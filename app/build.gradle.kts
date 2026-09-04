@@ -12,9 +12,16 @@ android {
         applicationId = "com.hishow.terminal33"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         ndk { abiFilters += "arm64-v8a" }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     androidResources {
