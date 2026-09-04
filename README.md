@@ -6,7 +6,7 @@
 
 ## 当前版本 1.1.0
 
-- Ubuntu 24.04.4 arm64 Base 用户空间
+- Ubuntu 24.04.3 arm64 Base 用户空间
 - Ubuntu Base 压缩包设计为 APK `assets` 内置资源
 - 首次启动从 APK 复制、校验并解压 Ubuntu Base
 - PRoot 无 root 运行
@@ -24,19 +24,19 @@
 
 ## 必需资源
 
-仓库构建前需要把 Canonical 官方 Ubuntu Base 24.04.4 arm64 压缩包放到：
+仓库构建前需要把 Canonical 官方 Ubuntu Base 24.04.3 arm64 压缩包放到：
 
 ```text
-app/src/main/assets/ubuntu-base-24.04.4-base-arm64.tar.gz
+app/src/main/assets/ubuntu-base-24.04.3-base-arm64.tar.gz
 ```
 
-SHA-256：
+本次使用的压缩包 SHA-256：
 
 ```text
-04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2
+7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048
 ```
 
-Canonical 官方发布的该 arm64 压缩包约 28 MB。构建时不会再把它作为普通网络下载项；运行时首次启动直接从 APK 读取，然后复制到应用私有目录并校验、解压。
+压缩包约 29 MB。构建时不会再把 Ubuntu Base 作为普通网络下载项；运行时首次启动直接从 APK 读取，然后复制到应用私有目录并校验、解压。
 
 ## PRoot
 
@@ -67,7 +67,7 @@ app/build/outputs/apk/release/app-release.apk
 
 ## 体积目标
 
-Ubuntu Base 官方发布文件约 28 MB。应用只包含 arm64-v8a，并启用 R8/资源压缩；目标 APK 小于 100 MB。最终 APK 大小必须以实际 Release 构建结果为准。
+Ubuntu Base 官方发布压缩包约 29 MB。应用只包含 arm64-v8a，并启用 R8/资源压缩；目标 APK 小于 100 MB。最终 APK 大小必须以实际 Release 构建结果为准。
 
 ## 项目说明
 
