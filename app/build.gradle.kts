@@ -15,13 +15,6 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         ndk { abiFilters += "arm64-v8a" }
-        externalNativeBuild {
-            cmake { cppFlags += "-O2 -fvisibility=hidden" }
-        }
-    }
-
-    externalNativeBuild {
-        cmake { path = file("src/main/cpp/CMakeLists.txt") }
     }
 
     buildTypes {
