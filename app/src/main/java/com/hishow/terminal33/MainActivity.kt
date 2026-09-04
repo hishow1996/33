@@ -1,7 +1,12 @@
 package com.hishow.terminal33
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.inputmethod.EditorInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -21,12 +26,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -65,13 +75,25 @@ private fun TerminalApp(context: Context) {
     var terminal by remember { mutableStateOf<UbuntuTerminal?>(null) }
     var output by remember { mutableStateOf("") }
     var command by remember { mutableStateOf("") }
+    var history by remember { mutableStateOf(emptyList<String>()) }
+    var historyIndex by remember { mutableStateOf(-1) }
     val scope = rememberCoroutineScope()
+    val main = remember { Handler(Looper.getMainLooper()) }
+
+    fun send(text: String, rememberCommand: Boolean = false) {
+        terminal?.write(text)
+        if (rememberCommand && text.trim().isNotEmpty()) {
+            val clean = text.trimEnd('\n')
+            history = (history + clean).takeLast(100)
+            historyIndex = -1
+        }
+    }
 
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {
             try {
                 UbuntuBootstrap(context).prepare { message, progress ->
-                    state = BootstrapState(false, message, progress)
+                    main.post { state = BootstrapState(false, message, progress) }
                 }
                 withContext(Dispatchers.Main) {
                     val session = UbuntuTerminal(context)
@@ -79,19 +101,27 @@ private fun TerminalApp(context: Context) {
                     state = BootstrapState(true, "Ubuntu 24.04 ready", 100)
                     session.start { chunk ->
                         output += chunk
-                        if (output.length > 120_000) output = output.takeLast(100_000)
+                        if (output.length > 160_000) output = output.takeLast(140_000)
                     }
                 }
             } catch (t: Throwable) {
-                state = BootstrapState(false, "Setup failed: ${t.message ?: "unknown error"}", -1)
+                main.post { state = BootstrapState(false, "Setup failed: ${t.message ?: "unknown error"}", -1) }
             }
         }
     }
 
-    Surface(Modifier.fillMaxSize(), Color(0xFF0B0D10)) {
+    DisposableEffect(Unit) { onDispose { terminal?.close() } }
+
+    Surface(Modifier.fillMaxSize(), Color(0xFF090B0E)) {
         if (!state.ready) BootstrapScreen(state) else {
             Column(Modifier.fillMaxSize().navigationBarsPadding()) {
-                TerminalHeader()
+                TerminalHeader(
+                    onClear = { output = "" },
+                    onCopy = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("terminal", output))
+                    }
+                )
                 TerminalOutput(output)
                 CommandBar(
                     value = command,
@@ -99,11 +129,18 @@ private fun TerminalApp(context: Context) {
                     onSend = {
                         val text = command
                         command = ""
-                        if (text.isNotBlank()) terminal?.write(text + "\n")
+                        if (text.isNotBlank()) send(text + "\n", true)
                     },
-                    onInterrupt = { terminal?.write("\u0003") }
+                    onInterrupt = { send("\u0003") },
+                    onKey = { send(it) },
+                    onHistory = { direction ->
+                        if (history.isEmpty()) return@CommandBar
+                        val next = (historyIndex + direction).coerceIn(-1, history.lastIndex)
+                        historyIndex = next
+                        command = if (next < 0) "" else history[history.lastIndex - next]
+                    }
                 )
-                QuickBar { terminal?.write(it + "\n") }
+                QuickBar { send(it + "\n", true) }
             }
         }
     }
@@ -111,36 +148,28 @@ private fun TerminalApp(context: Context) {
 
 @Composable
 private fun BootstrapScreen(state: BootstrapState) {
-    Column(
-        Modifier.fillMaxSize().padding(28.dp),
-        verticalArrangement = Arrangement.Center
-    ) {
+    Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
         Text("Ubuntu Terminal", color = Color.White, fontSize = 28.sp, fontFamily = FontFamily.Monospace)
         Spacer(Modifier.height(8.dp))
-        Text("Native Android terminal · Ubuntu 24.04 arm64", color = Color(0xFF9AA3AD), fontSize = 13.sp)
+        Text("Ubuntu 24.04 · arm64", color = Color(0xFF8D98A5), fontSize = 13.sp)
         Spacer(Modifier.height(28.dp))
         Text(state.message, color = Color(0xFFE8EAED), fontSize = 15.sp)
         Spacer(Modifier.height(12.dp))
         if (state.progress >= 0) Text("${state.progress}%", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace)
         Spacer(Modifier.height(12.dp))
-        Text(
-            "Ubuntu Base is bundled in the APK. The first launch only extracts the bundled system into private storage.",
-            color = Color(0xFF727B86), fontSize = 12.sp
-        )
+        Text("Ubuntu Base is bundled in the APK. The first launch unpacks it into private storage.", color = Color(0xFF68727D), fontSize = 12.sp)
     }
 }
 
 @Composable
-private fun TerminalHeader() {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+private fun TerminalHeader(onClear: () -> Unit, onCopy: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("ubuntu", color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
-        Spacer(Modifier.width(10.dp))
-        Text("24.04", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+        Spacer(Modifier.width(9.dp))
+        Text("24.04", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         Spacer(Modifier.weight(1f))
-        Text("arm64", color = Color(0xFF66717D), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+        IconButton(onClick = onCopy) { Text("CP", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+        IconButton(onClick = onClear) { Text("CL", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
     }
 }
 
@@ -149,49 +178,54 @@ private fun TerminalOutput(text: String) {
     val vertical = rememberScrollState()
     val horizontal = rememberScrollState()
     LaunchedEffect(text) { vertical.scrollTo(vertical.maxValue) }
-    Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF050608)).padding(14.dp)) {
-        Text(
-            text.ifEmpty { "Starting shell…\n" },
-            Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal),
-            color = Color(0xFFE5E7EB), fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 19.sp
-        )
+    Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF050608)).padding(13.dp)) {
+        Text(text.ifEmpty { "Starting shell…\n" }, Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal), color = Color(0xFFE4E7EB), fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 19.sp)
     }
 }
 
 @Composable
-private fun CommandBar(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit, onInterrupt: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            modifier = Modifier.weight(1f).background(Color(0xFF171A1F), RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 10.dp),
-            textStyle = TextStyle(color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-        )
-        Spacer(Modifier.width(8.dp))
-        Button(onClick = onInterrupt, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252A31)), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
-            Text("Ctrl+C", fontSize = 12.sp)
+private fun CommandBar(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit, onInterrupt: () -> Unit, onKey: (String) -> Unit, onHistory: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Color(0xFF0D1014)).padding(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                modifier = Modifier.weight(1f).background(Color(0xFF171B20), RoundedCornerShape(9.dp)).padding(horizontal = 11.dp, vertical = 10.dp),
+                textStyle = TextStyle(color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onSend() })
+            )
+            Spacer(Modifier.width(6.dp))
+            Button(onClick = onInterrupt, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF242A31)), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) { Text("^C", fontFamily = FontFamily.Monospace) }
+            Spacer(Modifier.width(5.dp))
+            Button(onClick = onSend, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF287CF0)), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 8.dp)) { Text("Run") }
         }
-        Spacer(Modifier.width(6.dp))
-        Button(onClick = onSend, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2B7FFF)), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
-            Text("Run")
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            SmallKey("↑") { onHistory(1) }
+            SmallKey("↓") { onHistory(-1) }
+            SmallKey("Tab") { onKey("\t") }
+            SmallKey("Esc") { onKey("\u001b") }
+            SmallKey("←") { onKey("\u001b[D") }
+            SmallKey("→") { onKey("\u001b[C") }
+            SmallKey("Home") { onKey("\u001b[H") }
+            SmallKey("End") { onKey("\u001b[F") }
         }
     }
+}
+
+@Composable
+private fun SmallKey(text: String, onClick: () -> Unit) {
+    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF171B20)), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text(text, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
 }
 
 @Composable
 private fun QuickBar(onCommand: (String) -> Unit) {
-    val items = listOf("pwd", "ls -la", "uname -a", "whoami", "clear")
-    Row(
-        Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp).horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
+    val items = listOf("pwd", "ls -la", "whoami", "uname -a", "id", "clear")
+    Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 7.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         items.forEach { item ->
-            Button(
-                onClick = { onCommand(item) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15181D)),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp)
-            ) { Text(item, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+            Button(onClick = { onCommand(item) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14181D)), contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp)) { Text(item, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
         }
     }
 }
@@ -202,7 +236,6 @@ private class UbuntuBootstrap(private val context: Context) {
         private const val ROOTFS_SHA256 = "04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2"
         private const val PROOT_URL = "https://github.com/proot-me/proot-rs/releases/download/v0.1.0/proot-rs-v0.1.0-aarch64-linux-android.tar.gz"
     }
-
     private val home = File(context.filesDir, "ubuntu")
     private val rootfs = File(home, "rootfs")
     private val proot = File(home, "proot")
@@ -211,11 +244,11 @@ private class UbuntuBootstrap(private val context: Context) {
         home.mkdirs()
         if (!rootfsReady()) {
             val archive = File(home, "rootfs.tar.gz")
-            copyBundledRootfs(archive) { p -> progress("Preparing bundled Ubuntu…", 5 + p * 45 / 100) }
-            progress("Verifying Ubuntu package…", 52)
+            copyAsset(ROOTFS_ASSET, archive) { p -> progress("Unpacking bundled Ubuntu package…", 5 + p * 45 / 100) }
+            progress("Checking Ubuntu package…", 52)
             verifySha256(archive, ROOTFS_SHA256)
-            progress("Extracting Ubuntu…", 55)
-            TarGzExtractor.extract(archive, rootfs) { p -> progress("Extracting Ubuntu…", 55 + p * 30 / 100) }
+            progress("Extracting Ubuntu filesystem…", 55)
+            TarGzExtractor.extract(archive, rootfs) { p -> progress("Extracting Ubuntu filesystem…", 55 + p * 30 / 100) }
             archive.delete()
             configureRootfs()
         }
@@ -227,14 +260,14 @@ private class UbuntuBootstrap(private val context: Context) {
             archive.delete()
             proot.setExecutable(true, false)
         }
-        progress("Finishing…", 100)
+        progress("Ready", 100)
     }
 
-    private fun rootfsReady(): Boolean = File(rootfs, "bin/bash").exists() && File(rootfs, "etc/os-release").exists()
+    private fun rootfsReady() = File(rootfs, "bin/bash").exists() && File(rootfs, "etc/os-release").exists()
 
-    private fun copyBundledRootfs(target: File, progress: (Int) -> Unit) {
-        val total = runCatching { context.assets.openFd(ROOTFS_ASSET).length }.getOrDefault(-1L)
-        context.assets.open(ROOTFS_ASSET, android.content.res.AssetManager.ACCESS_STREAMING).use { input ->
+    private fun copyAsset(name: String, target: File, progress: (Int) -> Unit) {
+        val total = runCatching { context.assets.openFd(name).length }.getOrDefault(-1L)
+        context.assets.open(name, android.content.res.AssetManager.ACCESS_STREAMING).use { input ->
             FileOutputStream(target).use { output ->
                 val buffer = ByteArray(128 * 1024)
                 var done = 0L
@@ -256,14 +289,11 @@ private class UbuntuBootstrap(private val context: Context) {
             resolv.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
         }
         File(rootfs, "tmp").mkdirs()
+        File(rootfs, "root").mkdirs()
     }
 
     private fun download(url: String, target: File, progress: (Int) -> Unit) {
-        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
-            connectTimeout = 20_000
-            readTimeout = 60_000
-            requestMethod = "GET"
-        }
+        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 20_000; readTimeout = 60_000; requestMethod = "GET" }
         try {
             connection.connect()
             if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
@@ -308,11 +338,7 @@ private class UbuntuTerminal(private val context: Context) {
         val rootfs = File(base, "rootfs")
         val proot = File(base, "proot")
         val tmp = File(base, "tmp").apply { mkdirs() }
-        val command = listOf(
-            proot.absolutePath, "-0", "-r", rootfs.absolutePath,
-            "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys",
-            "-b", "/sdcard:/mnt/shared", "-w", "/root", "/bin/bash", "--login"
-        )
+        val command = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "-w", "/root", "/bin/bash", "--login")
         val builder = ProcessBuilder(command).redirectErrorStream(true)
         builder.environment()["TERM"] = "xterm-256color"
         builder.environment()["HOME"] = "/root"
@@ -334,32 +360,30 @@ private class UbuntuTerminal(private val context: Context) {
     }
 
     fun write(text: String) {
-        runCatching {
-            writer?.write(text.toByteArray(Charsets.UTF_8))
-            writer?.flush()
-        }
+        runCatching { writer?.write(text.toByteArray(Charsets.UTF_8)); writer?.flush() }
+    }
+
+    fun close() {
+        runCatching { writer?.close() }
+        runCatching { process?.destroy() }
     }
 }
 
 private object TarGzExtractor {
     fun extract(archive: File, destination: File, progress: (Int) -> Unit) {
         destination.mkdirs()
-        GZIPInputStream(BufferedInputStream(archive.inputStream(), 64 * 1024)).use { input ->
-            extractTar(input, destination, progress)
-        }
+        GZIPInputStream(BufferedInputStream(archive.inputStream(), 64 * 1024)).use { extractTar(it, destination, progress) }
     }
 
     fun extractFirstNamed(archive: File, output: File) {
         val temp = File(output.parentFile, "proot.tmp")
-        GZIPInputStream(BufferedInputStream(archive.inputStream(), 64 * 1024)).use { input ->
-            extractTarToSingle(input, temp)
-        }
+        GZIPInputStream(BufferedInputStream(archive.inputStream(), 64 * 1024)).use { extractTarToSingle(it, temp) }
         check(temp.renameTo(output) || temp.copyTo(output, true).let { temp.delete(); true })
     }
 
     private fun extractTar(input: InputStream, destination: File, progress: (Int) -> Unit) {
         val header = ByteArray(512)
-        var bytes = 0L
+        var entries = 0
         while (true) {
             if (readFully(input, header) == null) break
             if (header.all { it.toInt() == 0 }) break
@@ -371,21 +395,14 @@ private object TarGzExtractor {
             val out = safePath(destination, path)
             when (type) {
                 '5' -> out.mkdirs()
-                '2' -> {
-                    skip(input, size)
-                    out.parentFile?.mkdirs()
-                    runCatching { android.system.Os.symlink(tarString(header, 157, 100), out.absolutePath) }
-                }
-                '0', '\u0000' -> {
-                    out.parentFile?.mkdirs()
-                    FileOutputStream(out).use { copyExactly(input, it, size) }
-                }
+                '2' -> { skip(input, size); out.parentFile?.mkdirs(); runCatching { android.system.Os.symlink(tarString(header, 157, 100), out.absolutePath) } }
+                '0', '\u0000' -> { out.parentFile?.mkdirs(); FileOutputStream(out).use { copyExactly(input, it, size) } }
                 else -> skip(input, size)
             }
             val pad = (512 - (size % 512)) % 512
             if (pad > 0) skip(input, pad)
-            bytes += size + 512 + pad
-            if (bytes % (512L * 128L) < 512) progress((bytes % 10000 / 100).toInt().coerceIn(0, 99))
+            entries++
+            if (entries % 200 == 0) progress((entries % 1000) / 10)
         }
         progress(100)
     }
@@ -399,9 +416,7 @@ private object TarGzExtractor {
             val name = tarString(header, 0, 100)
             val type = header[156].toInt().toChar()
             if ((type == '0' || type == '\u0000') && (name == "proot" || name.endsWith("/proot"))) {
-                output.parentFile?.mkdirs()
-                FileOutputStream(output).use { copyExactly(input, it, size) }
-                return
+                output.parentFile?.mkdirs(); FileOutputStream(output).use { copyExactly(input, it, size) }; return
             }
             skip(input, size)
             val pad = (512 - (size % 512)) % 512
@@ -435,10 +450,7 @@ private object TarGzExtractor {
         var remaining = count
         while (remaining > 0) {
             val skipped = input.skip(remaining)
-            if (skipped <= 0) {
-                if (input.read() < 0) error("Unexpected end of tar archive")
-                remaining--
-            } else remaining -= skipped
+            if (skipped <= 0) { if (input.read() < 0) error("Unexpected end of tar archive"); remaining-- } else remaining -= skipped
         }
     }
 
