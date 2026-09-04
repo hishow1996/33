@@ -2,71 +2,76 @@
 
 一个从零设计的原生 Android Ubuntu 终端应用，不依赖任何已有终端项目的代码或模块。
 
-目标很简单：打开应用，完成一次首次启动准备后，直接进入一个真正的 Ubuntu 24.04 arm64 用户空间；平时使用时尽量像一个干净、可靠的终端，而不是“套壳工具”。
+目标：打开应用，完成首次初始化后进入 Ubuntu 24.04 arm64 用户空间；日常操作保持简洁、稳定、低干扰。
 
-## 当前版本
+## 当前版本 1.1.0
 
 - Ubuntu 24.04.4 arm64 Base 用户空间
-- Ubuntu Base 压缩包作为 APK `assets` 内置资源
-- 首次启动从 APK 复制、校验并解压 Ubuntu Base，不再下载 Ubuntu rootfs
+- Ubuntu Base 压缩包设计为 APK `assets` 内置资源
+- 首次启动从 APK 复制、校验并解压 Ubuntu Base
 - PRoot 无 root 运行
 - 原生 Kotlin + Jetpack Compose UI
-- 低干扰深色终端界面
-- 命令输入、Ctrl+C、常用命令快捷栏
+- 深色终端界面
+- 命令输入、IME 回车、Ctrl+C
+- 上下历史、Tab、Esc、方向键、Home、End 快捷键
+- 一键复制输出、清空输出
+- 常用命令快捷栏
 - `/mnt/shared` 映射 Android 共享存储
 - C.UTF-8、xterm-256color、独立 HOME/TMP 环境
-- 只构建 arm64-v8a，控制安装包体积
+- 只构建 arm64-v8a
 - Release 开启 R8 与资源压缩
 - 不创建、不使用 GitHub Actions
 
-## Ubuntu 资源
+## 必需资源
 
-应用要求存在：
+仓库构建前需要把 Canonical 官方 Ubuntu Base 24.04.4 arm64 压缩包放到：
 
 ```text
 app/src/main/assets/ubuntu-base-24.04.4-base-arm64.tar.gz
 ```
 
-该文件对应 Canonical 官方 Ubuntu Base 24.04.4 arm64，并使用固定 SHA-256 校验值：
+SHA-256：
 
 ```text
 04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2
 ```
 
-构建系统会把 `assets` 中的文件原样打进 APK。应用首次启动时把压缩包复制到应用私有目录，校验成功后再解压。因此安装完成后不需要重新下载 Ubuntu Base。
+Canonical 官方发布的该 arm64 压缩包约 28 MB。构建时不会再把它作为普通网络下载项；运行时首次启动直接从 APK 读取，然后复制到应用私有目录并校验、解压。
 
 ## PRoot
 
-当前实现仍会在首次启动时下载一个 arm64 Android PRoot runtime，并缓存到应用私有目录。这样可以避免在仓库中额外存放另一个二进制包；后续可以继续把 PRoot 也改成 APK 内置资源，实现完全离线首次启动。
+为了控制仓库二进制体积，当前版本仍会在首次启动时获取 arm64 Android PRoot runtime，并缓存到应用私有目录。Ubuntu Base 本身不需要下载。
+
+## 终端行为
+
+当前运行模型使用 PRoot + `/bin/bash --login`。输入区负责发送命令，辅助按键负责发送常用控制字符。输出采用 UTF-8，并保留最近一段输出，适合移动设备长期使用。
 
 ## 构建
 
-使用 Android Studio 打开仓库即可构建。环境建议：
+使用 Android Studio 打开仓库即可构建。建议环境：
 
 - JDK 17+
 - Android SDK 35
 - Android Gradle Plugin 8.7.3
 - Kotlin 2.0.21
 
-在 Android Studio 中选择 `app` 模块并构建 Release。由于仓库刻意不包含 GitHub Actions，也没有提交 CI 配置。
-
-Release APK 输出在：
+选择 `app` 模块构建 Release：
 
 ```text
 app/build/outputs/apk/release/app-release.apk
 ```
 
-## 设备要求
+## 设备
 
-当前版本只面向 `arm64-v8a`。Ubuntu Base 已内置进 APK；首次启动需要完成解压，并默认需要网络获取 PRoot runtime。
+当前只面向 `arm64-v8a`。首次启动需要解压 Ubuntu Base；当前 PRoot runtime 仍需要网络获取。
 
-## 体积
+## 体积目标
 
-Ubuntu Base 官方发布文件约 28 MB（压缩状态）。应用只打包 `arm64-v8a`，并启用 R8 与资源压缩，目标仍然是让最终 APK 保持在 100 MB 以内。最终体积必须以实际 Release 构建结果为准。
+Ubuntu Base 官方发布文件约 28 MB。应用只包含 arm64-v8a，并启用 R8/资源压缩；目标 APK 小于 100 MB。最终 APK 大小必须以实际 Release 构建结果为准。
 
-## 说明
+## 项目说明
 
-这是一个全新的 `33` 项目，代码结构、UI、启动流程和 Ubuntu 初始化逻辑均独立设计；没有引用其他终端项目。
+这是一个独立的 `33` 项目：UI、初始化流程、Ubuntu 解包逻辑和运行管理均独立实现，没有引用其他终端项目。
 
 ## License
 
