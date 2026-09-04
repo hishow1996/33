@@ -56,7 +56,6 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 
@@ -232,8 +231,8 @@ private fun QuickBar(onCommand: (String) -> Unit) {
 
 private class UbuntuBootstrap(private val context: Context) {
     companion object {
-        private const val ROOTFS_ASSET = "ubuntu-base-24.04.4-base-arm64.tar.gz"
-        private const val ROOTFS_SHA256 = "04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2"
+        private const val ROOTFS_ASSET = "ubuntu-base-24.04.3-base-arm64.tar.gz"
+        private const val ROOTFS_SHA256 = "7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048"
         private const val PROOT_URL = "https://github.com/proot-me/proot-rs/releases/download/v0.1.0/proot-rs-v0.1.0-aarch64-linux-android.tar.gz"
     }
     private val home = File(context.filesDir, "ubuntu")
@@ -244,7 +243,7 @@ private class UbuntuBootstrap(private val context: Context) {
         home.mkdirs()
         if (!rootfsReady()) {
             val archive = File(home, "rootfs.tar.gz")
-            copyAsset(ROOTFS_ASSET, archive) { p -> progress("Unpacking bundled Ubuntu package…", 5 + p * 45 / 100) }
+            copyAsset(ROOTFS_ASSET, archive) { p -> progress("Copying bundled Ubuntu package…", 5 + p * 45 / 100) }
             progress("Checking Ubuntu package…", 52)
             verifySha256(archive, ROOTFS_SHA256)
             progress("Extracting Ubuntu filesystem…", 55)
@@ -338,141 +337,162 @@ private class UbuntuTerminal(private val context: Context) {
         val rootfs = File(base, "rootfs")
         val proot = File(base, "proot")
         val tmp = File(base, "tmp").apply { mkdirs() }
-        val command = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "-w", "/root", "/bin/bash", "--login")
-        val builder = ProcessBuilder(command).redirectErrorStream(true)
-        builder.environment()["TERM"] = "xterm-256color"
-        builder.environment()["HOME"] = "/root"
-        builder.environment()["LANG"] = "C.UTF-8"
-        builder.environment()["LC_ALL"] = "C.UTF-8"
-        builder.environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        builder.environment()["PROOT_TMP_DIR"] = tmp.absolutePath
-        process = builder.start()
-        writer = process?.outputStream
-        Thread {
-            val input = process?.inputStream ?: return@Thread
-            val buffer = ByteArray(8192)
-            while (true) {
-                val n = input.read(buffer)
-                if (n < 0) break
-                onOutput(String(buffer, 0, n, Charsets.UTF_8))
+        val command = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "/bin/bash", "--login")
+        process = ProcessBuilder(command)
+            .directory(rootfs)
+            .redirectErrorStream(true)
+            .apply {
+                environment()["HOME"] = "/root"
+                environment()["TERM"] = "xterm-256color"
+                environment()["LANG"] = "C.UTF-8"
+                environment()["LC_ALL"] = "C.UTF-8"
+                environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                environment()["PROOT_TMP_DIR"] = tmp.absolutePath
             }
-        }.apply { isDaemon = true }.start()
+            .start()
+        writer = process!!.outputStream
+        Thread {
+            process!!.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                lines.forEach { line -> onOutput(line + "\n") }
+            }
+        }.start()
     }
 
     fun write(text: String) {
-        runCatching { writer?.write(text.toByteArray(Charsets.UTF_8)); writer?.flush() }
+        runCatching {
+            writer?.write(text.toByteArray(Charsets.UTF_8))
+            writer?.flush()
+        }
     }
 
     fun close() {
         runCatching { writer?.close() }
         runCatching { process?.destroy() }
+        writer = null
+        process = null
     }
 }
 
 private object TarGzExtractor {
+    private const val BLOCK = 512
+
     fun extract(archive: File, destination: File, progress: (Int) -> Unit) {
         destination.mkdirs()
-        GZIPInputStream(BufferedInputStream(archive.inputStream(), 64 * 1024)).use { extractTar(it, destination, progress) }
-    }
-
-    fun extractFirstNamed(archive: File, output: File) {
-        val temp = File(output.parentFile, "proot.tmp")
-        GZIPInputStream(BufferedInputStream(archive.inputStream(), 64 * 1024)).use { extractTarToSingle(it, temp) }
-        check(temp.renameTo(output) || temp.copyTo(output, true).let { temp.delete(); true })
-    }
-
-    private fun extractTar(input: InputStream, destination: File, progress: (Int) -> Unit) {
-        val header = ByteArray(512)
-        var entries = 0
-        while (true) {
-            if (readFully(input, header) == null) break
-            if (header.all { it.toInt() == 0 }) break
-            val size = octal(header, 124, 12)
-            val name = tarString(header, 0, 100)
-            val prefix = tarString(header, 345, 155)
-            val path = if (prefix.isNotEmpty()) "$prefix/$name" else name
-            val type = header[156].toInt().toChar()
-            val out = safePath(destination, path)
-            when (type) {
-                '5' -> out.mkdirs()
-                '2' -> { skip(input, size); out.parentFile?.mkdirs(); runCatching { android.system.Os.symlink(tarString(header, 157, 100), out.absolutePath) } }
-                '0', '\u0000' -> { out.parentFile?.mkdirs(); FileOutputStream(out).use { copyExactly(input, it, size) } }
-                else -> skip(input, size)
-            }
-            val pad = (512 - (size % 512)) % 512
-            if (pad > 0) skip(input, pad)
-            entries++
-            if (entries % 200 == 0) progress((entries % 1000) / 10)
+        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input ->
+            extractTar(input, destination, progress)
         }
-        progress(100)
     }
 
-    private fun extractTarToSingle(input: InputStream, output: File) {
-        val header = ByteArray(512)
-        while (true) {
-            if (readFully(input, header) == null) break
-            if (header.all { it.toInt() == 0 }) break
-            val size = octal(header, 124, 12)
-            val name = tarString(header, 0, 100)
-            val type = header[156].toInt().toChar()
-            if ((type == '0' || type == '\u0000') && (name == "proot" || name.endsWith("/proot"))) {
-                output.parentFile?.mkdirs(); FileOutputStream(output).use { copyExactly(input, it, size) }; return
+    fun extractFirstNamed(archive: File, target: File) {
+        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input ->
+            val buffer = ByteArray(BLOCK)
+            while (true) {
+                if (!readFully(input, buffer)) break
+                if (buffer.all { it.toInt() == 0 }) break
+                val name = tarString(buffer, 0, 100)
+                val size = tarOctal(buffer, 124, 12)
+                val type = buffer[156].toInt().toChar()
+                val skip = (size + BLOCK - 1) / BLOCK * BLOCK
+                if (type == '0' || type == '\u0000') {
+                    val baseName = File(name).name
+                    if (baseName == "proot" || name.endsWith("/proot")) {
+                        target.outputStream().use { output -> copyExactly(input, output, size) }
+                        target.setExecutable(true, false)
+                        return
+                    }
+                }
+                skipFully(input, skip)
             }
-            skip(input, size)
-            val pad = (512 - (size % 512)) % 512
-            if (pad > 0) skip(input, pad)
         }
         error("PRoot binary not found in archive")
     }
 
-    private fun readFully(input: InputStream, buffer: ByteArray): ByteArray? {
-        var offset = 0
-        while (offset < buffer.size) {
-            val n = input.read(buffer, offset, buffer.size - offset)
-            if (n < 0) return if (offset == 0) null else error("Unexpected end of tar archive")
-            offset += n
+    private fun extractTar(input: InputStream, destination: File, progress: (Int) -> Unit) {
+        val header = ByteArray(BLOCK)
+        var entries = 0L
+        while (true) {
+            if (!readFully(input, header)) break
+            if (header.all { it.toInt() == 0 }) break
+            val name = tarString(header, 0, 100)
+            val prefix = tarString(header, 345, 155)
+            val fullName = if (prefix.isEmpty()) name else "$prefix/$name"
+            val safe = safePath(destination, fullName)
+            val size = tarOctal(header, 124, 12)
+            val mode = tarOctal(header, 100, 8).toInt()
+            val type = header[156].toInt().toChar()
+            when (type) {
+                '5' -> safe.mkdirs()
+                '2' -> {
+                    val link = tarString(header, 157, 100)
+                    safe.parentFile?.mkdirs()
+                    runCatching { java.nio.file.Files.deleteIfExists(safe.toPath()) }
+                    java.nio.file.Files.createSymbolicLink(safe.toPath(), java.nio.file.Paths.get(link))
+                }
+                '0', '\u0000' -> {
+                    safe.parentFile?.mkdirs()
+                    FileOutputStream(safe).use { output -> copyExactly(input, output, size) }
+                    if (mode and 0b001_001_001 != 0) safe.setExecutable(true, false)
+                }
+                else -> skipFully(input, size)
+            }
+            val padding = (BLOCK - (size % BLOCK)) % BLOCK
+            skipFully(input, padding)
+            entries++
+            progress((entries % 1000).toInt().coerceAtMost(99))
         }
-        return buffer
+        progress(100)
     }
 
-    private fun copyExactly(input: InputStream, output: FileOutputStream, size: Long) {
-        var remaining = size
-        val buffer = ByteArray(64 * 1024)
-        while (remaining > 0) {
-            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-            if (n < 0) error("Unexpected end of tar entry")
-            output.write(buffer, 0, n)
-            remaining -= n
-        }
-    }
-
-    private fun skip(input: InputStream, count: Long) {
-        var remaining = count
-        while (remaining > 0) {
-            val skipped = input.skip(remaining)
-            if (skipped <= 0) { if (input.read() < 0) error("Unexpected end of tar archive"); remaining-- } else remaining -= skipped
-        }
-    }
-
-    private fun octal(buffer: ByteArray, offset: Int, length: Int): Long {
-        var value = 0L
-        for (i in offset until offset + length) {
-            val c = buffer[i].toInt().and(0xFF)
-            if (c in 48..55) value = (value shl 3) + (c - 48)
-        }
-        return value
+    private fun safePath(root: File, entry: String): File {
+        val normalized = entry.replace('\\', '/').trimStart('/')
+        require(normalized.split('/').none { it == ".." }) { "Unsafe archive path" }
+        val target = File(root, normalized)
+        val canonicalRoot = root.canonicalFile
+        val canonicalTarget = target.canonicalFile
+        require(canonicalTarget.path == canonicalRoot.path || canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) { "Unsafe archive path" }
+        return target
     }
 
     private fun tarString(buffer: ByteArray, offset: Int, length: Int): String {
         var end = offset
         while (end < offset + length && buffer[end].toInt() != 0) end++
-        return String(buffer, offset, end - offset, Charsets.UTF_8).trim()
+        return buffer.copyOfRange(offset, end).toString(Charsets.UTF_8).trim()
     }
 
-    private fun safePath(root: File, entry: String): File {
-        val clean = entry.trimStart('/').replace("..", "_")
-        val file = File(root, clean).canonicalFile
-        check(file.path == root.canonicalPath || file.path.startsWith(root.canonicalPath + File.separator)) { "Unsafe tar path" }
-        return file
+    private fun tarOctal(buffer: ByteArray, offset: Int, length: Int): Long {
+        val text = tarString(buffer, offset, length).trim()
+        return if (text.isEmpty()) 0 else text.toLongOrNull(8) ?: 0
+    }
+
+    private fun readFully(input: InputStream, buffer: ByteArray): Boolean {
+        var offset = 0
+        while (offset < buffer.size) {
+            val n = input.read(buffer, offset, buffer.size - offset)
+            if (n < 0) return false
+            offset += n
+        }
+        return true
+    }
+
+    private fun copyExactly(input: InputStream, output: java.io.OutputStream, size: Long) {
+        var remaining = size
+        val buffer = ByteArray(128 * 1024)
+        while (remaining > 0) {
+            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (n < 0) error("Unexpected end of archive")
+            output.write(buffer, 0, n)
+            remaining -= n
+        }
+    }
+
+    private fun skipFully(input: InputStream, size: Long) {
+        var remaining = size
+        while (remaining > 0) {
+            val skipped = input.skip(remaining)
+            if (skipped > 0) remaining -= skipped else {
+                if (input.read() < 0) error("Unexpected end of archive")
+                remaining--
+            }
+        }
     }
 }
