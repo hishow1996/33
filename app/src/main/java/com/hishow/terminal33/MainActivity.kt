@@ -6,7 +6,6 @@ import android.content.Context
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.inputmethod.EditorInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -53,7 +52,6 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -83,38 +81,48 @@ private fun TerminalApp(context: Context) {
         terminal?.write(text)
         if (rememberCommand && text.trim().isNotEmpty()) {
             val clean = text.trimEnd('\n')
-            history = (history + clean).takeLast(100)
+            if (history.lastOrNull() != clean) history = (history + clean).takeLast(100)
             historyIndex = -1
         }
     }
 
-    LaunchedEffect(Unit) {
+    fun startSession() {
         scope.launch(Dispatchers.IO) {
             try {
                 UbuntuBootstrap(context).prepare { message, progress ->
                     main.post { state = BootstrapState(false, message, progress) }
                 }
+                val session = UbuntuTerminal(context)
                 withContext(Dispatchers.Main) {
-                    val session = UbuntuTerminal(context)
+                    terminal?.close()
                     terminal = session
+                    output = ""
                     state = BootstrapState(true, "Ubuntu 24.04 ready", 100)
-                    session.start { chunk ->
-                        output += chunk
-                        if (output.length > 160_000) output = output.takeLast(140_000)
-                    }
                 }
+                session.start(
+                    onOutput = { chunk ->
+                        main.post {
+                            output = (output + cleanTerminalOutput(chunk)).let { value ->
+                                if (value.length > 180_000) value.takeLast(150_000) else value
+                            }
+                        }
+                    },
+                    onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
+                )
             } catch (t: Throwable) {
                 main.post { state = BootstrapState(false, "Setup failed: ${t.message ?: "unknown error"}", -1) }
             }
         }
     }
 
+    LaunchedEffect(Unit) { startSession() }
     DisposableEffect(Unit) { onDispose { terminal?.close() } }
 
     Surface(Modifier.fillMaxSize(), Color(0xFF090B0E)) {
         if (!state.ready) BootstrapScreen(state) else {
             Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                 TerminalHeader(
+                    onRestart = { terminal?.close(); startSession() },
                     onClear = { output = "" },
                     onCopy = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -145,6 +153,15 @@ private fun TerminalApp(context: Context) {
     }
 }
 
+private fun cleanTerminalOutput(input: String): String {
+    var text = input.replace("\u0000", "")
+    // Keep normal SGR color sequences out of the plain Compose text while removing
+    // cursor/control sequences emitted by readline and common shell prompts.
+    text = Regex("\\u001B\\[[0-9;?]*[ -/]*[@-~]").replace(text, "")
+    text = text.replace("\r\n", "\n").replace('\r', '\n')
+    return text
+}
+
 @Composable
 private fun BootstrapScreen(state: BootstrapState) {
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
@@ -156,17 +173,18 @@ private fun BootstrapScreen(state: BootstrapState) {
         Spacer(Modifier.height(12.dp))
         if (state.progress >= 0) Text("${state.progress}%", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace)
         Spacer(Modifier.height(12.dp))
-        Text("Ubuntu Base is bundled in the APK. The first launch unpacks it into private storage.", color = Color(0xFF68727D), fontSize = 12.sp)
+        Text("Ubuntu Base is bundled in the APK. First launch unpacks it into private storage.", color = Color(0xFF68727D), fontSize = 12.sp)
     }
 }
 
 @Composable
-private fun TerminalHeader(onClear: () -> Unit, onCopy: () -> Unit) {
+private fun TerminalHeader(onRestart: () -> Unit, onClear: () -> Unit, onCopy: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("ubuntu", color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
         Spacer(Modifier.width(9.dp))
         Text("24.04", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         Spacer(Modifier.weight(1f))
+        IconButton(onClick = onRestart) { Text("RS", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
         IconButton(onClick = onCopy) { Text("CP", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
         IconButton(onClick = onClear) { Text("CL", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
     }
@@ -178,12 +196,26 @@ private fun TerminalOutput(text: String) {
     val horizontal = rememberScrollState()
     LaunchedEffect(text) { vertical.scrollTo(vertical.maxValue) }
     Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF050608)).padding(13.dp)) {
-        Text(text.ifEmpty { "Starting shell…\n" }, Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal), color = Color(0xFFE4E7EB), fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 19.sp)
+        Text(
+            text.ifEmpty { "Starting shell…\n" },
+            Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal),
+            color = Color(0xFFE4E7EB),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp,
+            lineHeight = 19.sp
+        )
     }
 }
 
 @Composable
-private fun CommandBar(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit, onInterrupt: () -> Unit, onKey: (String) -> Unit, onHistory: (Int) -> Unit) {
+private fun CommandBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onInterrupt: () -> Unit,
+    onKey: (String) -> Unit,
+    onHistory: (Int) -> Unit
+) {
     Column(Modifier.fillMaxWidth().background(Color(0xFF0D1014)).padding(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             BasicTextField(
@@ -216,7 +248,9 @@ private fun CommandBar(value: String, onValueChange: (String) -> Unit, onSend: (
 
 @Composable
 private fun SmallKey(text: String, onClick: () -> Unit) {
-    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF171B20)), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text(text, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF171B20)), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+        Text(text, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+    }
 }
 
 @Composable
@@ -224,7 +258,9 @@ private fun QuickBar(onCommand: (String) -> Unit) {
     val items = listOf("pwd", "ls -la", "whoami", "uname -a", "id", "clear")
     Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 7.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         items.forEach { item ->
-            Button(onClick = { onCommand(item) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14181D)), contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp)) { Text(item, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+            Button(onClick = { onCommand(item) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14181D)), contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp)) {
+                Text(item, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+            }
         }
     }
 }
@@ -235,6 +271,7 @@ private class UbuntuBootstrap(private val context: Context) {
         private const val ROOTFS_SHA256 = "7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048"
         private const val PROOT_URL = "https://github.com/proot-me/proot-rs/releases/download/v0.1.0/proot-rs-v0.1.0-aarch64-linux-android.tar.gz"
     }
+
     private val home = File(context.filesDir, "ubuntu")
     private val rootfs = File(home, "rootfs")
     private val proot = File(home, "proot")
@@ -243,10 +280,12 @@ private class UbuntuBootstrap(private val context: Context) {
         home.mkdirs()
         if (!rootfsReady()) {
             val archive = File(home, "rootfs.tar.gz")
+            runCatching { archive.delete() }
             copyAsset(ROOTFS_ASSET, archive) { p -> progress("Copying bundled Ubuntu package…", 5 + p * 45 / 100) }
             progress("Checking Ubuntu package…", 52)
             verifySha256(archive, ROOTFS_SHA256)
             progress("Extracting Ubuntu filesystem…", 55)
+            runCatching { rootfs.deleteRecursively() }
             TarGzExtractor.extract(archive, rootfs) { p -> progress("Extracting Ubuntu filesystem…", 55 + p * 30 / 100) }
             archive.delete()
             configureRootfs()
@@ -292,12 +331,16 @@ private class UbuntuBootstrap(private val context: Context) {
     }
 
     private fun download(url: String, target: File, progress: (Int) -> Unit) {
-        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 20_000; readTimeout = 60_000; requestMethod = "GET" }
+        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 20_000
+            readTimeout = 60_000
+            requestMethod = "GET"
+        }
         try {
             connection.connect()
             if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
             val total = connection.contentLengthLong
-            BufferedInputStream(connection.inputStream, 64 * 1024).use { input ->
+            connection.inputStream.buffered(64 * 1024).use { input ->
                 FileOutputStream(target).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     var done = 0L
@@ -310,7 +353,9 @@ private class UbuntuBootstrap(private val context: Context) {
                     }
                 }
             }
-        } finally { connection.disconnect() }
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun verifySha256(file: File, expected: String) {
@@ -329,48 +374,33 @@ private class UbuntuBootstrap(private val context: Context) {
 }
 
 private class UbuntuTerminal(private val context: Context) {
-    private var process: Process? = null
-    private var writer: java.io.OutputStream? = null
+    private var pty: NativePty? = null
 
-    fun start(onOutput: (String) -> Unit) {
+    fun start(onOutput: (String) -> Unit, onExit: () -> Unit) {
         val base = File(context.filesDir, "ubuntu")
         val rootfs = File(base, "rootfs")
         val proot = File(base, "proot")
         val tmp = File(base, "tmp").apply { mkdirs() }
-        val command = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "/bin/bash", "--login")
-        process = ProcessBuilder(command)
-            .directory(rootfs)
-            .redirectErrorStream(true)
-            .apply {
-                environment()["HOME"] = "/root"
-                environment()["TERM"] = "xterm-256color"
-                environment()["LANG"] = "C.UTF-8"
-                environment()["LC_ALL"] = "C.UTF-8"
-                environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                environment()["PROOT_TMP_DIR"] = tmp.absolutePath
-            }
-            .start()
-        writer = process!!.outputStream
-        Thread {
-            process!!.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                lines.forEach { line -> onOutput(line + "\n") }
-            }
-        }.start()
-    }
-
-    fun write(text: String) {
-        runCatching {
-            writer?.write(text.toByteArray(Charsets.UTF_8))
-            writer?.flush()
+        val args = listOf(
+            proot.absolutePath,
+            "-0",
+            "-r", rootfs.absolutePath,
+            "-b", "/dev:/dev",
+            "-b", "/proc:/proc",
+            "-b", "/sys:/sys",
+            "-b", "/sdcard:/mnt/shared",
+            "/bin/bash", "--login"
+        )
+        pty = NativePty().also { session ->
+            session.start(args, rootfs.absolutePath, onOutput, onExit)
+            session.resize(32, 120)
         }
+        @Suppress("UNUSED_VARIABLE")
+        val unused = tmp
     }
 
-    fun close() {
-        runCatching { writer?.close() }
-        runCatching { process?.destroy() }
-        writer = null
-        process = null
-    }
+    fun write(text: String) { pty?.write(text) }
+    fun close() { pty?.close(); pty = null }
 }
 
 private object TarGzExtractor {
@@ -378,9 +408,7 @@ private object TarGzExtractor {
 
     fun extract(archive: File, destination: File, progress: (Int) -> Unit) {
         destination.mkdirs()
-        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input ->
-            extractTar(input, destination, progress)
-        }
+        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input -> extractTar(input, destination, progress) }
     }
 
     fun extractFirstNamed(archive: File, target: File) {
@@ -393,13 +421,11 @@ private object TarGzExtractor {
                 val size = tarOctal(buffer, 124, 12)
                 val type = buffer[156].toInt().toChar()
                 val skip = (size + BLOCK - 1) / BLOCK * BLOCK
-                if (type == '0' || type == '\u0000') {
-                    val baseName = File(name).name
-                    if (baseName == "proot" || name.endsWith("/proot")) {
-                        target.outputStream().use { output -> copyExactly(input, output, size) }
-                        target.setExecutable(true, false)
-                        return
-                    }
+                if ((type == '0' || type == '\u0000') && (File(name).name == "proot" || name.endsWith("/proot"))) {
+                    target.parentFile?.mkdirs()
+                    target.outputStream().use { output -> copyExactly(input, output, size) }
+                    target.setExecutable(true, false)
+                    return
                 }
                 skipFully(input, skip)
             }
@@ -407,7 +433,7 @@ private object TarGzExtractor {
         error("PRoot binary not found in archive")
     }
 
-    private fun extractTar(input: InputStream, destination: File, progress: (Int) -> Unit) {
+    private fun extractTar(input: java.io.InputStream, destination: File, progress: (Int) -> Unit) {
         val header = ByteArray(BLOCK)
         var entries = 0L
         while (true) {
@@ -426,6 +452,8 @@ private object TarGzExtractor {
                     val link = tarString(header, 157, 100)
                     safe.parentFile?.mkdirs()
                     runCatching { java.nio.file.Files.deleteIfExists(safe.toPath()) }
+                    val linkTarget = File(link)
+                    require(!linkTarget.isAbsolute && !link.split('/').contains("..")) { "Unsafe symbolic link" }
                     java.nio.file.Files.createSymbolicLink(safe.toPath(), java.nio.file.Paths.get(link))
                 }
                 '0', '\u0000' -> {
@@ -435,10 +463,9 @@ private object TarGzExtractor {
                 }
                 else -> skipFully(input, size)
             }
-            val padding = (BLOCK - (size % BLOCK)) % BLOCK
-            skipFully(input, padding)
+            skipFully(input, (BLOCK - (size % BLOCK)) % BLOCK)
             entries++
-            progress((entries % 1000).toInt().coerceAtMost(99))
+            if (entries % 1000L == 0L) progress((entries % 100).toInt())
         }
         progress(100)
     }
@@ -464,7 +491,7 @@ private object TarGzExtractor {
         return if (text.isEmpty()) 0 else text.toLongOrNull(8) ?: 0
     }
 
-    private fun readFully(input: InputStream, buffer: ByteArray): Boolean {
+    private fun readFully(input: java.io.InputStream, buffer: ByteArray): Boolean {
         var offset = 0
         while (offset < buffer.size) {
             val n = input.read(buffer, offset, buffer.size - offset)
@@ -474,7 +501,7 @@ private object TarGzExtractor {
         return true
     }
 
-    private fun copyExactly(input: InputStream, output: java.io.OutputStream, size: Long) {
+    private fun copyExactly(input: java.io.InputStream, output: java.io.OutputStream, size: Long) {
         var remaining = size
         val buffer = ByteArray(128 * 1024)
         while (remaining > 0) {
@@ -485,7 +512,7 @@ private object TarGzExtractor {
         }
     }
 
-    private fun skipFully(input: InputStream, size: Long) {
+    private fun skipFully(input: java.io.InputStream, size: Long) {
         var remaining = size
         while (remaining > 0) {
             val skipped = input.skip(remaining)
