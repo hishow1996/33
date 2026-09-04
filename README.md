@@ -20,7 +20,7 @@
 
 ## 工作方式
 
-应用本身只负责 Android UI、Ubuntu 初始化和进程管理。Ubuntu Base 与 PRoot 在首次启动时下载到应用私有目录，因此不会把大型 Linux 用户空间塞进 APK。
+应用本身负责 Android UI、Ubuntu 初始化和进程管理。Ubuntu Base 与 PRoot 在首次启动时下载到应用私有目录，因此不会把大型 Linux 用户空间塞进 APK。
 
 Ubuntu Base 来自 Canonical 官方 Ubuntu Base 发布目录，并在解压前进行 SHA-256 校验。当前固定使用 Ubuntu 24.04.4 arm64 Base。
 
@@ -33,11 +33,7 @@ Ubuntu Base 来自 Canonical 官方 Ubuntu Base 发布目录，并在解压前�
 - Android Gradle Plugin 8.7.3
 - Kotlin 2.0.21
 
-命令行构建：
-
-```bash
-./gradlew :app:assembleRelease
-```
+在 Android Studio 中选择 `app` 模块并构建 Release。由于仓库刻意不包含 GitHub Actions，也没有提交 CI 配置。
 
 Release APK 输出在：
 
@@ -55,7 +51,7 @@ app/build/outputs/apk/release/app-release.apk
 
 ## 说明
 
-这是一个全新的 `33` 项目，代码结构、UI、启动流程和 Ubuntu 初始化逻辑均独立设计；没有引用 OnecodeTerminal 项目。
+这是一个全新的 `33` 项目，代码结构、UI、启动流程和 Ubuntu 初始化逻辑均独立设计；没有引用其他终端项目。
 
 ## License
 
