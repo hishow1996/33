@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,35 +57,11 @@ class TerminalScreenModel {
     }
 
     fun updateSelection(position: CellPosition) = synchronized(lock) {
-        if (selectionStart != null) {
-            selectionEnd = position.clamp(state.columns, state.rows)
-            version++
-        }
+        if (selectionStart != null) { selectionEnd = position.clamp(state.columns, state.rows); version++ }
     }
 
-    fun clearSelection() = synchronized(lock) { if (selectionStart != null || selectionEnd != null) { clearSelectionLocked(); version++ } }
-
-    fun hasSelection(): Boolean = synchronized(lock) = selectionStart != null && selectionEnd != null && selectionStart != selectionEnd
-
-    fun selectedText(): String = synchronized(lock) {
-        val start = selectionStart ?: return@synchronized ""
-        val end = selectionEnd ?: return@synchronized ""
-        if (start == end) return@synchronized ""
-        val a = start.clamp(state.columns, state.rows)
-        val b = end.clamp(state.columns, state.rows)
-        val first = minOf(a, b)
-        val last = maxOf(a, b)
-        val rows = state.snapshot()
-        buildString {
-            for (y in first.row..last.row) {
-                val from = if (y == first.row) first.column else 0
-                val to = if (y == last.row) last.column else state.columns - 1
-                if (y in rows.indices) {
-                    for (x in from..to.coerceAtLeast(from)) if (x in rows[y].indices) append(rows[y][x].ch)
-                }
-                if (y != last.row) append('\n')
-            }
-        }.trimEnd()
+    fun clearSelection() = synchronized(lock) {
+        if (selectionStart != null || selectionEnd != null) { clearSelectionLocked(); version++ }
     }
 
     fun copyText(): String = synchronized(lock) {
@@ -134,16 +111,14 @@ data class TerminalFrame(
 )
 
 @Composable
-fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fontSizeSp: Int = 13, onSizeChanged: (rows: Int, columns: Int) -> Unit = { _, _ -> }) {
+fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fontSizeSp: Int = 13, onSizeChanged: (rows: Int, columns: Int) -> Unit = { _, _ -> }, onTap: () -> Unit = {}) {
     val density = LocalDensity.current
     val textSize = with(density) { fontSizeSp.sp.toPx() }
     var version by remember(model) { mutableIntStateOf(-1) }
     var selecting by remember(model) { mutableStateOf(false) }
-    LaunchedEffect(model) {
-        while (true) { version = model.snapshot().version; delay(50) }
-    }
-    val current = model.snapshot()
+    LaunchedEffect(model) { while (true) { version = model.snapshot().version; delay(50) } }
     val sizingModifier = modifier.fillMaxSize()
+        .pointerInput(model) { detectTapGestures(onTap = { onTap() }) }
         .pointerInput(model, textSize) {
             detectDragGesturesAfterLongPress(
                 onDragStart = { offset ->
@@ -164,8 +139,7 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
                         change.consume()
                     }
                 },
-                onDragEnd = { selecting = false },
-                onDragCancel = { selecting = false }
+                onDragEnd = { selecting = false }, onDragCancel = { selecting = false }
             )
         }
         .pointerInput(model, selecting) {
@@ -184,6 +158,7 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
             onSizeChanged((size.height / cellHeight).toInt().coerceAtLeast(1), (size.width / cellWidth).toInt().coerceAtLeast(1))
         }
     @Suppress("UNUSED_VARIABLE") val observedVersion = version
+    val current = model.snapshot()
     Canvas(sizingModifier.background(Color(0xFF050608))) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.MONOSPACE; this.textSize = textSize }
         val metrics = paint.fontMetrics
@@ -206,10 +181,7 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
             if (cell.ch != ' ') {
                 paint.color = (if (selected) Color.White else fg ?: Color(0xFFE4E7EB)).toArgb(); paint.isFakeBoldText = cell.bold
                 drawContext.canvas.nativeCanvas.drawText(cell.ch.toString(), left, top + baseline, paint)
-                if (cell.underline) {
-                    val lineY = top + baseline + 1.5f
-                    drawContext.canvas.nativeCanvas.drawRect(left, lineY, left + cellWidth, lineY + 1f, paint)
-                }
+                if (cell.underline) { val lineY = top + baseline + 1.5f; drawContext.canvas.nativeCanvas.drawRect(left, lineY, left + cellWidth, lineY + 1f, paint) }
             }
         }
         if (current.scrollOffset == 0 && current.cursorVisible && current.cursorY in 0 until rows && current.cursorX in 0 until columns) {
