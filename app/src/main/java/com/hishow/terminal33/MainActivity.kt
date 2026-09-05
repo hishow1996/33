@@ -69,12 +69,13 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 
-private val Ink = Color(0xFFF4F6F8)
+private val Ink = Color(0xFFF2F4F6)
 private val Muted = Color(0xFF89929D)
-private val Panel = Color(0xFF11151A)
-private val Panel2 = Color(0xFF171C22)
-private val Line = Color(0xFF252C34)
-private val Accent = Color(0xFF8B7CFF)
+private val Panel = Color(0xFF101419)
+private val Panel2 = Color(0xFF181D23)
+private val Line = Color(0xFF29313A)
+private val Accent = Color(0xFF9B8CFF)
+private val TerminalBg = Color(0xFF07090C)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -148,8 +149,8 @@ private fun TerminalApp(context: Context) {
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF090B0E)) {
         if (!state.ready) BootstrapScreen(state) else {
-            Column(Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 10.dp)) {
-                ModernHeader(
+            Column(Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 12.dp)) {
+                TerminalTopBar(
                     isUbuntu = terminal?.isUbuntu == true,
                     onRestart = { terminal?.close(); startSession() },
                     onCopy = {
@@ -161,14 +162,15 @@ private fun TerminalApp(context: Context) {
 
                 Card(
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF050607)),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = TerminalBg),
                     border = androidx.compose.foundation.BorderStroke(1.dp, Line)
                 ) {
                     Box(Modifier.fillMaxSize()) {
                         TerminalCanvas(
                             model = screen,
-                            modifier = Modifier.fillMaxSize().padding(8.dp),
+                            modifier = Modifier.fillMaxSize().padding(10.dp),
+                            fontSizeSp = 13,
                             onSizeChanged = { rows, columns -> screen.resize(columns, rows); terminal?.resize(rows, columns) },
                             onTap = ::focusTerminal
                         )
@@ -176,7 +178,7 @@ private fun TerminalApp(context: Context) {
                     }
                 }
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(9.dp))
                 CommandDock(
                     value = command,
                     onValueChange = { command = it },
@@ -194,7 +196,7 @@ private fun TerminalApp(context: Context) {
                         command = if (next < 0) "" else history[history.lastIndex - next]
                     }
                 )
-                Spacer(Modifier.height(5.dp))
+                Spacer(Modifier.height(3.dp))
                 QuickDock { send(it + "\n", true); focusTerminal() }
             }
         }
@@ -202,32 +204,34 @@ private fun TerminalApp(context: Context) {
 }
 
 @Composable
-private fun ModernHeader(isUbuntu: Boolean, onRestart: () -> Unit, onCopy: () -> Unit, onClear: () -> Unit) {
+private fun TerminalTopBar(isUbuntu: Boolean, onRestart: () -> Unit, onCopy: () -> Unit, onClear: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 5.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 3.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Luma", color = Ink, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.width(8.dp))
-                Text("•", color = Accent, fontSize = 16.sp)
-                Spacer(Modifier.width(7.dp))
-                Text(if (isUbuntu) "Ubuntu 24.04" else "Shell", color = Muted, fontSize = 12.sp)
+                Text("33", color = Ink, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.width(9.dp))
+                Text("terminal", color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
             Spacer(Modifier.height(2.dp))
-            Text(if (isUbuntu) "arm64  ·  ready" else "local session", color = Color(0xFF5F6974), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("●", color = Color(0xFF6ED08A), fontSize = 8.sp)
+                Spacer(Modifier.width(5.dp))
+                Text(if (isUbuntu) "Ubuntu 24.04 · arm64" else "system shell", color = Color(0xFF626C77), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            }
         }
-        HeaderAction("⌘", onCopy)
-        HeaderAction("×", onClear)
-        HeaderAction("↻", onRestart)
+        HeaderAction("copy", onCopy)
+        HeaderAction("clear", onClear)
+        HeaderAction("restart", onRestart)
     }
 }
 
 @Composable
-private fun HeaderAction(symbol: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp)) {
-        Text(symbol, color = Muted, fontSize = 19.sp)
+private fun HeaderAction(text: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
+        Text(text, color = Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
@@ -235,28 +239,31 @@ private fun HeaderAction(symbol: String, onClick: () -> Unit) {
 private fun CommandDock(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit, onPaste: () -> Unit, onInterrupt: () -> Unit) {
     Card(
         Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(17.dp),
         colors = CardDefaults.cardColors(containerColor = Panel),
         border = androidx.compose.foundation.BorderStroke(1.dp, Line)
     ) {
         Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("$", color = Accent, fontFamily = FontFamily.Monospace, fontSize = 15.sp, modifier = Modifier.padding(start = 8.dp, end = 7.dp))
+            Box(
+                modifier = Modifier.size(32.dp),
+                contentAlignment = Alignment.Center
+            ) { Text("›", color = Accent, fontFamily = FontFamily.Monospace, fontSize = 21.sp, fontWeight = FontWeight.Medium) }
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
                 singleLine = true,
-                modifier = Modifier.weight(1f).padding(vertical = 10.dp),
+                modifier = Modifier.weight(1f).padding(vertical = 9.dp),
                 textStyle = TextStyle(color = Ink, fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onSend() }),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { onSend() }),
                 decorationBox = { inner ->
-                    if (value.isEmpty()) Text("Run a command…", color = Color(0xFF59636E), fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                    if (value.isEmpty()) Text("command", color = Color(0xFF59636E), fontFamily = FontFamily.Monospace, fontSize = 14.sp)
                     inner()
                 }
             )
-            DockButton("Paste", onPaste, false)
+            DockButton("paste", onPaste, false)
             DockButton("^C", onInterrupt, false)
-            DockButton("Run", onSend, true)
+            DockButton("run", onSend, true)
         }
     }
 }
@@ -267,8 +274,8 @@ private fun DockButton(text: String, onClick: () -> Unit, primary: Boolean) {
         onClick = onClick,
         shape = RoundedCornerShape(11.dp),
         colors = ButtonDefaults.buttonColors(containerColor = if (primary) Accent else Panel2, contentColor = Ink),
-        contentPadding = PaddingValues(horizontal = if (primary) 15.dp else 11.dp, vertical = 8.dp)
-    ) { Text(text, fontSize = 12.sp, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal) }
+        contentPadding = PaddingValues(horizontal = if (primary) 14.dp else 10.dp, vertical = 8.dp)
+    ) { Text(text, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal) }
 }
 
 @Composable
@@ -289,16 +296,16 @@ private fun KeyChip(text: String, onClick: () -> Unit) {
         onClick = onClick,
         shape = RoundedCornerShape(10.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Panel2, contentColor = Color(0xFFB8C0C9)),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+        contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp)
     ) { Text(text, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
 }
 
 @Composable
 private fun QuickDock(onCommand: (String) -> Unit) {
     val items = listOf("pwd", "ls", "ls -la", "whoami", "uname -a", "clear")
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         items.forEach { item ->
-            TextButton(onClick = { onCommand(item) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)) {
+            TextButton(onClick = { onCommand(item) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
                 Text(item, color = Color(0xFF68727D), fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
         }
@@ -312,16 +319,31 @@ private fun DirectTerminalInput(focusRequester: FocusRequester, onSend: (String)
         value = buffer,
         onValueChange = { value ->
             when {
-                value.length > buffer.length && value.startsWith(buffer) -> { onSend(value.substring(buffer.length)); buffer = value }
-                value.length < buffer.length && buffer.startsWith(value) -> { repeat(buffer.length - value.length) { onSend(TerminalInput.BACKSPACE) }; buffer = value }
-                else -> { if (value.isNotEmpty()) onSend(value); buffer = value.takeLast(32) }
+                value.length > buffer.length && value.startsWith(buffer) -> {
+                    onSend(value.substring(buffer.length))
+                    buffer = value
+                }
+                value.length < buffer.length && buffer.startsWith(value) -> {
+                    repeat(buffer.length - value.length) { onSend(TerminalInput.BACKSPACE) }
+                    buffer = value
+                }
+                else -> {
+                    if (value.isNotEmpty()) onSend(value)
+                    buffer = value.takeLast(32)
+                }
             }
             if (buffer.length > 32) buffer = buffer.takeLast(32)
         },
         singleLine = true,
         textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
         cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.Transparent),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.None),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+        keyboardActions = KeyboardActions(onSend = {
+            // A software keyboard's action key does not necessarily produce a Key.Enter
+            // event for a 1dp transparent editor. Handle the IME action explicitly.
+            onSend(TerminalInput.ENTER)
+            buffer = ""
+        }),
         modifier = Modifier.size(1.dp).focusRequester(focusRequester).onKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
             val sequence = when (event.key) {
@@ -340,7 +362,11 @@ private fun DirectTerminalInput(focusRequester: FocusRequester, onSend: (String)
                 Key.Escape -> TerminalInput.ESC
                 else -> null
             }
-            if (sequence != null) { onSend(sequence); if (sequence == TerminalInput.ENTER) buffer = ""; true } else false
+            if (sequence != null) {
+                onSend(sequence)
+                if (sequence == TerminalInput.ENTER) buffer = ""
+                true
+            } else false
         }
     )
 }
@@ -348,7 +374,7 @@ private fun DirectTerminalInput(focusRequester: FocusRequester, onSend: (String)
 @Composable
 private fun BootstrapScreen(state: BootstrapState) {
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-        Text("Luma", color = Ink, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+        Text("33", color = Ink, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(5.dp))
         Text("A quiet Ubuntu workspace", color = Muted, fontSize = 13.sp)
         Spacer(Modifier.height(30.dp))
