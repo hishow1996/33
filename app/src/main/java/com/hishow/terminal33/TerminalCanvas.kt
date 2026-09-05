@@ -33,8 +33,16 @@ class TerminalScreenModel {
         state.resize(columns, rows)
         if (c != state.columns || r != state.rows) version++
     }
-    fun scrollBy(delta: Int) = synchronized(lock) { val before = state.scrollOffset; state.scrollBy(delta); if (before != state.scrollOffset) version++ }
-    fun scrollToBottom() = synchronized(lock) { val before = state.scrollOffset; state.scrollToBottom(); if (before != state.scrollOffset) version++ }
+    fun scrollBy(delta: Int) = synchronized(lock) {
+        val before = state.scrollOffset
+        state.scrollBy(delta)
+        if (before != state.scrollOffset) version++
+    }
+    fun scrollToBottom() = synchronized(lock) {
+        val before = state.scrollOffset
+        state.scrollToBottom()
+        if (before != state.scrollOffset) version++
+    }
     fun clear() = synchronized(lock) { state.feed("\u001b[2J\u001b[H"); version++ }
     fun copyText(): String = synchronized(lock) {
         state.snapshot().joinToString("\n") { row -> row.joinToString("") { it.ch.toString() }.trimEnd() }.trimEnd()
@@ -66,14 +74,11 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
     val current = model.snapshot()
     val sizingModifier = modifier.fillMaxSize()
         .pointerInput(model) {
-            detectVerticalDragGestures(
-                onVerticalDrag = { _, dragAmount ->
-                    // A downward finger drag reveals older terminal output.
-                    val lines = (dragAmount / 22f).toInt().let { if (it == 0) if (dragAmount > 0) 1 else -1 else it }
-                    model.scrollBy(lines)
-                },
-                onDragEnd = { model.scrollToBottom() }
-            )
+            detectVerticalDragGestures { _, dragAmount ->
+                // Downward finger movement reveals older output; upward movement returns to the prompt.
+                val lines = (dragAmount / 22f).toInt().let { if (it == 0) if (dragAmount > 0) 1 else -1 else it }
+                model.scrollBy(lines)
+            }
         }
         .onSizeChanged { size ->
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.MONOSPACE; this.textSize = textSize }
