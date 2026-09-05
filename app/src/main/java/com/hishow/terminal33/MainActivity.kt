@@ -27,7 +27,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.IconButton
@@ -70,10 +69,10 @@ private data class BootstrapState(val ready: Boolean, val message: String, val p
 private fun TerminalApp(context: Context) {
     var state by remember { mutableStateOf(BootstrapState(false, "Preparing Ubuntu…", 0)) }
     var terminal by remember { mutableStateOf<UbuntuTerminal?>(null) }
-    var output by remember { mutableStateOf("") }
     var command by remember { mutableStateOf("") }
     var history by remember { mutableStateOf(emptyList<String>()) }
     var historyIndex by remember { mutableStateOf(-1) }
+    val screen = remember { TerminalScreenModel() }
     val scope = rememberCoroutineScope()
     val main = remember { Handler(Looper.getMainLooper()) }
 
@@ -96,17 +95,12 @@ private fun TerminalApp(context: Context) {
                 withContext(Dispatchers.Main) {
                     terminal?.close()
                     terminal = session
-                    output = ""
+                    screen.clear()
+                    screen.resize(120, 32)
                     state = BootstrapState(true, "Ubuntu 24.04 ready", 100)
                 }
                 session.start(
-                    onOutput = { chunk ->
-                        main.post {
-                            output = (output + cleanTerminalOutput(chunk)).let { value ->
-                                if (value.length > 180_000) value.takeLast(150_000) else value
-                            }
-                        }
-                    },
+                    onOutput = { chunk -> screen.feed(chunk) },
                     onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
                 )
             } catch (t: Throwable) {
@@ -123,13 +117,20 @@ private fun TerminalApp(context: Context) {
             Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                 TerminalHeader(
                     onRestart = { terminal?.close(); startSession() },
-                    onClear = { output = "" },
+                    onClear = { screen.clear() },
                     onCopy = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("terminal", output))
+                        clipboard.setPrimaryClip(ClipData.newPlainText("terminal", screen.copyText()))
                     }
                 )
-                TerminalOutput(output)
+                TerminalCanvas(
+                    model = screen,
+                    modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 7.dp),
+                    onSizeChanged = { rows, columns ->
+                        screen.resize(columns, rows)
+                        terminal?.resize(rows, columns)
+                    }
+                )
                 CommandBar(
                     value = command,
                     onValueChange = { command = it },
@@ -151,15 +152,6 @@ private fun TerminalApp(context: Context) {
             }
         }
     }
-}
-
-private fun cleanTerminalOutput(input: String): String {
-    var text = input.replace("\u0000", "")
-    // Keep normal SGR color sequences out of the plain Compose text while removing
-    // cursor/control sequences emitted by readline and common shell prompts.
-    text = Regex("\\u001B\\[[0-9;?]*[ -/]*[@-~]").replace(text, "")
-    text = text.replace("\r\n", "\n").replace('\r', '\n')
-    return text
 }
 
 @Composable
@@ -187,23 +179,6 @@ private fun TerminalHeader(onRestart: () -> Unit, onClear: () -> Unit, onCopy: (
         IconButton(onClick = onRestart) { Text("RS", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
         IconButton(onClick = onCopy) { Text("CP", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
         IconButton(onClick = onClear) { Text("CL", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
-    }
-}
-
-@Composable
-private fun TerminalOutput(text: String) {
-    val vertical = rememberScrollState()
-    val horizontal = rememberScrollState()
-    LaunchedEffect(text) { vertical.scrollTo(vertical.maxValue) }
-    Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF050608)).padding(13.dp)) {
-        Text(
-            text.ifEmpty { "Starting shell…\n" },
-            Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal),
-            color = Color(0xFFE4E7EB),
-            fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
-            lineHeight = 19.sp
-        )
     }
 }
 
@@ -271,11 +246,9 @@ private class UbuntuBootstrap(private val context: Context) {
         private const val ROOTFS_SHA256 = "7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048"
         private const val PROOT_URL = "https://github.com/proot-me/proot-rs/releases/download/v0.1.0/proot-rs-v0.1.0-aarch64-linux-android.tar.gz"
     }
-
     private val home = File(context.filesDir, "ubuntu")
     private val rootfs = File(home, "rootfs")
     private val proot = File(home, "proot")
-
     fun prepare(progress: (String, Int) -> Unit) {
         home.mkdirs()
         if (!rootfsReady()) {
@@ -300,74 +273,35 @@ private class UbuntuBootstrap(private val context: Context) {
         }
         progress("Ready", 100)
     }
-
     private fun rootfsReady() = File(rootfs, "bin/bash").exists() && File(rootfs, "etc/os-release").exists()
-
     private fun copyAsset(name: String, target: File, progress: (Int) -> Unit) {
         val total = runCatching { context.assets.openFd(name).length }.getOrDefault(-1L)
         context.assets.open(name, android.content.res.AssetManager.ACCESS_STREAMING).use { input ->
             FileOutputStream(target).use { output ->
-                val buffer = ByteArray(128 * 1024)
-                var done = 0L
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    output.write(buffer, 0, n)
-                    done += n
-                    if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100))
-                }
+                val buffer = ByteArray(128 * 1024); var done = 0L
+                while (true) { val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n); done += n; if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100)) }
             }
         }
     }
-
     private fun configureRootfs() {
         val resolv = File(rootfs, "etc/resolv.conf")
-        runCatching {
-            if (resolv.exists() || java.nio.file.Files.isSymbolicLink(resolv.toPath())) resolv.delete()
-            resolv.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
-        }
-        File(rootfs, "tmp").mkdirs()
-        File(rootfs, "root").mkdirs()
+        runCatching { if (resolv.exists() || java.nio.file.Files.isSymbolicLink(resolv.toPath())) resolv.delete(); resolv.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n") }
+        File(rootfs, "tmp").mkdirs(); File(rootfs, "root").mkdirs()
     }
-
     private fun download(url: String, target: File, progress: (Int) -> Unit) {
-        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
-            connectTimeout = 20_000
-            readTimeout = 60_000
-            requestMethod = "GET"
-        }
+        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 20_000; readTimeout = 60_000; requestMethod = "GET" }
         try {
-            connection.connect()
-            if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
+            connection.connect(); if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
             val total = connection.contentLengthLong
-            connection.inputStream.buffered(64 * 1024).use { input ->
-                FileOutputStream(target).use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    var done = 0L
-                    while (true) {
-                        val n = input.read(buffer)
-                        if (n < 0) break
-                        output.write(buffer, 0, n)
-                        done += n
-                        if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100))
-                    }
-                }
-            }
-        } finally {
-            connection.disconnect()
-        }
+            connection.inputStream.buffered(64 * 1024).use { input -> FileOutputStream(target).use { output ->
+                val buffer = ByteArray(64 * 1024); var done = 0L
+                while (true) { val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n); done += n; if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100)) }
+            }}
+        } finally { connection.disconnect() }
     }
-
     private fun verifySha256(file: File, expected: String) {
         val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(128 * 1024)
-            while (true) {
-                val n = input.read(buffer)
-                if (n < 0) break
-                digest.update(buffer, 0, n)
-            }
-        }
+        file.inputStream().use { input -> val buffer = ByteArray(128 * 1024); while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) } }
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
         check(actual.equals(expected, ignoreCase = true)) { "Ubuntu archive checksum mismatch" }
     }
@@ -375,151 +309,57 @@ private class UbuntuBootstrap(private val context: Context) {
 
 private class UbuntuTerminal(private val context: Context) {
     private var pty: NativePty? = null
-
     fun start(onOutput: (String) -> Unit, onExit: () -> Unit) {
-        val base = File(context.filesDir, "ubuntu")
-        val rootfs = File(base, "rootfs")
-        val proot = File(base, "proot")
-        val tmp = File(base, "tmp").apply { mkdirs() }
-        val args = listOf(
-            proot.absolutePath,
-            "-0",
-            "-r", rootfs.absolutePath,
-            "-b", "/dev:/dev",
-            "-b", "/proc:/proc",
-            "-b", "/sys:/sys",
-            "-b", "/sdcard:/mnt/shared",
-            "/bin/bash", "--login"
-        )
-        pty = NativePty().also { session ->
-            session.start(args, rootfs.absolutePath, onOutput, onExit)
-            session.resize(32, 120)
-        }
-        @Suppress("UNUSED_VARIABLE")
-        val unused = tmp
+        val base = File(context.filesDir, "ubuntu"); val rootfs = File(base, "rootfs"); val proot = File(base, "proot")
+        val args = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "/bin/bash", "--login")
+        pty = NativePty().also { session -> session.start(args, rootfs.absolutePath, onOutput, onExit); session.resize(32, 120) }
     }
-
     fun write(text: String) { pty?.write(text) }
+    fun resize(rows: Int, columns: Int) { pty?.resize(rows, columns) }
     fun close() { pty?.close(); pty = null }
 }
 
 private object TarGzExtractor {
     private const val BLOCK = 512
-
     fun extract(archive: File, destination: File, progress: (Int) -> Unit) {
-        destination.mkdirs()
-        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input -> extractTar(input, destination, progress) }
+        destination.mkdirs(); GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input -> extractTar(input, destination, progress) }
     }
-
     fun extractFirstNamed(archive: File, target: File) {
         GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input ->
             val buffer = ByteArray(BLOCK)
             while (true) {
                 if (!readFully(input, buffer)) break
                 if (buffer.all { it.toInt() == 0 }) break
-                val name = tarString(buffer, 0, 100)
-                val size = tarOctal(buffer, 124, 12)
-                val type = buffer[156].toInt().toChar()
-                val skip = (size + BLOCK - 1) / BLOCK * BLOCK
+                val name = tarString(buffer, 0, 100); val size = tarOctal(buffer, 124, 12); val type = buffer[156].toInt().toChar(); val skip = (size + BLOCK - 1) / BLOCK * BLOCK
                 if ((type == '0' || type == '\u0000') && (File(name).name == "proot" || name.endsWith("/proot"))) {
-                    target.parentFile?.mkdirs()
-                    target.outputStream().use { output -> copyExactly(input, output, size) }
-                    target.setExecutable(true, false)
-                    return
+                    target.parentFile?.mkdirs(); target.outputStream().use { output -> copyExactly(input, output, size) }; target.setExecutable(true, false); return
                 }
                 skipFully(input, skip)
             }
         }
         error("PRoot binary not found in archive")
     }
-
     private fun extractTar(input: java.io.InputStream, destination: File, progress: (Int) -> Unit) {
-        val header = ByteArray(BLOCK)
-        var entries = 0L
+        val header = ByteArray(BLOCK); var entries = 0L
         while (true) {
-            if (!readFully(input, header)) break
-            if (header.all { it.toInt() == 0 }) break
-            val name = tarString(header, 0, 100)
-            val prefix = tarString(header, 345, 155)
-            val fullName = if (prefix.isEmpty()) name else "$prefix/$name"
-            val safe = safePath(destination, fullName)
-            val size = tarOctal(header, 124, 12)
-            val mode = tarOctal(header, 100, 8).toInt()
-            val type = header[156].toInt().toChar()
+            if (!readFully(input, header)) break; if (header.all { it.toInt() == 0 }) break
+            val name = tarString(header, 0, 100); val prefix = tarString(header, 345, 155); val fullName = if (prefix.isEmpty()) name else "$prefix/$name"; val safe = safePath(destination, fullName); val size = tarOctal(header, 124, 12); val mode = tarOctal(header, 100, 8).toInt(); val type = header[156].toInt().toChar()
             when (type) {
                 '5' -> safe.mkdirs()
-                '2' -> {
-                    val link = tarString(header, 157, 100)
-                    safe.parentFile?.mkdirs()
-                    runCatching { java.nio.file.Files.deleteIfExists(safe.toPath()) }
-                    val linkTarget = File(link)
-                    require(!linkTarget.isAbsolute && !link.split('/').contains("..")) { "Unsafe symbolic link" }
-                    java.nio.file.Files.createSymbolicLink(safe.toPath(), java.nio.file.Paths.get(link))
-                }
-                '0', '\u0000' -> {
-                    safe.parentFile?.mkdirs()
-                    FileOutputStream(safe).use { output -> copyExactly(input, output, size) }
-                    if (mode and 0b001_001_001 != 0) safe.setExecutable(true, false)
-                }
+                '2' -> { val link = tarString(header, 157, 100); safe.parentFile?.mkdirs(); runCatching { java.nio.file.Files.deleteIfExists(safe.toPath()) }; require(!File(link).isAbsolute && !link.split('/').contains("..")) { "Unsafe symbolic link" }; java.nio.file.Files.createSymbolicLink(safe.toPath(), java.nio.file.Paths.get(link)) }
+                '0', '\u0000' -> { safe.parentFile?.mkdirs(); FileOutputStream(safe).use { output -> copyExactly(input, output, size) }; if (mode and 0b001_001_001 != 0) safe.setExecutable(true, false) }
                 else -> skipFully(input, size)
             }
-            skipFully(input, (BLOCK - (size % BLOCK)) % BLOCK)
-            entries++
-            if (entries % 1000L == 0L) progress((entries % 100).toInt())
+            skipFully(input, (BLOCK - (size % BLOCK)) % BLOCK); entries++; if (entries % 1000L == 0L) progress((entries % 100).toInt())
         }
         progress(100)
     }
-
     private fun safePath(root: File, entry: String): File {
-        val normalized = entry.replace('\\', '/').trimStart('/')
-        require(normalized.split('/').none { it == ".." }) { "Unsafe archive path" }
-        val target = File(root, normalized)
-        val canonicalRoot = root.canonicalFile
-        val canonicalTarget = target.canonicalFile
-        require(canonicalTarget.path == canonicalRoot.path || canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) { "Unsafe archive path" }
-        return target
+        val normalized = entry.replace('\\', '/').trimStart('/'); require(normalized.split('/').none { it == ".." }) { "Unsafe archive path" }; val target = File(root, normalized); val canonicalRoot = root.canonicalFile; val canonicalTarget = target.canonicalFile; require(canonicalTarget.path == canonicalRoot.path || canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) { "Unsafe archive path" }; return target
     }
-
-    private fun tarString(buffer: ByteArray, offset: Int, length: Int): String {
-        var end = offset
-        while (end < offset + length && buffer[end].toInt() != 0) end++
-        return buffer.copyOfRange(offset, end).toString(Charsets.UTF_8).trim()
-    }
-
-    private fun tarOctal(buffer: ByteArray, offset: Int, length: Int): Long {
-        val text = tarString(buffer, offset, length).trim()
-        return if (text.isEmpty()) 0 else text.toLongOrNull(8) ?: 0
-    }
-
-    private fun readFully(input: java.io.InputStream, buffer: ByteArray): Boolean {
-        var offset = 0
-        while (offset < buffer.size) {
-            val n = input.read(buffer, offset, buffer.size - offset)
-            if (n < 0) return false
-            offset += n
-        }
-        return true
-    }
-
-    private fun copyExactly(input: java.io.InputStream, output: java.io.OutputStream, size: Long) {
-        var remaining = size
-        val buffer = ByteArray(128 * 1024)
-        while (remaining > 0) {
-            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-            if (n < 0) error("Unexpected end of archive")
-            output.write(buffer, 0, n)
-            remaining -= n
-        }
-    }
-
-    private fun skipFully(input: java.io.InputStream, size: Long) {
-        var remaining = size
-        while (remaining > 0) {
-            val skipped = input.skip(remaining)
-            if (skipped > 0) remaining -= skipped else {
-                if (input.read() < 0) error("Unexpected end of archive")
-                remaining--
-            }
-        }
-    }
+    private fun tarString(buffer: ByteArray, offset: Int, length: Int): String { var end = offset; while (end < offset + length && buffer[end].toInt() != 0) end++; return buffer.copyOfRange(offset, end).toString(Charsets.UTF_8).trim() }
+    private fun tarOctal(buffer: ByteArray, offset: Int, length: Int): Long { val text = tarString(buffer, offset, length).trim(); return if (text.isEmpty()) 0 else text.toLongOrNull(8) ?: 0 }
+    private fun readFully(input: java.io.InputStream, buffer: ByteArray): Boolean { var offset = 0; while (offset < buffer.size) { val n = input.read(buffer, offset, buffer.size - offset); if (n < 0) return false; offset += n }; return true }
+    private fun copyExactly(input: java.io.InputStream, output: java.io.OutputStream, size: Long) { var remaining = size; val buffer = ByteArray(128 * 1024); while (remaining > 0) { val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt()); if (n < 0) error("Unexpected end of archive"); output.write(buffer, 0, n); remaining -= n } }
+    private fun skipFully(input: java.io.InputStream, size: Long) { var remaining = size; while (remaining > 0) { val skipped = input.skip(remaining); if (skipped > 0) remaining -= skipped else { if (input.read() < 0) error("Unexpected end of archive"); remaining-- } } }
 }
