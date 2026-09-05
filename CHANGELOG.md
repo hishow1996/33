@@ -1,13 +1,12 @@
 # Changelog
 
+## 1.4.0
+- Added a VT-style terminal screen buffer foundation.
+- Added lazy multi-session management (up to four sessions).
+- Added SAF file import bridge for the shared directory.
+- Bumped Android version to 1.4.0.
+- Kept arm64-v8a only, no root, no GitHub Actions, and release shrinking enabled.
+
 ## 1.3.0
-
-- Terminal ANSI/VT incremental parsing foundation
-- Mobile terminal shortcut definitions
-- Persistent terminal display preferences
-- Ubuntu rootfs health-check helper
-- More quick diagnostic commands
-- Centralized terminal theme/runtime constants
-- Centralized Ubuntu/shared paths
-
-> Note: this release intentionally keeps the existing bootstrap and PTY flow intact. Advanced cell/grid rendering, multi-session, SAF integration and bundled PRoot require Android build/device validation before replacing the current path.
+- Added terminal preferences and health checks.
+- Added shortcut definitions and upgrade documentation.

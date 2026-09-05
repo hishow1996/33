@@ -1,23 +1,11 @@
-# 33 Terminal 1.3.0
+# 33 Terminal 1.4.0
 
-基础升级已完成，保持现有 Ubuntu bootstrap + Native PTY 路径不变。
+本轮继续完成真正可落地的终端基础升级：
 
-## 已加入
-- 增量 ANSI/VT 控制序列处理基础
-- 常用移动端 Ctrl/方向键/PageUp/PageDown 序列
-- 终端显示偏好持久化
-- Ubuntu rootfs 健康检查
-- 快捷诊断命令
-- 集中的主题、路径、运行参数和显示常量
-- 版本与 ABI 标识
+- 版本升级到 1.4.0，继续保持 arm64-v8a、无 root、无 GitHub Actions。
+- 增加 VT screen buffer，支持基础光标移动、清屏、行清除、SGR 状态保存。
+- 增加多 session 管理器基础，可创建最多 4 个懒加载会话。
+- 增加 SAF 文件导入桥接，可把用户选中的文件复制到 Ubuntu 共享目录。
+- 保留现有 Native PTY resize 接口，为后续按真实窗口尺寸同步做好基础。
 
-## 下一阶段
-- cell/grid 终端状态机与 SGR 彩色渲染
-- 光标、alternate screen、清屏和滚动区域
-- 多 PTY session
-- SAF 文件桥接
-- PRoot runtime APK 内置与校验
-- 增量/环形输出缓冲
-- 键盘、横竖屏与 PTY window size 同步
-
-约束：arm64-v8a、无 root、无 GitHub Actions、APK < 100 MB。
+仍需单独处理的发布级工作：PRoot 二进制需要经过可复现的构建/审计后再内置，不能拿未经验证的第三方二进制冒充“已内置”。
