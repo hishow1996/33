@@ -2,93 +2,47 @@ package com.hishow.terminal33
 
 /** Lightweight stateful ANSI/VT screen model used by the Compose renderer. */
 class VtState {
-    data class Cell(
-        val ch: Char = ' ',
-        val fg: Int = -1,
-        val bg: Int = -1,
-        val bold: Boolean = false,
-        val underline: Boolean = false,
-        val reverse: Boolean = false
-    )
-
-    var columns: Int = 120; private set
-    var rows: Int = 40; private set
+    data class Cell(val ch: Char = ' ', val fg: Int = -1, val bg: Int = -1, val bold: Boolean = false, val underline: Boolean = false, val reverse: Boolean = false)
+    var columns = 120; private set
+    var rows = 40; private set
     var cursorX = 0; private set
     var cursorY = 0; private set
     var savedX = 0; private set
     var savedY = 0; private set
     var alternateScreen = false; private set
     var cursorVisible = true; private set
-
-    private var fg = -1
-    private var bg = -1
-    private var bold = false
-    private var underline = false
-    private var reverse = false
-    private var normal = grid()
-    private var alternate = grid()
-    private val esc = StringBuilder()
-
+    private var fg = -1; private var bg = -1; private var bold = false; private var underline = false; private var reverse = false
+    private var normal = grid(); private var alternate = grid(); private val esc = StringBuilder()
     private fun grid() = Array(rows) { Array(columns) { Cell() } }
     private fun active() = if (alternateScreen) alternate else normal
 
     fun resize(newColumns: Int, newRows: Int) {
-        val c = newColumns.coerceIn(20, 300)
-        val r = newRows.coerceIn(5, 200)
+        val c = newColumns.coerceIn(20, 300); val r = newRows.coerceIn(5, 200)
         if (c == columns && r == rows) return
-        columns = c
-        rows = r
-        normal = resizeGrid(normal, c, r)
-        alternate = resizeGrid(alternate, c, r)
-        cursorX = cursorX.coerceIn(0, c - 1)
-        cursorY = cursorY.coerceIn(0, r - 1)
+        columns = c; rows = r; normal = resizeGrid(normal, c, r); alternate = resizeGrid(alternate, c, r)
+        cursorX = cursorX.coerceIn(0, c - 1); cursorY = cursorY.coerceIn(0, r - 1)
     }
-
     private fun resizeGrid(old: Array<Array<Cell>>, c: Int, r: Int): Array<Array<Cell>> {
         val n = Array(r) { Array(c) { Cell() } }
-        for (y in 0 until minOf(r, old.size)) {
-            for (x in 0 until minOf(c, old[y].size)) n[y][x] = old[y][x]
-        }
+        for (y in 0 until minOf(r, old.size)) for (x in 0 until minOf(c, old[y].size)) n[y][x] = old[y][x]
         return n
     }
-
-    fun feed(input: String) {
-        input.forEach(::consume)
-    }
+    fun feed(input: String) { input.forEach(::consume) }
 
     private fun consume(ch: Char) {
         if (esc.isNotEmpty() || ch == '\u001b') {
-            if (ch == '\u001b' && esc.isEmpty()) {
-                esc.append(ch)
-                return
-            }
+            if (ch == '\u001b' && esc.isEmpty()) { esc.append(ch); return }
             esc.append(ch)
-            if (esc.length == 2 && esc[1] !in "[]]7") {
-                esc.setLength(0)
-                return
+            if (esc.length == 2) {
+                when (esc[1]) {
+                    '7' -> { savedX = cursorX; savedY = cursorY; esc.setLength(0); return }
+                    '8' -> { cursorX = savedX.coerceIn(0, columns - 1); cursorY = savedY.coerceIn(0, rows - 1); esc.setLength(0); return }
+                }
+                if (esc[1] !in "[]") { esc.setLength(0); return }
             }
-            if (esc.length >= 2 && esc[1] == '[' && ch in '@'..'~') {
-                handleCsi(esc.substring(2, esc.length - 1), ch)
-                esc.setLength(0)
-                return
-            }
-            if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b')) {
-                esc.setLength(0)
-                return
-            }
-            if (esc.length >= 2 && esc[1] == '7') {
-                savedX = cursorX
-                savedY = cursorY
-                esc.setLength(0)
-                return
-            }
-            if (esc.length >= 2 && esc[1] == '8') {
-                cursorX = savedX
-                cursorY = savedY
-                esc.setLength(0)
-                return
-            }
-            if (esc.length > 96) esc.setLength(0)
+            if (esc.length >= 2 && esc[1] == '[' && ch in '@'..'~') { handleCsi(esc.substring(2, esc.length - 1), ch); esc.setLength(0); return }
+            if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b')) { esc.setLength(0); return }
+            if (esc.length > 128) esc.setLength(0)
             return
         }
         when (ch) {
@@ -97,38 +51,19 @@ class VtState {
             '\b' -> cursorX = (cursorX - 1).coerceAtLeast(0)
             '\t' -> cursorX = (((cursorX / 8) + 1) * 8).coerceAtMost(columns - 1)
             '\u0007', '\u0000' -> Unit
-            else -> put(ch)
+            else -> if (ch >= ' ') put(ch)
         }
     }
 
-    private fun put(ch: Char) {
-        val g = active()
-        g[cursorY][cursorX] = Cell(ch, fg, bg, bold, underline, reverse)
-        if (cursorX == columns - 1) newline() else cursorX++
-    }
-
-    private fun newline() {
-        cursorX = 0
-        if (cursorY == rows - 1) {
-            val g = active()
-            for (y in 1 until rows) g[y - 1] = g[y].copyOf()
-            g[rows - 1] = Array(columns) { Cell() }
-        } else {
-            cursorY++
-        }
-    }
+    private fun put(ch: Char) { active()[cursorY][cursorX] = Cell(ch, fg, bg, bold, underline, reverse); if (cursorX == columns - 1) newline() else cursorX++ }
+    private fun newline() { cursorX = 0; if (cursorY == rows - 1) { val g = active(); for (y in 1 until rows) g[y - 1] = g[y].copyOf(); g[rows - 1] = Array(columns) { Cell() } } else cursorY++ }
 
     private fun handleCsi(raw: String, command: Char) {
-        val privateMode = raw.startsWith("?")
-        val body = raw.removePrefix("?").removePrefix(">")
-        val p = body.split(';').map { it.toIntOrNull() ?: 0 }
+        val privateMode = raw.startsWith("?"); val body = raw.removePrefix("?").removePrefix(">"); val p = body.split(';').map { it.toIntOrNull() ?: 0 }
         val n = { i: Int, d: Int = 1 -> (p.getOrNull(i) ?: d).coerceAtLeast(1) }
         when (command) {
             'm' -> applySgr(p)
-            'H', 'f' -> {
-                cursorY = (n(0) - 1).coerceIn(0, rows - 1)
-                cursorX = (n(1) - 1).coerceIn(0, columns - 1)
-            }
+            'H', 'f' -> { cursorY = (n(0) - 1).coerceIn(0, rows - 1); cursorX = (n(1) - 1).coerceIn(0, columns - 1) }
             'A' -> cursorY = (cursorY - n(0)).coerceAtLeast(0)
             'B' -> cursorY = (cursorY + n(0)).coerceAtMost(rows - 1)
             'C' -> cursorX = (cursorX + n(0)).coerceAtMost(columns - 1)
@@ -140,109 +75,32 @@ class VtState {
             'P' -> deleteChars(n(0))
             '@' -> insertChars(n(0))
             's' -> { savedX = cursorX; savedY = cursorY }
-            'u' -> {
-                cursorX = savedX.coerceIn(0, columns - 1)
-                cursorY = savedY.coerceIn(0, rows - 1)
-            }
+            'u' -> { cursorX = savedX.coerceIn(0, columns - 1); cursorY = savedY.coerceIn(0, rows - 1) }
             'h' -> if (privateMode) applyMode(p, true)
             'l' -> if (privateMode) applyMode(p, false)
         }
     }
-
-    private fun applyMode(params: List<Int>, enabled: Boolean) {
-        params.forEach {
-            when (it) {
-                25 -> cursorVisible = enabled
-                47, 1047, 1049 -> if (enabled) enterAlternate() else leaveAlternate()
-            }
-        }
-    }
+    private fun applyMode(params: List<Int>, enabled: Boolean) { params.forEach { when (it) { 25 -> cursorVisible = enabled; 47, 1047, 1049 -> if (enabled) enterAlternate() else leaveAlternate() } } }
 
     private fun applySgr(params: List<Int>) {
-        val values = if (params.isEmpty()) listOf(0) else params
-        var i = 0
-        while (i < values.size) {
-            when (val value = values[i]) {
+        val v = if (params.isEmpty()) listOf(0) else params; var i = 0
+        while (i < v.size) {
+            when (val x = v[i]) {
                 0 -> { fg = -1; bg = -1; bold = false; underline = false; reverse = false }
-                1 -> bold = true
-                2 -> bold = false
-                4 -> underline = true
-                7 -> reverse = true
-                22 -> bold = false
-                24 -> underline = false
-                27 -> reverse = false
-                in 30..37 -> fg = value - 30
-                39 -> fg = -1
-                in 40..47 -> bg = value - 40
-                49 -> bg = -1
-                in 90..97 -> fg = value - 90 + 8
-                in 100..107 -> bg = value - 100 + 8
-                38, 48 -> {
-                    if (i + 2 < values.size && values[i + 1] == 5) {
-                        val color = values[i + 2].coerceIn(0, 255)
-                        if (value == 38) fg = color + 16 else bg = color + 16
-                        i += 2
-                    }
-                }
+                1 -> bold = true; 2, 22 -> bold = false; 4 -> underline = true; 24 -> underline = false; 7 -> reverse = true; 27 -> reverse = false
+                39 -> fg = -1; 49 -> bg = -1
+                in 30..37 -> fg = x - 30; in 40..47 -> bg = x - 40; in 90..97 -> fg = x - 90 + 8; in 100..107 -> bg = x - 100 + 8
+                38, 48 -> if (i + 2 < v.size && v[i + 1] == 5) { val c = v[i + 2].coerceIn(0, 255); if (x == 38) fg = c + 16 else bg = c + 16; i += 2 }
+                else -> if ((x == 38 || x == 48) && i + 4 < v.size && v[i + 1] == 2) { val r = v[i + 2].coerceIn(0,255); val g = v[i + 3].coerceIn(0,255); val b = v[i + 4].coerceIn(0,255); val c = 0x80000000.toInt() or (r shl 16) or (g shl 8) or b; if (x == 38) fg = c else bg = c; i += 4 }
             }
             i++
         }
     }
-
-    private fun eraseDisplay(mode: Int) {
-        val g = active()
-        when (mode) {
-            2, 3 -> for (row in g) java.util.Arrays.fill(row, Cell())
-            0 -> {
-                for (x in cursorX until columns) g[cursorY][x] = Cell()
-                for (y in cursorY + 1 until rows) java.util.Arrays.fill(g[y], Cell())
-            }
-            1 -> {
-                for (y in 0 until cursorY) java.util.Arrays.fill(g[y], Cell())
-                for (x in 0..cursorX) g[cursorY][x] = Cell()
-            }
-        }
-    }
-
-    private fun eraseLine(mode: Int) {
-        val g = active()
-        when (mode) {
-            2 -> java.util.Arrays.fill(g[cursorY], Cell())
-            1 -> for (x in 0..cursorX) g[cursorY][x] = Cell()
-            else -> for (x in cursorX until columns) g[cursorY][x] = Cell()
-        }
-    }
-
-    private fun deleteChars(count: Int) {
-        val g = active()[cursorY]
-        val n = count.coerceAtMost(columns - cursorX)
-        for (x in cursorX until columns - n) g[x] = g[x + n]
-        for (x in columns - n until columns) g[x] = Cell()
-    }
-
-    private fun insertChars(count: Int) {
-        val g = active()[cursorY]
-        val n = count.coerceAtMost(columns - cursorX)
-        for (x in columns - 1 downTo cursorX + n) g[x] = g[x - n]
-        for (x in cursorX until cursorX + n) g[x] = Cell()
-    }
-
-    private fun enterAlternate() {
-        if (!alternateScreen) {
-            alternate = grid()
-            alternateScreen = true
-            cursorX = 0
-            cursorY = 0
-        }
-    }
-
-    private fun leaveAlternate() {
-        if (alternateScreen) {
-            alternateScreen = false
-            cursorX = 0
-            cursorY = 0
-        }
-    }
-
+    private fun eraseDisplay(mode: Int) { val g = active(); when (mode) { 2, 3 -> for (row in g) java.util.Arrays.fill(row, Cell()); 0 -> { for (x in cursorX until columns) g[cursorY][x] = Cell(); for (y in cursorY + 1 until rows) java.util.Arrays.fill(g[y], Cell()) }; 1 -> { for (y in 0 until cursorY) java.util.Arrays.fill(g[y], Cell()); for (x in 0..cursorX) g[cursorY][x] = Cell() } } }
+    private fun eraseLine(mode: Int) { val g = active(); when (mode) { 2 -> java.util.Arrays.fill(g[cursorY], Cell()); 1 -> for (x in 0..cursorX) g[cursorY][x] = Cell(); else -> for (x in cursorX until columns) g[cursorY][x] = Cell() } }
+    private fun deleteChars(count: Int) { val g = active()[cursorY]; val n = count.coerceAtMost(columns - cursorX); for (x in cursorX until columns - n) g[x] = g[x + n]; for (x in columns - n until columns) g[x] = Cell() }
+    private fun insertChars(count: Int) { val g = active()[cursorY]; val n = count.coerceAtMost(columns - cursorX); for (x in columns - 1 downTo cursorX + n) g[x] = g[x - n]; for (x in cursorX until cursorX + n) g[x] = Cell() }
+    private fun enterAlternate() { if (!alternateScreen) { alternate = grid(); alternateScreen = true; cursorX = 0; cursorY = 0 } }
+    private fun leaveAlternate() { if (alternateScreen) { alternateScreen = false; cursorX = 0; cursorY = 0 } }
     fun snapshot(): Array<Array<Cell>> = active().map { it.copyOf() }.toTypedArray()
 }
