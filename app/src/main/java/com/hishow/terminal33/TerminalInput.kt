@@ -17,18 +17,46 @@ object TerminalInput {
 
     fun alt(text: String): String = if (text.isEmpty()) "" else ESC + text
 
-    /** Bracketed paste keeps multiline clipboard text from being mistaken for commands. */
-    fun bracketedPaste(text: String): String = "\u001B[200~" + text.replace("\r\n", "\n").replace('\r', '\n') + "\u001B[201~"
+    /** Normalizes Android/Windows line endings without adding terminal control bytes. */
+    fun normalizePaste(text: String): String =
+        text.replace("\r\n", "\n").replace('\r', '\n')
 
-    fun arrowUp() = "\u001B[A"
-    fun arrowDown() = "\u001B[B"
-    fun arrowRight() = "\u001B[C"
-    fun arrowLeft() = "\u001B[D"
+    /** Bracketed paste payload for applications which have enabled DECSET 2004. */
+    fun bracketedPaste(text: String): String =
+        "\u001B[200~" + normalizePaste(text) + "\u001B[201~"
+
+    /** xterm-style modifier parameter: 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl, 8=Shift+Alt+Ctrl. */
+    private fun modifier(shift: Boolean, alt: Boolean, ctrl: Boolean): Int =
+        1 + (if (shift) 1 else 0) + (if (alt) 2 else 0) + (if (ctrl) 4 else 0)
+
+    /** Modified cursor keys, compatible with xterm/vim-style terminal applications. */
+    fun modifiedArrow(direction: Char, shift: Boolean = false, alt: Boolean = false, ctrl: Boolean = false): String {
+        val suffix = when (direction) {
+            'A' -> 'A'
+            'B' -> 'B'
+            'C' -> 'C'
+            'D' -> 'D'
+            else -> return ""
+        }
+        val mod = modifier(shift, alt, ctrl)
+        return if (mod == 1) "\u001B[$suffix" else "\u001B[1;${mod}${suffix}"
+    }
+
+    fun arrowUp() = modifiedArrow('A')
+    fun arrowDown() = modifiedArrow('B')
+    fun arrowRight() = modifiedArrow('C')
+    fun arrowLeft() = modifiedArrow('D')
+
     fun home() = "\u001B[H"
     fun end() = "\u001B[F"
     fun pageUp() = "\u001B[5~"
     fun pageDown() = "\u001B[6~"
     fun delete() = "\u001B[3~"
+
+    /** Common Ctrl+arrow/Home/End forms used by readline, shells and editors. */
+    fun ctrlArrow(direction: Char): String = modifiedArrow(direction, ctrl = true)
+    fun altArrow(direction: Char): String = modifiedArrow(direction, alt = true)
+    fun shiftArrow(direction: Char): String = modifiedArrow(direction, shift = true)
 
     fun functionKey(number: Int): String = when (number) {
         1 -> "\u001BOP"
