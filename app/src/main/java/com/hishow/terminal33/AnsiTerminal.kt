@@ -1,45 +1,38 @@
 package com.hishow.terminal33
 
-/** Lightweight VT/ANSI normalizer. Keeps printable text and handles common screen controls. */
+/** Incremental ANSI/VT normalizer used by the lightweight text renderer. */
 class AnsiTerminal {
     private var pending = ""
+
     fun feed(input: String): String {
         val s = pending + input
         pending = ""
         val out = StringBuilder(s.length)
         var i = 0
         while (i < s.length) {
-            val c = s[i]
-            if (c == '\u001B') {
-                if (i + 1 >= s.length) { pending = s.substring(i); break }
-                val n = s[i + 1]
-                if (n == '[') {
-                    var j = i + 2
-                    while (j < s.length && (s[j] < '@' || s[j] > '~')) j++
-                    if (j >= s.length) { pending = s.substring(i); break }
-                    i = j + 1
-                    continue
+            when (s[i]) {
+                '\u001b' -> {
+                    if (i + 1 >= s.length) { pending = s.substring(i); break }
+                    val kind = s[i + 1]
+                    if (kind == '[') {
+                        var j = i + 2
+                        while (j < s.length && (s[j] < '@' || s[j] > '~')) j++
+                        if (j >= s.length) { pending = s.substring(i); break }
+                        i = j + 1
+                    } else if (kind == ']') {
+                        var j = i + 2
+                        while (j < s.length && s[j] != '\u0007') j++
+                        if (j >= s.length) { pending = s.substring(i); break }
+                        i = j + 1
+                    } else i += 2
                 }
-                if (n == ']') {
-                    var j = i + 2
-                    while (j < s.length) {
-                        if (s[j] == '\u0007') { j++; break }
-                        if (s[j] == '\u001B' && j + 1 < s.length && s[j + 1] == '\\') { j += 2; break }
-                        j++
-                    }
-                    if (j > s.length) { pending = s.substring(i); break }
-                    i = j
-                    continue
-                }
-                i += 2
-                continue
+                '\u0000', '\u0007' -> i++
+                '\r' -> { if (i + 1 < s.length && s[i + 1] == '\n') i += 2 else i++ }
+                else -> { out.append(s[i]); i++ }
             }
-            if (c == '\r') { i++; continue }
-            if (c == '\u0000' || c == '\u0007') { i++; continue }
-            out.append(c)
-            i++
         }
         return out.toString()
     }
+
     fun reset() { pending = "" }
 }
