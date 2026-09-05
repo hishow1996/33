@@ -1,22 +1,23 @@
-# 33 Terminal Upgrade Plan
+# 33 Terminal — 1.3.0
 
-已完成基础升级：
+## 已完成
 
-- 移动端终端控制键集中管理
-- ANSI/VT 输出归一化组件
-- 终端显示偏好持久化基础设施
-- Ubuntu rootfs 健康检查组件
-- 快捷命令扩展
-- 终端主题常量集中管理
+- 增量 ANSI/VT 控制序列归一化基础设施
+- 移动端 Ctrl、方向键、PageUp/PageDown 序列集中定义
+- 终端字体大小/自动跟随偏好持久化
+- Ubuntu rootfs 健康检查
+- 快捷命令扩展：磁盘与内存检查
+- 终端主题 token 与运行参数集中管理
+- Ubuntu/shared 路径集中管理
 
-尚需在实际 Android 构建/设备验证后继续接入的高级能力：
+## 下一阶段
 
-1. Cell/Grid 终端渲染器（彩色、光标、清屏、滚动区域）
-2. PRoot runtime APK 内置与完整 SHA-256 校验
-3. 多 PTY session
-4. SAF 文件选择与共享目录操作
-5. 软键盘适配和选择/复制手势
-6. 增量输出渲染与环形缓冲
-7. 横竖屏、字体大小和终端窗口尺寸同步
+- terminal cell/grid 状态机与真实 SGR 彩色渲染
+- 光标、清屏、滚动区域、alternate screen
+- 多 PTY session
+- Android SAF 文件桥接
+- PRoot runtime 内置 APK 并校验
+- 增量 UI buffer / 环形历史
+- 键盘、横竖屏与 PTY window size 同步
 
-所有功能以 arm64-v8a 和 APK < 100 MB 为约束。
+所有工作保持 arm64-v8a、无 root、无 GitHub Actions，并以 APK 小于 100 MB 为硬约束。
