@@ -11,8 +11,11 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -42,7 +45,7 @@ class TerminalScreenModel {
 
     fun copyText(): String = synchronized(lock) {
         state.snapshot().joinToString("\n") { row ->
-            row.concatToString().trimEnd()
+            row.joinToString(separator = "") { it.ch.toString() }.trimEnd()
         }.trimEnd()
     }
 
@@ -83,10 +86,26 @@ fun TerminalCanvas(
     }
 
     val current = model.snapshot()
-    // Keep the state read observable so Compose redraws on PTY updates.
-    if (version < -1) Unit
+    val sizingModifier = modifier
+        .fillMaxSize()
+        .onSizeChanged { size ->
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                typeface = android.graphics.Typeface.MONOSPACE
+                textSize = textSize
+            }
+            val metrics = paint.fontMetrics
+            val cellWidth = paint.measureText("M").coerceAtLeast(1f)
+            val cellHeight = (metrics.descent - metrics.ascent).coerceAtLeast(textSize * 1.2f)
+            val columns = (size.width / cellWidth).toInt().coerceAtLeast(1)
+            val rows = (size.height / cellHeight).toInt().coerceAtLeast(1)
+            onSizeChanged(rows, columns)
+        }
 
-    Canvas(modifier.fillMaxSize().background(Color(0xFF050608))) {
+    // The version state is deliberately read before drawing so PTY updates trigger recomposition.
+    @Suppress("UNUSED_VARIABLE")
+    val observedVersion = version
+
+    Canvas(sizingModifier.background(Color(0xFF050608))) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = android.graphics.Typeface.MONOSPACE
             textSize = textSize
@@ -97,10 +116,9 @@ fun TerminalCanvas(
         val baseline = -metrics.ascent
         val visibleColumns = (size.width / cellWidth).toInt().coerceAtLeast(1)
         val visibleRows = (size.height / cellHeight).toInt().coerceAtLeast(1)
-        onSizeChanged(visibleRows, visibleColumns)
-
         val rows = minOf(current.rows, visibleRows)
         val columns = minOf(current.columns, visibleColumns)
+
         for (y in 0 until rows) {
             for (x in 0 until columns) {
                 val cell = current.cells[y][x]
@@ -110,7 +128,7 @@ fun TerminalCanvas(
                 val bg = if (cell.reverse) baseFg else baseBg
                 val left = x * cellWidth
                 val top = y * cellHeight
-                if (bg != null) drawRect(bg, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(cellWidth, cellHeight))
+                if (bg != null) drawRect(bg, Offset(left, top), Size(cellWidth, cellHeight))
                 if (cell.ch != ' ') {
                     paint.color = (fg ?: Color(0xFFE4E7EB)).toArgb()
                     paint.isFakeBoldText = cell.bold
@@ -126,7 +144,7 @@ fun TerminalCanvas(
         if (current.cursorVisible && current.cursorY in 0 until rows && current.cursorX in 0 until columns) {
             val left = current.cursorX * cellWidth
             val top = current.cursorY * cellHeight
-            drawRect(Color(0x99FFFFFF), androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(cellWidth, cellHeight))
+            drawRect(Color(0x99FFFFFF), Offset(left, top), Size(cellWidth, cellHeight))
         }
     }
 }
