@@ -72,7 +72,10 @@ class VtState {
                 }
                 if (esc[1] !in "[]") { esc.setLength(0); return }
             }
-            if (esc.length >= 2 && esc[1] == '[' && ch in '@'..'~') {
+            // A CSI sequence is ESC + '[' + final byte. '[' itself is in the
+            // '@'..'~' range, so the old >=2 check parsed ESC[ immediately and
+            // called substring(2, 1), crashing with "start 2, end 1, length 2".
+            if (esc.length >= 3 && esc[1] == '[' && ch in '@'..'~') {
                 handleCsi(esc.substring(2, esc.length - 1), ch); esc.setLength(0); return
             }
             if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b')) { esc.setLength(0); return }
@@ -136,6 +139,7 @@ class VtState {
         params.forEach { when (it) {
             25 -> cursorVisible = enabled
             47, 1047, 1049 -> if (enabled) enterAlternate(it) else leaveAlternate(it)
+            2004 -> bracketedPasteEnabled = enabled
         } }
     }
 
