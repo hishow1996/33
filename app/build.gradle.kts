@@ -36,7 +36,7 @@ android {
             storeFile = file("${rootDir}/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
-            keyPassword = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
