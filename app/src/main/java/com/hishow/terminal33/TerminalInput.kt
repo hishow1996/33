@@ -10,6 +10,13 @@ object TerminalInput {
     const val ESC = "\u001B"
     const val BACKSPACE = "\u007F"
 
+    fun ctrl(letter: Char): String {
+        val c = letter.uppercaseChar()
+        return if (c in 'A'..'Z') (c.code - 'A'.code + 1).toChar().toString() else ""
+    }
+
+    fun alt(text: String): String = if (text.isEmpty()) "" else ESC + text
+
     fun arrowUp() = "\u001B[A"
     fun arrowDown() = "\u001B[B"
     fun arrowRight() = "\u001B[C"
