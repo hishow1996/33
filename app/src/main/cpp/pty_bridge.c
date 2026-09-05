@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -26,13 +27,9 @@ static void set_fields(JNIEnv *env, jobject self, int master, pid_t pid) {
     (*env)->SetLongField(env, self, g_pid, (jlong)pid);
 }
 
-/* Android devices normally provide posix_openpt/grantpt. Some older vendor
- * builds are more reliable when /dev/ptmx is opened and unlocked directly. */
 static int open_ptmx(char *slave_name, size_t slave_capacity) {
     int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
-    if (master < 0) {
-        master = open("/dev/ptmx", O_RDWR | O_NOCTTY | O_CLOEXEC);
-    }
+    if (master < 0) master = open("/dev/ptmx", O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (master < 0) return -1;
 
     int unlocked = 0;
@@ -48,8 +45,7 @@ static int open_ptmx(char *slave_name, size_t slave_capacity) {
     if (!unlocked) {
         unsigned int pty_number = 0;
         int lock = 0;
-        if (ioctl(master, TIOCGPTN, &pty_number) == 0 &&
-            ioctl(master, TIOCSPTLCK, &lock) == 0) {
+        if (ioctl(master, TIOCGPTN, &pty_number) == 0 && ioctl(master, TIOCSPTLCK, &lock) == 0) {
             int written = snprintf(slave_name, slave_capacity, "/dev/pts/%u", pty_number);
             unlocked = written > 0 && (size_t)written < slave_capacity;
         }
