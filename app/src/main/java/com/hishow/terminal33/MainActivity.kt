@@ -43,6 +43,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -79,7 +84,7 @@ private fun TerminalApp(context: Context) {
     fun send(text: String, rememberCommand: Boolean = false) {
         terminal?.write(text)
         if (rememberCommand && text.trim().isNotEmpty()) {
-            val clean = text.trimEnd('\n')
+            val clean = text.trimEnd('\n', '\r')
             if (history.lastOrNull() != clean) history = (history + clean).takeLast(100)
             historyIndex = -1
         }
@@ -123,14 +128,17 @@ private fun TerminalApp(context: Context) {
                         clipboard.setPrimaryClip(ClipData.newPlainText("terminal", screen.copyText()))
                     }
                 )
-                TerminalCanvas(
-                    model = screen,
-                    modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 7.dp),
-                    onSizeChanged = { rows, columns ->
-                        screen.resize(columns, rows)
-                        terminal?.resize(rows, columns)
-                    }
-                )
+                Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 7.dp)) {
+                    TerminalCanvas(
+                        model = screen,
+                        modifier = Modifier.fillMaxSize(),
+                        onSizeChanged = { rows, columns ->
+                            screen.resize(columns, rows)
+                            terminal?.resize(rows, columns)
+                        }
+                    )
+                    DirectTerminalInput(onSend = { text -> send(text) })
+                }
                 CommandBar(
                     value = command,
                     onValueChange = { command = it },
@@ -139,7 +147,7 @@ private fun TerminalApp(context: Context) {
                         command = ""
                         if (text.isNotBlank()) send(text + "\n", true)
                     },
-                    onInterrupt = { send("\u0003") },
+                    onInterrupt = { send(TerminalInput.CTRL_C) },
                     onKey = { send(it) },
                     onHistory = { direction ->
                         if (history.isEmpty()) return@CommandBar
@@ -152,6 +160,66 @@ private fun TerminalApp(context: Context) {
             }
         }
     }
+}
+
+/** Transparent IME bridge: tapping the terminal gives the real Bash session the Android keyboard. */
+@Composable
+private fun DirectTerminalInput(onSend: (String) -> Unit) {
+    var buffer by remember { mutableStateOf("") }
+
+    BasicTextField(
+        value = buffer,
+        onValueChange = { value ->
+            when {
+                value.length > buffer.length && value.startsWith(buffer) -> {
+                    onSend(value.substring(buffer.length))
+                    buffer = value
+                }
+                value.length < buffer.length && buffer.startsWith(value) -> {
+                    repeat(buffer.length - value.length) { onSend(TerminalInput.BACKSPACE) }
+                    buffer = value
+                }
+                else -> {
+                    if (value.isNotEmpty()) onSend(value)
+                    buffer = value.takeLast(32)
+                }
+            }
+            // Keep the proxy small; the actual terminal owns the command line.
+            if (buffer.length > 32) buffer = buffer.takeLast(32)
+        },
+        singleLine = true,
+        textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
+        cursorBrush = androidx.compose.ui.text.SolidColor(Color.Transparent),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.None),
+        keyboardActions = KeyboardActions(),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Transparent)
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                val sequence = when (event.key) {
+                    Key.Enter -> TerminalInput.ENTER
+                    Key.Backspace -> TerminalInput.BACKSPACE
+                    Key.Delete -> TerminalInput.delete()
+                    Key.DirectionUp -> TerminalInput.arrowUp()
+                    Key.DirectionDown -> TerminalInput.arrowDown()
+                    Key.DirectionLeft -> TerminalInput.arrowLeft()
+                    Key.DirectionRight -> TerminalInput.arrowRight()
+                    Key.MoveHome -> TerminalInput.home()
+                    Key.MoveEnd -> TerminalInput.end()
+                    Key.PageUp -> TerminalInput.pageUp()
+                    Key.PageDown -> TerminalInput.pageDown()
+                    Key.Tab -> TerminalInput.TAB
+                    Key.Escape -> TerminalInput.ESC
+                    else -> null
+                }
+                if (sequence != null) {
+                    onSend(sequence)
+                    if (sequence == TerminalInput.ENTER) buffer = ""
+                    true
+                } else false
+            }
+    )
 }
 
 @Composable
@@ -211,12 +279,12 @@ private fun CommandBar(
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             SmallKey("↑") { onHistory(1) }
             SmallKey("↓") { onHistory(-1) }
-            SmallKey("Tab") { onKey("\t") }
-            SmallKey("Esc") { onKey("\u001b") }
-            SmallKey("←") { onKey("\u001b[D") }
-            SmallKey("→") { onKey("\u001b[C") }
-            SmallKey("Home") { onKey("\u001b[H") }
-            SmallKey("End") { onKey("\u001b[F") }
+            SmallKey("Tab") { onKey(TerminalInput.TAB) }
+            SmallKey("Esc") { onKey(TerminalInput.ESC) }
+            SmallKey("←") { onKey(TerminalInput.arrowLeft()) }
+            SmallKey("→") { onKey(TerminalInput.arrowRight()) }
+            SmallKey("Home") { onKey(TerminalInput.home()) }
+            SmallKey("End") { onKey(TerminalInput.end()) }
         }
     }
 }
