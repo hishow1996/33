@@ -17,6 +17,9 @@ object TerminalInput {
 
     fun alt(text: String): String = if (text.isEmpty()) "" else ESC + text
 
+    /** Bracketed paste keeps multiline clipboard text from being mistaken for commands. */
+    fun bracketedPaste(text: String): String = "\u001B[200~" + text.replace("\r\n", "\n").replace('\r', '\n') + "\u001B[201~"
+
     fun arrowUp() = "\u001B[A"
     fun arrowDown() = "\u001B[B"
     fun arrowRight() = "\u001B[C"
