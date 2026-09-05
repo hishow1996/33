@@ -14,12 +14,17 @@ class VtState {
     var savedY = 0; private set
     var alternateScreen = false; private set
     var cursorVisible = true; private set
+    var bracketedPasteEnabled = false; private set
     var scrollOffset = 0; private set
 
     private var fg = -1; private var bg = -1; private var bold = false; private var underline = false; private var reverse = false
     private var normal = grid(); private var alternate = grid()
     private val scrollback = ArrayDeque<Array<Cell>>()
     private val esc = StringBuilder()
+    private var normalCursorX = 0
+    private var normalCursorY = 0
+    private var normalSavedX = 0
+    private var normalSavedY = 0
 
     private fun grid() = Array(rows) { Array(columns) { Cell() } }
     private fun active() = if (alternateScreen) alternate else normal
@@ -31,6 +36,9 @@ class VtState {
         normal = resizeGrid(normal, c, r); alternate = resizeGrid(alternate, c, r)
         while (scrollback.size > MAX_SCROLLBACK) scrollback.removeFirst()
         cursorX = cursorX.coerceIn(0, c - 1); cursorY = cursorY.coerceIn(0, r - 1)
+        savedX = savedX.coerceIn(0, c - 1); savedY = savedY.coerceIn(0, r - 1)
+        normalCursorX = normalCursorX.coerceIn(0, c - 1); normalCursorY = normalCursorY.coerceIn(0, r - 1)
+        normalSavedX = normalSavedX.coerceIn(0, c - 1); normalSavedY = normalSavedY.coerceIn(0, r - 1)
         scrollOffset = 0
     }
 
@@ -67,7 +75,7 @@ class VtState {
             if (esc.length >= 2 && esc[1] == '[' && ch in '@'..'~') {
                 handleCsi(esc.substring(2, esc.length - 1), ch); esc.setLength(0); return
             }
-            if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b')) { esc.setLength(0); return }
+            if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b') { esc.setLength(0); return }
             if (esc.length > 128) esc.setLength(0)
             return
         }
@@ -127,8 +135,32 @@ class VtState {
     private fun applyMode(params: List<Int>, enabled: Boolean) {
         params.forEach { when (it) {
             25 -> cursorVisible = enabled
-            47, 1047, 1049 -> if (enabled) enterAlternate() else leaveAlternate()
+            47, 1047, 1049 -> if (enabled) enterAlternate(it) else leaveAlternate(it)
         } }
+    }
+
+    private fun enterAlternate(mode: Int) {
+        if (alternateScreen) return
+        normalCursorX = cursorX
+        normalCursorY = cursorY
+        normalSavedX = savedX
+        normalSavedY = savedY
+        alternate = grid()
+        alternateScreen = true
+        cursorX = 0
+        cursorY = 0
+        if (mode == 1049) { savedX = 0; savedY = 0 }
+        scrollOffset = 0
+    }
+
+    private fun leaveAlternate(mode: Int) {
+        if (!alternateScreen) return
+        alternateScreen = false
+        cursorX = if (mode == 1049) normalCursorX else 0
+        cursorY = if (mode == 1049) normalCursorY else 0
+        savedX = if (mode == 1049) normalSavedX else savedX
+        savedY = if (mode == 1049) normalSavedY else savedY
+        scrollOffset = 0
     }
 
     private fun applySgr(values: List<Int>) {
@@ -189,9 +221,6 @@ class VtState {
         for (x in columns - 1 downTo cursorX + n) g[x] = g[x - n]
         for (x in cursorX until cursorX + n) g[x] = Cell()
     }
-
-    private fun enterAlternate() { if (!alternateScreen) { alternate = grid(); alternateScreen = true; cursorX = 0; cursorY = 0; scrollOffset = 0 } }
-    private fun leaveAlternate() { if (alternateScreen) { alternateScreen = false; cursorX = 0; cursorY = 0; scrollOffset = 0 } }
 
     /** Returns the current viewport, including scrollback when the user has moved away from the live prompt. */
     fun snapshot(): Array<Array<Cell>> {
