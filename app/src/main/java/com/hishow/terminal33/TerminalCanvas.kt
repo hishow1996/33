@@ -75,7 +75,7 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
     val sizingModifier = modifier.fillMaxSize()
         .pointerInput(model) {
             detectVerticalDragGestures { _, dragAmount ->
-                // Downward finger movement reveals older output; upward movement returns to the prompt.
+                // Positive movement reveals older output; negative movement returns toward the live prompt.
                 val lines = (dragAmount / 22f).toInt().let { if (it == 0) if (dragAmount > 0) 1 else -1 else it }
                 model.scrollBy(lines)
             }
