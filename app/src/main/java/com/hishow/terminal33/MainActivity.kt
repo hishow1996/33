@@ -76,8 +76,8 @@ private data class BootstrapState(val ready: Boolean, val message: String, val p
 
 @Composable
 private fun TerminalApp(context: Context) {
-    var state by remember { mutableStateOf(BootstrapState(false, "Preparing Ubuntu…", 0)) }
-    var terminal by remember { mutableStateOf<UbuntuTerminal?>(null) }
+    var state by remember { mutableStateOf(BootstrapState(false, "Preparing terminal…", 0)) }
+    var terminal by remember { mutableStateOf<ShellTerminal?>(null) }
     var command by remember { mutableStateOf("") }
     var history by remember { mutableStateOf(emptyList<String>()) }
     var historyIndex by remember { mutableStateOf(-1) }
@@ -113,21 +113,39 @@ private fun TerminalApp(context: Context) {
     fun startSession() {
         scope.launch(Dispatchers.IO) {
             try {
-                UbuntuBootstrap(context).prepare { message, progress -> main.post { state = BootstrapState(false, message, progress) } }
-                val session = UbuntuTerminal(context)
+                val bootstrap = UbuntuBootstrap(context)
+                if (bootstrap.hasRootfsAsset()) {
+                    bootstrap.prepare { message, progress -> main.post { state = BootstrapState(false, message, progress) } }
+                }
+                val session = ShellTerminal(context)
+                session.start(
+                    onOutput = { chunk -> screen.feed(chunk) },
+                    onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
+                )
                 withContext(Dispatchers.Main) {
                     terminal?.close()
                     terminal = session
                     screen.clear()
                     screen.resize(120, 32)
-                    state = BootstrapState(true, "Ubuntu 24.04 ready", 100)
+                    state = BootstrapState(true, if (session.isUbuntu) "Ubuntu 24.04 ready" else "Terminal ready (sh)", 100)
                 }
-                session.start(
-                    onOutput = { chunk -> screen.feed(chunk) },
-                    onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
-                )
             } catch (t: Throwable) {
-                main.post { state = BootstrapState(false, "Setup failed: ${t.message ?: "unknown error"}", -1) }
+                try {
+                    val fallback = ShellTerminal(context)
+                    fallback.start(
+                        onOutput = { chunk -> screen.feed(chunk) },
+                        onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
+                    )
+                    withContext(Dispatchers.Main) {
+                        terminal?.close()
+                        terminal = fallback
+                        screen.clear()
+                        screen.resize(120, 32)
+                        state = BootstrapState(true, "Terminal ready (sh)", 100)
+                    }
+                } catch (inner: Throwable) {
+                    main.post { state = BootstrapState(false, "Setup failed: ${inner.message ?: "unknown error"}", -1) }
+                }
             }
         }
     }
@@ -135,10 +153,11 @@ private fun TerminalApp(context: Context) {
     LaunchedEffect(Unit) { startSession() }
     DisposableEffect(Unit) { onDispose { terminal?.close() } }
 
-    Surface(Modifier.fillMaxSize(), Color(0xFF090B0E)) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF090B0E)) {
         if (!state.ready) BootstrapScreen(state) else {
             Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                 TerminalHeader(
+                    isUbuntu = terminal?.isUbuntu == true,
                     onRestart = { terminal?.close(); startSession() },
                     onClear = { screen.clear() },
                     onCopy = {
@@ -194,7 +213,7 @@ private fun DirectTerminalInput(focusRequester: FocusRequester, onSend: (String)
         },
         singleLine = true,
         textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
-        cursorBrush = androidx.compose.ui.text.SolidColor(Color.Transparent),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.Transparent),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.None),
         keyboardActions = KeyboardActions(),
         modifier = Modifier.size(1.dp).focusRequester(focusRequester).onKeyEvent { event ->
@@ -232,10 +251,10 @@ private fun BootstrapScreen(state: BootstrapState) {
 }
 
 @Composable
-private fun TerminalHeader(onRestart: () -> Unit, onClear: () -> Unit, onCopy: () -> Unit, onPaste: () -> Unit) {
+private fun TerminalHeader(isUbuntu: Boolean, onRestart: () -> Unit, onClear: () -> Unit, onCopy: () -> Unit, onPaste: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("ubuntu", color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
-        Spacer(Modifier.width(9.dp)); Text("24.04", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace, fontSize = 12.sp); Spacer(Modifier.weight(1f))
+        Text(if (isUbuntu) "ubuntu" else "terminal", color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
+        Spacer(Modifier.width(9.dp)); Text(if (isUbuntu) "24.04" else "sh", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace, fontSize = 12.sp); Spacer(Modifier.weight(1f))
         IconButton(onClick = onPaste) { Text("PA", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
         IconButton(onClick = onRestart) { Text("RS", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
         IconButton(onClick = onCopy) { Text("CP", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
@@ -284,6 +303,10 @@ private class UbuntuBootstrap(private val context: Context) {
         private const val PROOT_URL = "https://github.com/proot-me/proot-rs/releases/download/v0.1.0/proot-rs-v0.1.0-aarch64-linux-android.tar.gz"
     }
     private val home = File(context.filesDir, "ubuntu"); private val rootfs = File(home, "rootfs"); private val proot = File(home, "proot")
+    fun hasRootfsAsset(): Boolean = runCatching {
+        context.assets.list("")?.contains(ROOTFS_ASSET) == true
+    }.getOrDefault(false)
+
     fun prepare(progress: (String, Int) -> Unit) {
         home.mkdirs()
         if (!rootfsReady()) {
@@ -315,14 +338,39 @@ private class UbuntuBootstrap(private val context: Context) {
     }
 }
 
-private class UbuntuTerminal(private val context: Context) {
+private class ShellTerminal(private val context: Context) {
     private var pty: NativePty? = null
+    var isUbuntu: Boolean = false
+        private set
+
     fun start(onOutput: (String) -> Unit, onExit: () -> Unit) {
-        val base = File(context.filesDir, "ubuntu"); val rootfs = File(base, "rootfs"); val proot = File(base, "proot")
-        val args = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "/bin/bash", "--login")
-        pty = NativePty().also { session -> session.start(args, rootfs.absolutePath, onOutput, onExit); session.resize(32, 120) }
+        val base = File(context.filesDir, "ubuntu")
+        val rootfs = File(base, "rootfs")
+        val proot = File(base, "proot")
+        val canRunUbuntu = File(rootfs, "bin/bash").exists() && proot.exists() && proot.canExecute()
+        if (canRunUbuntu) {
+            try {
+                isUbuntu = true
+                val args = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "/bin/bash", "--login")
+                pty = NativePty().also { session ->
+                    session.start(args, rootfs.absolutePath, onOutput, onExit)
+                    session.resize(32, 120)
+                }
+                return
+            } catch (_: Throwable) {
+                isUbuntu = false
+            }
+        }
+        isUbuntu = false
+        val shPath = listOf("/system/bin/sh", "/bin/sh", "sh").firstOrNull { File(it).exists() } ?: "/system/bin/sh"
+        pty = NativePty().also { session ->
+            session.start(listOf(shPath), context.filesDir.absolutePath, onOutput, onExit)
+            session.resize(32, 120)
+        }
     }
-    fun write(text: String) { pty?.write(text) }; fun resize(rows: Int, columns: Int) { pty?.resize(rows, columns) }; fun close() { pty?.close(); pty = null }
+    fun write(text: String) { pty?.write(text) }
+    fun resize(rows: Int, columns: Int) { pty?.resize(rows, columns) }
+    fun close() { pty?.close(); pty = null }
 }
 
 private object TarGzExtractor {

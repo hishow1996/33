@@ -78,12 +78,12 @@ JNIEXPORT jboolean JNICALL Java_com_hishow_terminal33_NativePty_nativeStart(JNIE
         ioctl(STDIN_FILENO, TIOCSWINSZ, &ws);
 
         if (chdir(cwd_copy) != 0) _exit(126);
-        setenv("HOME", "/root", 1);
+        setenv("HOME", (access("/root", W_OK) == 0) ? "/root" : cwd_copy, 1);
         setenv("TERM", "xterm-256color", 1);
         setenv("LANG", "C.UTF-8", 1);
         setenv("LC_ALL", "C.UTF-8", 1);
         setenv("COLORTERM", "truecolor", 1);
-        setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+        setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/system/bin:/system/xbin", 1);
         execv(args[0], args);
         _exit(127);
     }

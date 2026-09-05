@@ -75,7 +75,7 @@ class VtState {
             if (esc.length >= 2 && esc[1] == '[' && ch in '@'..'~') {
                 handleCsi(esc.substring(2, esc.length - 1), ch); esc.setLength(0); return
             }
-            if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b') { esc.setLength(0); return }
+            if (esc.length >= 2 && esc[1] == ']' && (ch == '\u0007' || ch == '\u001b')) { esc.setLength(0); return }
             if (esc.length > 128) esc.setLength(0)
             return
         }
@@ -111,7 +111,7 @@ class VtState {
         val privateMode = raw.startsWith("?")
         val body = raw.removePrefix("?").removePrefix(">")
         val p = body.split(';').map { it.toIntOrNull() ?: 0 }
-        val n = { i: Int, d: Int = 1 -> (p.getOrNull(i) ?: d).coerceAtLeast(1) }
+        fun n(i: Int, d: Int = 1): Int = (p.getOrNull(i) ?: d).coerceAtLeast(1)
         when (command) {
             'm' -> applySgr(p)
             'H', 'f' -> { cursorY = (n(0) - 1).coerceIn(0, rows - 1); cursorX = (n(1) - 1).coerceIn(0, columns - 1) }
