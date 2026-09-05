@@ -30,9 +30,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -49,11 +52,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,6 +68,13 @@ import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
+
+private val Ink = Color(0xFFF4F6F8)
+private val Muted = Color(0xFF89929D)
+private val Panel = Color(0xFF11151A)
+private val Panel2 = Color(0xFF171C22)
+private val Line = Color(0xFF252C34)
+private val Accent = Color(0xFF8B7CFF)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -118,34 +129,16 @@ private fun TerminalApp(context: Context) {
                     bootstrap.prepare { message, progress -> main.post { state = BootstrapState(false, message, progress) } }
                 }
                 val session = ShellTerminal(context)
-                session.start(
-                    onOutput = { chunk -> screen.feed(chunk) },
-                    onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
-                )
+                session.start({ chunk -> screen.feed(chunk) }, { main.post { state = BootstrapState(true, "Shell exited · tap Restart", 100) } })
                 withContext(Dispatchers.Main) {
                     terminal?.close()
                     terminal = session
                     screen.clear()
                     screen.resize(120, 32)
-                    state = BootstrapState(true, if (session.isUbuntu) "Ubuntu 24.04 ready" else "Terminal ready (sh)", 100)
+                    state = BootstrapState(true, if (session.isUbuntu) "Ubuntu 24.04" else "System shell", 100)
                 }
             } catch (t: Throwable) {
-                try {
-                    val fallback = ShellTerminal(context)
-                    fallback.start(
-                        onOutput = { chunk -> screen.feed(chunk) },
-                        onExit = { main.post { state = BootstrapState(true, "Shell exited · press Restart", 100) } }
-                    )
-                    withContext(Dispatchers.Main) {
-                        terminal?.close()
-                        terminal = fallback
-                        screen.clear()
-                        screen.resize(120, 32)
-                        state = BootstrapState(true, "Terminal ready (sh)", 100)
-                    }
-                } catch (inner: Throwable) {
-                    main.post { state = BootstrapState(false, "Setup failed: ${inner.message ?: "unknown error"}", -1) }
-                }
+                main.post { state = BootstrapState(false, "Setup failed: ${t.message ?: "unknown error"}", -1) }
             }
         }
     }
@@ -153,46 +146,160 @@ private fun TerminalApp(context: Context) {
     LaunchedEffect(Unit) { startSession() }
     DisposableEffect(Unit) { onDispose { terminal?.close() } }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF090B0E)) {
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF090B0E)) {
         if (!state.ready) BootstrapScreen(state) else {
-            Column(Modifier.fillMaxSize().navigationBarsPadding()) {
-                TerminalHeader(
+            Column(Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 10.dp)) {
+                ModernHeader(
                     isUbuntu = terminal?.isUbuntu == true,
                     onRestart = { terminal?.close(); startSession() },
-                    onClear = { screen.clear() },
                     onCopy = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("terminal", screen.copyText()))
                     },
-                    onPaste = ::pasteClipboard
+                    onClear = { screen.clear() }
                 )
-                Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 7.dp)) {
-                    TerminalCanvas(
-                        model = screen,
-                        modifier = Modifier.fillMaxSize(),
-                        onSizeChanged = { rows, columns -> screen.resize(columns, rows); terminal?.resize(rows, columns) },
-                        onTap = ::focusTerminal
-                    )
-                    DirectTerminalInput(
-                        focusRequester = terminalFocus,
-                        onSend = { text -> send(text) }
-                    )
+
+                Card(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF050607)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Line)
+                ) {
+                    Box(Modifier.fillMaxSize()) {
+                        TerminalCanvas(
+                            model = screen,
+                            modifier = Modifier.fillMaxSize().padding(8.dp),
+                            onSizeChanged = { rows, columns -> screen.resize(columns, rows); terminal?.resize(rows, columns) },
+                            onTap = ::focusTerminal
+                        )
+                        DirectTerminalInput(terminalFocus) { send(it) }
+                    }
                 }
-                CommandBar(
+
+                Spacer(Modifier.height(8.dp))
+                CommandDock(
                     value = command,
                     onValueChange = { command = it },
-                    onSend = { val text = command; command = ""; if (text.isNotBlank()) send(text + "\n", true) },
-                    onInterrupt = { send(TerminalInput.CTRL_C) },
-                    onKey = { send(it) },
+                    onSend = { val text = command; command = ""; if (text.isNotBlank()) send(text + "\n", true); focusTerminal() },
+                    onPaste = ::pasteClipboard,
+                    onInterrupt = { send(TerminalInput.CTRL_C); focusTerminal() }
+                )
+                Spacer(Modifier.height(7.dp))
+                KeyDock(
+                    onKey = { send(it); focusTerminal() },
                     onHistory = { direction ->
-                        if (history.isEmpty()) return@CommandBar
+                        if (history.isEmpty()) return@KeyDock
                         val next = (historyIndex + direction).coerceIn(-1, history.lastIndex)
                         historyIndex = next
                         command = if (next < 0) "" else history[history.lastIndex - next]
-                    },
-                    onPaste = ::pasteClipboard
+                    }
                 )
-                QuickBar { send(it + "\n", true) }
+                Spacer(Modifier.height(5.dp))
+                QuickDock { send(it + "\n", true); focusTerminal() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModernHeader(isUbuntu: Boolean, onRestart: () -> Unit, onCopy: () -> Unit, onClear: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 5.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Luma", color = Ink, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.width(8.dp))
+                Text("•", color = Accent, fontSize = 16.sp)
+                Spacer(Modifier.width(7.dp))
+                Text(if (isUbuntu) "Ubuntu 24.04" else "Shell", color = Muted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(if (isUbuntu) "arm64  ·  ready" else "local session", color = Color(0xFF5F6974), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+        }
+        HeaderAction("⌘", onCopy)
+        HeaderAction("×", onClear)
+        HeaderAction("↻", onRestart)
+    }
+}
+
+@Composable
+private fun HeaderAction(symbol: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp)) {
+        Text(symbol, color = Muted, fontSize = 19.sp)
+    }
+}
+
+@Composable
+private fun CommandDock(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit, onPaste: () -> Unit, onInterrupt: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Line)
+    ) {
+        Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("$", color = Accent, fontFamily = FontFamily.Monospace, fontSize = 15.sp, modifier = Modifier.padding(start = 8.dp, end = 7.dp))
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                modifier = Modifier.weight(1f).padding(vertical = 10.dp),
+                textStyle = TextStyle(color = Ink, fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onSend() }),
+                decorationBox = { inner ->
+                    if (value.isEmpty()) Text("Run a command…", color = Color(0xFF59636E), fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                    inner()
+                }
+            )
+            DockButton("Paste", onPaste, false)
+            DockButton("^C", onInterrupt, false)
+            DockButton("Run", onSend, true)
+        }
+    }
+}
+
+@Composable
+private fun DockButton(text: String, onClick: () -> Unit, primary: Boolean) {
+    Button(
+        onClick = onClick,
+        shape = RoundedCornerShape(11.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = if (primary) Accent else Panel2, contentColor = Ink),
+        contentPadding = PaddingValues(horizontal = if (primary) 15.dp else 11.dp, vertical = 8.dp)
+    ) { Text(text, fontSize = 12.sp, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal) }
+}
+
+@Composable
+private fun KeyDock(onKey: (String) -> Unit, onHistory: (Int) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        KeyChip("↑") { onHistory(1) }; KeyChip("↓") { onHistory(-1) }
+        KeyChip("Tab") { onKey(TerminalInput.TAB) }; KeyChip("Esc") { onKey(TerminalInput.ESC) }
+        KeyChip("^C") { onKey(TerminalInput.CTRL_C) }; KeyChip("^D") { onKey(TerminalInput.CTRL_D) }
+        KeyChip("←") { onKey(TerminalInput.arrowLeft()) }; KeyChip("→") { onKey(TerminalInput.arrowRight()) }
+        KeyChip("Home") { onKey(TerminalInput.home()) }; KeyChip("End") { onKey(TerminalInput.end()) }
+        KeyChip("PgUp") { onKey(TerminalInput.pageUp()) }; KeyChip("PgDn") { onKey(TerminalInput.pageDown()) }
+    }
+}
+
+@Composable
+private fun KeyChip(text: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Panel2, contentColor = Color(0xFFB8C0C9)),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+    ) { Text(text, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+}
+
+@Composable
+private fun QuickDock(onCommand: (String) -> Unit) {
+    val items = listOf("pwd", "ls", "ls -la", "whoami", "uname -a", "clear")
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        items.forEach { item ->
+            TextButton(onClick = { onCommand(item) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)) {
+                Text(item, color = Color(0xFF68727D), fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
         }
     }
@@ -215,7 +322,6 @@ private fun DirectTerminalInput(focusRequester: FocusRequester, onSend: (String)
         textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
         cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.Transparent),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.None),
-        keyboardActions = KeyboardActions(),
         modifier = Modifier.size(1.dp).focusRequester(focusRequester).onKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
             val sequence = when (event.key) {
@@ -242,57 +348,19 @@ private fun DirectTerminalInput(focusRequester: FocusRequester, onSend: (String)
 @Composable
 private fun BootstrapScreen(state: BootstrapState) {
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-        Text("Ubuntu Terminal", color = Color.White, fontSize = 28.sp, fontFamily = FontFamily.Monospace)
-        Spacer(Modifier.height(8.dp)); Text("Ubuntu 24.04 · arm64", color = Color(0xFF8D98A5), fontSize = 13.sp)
-        Spacer(Modifier.height(28.dp)); Text(state.message, color = Color(0xFFE8EAED), fontSize = 15.sp)
-        Spacer(Modifier.height(12.dp)); if (state.progress >= 0) Text("${state.progress}%", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace)
-        Spacer(Modifier.height(12.dp)); Text("Ubuntu Base is bundled in the APK. First launch unpacks it into private storage.", color = Color(0xFF68727D), fontSize = 12.sp)
-    }
-}
-
-@Composable
-private fun TerminalHeader(isUbuntu: Boolean, onRestart: () -> Unit, onClear: () -> Unit, onCopy: () -> Unit, onPaste: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(if (isUbuntu) "ubuntu" else "terminal", color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
-        Spacer(Modifier.width(9.dp)); Text(if (isUbuntu) "24.04" else "sh", color = Color(0xFF7DD3FC), fontFamily = FontFamily.Monospace, fontSize = 12.sp); Spacer(Modifier.weight(1f))
-        IconButton(onClick = onPaste) { Text("PA", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
-        IconButton(onClick = onRestart) { Text("RS", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
-        IconButton(onClick = onCopy) { Text("CP", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
-        IconButton(onClick = onClear) { Text("CL", color = Color(0xFF87919D), fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
-    }
-}
-
-@Composable
-private fun CommandBar(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit, onInterrupt: () -> Unit, onKey: (String) -> Unit, onHistory: (Int) -> Unit, onPaste: () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(Color(0xFF0D1014)).padding(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            BasicTextField(value = value, onValueChange = onValueChange, singleLine = true,
-                modifier = Modifier.weight(1f).background(Color(0xFF171B20), RoundedCornerShape(9.dp)).padding(horizontal = 11.dp, vertical = 10.dp),
-                textStyle = TextStyle(color = Color.White, fontFamily = FontFamily.Monospace, fontSize = 14.sp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { onSend() }))
-            Spacer(Modifier.width(5.dp)); Button(onClick = onPaste, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF242A31)), contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp)) { Text("Paste", fontSize = 12.sp) }
-            Spacer(Modifier.width(5.dp)); Button(onClick = onInterrupt, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF242A31)), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) { Text("^C", fontFamily = FontFamily.Monospace) }
-            Spacer(Modifier.width(5.dp)); Button(onClick = onSend, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF287CF0)), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 8.dp)) { Text("Run") }
+        Text("Luma", color = Ink, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(5.dp))
+        Text("A quiet Ubuntu workspace", color = Muted, fontSize = 13.sp)
+        Spacer(Modifier.height(30.dp))
+        Text(state.message, color = Ink, fontSize = 15.sp)
+        if (state.progress >= 0) {
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(progress = { state.progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Accent, trackColor = Panel2)
+            Spacer(Modifier.height(7.dp))
+            Text("${state.progress}%", color = Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         }
-        Spacer(Modifier.height(6.dp))
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            SmallKey("Ctrl-C") { onKey(TerminalInput.CTRL_C) }; SmallKey("Ctrl-D") { onKey(TerminalInput.CTRL_D) }; SmallKey("Ctrl-Z") { onKey(TerminalInput.CTRL_Z) }
-            SmallKey("Alt-") { onKey(TerminalInput.alt("")) }; SmallKey("↑") { onHistory(1) }; SmallKey("↓") { onHistory(-1) }
-            SmallKey("Tab") { onKey(TerminalInput.TAB) }; SmallKey("Esc") { onKey(TerminalInput.ESC) }; SmallKey("←") { onKey(TerminalInput.arrowLeft()) }; SmallKey("→") { onKey(TerminalInput.arrowRight()) }
-            SmallKey("Home") { onKey(TerminalInput.home()) }; SmallKey("End") { onKey(TerminalInput.end()) }; SmallKey("PgUp") { onKey(TerminalInput.pageUp()) }; SmallKey("PgDn") { onKey(TerminalInput.pageDown()) }
-        }
-    }
-}
-
-@Composable
-private fun SmallKey(text: String, onClick: () -> Unit) {
-    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF171B20)), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text(text, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
-}
-
-@Composable
-private fun QuickBar(onCommand: (String) -> Unit) {
-    val items = listOf("pwd", "ls -la", "whoami", "uname -a", "id", "clear")
-    Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 7.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        items.forEach { item -> Button(onClick = { onCommand(item) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14181D)), contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp)) { Text(item, fontFamily = FontFamily.Monospace, fontSize = 11.sp) } }
+        Spacer(Modifier.height(16.dp))
+        Text("Ubuntu Base is bundled in the APK and unpacked into private storage on first launch.", color = Color(0xFF59636E), fontSize = 12.sp)
     }
 }
 
@@ -302,27 +370,43 @@ private class UbuntuBootstrap(private val context: Context) {
         private const val ROOTFS_SHA256 = "7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048"
         private const val PROOT_URL = "https://github.com/proot-me/proot-rs/releases/download/v0.1.0/proot-rs-v0.1.0-aarch64-linux-android.tar.gz"
     }
-    private val home = File(context.filesDir, "ubuntu"); private val rootfs = File(home, "rootfs"); private val proot = File(home, "proot")
-    fun hasRootfsAsset(): Boolean = runCatching {
-        context.assets.list("")?.contains(ROOTFS_ASSET) == true
-    }.getOrDefault(false)
+    private val home = File(context.filesDir, "ubuntu")
+    private val rootfs = File(home, "rootfs")
+    private val proot = File(home, "proot")
+
+    fun hasRootfsAsset() = runCatching { context.assets.list("")?.contains(ROOTFS_ASSET) == true }.getOrDefault(false)
 
     fun prepare(progress: (String, Int) -> Unit) {
         home.mkdirs()
         if (!rootfsReady()) {
-            val archive = File(home, "rootfs.tar.gz"); runCatching { archive.delete() }
-            copyAsset(ROOTFS_ASSET, archive) { p -> progress("Copying bundled Ubuntu package…", 5 + p * 45 / 100) }; progress("Checking Ubuntu package…", 52); verifySha256(archive, ROOTFS_SHA256)
-            progress("Extracting Ubuntu filesystem…", 55); runCatching { rootfs.deleteRecursively() }; TarGzExtractor.extract(archive, rootfs) { p -> progress("Extracting Ubuntu filesystem…", 55 + p * 30 / 100) }; archive.delete(); configureRootfs()
+            val archive = File(home, "rootfs.tar.gz"); archive.delete()
+            copyAsset(ROOTFS_ASSET, archive) { p -> progress("Copying Ubuntu package…", 5 + p * 45 / 100) }
+            progress("Checking Ubuntu package…", 52)
+            verifySha256(archive, ROOTFS_SHA256)
+            progress("Extracting Ubuntu filesystem…", 55)
+            rootfs.deleteRecursively()
+            TarGzExtractor.extract(archive, rootfs) { p -> progress("Extracting Ubuntu filesystem…", 55 + p * 30 / 100) }
+            archive.delete(); configureRootfs()
         }
-        if (!proot.exists()) {
-            val archive = File(home, "proot.tar.gz"); progress("Installing PRoot runtime…", 87); download(PROOT_URL, archive) { p -> progress("Installing PRoot runtime…", 87 + p * 10 / 100) }; TarGzExtractor.extractFirstNamed(archive, proot); archive.delete(); proot.setExecutable(true, false)
+        if (!proot.exists() || !proot.canExecute()) {
+            val archive = File(home, "proot.tar.gz"); archive.delete()
+            progress("Installing PRoot runtime…", 87)
+            download(PROOT_URL, archive) { p -> progress("Installing PRoot runtime…", 87 + p * 10 / 100) }
+            TarGzExtractor.extractFirstNamed(archive, proot)
+            archive.delete(); proot.setExecutable(true, false)
         }
         progress("Ready", 100)
     }
+
     private fun rootfsReady() = File(rootfs, "bin/bash").exists() && File(rootfs, "etc/os-release").exists()
     private fun copyAsset(name: String, target: File, progress: (Int) -> Unit) {
         val total = runCatching { context.assets.openFd(name).length }.getOrDefault(-1L)
-        context.assets.open(name, android.content.res.AssetManager.ACCESS_STREAMING).use { input -> FileOutputStream(target).use { output -> val buffer = ByteArray(128 * 1024); var done = 0L; while (true) { val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n); done += n; if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100)) } } }
+        context.assets.open(name, android.content.res.AssetManager.ACCESS_STREAMING).use { input ->
+            FileOutputStream(target).use { output ->
+                val buffer = ByteArray(128 * 1024); var done = 0L
+                while (true) { val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n); done += n; if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100)) }
+            }
+        }
     }
     private fun configureRootfs() {
         val resolv = File(rootfs, "etc/resolv.conf")
@@ -331,10 +415,20 @@ private class UbuntuBootstrap(private val context: Context) {
     }
     private fun download(url: String, target: File, progress: (Int) -> Unit) {
         val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 20_000; readTimeout = 60_000; requestMethod = "GET" }
-        try { connection.connect(); if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}"); val total = connection.contentLengthLong; connection.inputStream.buffered(64 * 1024).use { input -> FileOutputStream(target).use { output -> val buffer = ByteArray(64 * 1024); var done = 0L; while (true) { val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n); done += n; if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100)) } } } } finally { connection.disconnect() }
+        try {
+            connection.connect(); if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
+            val total = connection.contentLengthLong
+            connection.inputStream.buffered(64 * 1024).use { input -> FileOutputStream(target).use { output ->
+                val buffer = ByteArray(64 * 1024); var done = 0L
+                while (true) { val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n); done += n; if (total > 0) progress((done * 100 / total).toInt().coerceIn(0, 100)) }
+            } }
+        } finally { connection.disconnect() }
     }
     private fun verifySha256(file: File, expected: String) {
-        val digest = MessageDigest.getInstance("SHA-256"); file.inputStream().use { input -> val buffer = ByteArray(128 * 1024); while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) } }; val actual = digest.digest().joinToString("") { "%02x".format(it) }; check(actual.equals(expected, ignoreCase = true)) { "Ubuntu archive checksum mismatch" }
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input -> val buffer = ByteArray(128 * 1024); while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) } }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        check(actual.equals(expected, ignoreCase = true)) { "Ubuntu archive checksum mismatch" }
     }
 }
 
@@ -342,31 +436,20 @@ private class ShellTerminal(private val context: Context) {
     private var pty: NativePty? = null
     var isUbuntu: Boolean = false
         private set
-
     fun start(onOutput: (String) -> Unit, onExit: () -> Unit) {
-        val base = File(context.filesDir, "ubuntu")
-        val rootfs = File(base, "rootfs")
-        val proot = File(base, "proot")
+        val base = File(context.filesDir, "ubuntu"); val rootfs = File(base, "rootfs"); val proot = File(base, "proot")
         val canRunUbuntu = File(rootfs, "bin/bash").exists() && proot.exists() && proot.canExecute()
         if (canRunUbuntu) {
             try {
                 isUbuntu = true
                 val args = listOf(proot.absolutePath, "-0", "-r", rootfs.absolutePath, "-b", "/dev:/dev", "-b", "/proc:/proc", "-b", "/sys:/sys", "-b", "/sdcard:/mnt/shared", "/bin/bash", "--login")
-                pty = NativePty().also { session ->
-                    session.start(args, rootfs.absolutePath, onOutput, onExit)
-                    session.resize(32, 120)
-                }
+                pty = NativePty().also { session -> session.start(args, rootfs.absolutePath, onOutput, onExit); session.resize(32, 120) }
                 return
-            } catch (_: Throwable) {
-                isUbuntu = false
-            }
+            } catch (_: Throwable) { isUbuntu = false }
         }
         isUbuntu = false
         val shPath = listOf("/system/bin/sh", "/bin/sh", "sh").firstOrNull { File(it).exists() } ?: "/system/bin/sh"
-        pty = NativePty().also { session ->
-            session.start(listOf(shPath), context.filesDir.absolutePath, onOutput, onExit)
-            session.resize(32, 120)
-        }
+        pty = NativePty().also { session -> session.start(listOf(shPath), context.filesDir.absolutePath, onOutput, onExit); session.resize(32, 120) }
     }
     fun write(text: String) { pty?.write(text) }
     fun resize(rows: Int, columns: Int) { pty?.resize(rows, columns) }
@@ -377,7 +460,15 @@ private object TarGzExtractor {
     private const val BLOCK = 512
     fun extract(archive: File, destination: File, progress: (Int) -> Unit) { destination.mkdirs(); GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input -> extractTar(input, destination, progress) } }
     fun extractFirstNamed(archive: File, target: File) {
-        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input -> val buffer = ByteArray(BLOCK); while (true) { if (!readFully(input, buffer)) break; if (buffer.all { it.toInt() == 0 }) break; val name = tarString(buffer, 0, 100); val size = tarOctal(buffer, 124, 12); val type = buffer[156].toInt().toChar(); val skip = (size + BLOCK - 1) / BLOCK * BLOCK; if ((type == '0' || type == '\u0000') && (File(name).name == "proot" || name.endsWith("/proot"))) { target.parentFile?.mkdirs(); target.outputStream().use { output -> copyExactly(input, output, size) }; target.setExecutable(true, false); return }; skipFully(input, skip) } }
+        GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input ->
+            val buffer = ByteArray(BLOCK)
+            while (true) {
+                if (!readFully(input, buffer)) break; if (buffer.all { it.toInt() == 0 }) break
+                val name = tarString(buffer, 0, 100); val size = tarOctal(buffer, 124, 12); val type = buffer[156].toInt().toChar(); val skip = (size + BLOCK - 1) / BLOCK * BLOCK
+                if ((type == '0' || type == '\u0000') && (File(name).name == "proot" || name.endsWith("/proot"))) { target.parentFile?.mkdirs(); target.outputStream().use { output -> copyExactly(input, output, size) }; target.setExecutable(true, false); return }
+                skipFully(input, skip)
+            }
+        }
         error("PRoot binary not found in archive")
     }
     private fun extractTar(input: java.io.InputStream, destination: File, progress: (Int) -> Unit) {
