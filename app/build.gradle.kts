@@ -12,9 +12,9 @@ android {
         applicationId = "com.hishow.terminal33"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.5.0"
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        versionCode = 6
+        versionName = "1.5.1"
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     externalNativeBuild {
@@ -36,7 +36,7 @@ android {
             storeFile = file("${rootDir}/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            keyPassword = "androiddebugkey"
         }
     }
 
