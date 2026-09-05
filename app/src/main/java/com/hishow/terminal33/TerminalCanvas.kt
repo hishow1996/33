@@ -3,12 +3,14 @@ package com.hishow.terminal33
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -26,12 +28,14 @@ class TerminalScreenModel {
     private val lock = Any()
     private val state = VtState()
     private var version = 0
+    private var selectionStart: CellPosition? = null
+    private var selectionEnd: CellPosition? = null
 
-    fun feed(chunk: String) = synchronized(lock) { state.feed(chunk); version++ }
+    fun feed(chunk: String) = synchronized(lock) { state.feed(chunk); clearSelectionLocked(); version++ }
     fun resize(columns: Int, rows: Int) = synchronized(lock) {
         val c = state.columns; val r = state.rows
         state.resize(columns, rows)
-        if (c != state.columns || r != state.rows) version++
+        if (c != state.columns || r != state.rows) { clearSelectionLocked(); version++ }
     }
     fun scrollBy(delta: Int) = synchronized(lock) {
         val before = state.scrollOffset
@@ -43,13 +47,77 @@ class TerminalScreenModel {
         state.scrollToBottom()
         if (before != state.scrollOffset) version++
     }
-    fun clear() = synchronized(lock) { state.feed("\u001b[2J\u001b[H"); version++ }
+    fun clear() = synchronized(lock) { state.feed("\u001b[2J\u001b[H"); clearSelectionLocked(); version++ }
+
+    fun beginSelection(position: CellPosition) = synchronized(lock) {
+        selectionStart = position.clamp(state.columns, state.rows)
+        selectionEnd = selectionStart
+        version++
+    }
+
+    fun updateSelection(position: CellPosition) = synchronized(lock) {
+        if (selectionStart != null) {
+            selectionEnd = position.clamp(state.columns, state.rows)
+            version++
+        }
+    }
+
+    fun clearSelection() = synchronized(lock) { if (selectionStart != null || selectionEnd != null) { clearSelectionLocked(); version++ } }
+
+    fun hasSelection(): Boolean = synchronized(lock) = selectionStart != null && selectionEnd != null && selectionStart != selectionEnd
+
+    fun selectedText(): String = synchronized(lock) {
+        val start = selectionStart ?: return@synchronized ""
+        val end = selectionEnd ?: return@synchronized ""
+        if (start == end) return@synchronized ""
+        val a = start.clamp(state.columns, state.rows)
+        val b = end.clamp(state.columns, state.rows)
+        val first = minOf(a, b)
+        val last = maxOf(a, b)
+        val rows = state.snapshot()
+        buildString {
+            for (y in first.row..last.row) {
+                val from = if (y == first.row) first.column else 0
+                val to = if (y == last.row) last.column else state.columns - 1
+                if (y in rows.indices) {
+                    for (x in from..to.coerceAtLeast(from)) if (x in rows[y].indices) append(rows[y][x].ch)
+                }
+                if (y != last.row) append('\n')
+            }
+        }.trimEnd()
+    }
+
     fun copyText(): String = synchronized(lock) {
-        state.snapshot().joinToString("\n") { row -> row.joinToString("") { it.ch.toString() }.trimEnd() }.trimEnd()
+        val selected = selectedTextLocked()
+        if (selected.isNotEmpty()) selected else state.snapshot().joinToString("\n") { row -> row.joinToString("") { it.ch.toString() }.trimEnd() }.trimEnd()
     }
+
     fun snapshot() = synchronized(lock) {
-        TerminalFrame(state.snapshot(), state.columns, state.rows, state.cursorX, state.cursorY, state.cursorVisible, state.scrollOffset, version)
+        TerminalFrame(state.snapshot(), state.columns, state.rows, state.cursorX, state.cursorY, state.cursorVisible, state.scrollOffset, version, selectionStart, selectionEnd)
     }
+
+    private fun selectedTextLocked(): String {
+        val start = selectionStart ?: return ""
+        val end = selectionEnd ?: return ""
+        if (start == end) return ""
+        val a = start.clamp(state.columns, state.rows); val b = end.clamp(state.columns, state.rows)
+        val first = minOf(a, b); val last = maxOf(a, b); val rows = state.snapshot()
+        return buildString {
+            for (y in first.row..last.row) {
+                val from = if (y == first.row) first.column else 0
+                val to = if (y == last.row) last.column else state.columns - 1
+                if (y in rows.indices) for (x in from..to.coerceAtLeast(from)) if (x in rows[y].indices) append(rows[y][x].ch)
+                if (y != last.row) append('\n')
+            }
+        }.trimEnd()
+    }
+
+    private fun clearSelectionLocked() { selectionStart = null; selectionEnd = null }
+}
+
+data class CellPosition(val row: Int, val column: Int) : Comparable<CellPosition> {
+    override fun compareTo(other: CellPosition): Int = compareValuesBy(this, other, { it.row }, { it.column })
+    fun clamp(columns: Int, rows: Int) = CellPosition(row.coerceIn(0, (rows - 1).coerceAtLeast(0)), column.coerceIn(0, (columns - 1).coerceAtLeast(0)))
 }
 
 data class TerminalFrame(
@@ -60,7 +128,9 @@ data class TerminalFrame(
     val cursorY: Int,
     val cursorVisible: Boolean,
     val scrollOffset: Int,
-    val version: Int
+    val version: Int,
+    val selectionStart: CellPosition? = null,
+    val selectionEnd: CellPosition? = null
 )
 
 @Composable
@@ -68,16 +138,42 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
     val density = LocalDensity.current
     val textSize = with(density) { fontSizeSp.sp.toPx() }
     var version by remember(model) { mutableIntStateOf(-1) }
+    var selecting by remember(model) { mutableStateOf(false) }
     LaunchedEffect(model) {
         while (true) { version = model.snapshot().version; delay(50) }
     }
     val current = model.snapshot()
     val sizingModifier = modifier.fillMaxSize()
-        .pointerInput(model) {
+        .pointerInput(model, textSize) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = { offset ->
+                    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.MONOSPACE; this.textSize = textSize }
+                    val metrics = paint.fontMetrics
+                    val cellWidth = paint.measureText("M").coerceAtLeast(1f)
+                    val cellHeight = (metrics.descent - metrics.ascent).coerceAtLeast(textSize * 1.2f)
+                    model.beginSelection(CellPosition((offset.y / cellHeight).toInt(), (offset.x / cellWidth).toInt()))
+                    selecting = true
+                },
+                onDrag = { change, _ ->
+                    if (selecting) {
+                        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.MONOSPACE; this.textSize = textSize }
+                        val metrics = paint.fontMetrics
+                        val cellWidth = paint.measureText("M").coerceAtLeast(1f)
+                        val cellHeight = (metrics.descent - metrics.ascent).coerceAtLeast(textSize * 1.2f)
+                        model.updateSelection(CellPosition((change.position.y / cellHeight).toInt(), (change.position.x / cellWidth).toInt()))
+                        change.consume()
+                    }
+                },
+                onDragEnd = { selecting = false },
+                onDragCancel = { selecting = false }
+            )
+        }
+        .pointerInput(model, selecting) {
             detectVerticalDragGestures { _, dragAmount ->
-                // Positive movement reveals older output; negative movement returns toward the live prompt.
-                val lines = (dragAmount / 22f).toInt().let { if (it == 0) if (dragAmount > 0) 1 else -1 else it }
-                model.scrollBy(lines)
+                if (!selecting) {
+                    val lines = (dragAmount / 22f).toInt().let { if (it == 0) if (dragAmount > 0) 1 else -1 else it }
+                    model.scrollBy(lines)
+                }
             }
         }
         .onSizeChanged { size ->
@@ -97,14 +193,18 @@ fun TerminalCanvas(model: TerminalScreenModel, modifier: Modifier = Modifier, fo
         val visibleColumns = (size.width / cellWidth).toInt().coerceAtLeast(1)
         val visibleRows = (size.height / cellHeight).toInt().coerceAtLeast(1)
         val rows = minOf(current.rows, visibleRows); val columns = minOf(current.columns, visibleColumns)
+        val selectionA = current.selectionStart?.let { current.selectionEnd?.let { end -> minOf(it, end) } }
+        val selectionB = current.selectionStart?.let { current.selectionEnd?.let { end -> maxOf(it, end) } }
         for (y in 0 until rows) for (x in 0 until columns) {
             val cell = current.cells[y][x]
             val baseFg = ansiColor(cell.fg, false); val baseBg = ansiColor(cell.bg, true)
             val fg = if (cell.reverse) baseBg else baseFg; val bg = if (cell.reverse) baseFg else baseBg
             val left = x * cellWidth; val top = y * cellHeight
             if (bg != null) drawRect(bg, Offset(left, top), Size(cellWidth, cellHeight))
+            val selected = selectionA != null && selectionB != null && CellPosition(y, x) >= selectionA && CellPosition(y, x) <= selectionB
+            if (selected) drawRect(Color(0xFF365B78), Offset(left, top), Size(cellWidth, cellHeight))
             if (cell.ch != ' ') {
-                paint.color = (fg ?: Color(0xFFE4E7EB)).toArgb(); paint.isFakeBoldText = cell.bold
+                paint.color = (if (selected) Color.White else fg ?: Color(0xFFE4E7EB)).toArgb(); paint.isFakeBoldText = cell.bold
                 drawContext.canvas.nativeCanvas.drawText(cell.ch.toString(), left, top + baseline, paint)
                 if (cell.underline) {
                     val lineY = top + baseline + 1.5f
