@@ -23,33 +23,33 @@ class TerminalScreenModel {
     private val state = VtState()
     private var version = 0
 
-    fun feed(chunk: String) {
-        synchronized(lock) {
-            state.feed(chunk)
-            version++
-        }
+    fun feed(chunk: String) = synchronized(lock) {
+        state.feed(chunk)
+        version++
     }
 
-    fun resize(columns: Int, rows: Int) {
-        synchronized(lock) { state.resize(columns, rows); version++ }
+    fun resize(columns: Int, rows: Int) = synchronized(lock) {
+        val beforeC = state.columns
+        val beforeR = state.rows
+        state.resize(columns, rows)
+        if (beforeC != state.columns || beforeR != state.rows) version++
     }
 
-    fun clear() {
-        synchronized(lock) {
-            state.feed("\u001b[2J\u001b[H")
-            version++
-        }
+    fun clear() = synchronized(lock) {
+        state.feed("\u001b[2J\u001b[H")
+        version++
+    }
+
+    fun copyText(): String = synchronized(lock) {
+        state.snapshot().joinToString("\n") { row ->
+            row.concatToString().trimEnd()
+        }.trimEnd()
     }
 
     fun snapshot(): TerminalFrame = synchronized(lock) {
         TerminalFrame(
-            state.snapshot(),
-            state.columns,
-            state.rows,
-            state.cursorX,
-            state.cursorY,
-            state.cursorVisible,
-            version
+            state.snapshot(), state.columns, state.rows,
+            state.cursorX, state.cursorY, state.cursorVisible, version
         )
     }
 }
@@ -73,7 +73,6 @@ fun TerminalCanvas(
 ) {
     val density = LocalDensity.current
     val textSize = with(density) { fontSizeSp.sp.toPx() }
-    val frame = remember(model) { mutableIntStateOf(-1) }
     var version by remember(model) { mutableIntStateOf(-1) }
 
     LaunchedEffect(model) {
@@ -84,7 +83,8 @@ fun TerminalCanvas(
     }
 
     val current = model.snapshot()
-    frame.intValue = version
+    // Keep the state read observable so Compose redraws on PTY updates.
+    if (version < -1) Unit
 
     Canvas(modifier.fillMaxSize().background(Color(0xFF050608))) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -110,11 +110,9 @@ fun TerminalCanvas(
                 val bg = if (cell.reverse) baseFg else baseBg
                 val left = x * cellWidth
                 val top = y * cellHeight
-                if (bg != null) {
-                    drawRect(bg, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(cellWidth, cellHeight))
-                }
+                if (bg != null) drawRect(bg, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Size(cellWidth, cellHeight))
                 if (cell.ch != ' ') {
-                    paint.color = fg.toArgb()
+                    paint.color = (fg ?: Color(0xFFE4E7EB)).toArgb()
                     paint.isFakeBoldText = cell.bold
                     drawContext.canvas.nativeCanvas.drawText(cell.ch.toString(), left, top + baseline, paint)
                     if (cell.underline) {
