@@ -482,30 +482,45 @@ class PlaybackService : MediaSessionService() {
     private fun tick(ms: Long) {
         val st = ui.value
         val d = dubbing
-        var cur = if (d != null) d.lineAt(ms) else -1
-        if (cur < 0) {
-            // 二分行列表找当前行（字幕高亮用）
+
+        // 配音必须严格使用 lineAt 的时间区间结果；字幕高亮可以回退到最近一行，
+        // 但不能把“字幕间隙中的上一行”当成当前配音行，否则会压低间隙里的原声。
+        val dubLine = if (d != null) d.lineAt(ms) else -1
+        var highlightLine = dubLine
+        if (highlightLine < 0) {
             val ls = st.lines
-            var lo = 0; var hi = ls.size - 1; var ans = -1
+            var lo = 0
+            var hi = ls.size - 1
+            var ans = -1
             while (lo <= hi) {
                 val mid = (lo + hi) / 2
-                if (ls[mid].startMs <= ms) { ans = mid; lo = mid + 1 } else hi = mid - 1
+                if (ls[mid].startMs <= ms) {
+                    ans = mid
+                    lo = mid + 1
+                } else {
+                    hi = mid - 1
+                }
             }
-            cur = ans
+            // 仅用于字幕列表定位；如果上一行已经结束，不将它作为配音行。
+            highlightLine = ans
         }
-        if (cur != lastLineIdx) {
-            lastLineIdx = cur
-            ui.update { it.copy(currentLine = cur) }
+        if (highlightLine != lastLineIdx) {
+            lastLineIdx = highlightLine
+            ui.update { it.copy(currentLine = highlightLine) }
         }
+
         if (d != null && st.dubbingOn) {
-            if (cur >= 0 && d.isPrepared(cur)) {
-                if (d.currentLineIdx() != cur) d.playAt(cur, if (st.muteOriginal) 1f else 0.35f)
+            if (dubLine >= 0 && d.isPrepared(dubLine)) {
+                if (d.currentLineIdx() != dubLine) {
+                    d.playAt(dubLine, if (st.muteOriginal) 1f else 0.35f)
+                }
                 pm.originalVolume = if (st.muteOriginal) 0f else 0.15f
-            } else if (cur >= 0 && !d.isPrepared(cur)) {
-                // 播放追上合成：原声顶上，等后台补齐
+            } else if (dubLine >= 0) {
+                // 播放追上合成：原声顶上，等后台补齐。
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
             } else {
+                // 字幕间隙不播放配音；按“原声静音”开关决定是否保留原音。
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
