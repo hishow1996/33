@@ -13,8 +13,8 @@ android {
         applicationId = "io.translatetube.local"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.0.4"
+        versionCode = 7
+        versionName = "1.0.5"
         ndk {
             // arm64 单架构（304MB 传输上限内；v7a 版存档）
             abiFilters += "arm64-v8a"
@@ -89,4 +89,6 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.core:core-ktx:1.13.1")
+    // 模型包解压（.tar.bz2）
+    implementation("org.apache.commons:commons-compress:1.26.1")
 }

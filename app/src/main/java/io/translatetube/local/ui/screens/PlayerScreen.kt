@@ -34,6 +34,7 @@ fun PlayerScreen(
     videoId: String?,
     localUri: android.net.Uri?,
     onBack: () -> Unit,
+    onGoSettings: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
@@ -169,6 +170,22 @@ fun PlayerScreen(
             }
 
             Spacer(Modifier.height(8.dp))
+
+            // 模型未下载引导条（点击跳设置）
+            state.noModelHint?.let { hint ->
+                Surface(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onGoSettings() },
+                    color = Color(0xFFFFF8E1),
+                ) {
+                    Row(Modifier.padding(10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text("⚠️", color = WarnYellow)
+                        Spacer(Modifier.width(8.dp))
+                        Text(hint, color = Color(0xFF5D4037), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        Text("去设置 →", color = AccentBlue, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
 
             // ===== 控制条 =====
             ControlBar(

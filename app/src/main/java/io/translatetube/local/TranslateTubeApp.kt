@@ -17,6 +17,8 @@ import kotlinx.coroutines.tasks.await
 
 class TranslateTubeApp : Application() {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** 模型下载单例（方案 B：配音/转写模型软件内下载） */
+    val modelDownload by lazy { io.translatetube.local.data.ModelDownloadManager(this, appScope) }
 
     override fun onCreate() {
         super.onCreate()

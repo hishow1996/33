@@ -33,6 +33,14 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     var profiles by remember { mutableStateOf<List<ApiProfile>>(emptyList()) }
     var editing by remember { mutableStateOf<ApiProfile?>(null) }
     var adding by remember { mutableStateOf(false) }
+    val prefs = remember { ctx.getSharedPreferences("settings", 0) }
+    var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
+
+    // 手动切换翻译引擎：写 prefs 即刻生效（下次翻译起用新源）
+    fun setActive(id: Long) {
+        activeId = id
+        prefs.edit().putLong("active_api_id", id).apply()
+    }
 
     LaunchedEffect(Unit) {
         db.apiProfileDao().all().collect { profiles = it }
@@ -47,21 +55,40 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
             ) { Text("+ 添加") }
         }
-        Text(
-            "排最前的启用项为活跃翻译源。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等所有兼容服务。",
-            color = SubText, style = MaterialTheme.typography.bodySmall,
-        )
+        Text("点击条目左侧圆点 = 切换为当前使用的翻译引擎（即刻生效）。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(8.dp))
+
+        // 本地引擎选项（始终可用）
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(
+                if (activeId == -1L) SurfaceHigh else SurfaceDark
+            ).clickable { setActive(-1L) }.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = activeId == -1L, onClick = { setActive(-1L) }, colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
+            Column(Modifier.weight(1f)) {
+                Text("本地引擎（离线）", color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                Text("免费 · 断网可用 · ML Kit", color = SubText, style = MaterialTheme.typography.bodySmall)
+            }
+        }
         Spacer(Modifier.height(8.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(profiles, key = { it.id }) { p ->
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceDark).padding(12.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(
+                        if (activeId == p.id && p.enabled) SurfaceHigh else SurfaceDark
+                    ).clickable(enabled = p.enabled) { setActive(p.id) }.padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    RadioButton(
+                        selected = activeId == p.id,
+                        onClick = { if (p.enabled) setActive(p.id) },
+                        colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+                    )
                     Column(Modifier.weight(1f)) {
                         Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                        Text("${typeLabel(p.type)} · ${p.model.ifEmpty { "未选模型" }}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                        Text("${typeLabel(p.type)} · ${if (p.type == "BAIDU") "AppID: ${p.model}" else p.model.ifEmpty { "未选模型" }}", color = SubText, style = MaterialTheme.typography.bodySmall)
                     }
                     Switch(
                         checked = p.enabled,
@@ -114,7 +141,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val needsBaseUrl = type == "OPENAI"
     val needsKey = type != "AZURE"
     val needsRegion = type == "AZURE"
-    val fixedEngine = type == "GCLOUD" || type == "AZURE"
+    val fixedEngine = type == "GCLOUD" || type == "AZURE" || type == "BAIDU"
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         val scope = rememberCoroutineScope()
@@ -129,7 +156,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
 
             Labeled("类型") {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("OPENAI" to "OpenAI兼容", "GEMINI" to "Gemini", "GCLOUD" to "谷歌", "AZURE" to "Azure").forEach { (v, label) ->
+                    listOf("OPENAI" to "OpenAI兼容", "GEMINI" to "Gemini", "GCLOUD" to "谷歌", "AZURE" to "微软Azure", "BAIDU" to "百度").forEach { (v, label) ->
                         FilterChip(
                             selected = type == v,
                             onClick = { type = v; models = null; model = "" },
@@ -148,10 +175,16 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     placeholder = { Text("https://api.deepseek.com（填到域名即可）") },
                 )
             }
-            if (needsKey) Labeled("API Key") {
+            if (type == "BAIDU") Labeled("AppID（百度翻译开放平台）") {
+                OutlinedTextField(
+                    model, { model = it }, Modifier.fillMaxWidth(), singleLine = true,
+                    placeholder = { Text("百度翻译开放平台的 AppID") },
+                )
+            }
+            if (needsKey) Labeled(if (type == "BAIDU") "密钥" else "API Key") {
                 OutlinedTextField(
                     apiKey, { apiKey = it }, Modifier.fillMaxWidth(), singleLine = true,
-                    placeholder = { Text("sk-…（本地加密存储）") },
+                    placeholder = { Text(if (type == "BAIDU") "百度翻译开放平台的密钥" else "sk-…（本地加密存储）") },
                 )
             }
             if (needsRegion) Labeled("区域") {

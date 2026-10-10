@@ -9,7 +9,7 @@ import com.k2fsa.sherpa.onnx.VadModelConfig
 fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long, Long>> {
     val config = VadModelConfig(
         sileroVadModelConfig = SileroVadModelConfig(
-            model = "whisper/silero_vad.onnx",
+            model = io.translatetube.local.data.ModelFiles.asrDir(ctx).absolutePath + "/silero_vad.onnx",
             threshold = 0.5f,
             minSilenceDuration = 0.3f,
             minSpeechDuration = 0.25f,
@@ -21,7 +21,7 @@ fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long,
         provider = "cpu",
         debug = false,
     )
-    val vad = Vad(ctx.assets, config)
+    val vad = Vad(null, config)
     val segs = mutableListOf<Pair<Long, Long>>()
     val window = 512
     var i = 0

@@ -35,6 +35,68 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         Text("设置", style = MaterialTheme.typography.headlineMedium, color = OnBg)
         Spacer(Modifier.height(16.dp))
 
+        // ===== 语音模型（方案 B：软件内下载） =====
+        val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
+        val ttsState by dlManager.tts.collectAsState()
+        val asrState by dlManager.asr.collectAsState()
+        var ttsReady by remember { mutableStateOf(io.translatetube.local.data.ModelFiles.ttsReady(ctx)) }
+        var asrReady by remember { mutableStateOf(io.translatetube.local.data.ModelFiles.asrReady(ctx)) }
+        var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
+
+        Section("语音模型") {
+            Text("配音与无字幕转写需要对应模型，各自独立下载（Wi-Fi 建议）。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(10.dp))
+
+            // —— 配音模型 ——
+            ModelRow(
+                title = "🎙 配音模型（Kokoro v1.1）",
+                state = ttsState,
+                ready = ttsReady,
+                pkgMB = 140,
+                readyText = "已就绪 · 中文配音可用",
+            )
+            Spacer(Modifier.height(10.dp))
+            // —— 转写模型 ——
+            ModelRow(
+                title = "📝 转写模型（Whisper base）",
+                state = asrState,
+                ready = asrReady,
+                pkgMB = 198,
+                readyText = "已就绪 · 无字幕视频可转写",
+            )
+        }
+
+        // 下载确认弹窗（规格：右侧确定 / 左侧取消，显示包大小）
+        confirmKind?.let { kind ->
+            val name = if (kind == io.translatetube.local.data.ModelKind.TTS) "配音模型（Kokoro）" else "转写模型（Whisper）"
+            val size = if (kind == io.translatetube.local.data.ModelKind.TTS) "140MB（解压后约 207MB）" else "198MB（解压后约 154MB）"
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirmKind = null },
+                title = { Text("确定下载吗？", color = OnBg) },
+                text = {
+                    Column {
+                        Text(name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(4.dp))
+                        Text("下载包大小：$size", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text("建议使用 Wi-Fi 网络，下载完成后自动解压安装。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                // 左：取消
+                dismissButton = {
+                    TextButton(onClick = { confirmKind = null }) { Text("取消", color = SubText) }
+                },
+                // 右：确定
+                confirmButton = {
+                    TextButton(onClick = {
+                        dlManager.download(kind)
+                        confirmKind = null
+                    }) { Text("确定", color = BrandBright) }
+                },
+                containerColor = SurfaceDark,
+            )
+        }
+
         Section("配音引擎") {
             EngineOption("kokoro", "Kokoro 神经网络（推荐）", "自然度高，首次合成略慢", ttsEngine) { e ->
                 ttsEngine = e; prefs.edit().putString("tts_engine", e).apply()
@@ -130,6 +192,49 @@ private fun EngineOption(
         Column {
             Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
             Text(desc, color = SubText, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ModelRow(
+    title: String,
+    state: io.translatetube.local.data.ModelState,
+    ready: Boolean,
+    pkgMB: Int,
+    readyText: String,
+) {
+    val dl = (LocalContext.current.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceDark).padding(12.dp)) {
+        Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+        Spacer(Modifier.height(4.dp))
+        when {
+            state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
+                Text(
+                    "下载中 ${state.progress}%（${state.downloadedMB}/${state.totalMB} MB）",
+                    color = BrandBright, style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { state.progress / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Brand, trackColor = SurfaceHigh,
+                )
+            }
+            state.status == io.translatetube.local.data.ModelStatus.EXTRACTING -> {
+                Text("解压安装中…", color = BrandBright, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Brand, trackColor = SurfaceHigh)
+            }
+            state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
+                Text("下载失败：${state.error ?: "网络异常"}", color = DangerRed, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = {
+                    dl.download(if (title.contains("配音")) io.translatetube.local.data.ModelKind.TTS else io.translatetube.local.data.ModelKind.ASR)
+                }) { Text("重试", color = BrandBright) }
+            }
+            ready -> Text("✅ $readyText", color = BrandBright, style = MaterialTheme.typography.bodySmall)
+            else -> Text("未下载 · 压缩包约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

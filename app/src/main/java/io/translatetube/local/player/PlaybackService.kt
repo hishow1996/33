@@ -65,6 +65,7 @@ data class PlayerUiState(
     val engineName: String = "",
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
+    val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
 )
 
 class PlaybackService : MediaSessionService() {
@@ -260,6 +261,10 @@ class PlaybackService : MediaSessionService() {
             val cached = db.subtitleCacheDao().get("$key|zh")
 
             if (lines == null && cached == null) {
+                if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
+                    // 方案 B：转写模型未下载——优雅降级（原声播放 + 引导提示），不崩
+                    ui.update { it.copy(noModelHint = "该视频无字幕。下载「转写模型」后即可生成中文字幕与配音（设置 → 语音模型）") }
+                } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 ui.update { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
                 val audioFile = if (videoId != null) {
@@ -286,6 +291,7 @@ class PlaybackService : MediaSessionService() {
                 if (audioFile is File) audioFile.delete()
                 lines = asrLines.mapIndexed { i, (a, b, text) -> SubLine(i, a, b, text) }
                 srcLang = whisper?.lastLang?.takeIf { it.isNotBlank() } ?: "en"
+                }
             }
 
             // 用户导入的字幕优先（SRT/VTT 导入入口）
@@ -352,12 +358,16 @@ class PlaybackService : MediaSessionService() {
 
             // ---- 5. 配音引擎 ----
             if (finalLines.isNotEmpty()) {
-                val tts: TtsEngine = makeTts()
-                val d = DubbingEngine(this, key, scope)
-                d.attach(tts, finalLines)
-                dubbing = d
-                dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                if (io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+                    val tts: TtsEngine = makeTts()
+                    val d = DubbingEngine(this, key, scope)
+                    d.attach(tts, finalLines)
+                    dubbing = d
+                    dubCollectJob = scope.launch {
+                        d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                    }
+                } else {
+                    ui.update { it.copy(noModelHint = "下载「配音模型」后即可中文配音（设置 → 语音模型）") }
                 }
             }
             saveHistory(meta)
@@ -383,18 +393,21 @@ class PlaybackService : MediaSessionService() {
     /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
     private suspend fun translateLines(key: String, lines: List<SubLine>, srcLang: String) {
         val db = AppDatabase.get(this)
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val activeId = prefs.getLong("active_api_id", -1L)
         val profiles = db.apiProfileDao().enabled()
         val tgt = "zh"
         val plain = lines.map { it.text }
         var engine: TranslationEngine? = null
         var engineName = ""
 
-        for (p in profiles.take(1)) { // 活跃 = 排最前的启用项
+        // 手动选择的活跃 API 优先；未选（-1）或已删除则回落本地
+        val active = profiles.firstOrNull { it.id == activeId }
+        if (active != null) {
             try {
-                val e = EngineFactory.fromProfile(p)
-                engine = e; engineName = p.name
-                break
-            } catch (e: Exception) { /* 跳过坏配置 */ }
+                engine = EngineFactory.fromProfile(active)
+                engineName = active.name
+            } catch (e: Exception) { /* 坏配置 → 落到本地 */ }
         }
         if (engine == null) {
             engine = MlKitEngine(); engineName = "本地引擎（离线）"

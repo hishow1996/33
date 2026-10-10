@@ -250,6 +250,54 @@ class AzureEngine(private val apiKey: String, private val region: String) : Tran
     }
 }
 
+/** 百度翻译开放平台（appid+密钥，MD5 签名；q 内换行天然支持批量） */
+class BaiduEngine(private val appid: String, private val secret: String) : TranslationEngine {
+    override val id = "baidu"
+    override val displayName = "百度翻译"
+
+    override suspend fun listModels(): List<String>? = null
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        val from = if (srcLang.isBlank() || srcLang == "auto") "auto" else srcLang.substringBefore('-')
+        val to = "zh"
+        val out = mutableListOf<String>()
+        // 单次 q 上限 6000 字节：按 20 行/5500 字节分批
+        var i = 0
+        while (i < lines.size) {
+            val batch = mutableListOf<String>()
+            var bytes = 0
+            while (i < lines.size && batch.size < 20) {
+                val b = lines[i].toByteArray(Charsets.UTF_8).size + 1
+                if (bytes + b > 5500 && batch.isNotEmpty()) break
+                batch += lines[i]; bytes += b; i++
+            }
+            val q = batch.joinToString("\n")
+            val salt = (System.currentTimeMillis() / 1000).toString()
+            val sign = md5(appid + q + salt + secret)
+            val form = "q=${java.net.URLEncoder.encode(q, "UTF-8")}&from=$from&to=$to&appid=$appid&salt=$salt&sign=$sign"
+            val body = post(
+                "https://fanyi-api.baidu.com/api/trans/vip/translate",
+                emptyMap(),
+                form,
+            )
+            val res = JSONObject(body)
+            res.optString("error_code").takeIf { it.isNotEmpty() }?.let {
+                throw IllegalStateException("百度 API 错误 $it: ${res.optString("error_msg")}")
+            }
+            val arr = res.getJSONArray("trans_result")
+            for (j in 0 until arr.length()) {
+                out += arr.getJSONObject(j).optString("dst").replace("\n", " ")
+            }
+        }
+        return out
+    }
+
+    private fun md5(s: String): String {
+        val d = java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
+        return d.joinToString("") { "%02x".format(it) }
+    }
+}
+
 /** 引擎工厂：从 ApiProfile 构建实例 */
 object EngineFactory {
     fun fromProfile(p: io.translatetube.local.data.ApiProfile): TranslationEngine {
@@ -259,6 +307,7 @@ object EngineFactory {
             "GEMINI" -> GeminiEngine(key, p.model, p.baseUrl.ifEmpty { "https://generativelanguage.googleapis.com" })
             "GCLOUD" -> GoogleCloudEngine(key)
             "AZURE" -> AzureEngine(key, p.region)
+            "BAIDU" -> BaiduEngine(p.model.ifEmpty { "" }, key)  // model 字段存 AppID
             else -> throw IllegalStateException("未知类型 ${p.type}")
         }
     }

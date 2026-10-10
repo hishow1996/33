@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
                                 videoId = req?.videoId,
                                 localUri = req?.localUri?.let(Uri::parse),
                                 onBack = { screen = Screen.HOME },
+                                onGoSettings = { screen = Screen.SETTINGS },
                             )
                             Screen.SETTINGS -> SettingsScreen(
                                 onBack = { screen = Screen.HOME },

@@ -15,21 +15,23 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         private set
 
     init {
+        val m = io.translatetube.local.data.ModelFiles.asrDir(ctx).absolutePath + "/"
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
             modelConfig = OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
-                    encoder = "whisper/base-encoder.int8.onnx",
-                    decoder = "whisper/base-decoder.int8.onnx",
+                    encoder = "${m}base-encoder.int8.onnx",
+                    decoder = "${m}base-decoder.int8.onnx",
                 ),
-                tokens = "whisper/base-tokens.txt",
+                tokens = "${m}base-tokens.txt",
                 numThreads = 2,
                 debug = false,
                 provider = "cpu",
                 modelType = "whisper",
             ),
         )
-        recognizer = OfflineRecognizer(assetManager = ctx.assets, config = config)
+        // assets=null → 文件系统模式（方案 B）
+        recognizer = OfflineRecognizer(assetManager = null, config = config)
     }
 
     /** 一次转写整段 PCM（16k mono float），自动检测语言 */

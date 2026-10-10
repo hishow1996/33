@@ -24,24 +24,26 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     private val tts: OfflineTts
 
     init {
+        val m = io.translatetube.local.data.ModelFiles.ttsDir(ctx).absolutePath + "/"
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
                 kokoro = OfflineTtsKokoroModelConfig(
-                    model = "tts/model.int8.onnx",
-                    voices = "tts/voices.bin",
-                    tokens = "tts/tokens.txt",
-                    dataDir = "tts/espeak-ng-data",
-                    lexicon = "tts/lexicon-zh.txt",
-                    dictDir = "tts/dict",
+                    model = "${m}model.int8.onnx",
+                    voices = "${m}voices.bin",
+                    tokens = "${m}tokens.txt",
+                    dataDir = "${m}espeak-ng-data",
+                    lexicon = "${m}lexicon-zh.txt",
+                    dictDir = "${m}dict",
                 ),
                 numThreads = numThreads,
                 debug = false,
                 provider = "cpu",
             ),
-            ruleFsts = "tts/phone-zh.fst,tts/date-zh.fst,tts/number-zh.fst",
+            ruleFsts = "${m}phone-zh.fst,${m}date-zh.fst,${m}number-zh.fst",
             maxNumSentences = 2,
         )
-        tts = OfflineTts(ctx.assets, config)
+        // assets=null → sherpa-onnx 走文件系统绝对路径加载（方案 B）
+        tts = OfflineTts(null, config)
     }
 
     override fun synth(text: String, speed: Float): TtsAudio {
