@@ -202,6 +202,39 @@ class GeminiEngine(
     }
 }
 
+/** Google Translate 网页端免密钥接口。需要联网；属于非正式接口，可能受服务方限流或调整。 */
+class GoogleWebEngine : TranslationEngine {
+    override val id = "google-web"
+    override val displayName = "Google 翻译（免费在线）"
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        val source = if (srcLang.isBlank() || srcLang == "auto") "auto" else srcLang.substringBefore('-')
+        val target = when (tgtLang) {
+            "zh", "zh-CN", "zh-Hans" -> "zh-CN"
+            "zh-TW", "zh-Hant" -> "zh-TW"
+            else -> tgtLang.substringBefore('-')
+        }
+        val out = ArrayList<String>(lines.size)
+        for (line in lines) {
+            if (line.isBlank()) { out += ""; continue }
+            val url = "https://translate.googleapis.com/translate_a/single?client=gtx" +
+                "&sl=" + java.net.URLEncoder.encode(source, "UTF-8") +
+                "&tl=" + java.net.URLEncoder.encode(target, "UTF-8") +
+                "&dt=t&q=" + java.net.URLEncoder.encode(line, "UTF-8")
+            val root = JSONArray(get(url, mapOf("User-Agent" to "Mozilla/5.0")))
+            val segments = root.optJSONArray(0) ?: throw IllegalStateException("Google 翻译返回格式异常")
+            val translated = buildString {
+                for (i in 0 until segments.length()) {
+                    val segment = segments.optJSONArray(i) ?: continue
+                    append(segment.optString(0))
+                }
+            }
+            if (translated.isBlank()) throw IllegalStateException("Google 翻译未返回译文")
+            out += translated
+        }
+        return out
+    }
+}
 /** Google Cloud Translation API v2（key 即用，固定引擎） */
 class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
     override val id = "gcloud"
