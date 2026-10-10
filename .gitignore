@@ -5,6 +5,9 @@ app/build/
 
 # 本机配置（含本机 SDK 路径）
 local.properties
+signing.properties
+*.keystore
+*.jks
 
 # 大模型资产（超过 GitHub 100MB 限制，用 scripts/download_models.sh 拉取）
 app/src/main/assets/tts/model.int8.onnx
