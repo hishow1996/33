@@ -137,6 +137,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         }
                     }
                 }
+                // TTS 压缩包有 GitHub Release API 公布的 SHA-256；镜像下载也必须通过相同校验。
+                // Whisper 压缩包当前上游没有提供可直接核验的 asset digest，因此仍依赖 HTTPS、大小限制和解压结构校验。
+                val expectedArchiveSha256 = when (kind) {
+                    ModelKind.TTS -> "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
+                    ModelKind.ASR -> null
+                }
+                if (expectedArchiveSha256 != null) {
+                    withContext(Dispatchers.IO) {
+                        val actual = sha256(pkg)
+                        if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
+                            throw java.io.IOException("模型压缩包 SHA-256 校验失败")
+                        }
+                    }
+                }
+
                 // 解压（原子：先解到 .extract 再整体 rename 内容）
                 state.value = state.value.copy(status = ModelStatus.EXTRACTING, progress = 100)
                 withContext(Dispatchers.IO) {
@@ -152,7 +167,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                         )) {
                             try {
-                                downloadTo(u, vad)
+                                downloadTo(u, vad, expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6")
                                 break
                             } catch (_: Exception) {}
                         }
@@ -174,8 +189,26 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         state.value = state.value.copy(status = ModelStatus.FAILED, error = lastError ?: "全部下载源失败")
     }
 
-    /** 下载小型附属模型时先写临时文件，校验大小后再替换，避免失败留下“存在但不完整”的文件。 */
-    private suspend fun downloadTo(url: String, dest: File, onProgress: ((got: Long, total: Long) -> Unit)? = null) = withContext(Dispatchers.IO) {
+    private fun sha256(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** 下载小型附属模型时先写临时文件，校验大小和（若有）SHA-256 后再替换。 */
+    private suspend fun downloadTo(
+        url: String,
+        dest: File,
+        onProgress: ((got: Long, total: Long) -> Unit)? = null,
+        expectedSha256: String? = null,
+    ) = withContext(Dispatchers.IO) {
         val parent = dest.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型目录")
         val temp = File(parent, dest.name + ".download")
@@ -203,6 +236,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     }
                 }
                 if (written == 0L) throw IllegalStateException("下载文件为空")
+            }
+            if (expectedSha256 != null && !sha256(temp).equals(expectedSha256, ignoreCase = true)) {
+                throw java.io.IOException("附属模型 SHA-256 校验失败")
             }
             if (dest.exists() && !dest.delete()) throw java.io.IOException("无法替换旧模型文件")
             if (!temp.renameTo(dest)) throw java.io.IOException("无法安装附属模型文件")
