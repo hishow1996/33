@@ -175,8 +175,9 @@ class DubbingEngine(
                 samples to sr
             }
         } catch (e: Exception) {
+            // 损坏缓存不能反复触发加载；将本行标记为无可用配音并回退原声。
             f.delete()
-            noAudio.remove(idx)
+            noAudio.add(idx)
             null
         }
     }
