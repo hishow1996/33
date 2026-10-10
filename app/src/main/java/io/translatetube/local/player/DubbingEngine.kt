@@ -196,7 +196,7 @@ class DubbingEngine(
                     val (samples, sr) = load(idx) ?: return@execute
                     // 空标记表示此行没有可用配音，保留原声，不创建零长度 AudioTrack。
                     if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
-                    created = AudioTrack.Builder()
+                    val newTrack = AudioTrack.Builder()
                         .setAudioAttributes(
                             AudioAttributes.Builder()
                                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -211,9 +211,10 @@ class DubbingEngine(
                         .setTransferMode(AudioTrack.MODE_STATIC)
                         .setBufferSizeInBytes(samples.size * 4)
                         .build()
-                    val written = created.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                    created = newTrack
+                    val written = newTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
                     if (written < 0 || released || playbackGeneration.get() != generation) {
-                        created.release()
+                        newTrack.release()
                         created = null
                         return@execute
                     }
@@ -221,15 +222,15 @@ class DubbingEngine(
                     track?.let { old ->
                         try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
                     }
-                    track = created
+                    track = newTrack
                     if (released || playbackGeneration.get() != generation) {
-                        if (track === created) track = null
-                        created.release()
+                        if (track === newTrack) track = null
+                        newTrack.release()
                         created = null
                         return@execute
                     }
-                    created.setVolume(volume)
-                    created.play()
+                    newTrack.setVolume(volume)
+                    newTrack.play()
                     created = null
                 } catch (e: Exception) {
                     try { created?.release() } catch (_: Exception) {}
