@@ -115,13 +115,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         val total = body.contentLength().takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
                         body.byteStream().use { ins ->
                             FileOutputStream(pkg).use { out ->
-                                val buf = ByteArray(256 * 1024)
+                                val buf = ByteArray(128 * 1024)
                                 var got = 0L
+                                val maxArchiveBytes = 512L * 1024 * 1024
+                                if (total > maxArchiveBytes) throw IllegalStateException("模型压缩包超过大小限制")
                                 while (true) {
                                     if (state.value.status == ModelStatus.FAILED) throw kotlinx.coroutines.CancellationException("用户取消")
+                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                                     val n = ins.read(buf)
                                     if (n < 0) break
-                                    out.write(buf, 0, n); got += n
+                                    got += n
+                                    if (got > maxArchiveBytes) throw IllegalStateException("模型压缩包超过大小限制")
+                                    out.write(buf, 0, n)
                                     val pct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
                                     state.value = state.value.copy(
                                         progress = pct, downloadedMB = got / 1048576, totalMB = total / 1048576,
@@ -178,30 +183,91 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     }
 
     private fun extractTarBz2(pkg: File, destDir: File) {
-        val staging = File(destDir.parentFile, destDir.name + ".extract").apply {
-            deleteRecursively(); mkdirs()
-        }
-        TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
-            var e = tar.nextTarEntry
-            while (e != null) {
-                val rel = e.name.substringAfter('/', "")
-                if (rel.isNotEmpty() && !e.isDirectory) {
-                    val out = File(staging, rel)
-                    out.parentFile?.mkdirs()
-                    FileOutputStream(out).use { tar.copyTo(it) }
+        val parent = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
+        if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型父目录")
+        val staging = File(parent, destDir.name + ".extract")
+        staging.deleteRecursively()
+        if (!staging.mkdirs()) throw java.io.IOException("无法创建模型临时目录")
+        val rootPath = staging.canonicalFile.path + File.separator
+        val maxExtractedBytes = 1024L * 1024 * 1024
+        var extractedBytes = 0L
+
+        try {
+            TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
+                while (true) {
+                    val entry = tar.nextTarEntry ?: break
+                    if (entry.isSymbolicLink || entry.isLink) {
+                        throw java.io.IOException("模型压缩包包含链接条目")
+                    }
+                    val normalized = entry.name.replace('\\\\', '/')
+                    val parts = normalized.split('/').filter { it.isNotEmpty() }
+                    if (parts.isEmpty() || parts.any { it == "." || it == ".." }) {
+                        throw java.io.IOException("模型压缩包包含非法路径")
+                    }
+
+                    // 模型官方压缩包带顶层目录；剥掉一层，匹配应用预期路径。
+                    val relative = parts.drop(1).joinToString(File.separator)
+                    if (relative.isEmpty()) continue
+                    val output = File(staging, relative).canonicalFile
+                    if (!output.path.startsWith(rootPath)) {
+                        throw java.io.IOException("模型压缩包路径越界")
+                    }
+                    if (entry.isDirectory) {
+                        if (!output.exists() && !output.mkdirs()) throw java.io.IOException("无法创建模型子目录")
+                        continue
+                    }
+                    if (!entry.isFile || entry.size < 0L) {
+                        throw java.io.IOException("模型压缩包包含不支持的条目")
+                    }
+                    if (extractedBytes + entry.size > maxExtractedBytes) {
+                        throw java.io.IOException("解压后的模型超过大小限制")
+                    }
+                    output.parentFile?.let {
+                        if (!it.exists() && !it.mkdirs()) throw java.io.IOException("无法创建模型子目录")
+                    }
+                    FileOutputStream(output).use { out ->
+                        val buffer = ByteArray(64 * 1024)
+                        var fileBytes = 0L
+                        while (true) {
+                            val count = tar.read(buffer)
+                            if (count < 0) break
+                            fileBytes += count
+                            extractedBytes += count
+                            if (extractedBytes > maxExtractedBytes || fileBytes > entry.size) {
+                                throw java.io.IOException("解压后的模型超过大小限制")
+                            }
+                            out.write(buffer, 0, count)
+                        }
+                        if (fileBytes != entry.size) throw java.io.IOException("模型文件长度校验失败")
+                    }
                 }
-                e = tar.nextTarEntry
             }
-        }
-        // 原子替换：旧目录改名换新
-        val old = File(destDir.parentFile, destDir.name + ".old")
-        old.deleteRecursively()
-        if (destDir.exists()) destDir.renameTo(old)
-        if (!staging.renameTo(destDir)) {
-            // 极端情况 rename 失败：直接拷贝
-            staging.copyRecursively(destDir, overwrite = true)
+
+            // 不完整或伪造的压缩包不能覆盖已经可用的模型。
+            val required = if (destDir.name == "tts") {
+                listOf("model.int8.onnx", "voices.bin")
+            } else {
+                listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx")
+            }
+            if (required.any { name ->
+                    val file = File(staging, name)
+                    !file.isFile || file.length() <= 0L
+                }) {
+                throw java.io.IOException("模型包缺少必要文件，已取消安装")
+            }
+
+            val old = File(parent, destDir.name + ".old")
+            old.deleteRecursively()
+            val hadOld = destDir.exists()
+            if (hadOld && !destDir.renameTo(old)) throw java.io.IOException("无法备份现有模型目录")
+            if (!staging.renameTo(destDir)) {
+                if (hadOld) old.renameTo(destDir)
+                throw java.io.IOException("无法安装新模型目录")
+            }
+            old.deleteRecursively()
+        } catch (e: Exception) {
             staging.deleteRecursively()
+            throw e
         }
-        old.deleteRecursively()
     }
 }
