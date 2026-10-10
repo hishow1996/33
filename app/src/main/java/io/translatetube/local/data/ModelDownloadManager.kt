@@ -174,12 +174,41 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         state.value = state.value.copy(status = ModelStatus.FAILED, error = lastError ?: "全部下载源失败")
     }
 
-    /** .tar.bz2 → 目标目录（剥掉顶层目录名，原子落位） */
+    /** 下载小型附属模型时先写临时文件，校验大小后再替换，避免失败留下“存在但不完整”的文件。 */
     private suspend fun downloadTo(url: String, dest: File, onProgress: ((got: Long, total: Long) -> Unit)? = null) = withContext(Dispatchers.IO) {
-        val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
-            dest.outputStream().use { out -> resp.body?.byteStream()?.copyTo(out) }
+        val parent = dest.parentFile ?: throw java.io.IOException("模型目录无效")
+        if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型目录")
+        val temp = File(parent, dest.name + ".download")
+        temp.delete()
+        try {
+            val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                val body = resp.body ?: throw IllegalStateException("下载响应为空")
+                val maxBytes = 16L * 1024 * 1024
+                if (body.contentLength() > maxBytes) throw IllegalStateException("附属模型超过大小限制")
+                var written = 0L
+                body.byteStream().use { input ->
+                    FileOutputStream(temp).use { output ->
+                        val buffer = ByteArray(32 * 1024)
+                        while (true) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            written += count
+                            if (written > maxBytes) throw IllegalStateException("附属模型超过大小限制")
+                            output.write(buffer, 0, count)
+                        }
+                        output.fd.sync()
+                    }
+                }
+                if (written == 0L) throw IllegalStateException("下载文件为空")
+            }
+            if (dest.exists() && !dest.delete()) throw java.io.IOException("无法替换旧模型文件")
+            if (!temp.renameTo(dest)) throw java.io.IOException("无法安装附属模型文件")
+        } catch (e: Exception) {
+            temp.delete()
+            throw e
         }
     }
 
