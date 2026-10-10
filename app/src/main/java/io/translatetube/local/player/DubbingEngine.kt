@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 行级预合成配音引擎：
@@ -42,7 +42,7 @@ class DubbingEngine(
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
     }
-    private val synthCounter = AtomicInteger(0)
+    private val noAudio = ConcurrentHashMap.newKeySet<Int>()
     private val pending = PriorityBlockingQueue<Int>()
     private var synthJob: Job? = null
 
@@ -58,12 +58,16 @@ class DubbingEngine(
         this.lines = lines
         _totalLines.value = lines.size
         _preparedUntil.value = 0
-        synthCounter.set(0)
+        noAudio.clear()
         pending.clear()
         // 清内存缓存：防止旧会话同 idx 行的音频串台
         synchronized(mem) { mem.clear() }
         // 从未缓存的最早行开始排
-        for (i in lines.indices) if (!cached(i)) pending.offer(i)
+        for (i in lines.indices) {
+            val file = File(cacheDir, "$i.pcm")
+            if (validCache(file) && file.length() == 8L) noAudio.add(i)
+            if (!cached(i)) pending.offer(i)
+        }
         startSynthLoop()
     }
 
@@ -77,27 +81,32 @@ class DubbingEngine(
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
-                    val f = File(cacheDir, "$idx.pcm")
-                    f.outputStream().use { o ->
-                        java.io.DataOutputStream(o).let { d -> d.writeInt(16000); d.writeInt(0) }
-                    }
-                    bumpPrepared(idx); continue
+                    writeCache(idx, 16000, FloatArray(0))
+                    noAudio.add(idx)
+                    bumpPrepared(idx)
+                    continue
                 }
                 try {
                     val audio = tts!!.synth(text, speed)
-                    val f = File(cacheDir, "$idx.pcm")
-                    f.outputStream().use { o ->
-                        java.io.DataOutputStream(o).let { d ->
-                            d.writeInt(audio.sampleRate)
-                            d.writeInt(audio.samples.size)
-                            audio.samples.forEach { d.writeFloat(it) }
-                        }
+                    if (audio.sampleRate <= 0 || audio.samples.isEmpty()) {
+                        writeCache(idx, audio.sampleRate.coerceAtLeast(16000), FloatArray(0))
+                        noAudio.add(idx)
+                    } else {
+                        writeCache(idx, audio.sampleRate, audio.samples)
+                        noAudio.remove(idx)
+                        synchronized(mem) { mem[idx] = audio.samples to audio.sampleRate }
                     }
-                    synchronized(mem) { mem[idx] = audio.samples to audio.sampleRate }
                     bumpPrepared(idx)
                 } catch (e: Exception) {
-                    // 合成失败：跳过该行继续（真机日志排查）
+                    // 合成失败时写入空标记，保证准备进度不会永久卡在这一行；该行回退原声。
                     android.util.Log.e("DubbingEngine", "synth fail line $idx", e)
+                    try {
+                        writeCache(idx, 16000, FloatArray(0))
+                        noAudio.add(idx)
+                        bumpPrepared(idx)
+                    } catch (writeError: Exception) {
+                        android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
+                    }
                 }
             }
         }
@@ -110,25 +119,63 @@ class DubbingEngine(
         _preparedUntil.value = n
     }
 
-    private fun cached(idx: Int): Boolean =
-        synchronized(mem) { mem.containsKey(idx) } || File(cacheDir, "$idx.pcm").exists()
+    private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
-    /** 返回 (samples, sampleRate) */
+    private fun cached(idx: Int): Boolean =
+        synchronized(mem) { mem.containsKey(idx) } || validCache(File(cacheDir, "$idx.pcm"))
+
+    /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
+    private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
+        val target = File(cacheDir, "$idx.pcm")
+        val temp = File(cacheDir, "$idx.pcm.tmp")
+        temp.delete()
+        java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
+            out.writeInt(sampleRate)
+            out.writeInt(samples.size)
+            samples.forEach { out.writeFloat(it) }
+            out.flush()
+        }
+        if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
+            temp.delete()
+            throw java.io.IOException("PCM 缓存写入不完整")
+        }
+        if (target.exists() && !target.delete()) {
+            temp.delete()
+            throw java.io.IOException("无法替换 PCM 缓存")
+        }
+        if (!temp.renameTo(target)) {
+            temp.delete()
+            throw java.io.IOException("无法安装 PCM 缓存")
+        }
+    }
+
+    /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。 */
     private fun load(idx: Int): Pair<FloatArray, Int>? {
         synchronized(mem) { mem[idx]?.let { return it } }
         val f = File(cacheDir, "$idx.pcm")
-        if (!f.exists()) return null
+        if (!validCache(f)) return null
         return try {
-            f.inputStream().use { ins ->
-                java.io.DataInputStream(ins).let { d ->
-                    val sr = d.readInt()
-                    val n = d.readInt()
-                    val samples = FloatArray(n) { d.readFloat() }
-                    synchronized(mem) { mem[idx] = samples to sr }
-                    samples to sr
+            java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
+                val sr = d.readInt()
+                val n = d.readInt()
+                if (sr <= 0 || n < 0 || n > 16_000_000 ||
+                    f.length() != 8L + n.toLong() * 4L) {
+                    throw java.io.IOException("PCM 缓存格式无效")
                 }
+                val samples = FloatArray(n) { d.readFloat() }
+                if (n == 0) {
+                    noAudio.add(idx)
+                } else {
+                    synchronized(mem) { mem[idx] = samples to sr }
+                    noAudio.remove(idx)
+                }
+                samples to sr
             }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            f.delete()
+            noAudio.remove(idx)
+            null
+        }
     }
 
     /** 播放某一行（先停上一行）。
@@ -188,7 +235,7 @@ class DubbingEngine(
     fun allLines(): List<SubLine> = lines
     fun setSpeed(s: Float) { speed = s }
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
-    fun isPrepared(idx: Int): Boolean = idx < _preparedUntil.value
+    fun isPrepared(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx !in noAudio
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
     fun release() {
