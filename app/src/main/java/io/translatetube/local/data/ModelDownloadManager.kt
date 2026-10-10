@@ -200,7 +200,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     if (entry.isSymbolicLink || entry.isLink) {
                         throw java.io.IOException("模型压缩包包含链接条目")
                     }
-                    val normalized = entry.name.replace('\\\\', '/')
+                    val normalized = entry.name.replace("\\", "/")
                     val parts = normalized.split('/').filter { it.isNotEmpty() }
                     if (parts.isEmpty() || parts.any { it == "." || it == ".." }) {
                         throw java.io.IOException("模型压缩包包含非法路径")
