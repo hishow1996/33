@@ -49,7 +49,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().background(BgDark).systemBarsPadding().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("← 返回", color = OnBg) }
-            Text("翻译 API", style = MaterialTheme.typography.titleLarge, color = OnBg, modifier = Modifier.weight(1f))
+            Text("翻译引擎", style = MaterialTheme.typography.titleLarge, color = OnBg, modifier = Modifier.weight(1f))
             Button(
                 onClick = { adding = true },
                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
