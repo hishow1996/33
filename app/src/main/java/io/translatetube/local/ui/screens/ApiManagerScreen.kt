@@ -86,6 +86,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Text("免 API Key · 需要联网 · 非正式接口，可能受限", color = SubText, style = MaterialTheme.typography.bodySmall)
             }
         }
+        Text(
+            "微软和百度的官方翻译接口可通过「+ 添加」配置；通常需要申请对应密钥/AppID，但有各自的免费额度。它们是联网服务，不是离线模型。",
+            color = SubText,
+            style = MaterialTheme.typography.bodySmall,
+        )
         Spacer(Modifier.height(8.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -135,7 +140,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
 private fun typeLabel(t: String) = when (t) {
     "OPENAI" -> "OpenAI 兼容"; "GEMINI" -> "Google Gemini"
-    "GCLOUD" -> "谷歌翻译 API（需密钥）"; "AZURE" -> "微软翻译 API（需密钥）"
+    "GCLOUD" -> "谷歌翻译 API（需密钥）"; "AZURE" -> "微软翻译 API（免费额度/需密钥）"; "BAIDU" -> "百度翻译（免费额度/需 AppID）"
     else -> t
 }
 
