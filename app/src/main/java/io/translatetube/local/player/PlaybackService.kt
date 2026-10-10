@@ -24,6 +24,7 @@ import io.translatetube.local.translate.Crypto
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.LangMap
 import io.translatetube.local.translate.MlKitEngine
+import io.translatetube.local.translate.GoogleWebEngine
 import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
 import io.translatetube.local.tts.TtsEngine
@@ -204,7 +205,7 @@ class PlaybackService : MediaSessionService() {
                     )
                     if (lines.count { !it.zh.isNullOrEmpty() } > lines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
-                            io.translatetube.local.data.SubtitleCacheEntity("$videoKey|zh", srcLang, arr.toString(), System.currentTimeMillis())
+                            io.translatetube.local.data.SubtitleCacheEntity("$videoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}", srcLang, arr.toString(), System.currentTimeMillis())
                         )
                     }
                     ui.update { it.copy(lines = lines, totalLines = lines.size, phase = Phase.READY, progress = "") }
@@ -265,7 +266,9 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             val db = AppDatabase.get(this)
-            val cached = db.subtitleCacheDao().get("$key|zh")
+            val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            val translationCacheKey = "$key|zh|$selectedTranslationId"
+            val cached = db.subtitleCacheDao().get(translationCacheKey)
 
             if (lines == null && cached == null) {
                 if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
@@ -331,7 +334,7 @@ class PlaybackService : MediaSessionService() {
                         org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "")
                     )
                     db.subtitleCacheDao().put(
-                        io.translatetube.local.data.SubtitleCacheEntity("$key|zh", srcLang, arr.toString(), System.currentTimeMillis())
+                        io.translatetube.local.data.SubtitleCacheEntity(translationCacheKey, srcLang, arr.toString(), System.currentTimeMillis())
                     )
                 }
             }
@@ -408,9 +411,13 @@ class PlaybackService : MediaSessionService() {
         var engine: TranslationEngine? = null
         var engineName = ""
 
-        // 手动选择的活跃 API 优先；未选（-1）或已删除则回落本地
+        // -2 为免密钥 Google 在线引擎；-1 或失效配置回落 ML Kit。
+        if (activeId == -2L) {
+            engine = GoogleWebEngine()
+            engineName = engine.displayName
+        }
         val active = profiles.firstOrNull { it.id == activeId }
-        if (active != null) {
+        if (engine == null && active != null) {
             try {
                 engine = EngineFactory.fromProfile(active)
                 engineName = active.name
