@@ -222,6 +222,12 @@ class DubbingEngine(
                         try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
                     }
                     track = created
+                    if (released || playbackGeneration.get() != generation) {
+                        if (track === created) track = null
+                        created.release()
+                        created = null
+                        return@execute
+                    }
                     created.setVolume(volume)
                     created.play()
                     created = null
