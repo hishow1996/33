@@ -199,7 +199,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 digest.update(buffer, 0, count)
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     /** 下载小型附属模型时先写临时文件，校验大小和（若有）SHA-256 后再替换。 */
