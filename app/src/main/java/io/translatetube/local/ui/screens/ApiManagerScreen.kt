@@ -55,7 +55,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
             ) { Text("+ 添加") }
         }
-        Text("点击条目左侧圆点 = 切换为当前使用的翻译引擎（即刻生效）。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Text("点击条目左侧圆点选择引擎；切换会用于后续重新翻译的字幕。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等。", color = SubText, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(8.dp))
 
         // 本地引擎选项（始终可用）
@@ -69,6 +69,21 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("本地引擎（离线）", color = OnBg, style = MaterialTheme.typography.bodyLarge)
                 Text("免费 · 断网可用 · ML Kit", color = SubText, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // 免密钥在线引擎：独立负数 ID，避免与数据库自增配置冲突。
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(
+                if (activeId == -2L) SurfaceHigh else SurfaceDark
+            ).clickable { setActive(-2L) }.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = activeId == -2L, onClick = { setActive(-2L) }, colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
+            Column(Modifier.weight(1f)) {
+                Text("Google 翻译（免费在线）", color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                Text("免 API Key · 需要联网 · 非正式接口，可能受限", color = SubText, style = MaterialTheme.typography.bodySmall)
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -120,7 +135,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
 private fun typeLabel(t: String) = when (t) {
     "OPENAI" -> "OpenAI 兼容"; "GEMINI" -> "Google Gemini"
-    "GCLOUD" -> "谷歌翻译 API"; "AZURE" -> "微软 Azure"
+    "GCLOUD" -> "谷歌翻译 API（需密钥）"; "AZURE" -> "微软翻译 API（需密钥）"
     else -> t
 }
 
