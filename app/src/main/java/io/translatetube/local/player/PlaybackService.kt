@@ -172,6 +172,11 @@ class PlaybackService : MediaSessionService() {
     fun importSubtitles(uri: Uri) {
         prepJob?.cancel()
         dubCollectJob?.cancel(); dubCollectJob = null
+        // 导入新字幕前先停止并释放旧配音引擎，避免旧任务与新字幕共用同一缓存目录。
+        dubbing?.release()
+        dubbing = null
+        pm.originalVolume = 1f
+        lastLineIdx = Int.MIN_VALUE
         try {
             val text = contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
                 ?: throw IllegalStateException("无法读取字幕文件")
@@ -204,6 +209,8 @@ class PlaybackService : MediaSessionService() {
                     }
                     ui.update { it.copy(lines = lines, totalLines = lines.size, phase = Phase.READY, progress = "") }
                     lastLineIdx = Int.MIN_VALUE
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     ui.update { it.copy(phase = Phase.ERROR, error = "字幕导入失败: ${e.message}") }
                 }
