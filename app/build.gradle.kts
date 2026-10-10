@@ -5,6 +5,25 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Release 签名仅从本机 signing.properties 或环境变量读取，不将密钥和密码写入仓库。
+val signingPropsFile = rootProject.file("signing.properties")
+val signingProps = java.util.Properties().apply {
+    if (signingPropsFile.isFile) signingPropsFile.inputStream().use { load(it) }
+}
+fun signingValue(envName: String, propertyName: String): String? =
+    System.getenv(envName)?.takeIf { it.isNotBlank() }
+        ?: signingProps.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+
+val releaseStorePath = signingValue("ANDROID_KEYSTORE_PATH", "storeFile")
+val releaseStorePassword = signingValue("ANDROID_KEYSTORE_PASSWORD", "storePassword")
+val releaseKeyAlias = signingValue("ANDROID_KEY_ALIAS", "keyAlias")
+val releaseKeyPassword = signingValue("ANDROID_KEY_PASSWORD", "keyPassword")
+val releaseSigningReady = !releaseStorePath.isNullOrBlank() &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank() &&
+    file(releaseStorePath).isFile
+
 android {
     namespace = "io.translatetube.local"
     compileSdk = 34
@@ -21,19 +40,22 @@ android {
         }
     }
 
-    signingConfigs {
-        create("release") {
-            storeFile = file("/home/z/godot/civ.keystore")
-            storePassword = "civsandbox"
-            keyAlias = "civ"
-            keyPassword = "civsandbox"
+    if (releaseSigningReady) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(requireNotNull(releaseStorePath))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            // 没有本机签名配置时，仍可 assembleRelease；生成未签名 APK。
+            if (releaseSigningReady) signingConfig = signingConfigs.getByName("release")
         }
     }
 
