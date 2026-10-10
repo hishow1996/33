@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TranslateTube" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#ECFAF1</item>
+        <item name="android:statusBarColor">#ECFAF1</item>
+        <item name="android:navigationBarColor">#ECFAF1</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

@@ -1,0 +1,265 @@
+package io.translatetube.local.translate
+
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
+import kotlinx.coroutines.tasks.await
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+private val http: OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(20, TimeUnit.SECONDS)
+    .readTimeout(120, TimeUnit.SECONDS)
+    .build()
+
+private val JSON = "application/json; charset=utf-8".toMediaType()
+
+private fun post(url: String, headers: Map<String, String>, body: String): String {
+    val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
+    headers.forEach { (k, v) -> b.header(k, v) }
+    http.newCall(b.build()).execute().use { resp ->
+        val text = resp.body?.string() ?: throw IllegalStateException("空响应")
+        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}: ${text.take(300)}")
+        return text
+    }
+}
+
+private fun get(url: String, headers: Map<String, String>): String {
+    val b = Request.Builder().url(url).get()
+    headers.forEach { (k, v) -> b.header(k, v) }
+    http.newCall(b.build()).execute().use { resp ->
+        val text = resp.body?.string() ?: throw IllegalStateException("空响应")
+        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}: ${text.take(300)}")
+        return text
+    }
+}
+
+/** 本地离线翻译（ML Kit bundled 引擎；语言模型首次下载后永久离线） */
+class MlKitEngine : TranslationEngine {
+    override val id = "local"
+    override val displayName = "本地引擎（离线）"
+
+    private suspend fun ensureModel(lang: String) {
+        val tag = TranslateLanguage.fromLanguageTag(lang)
+            ?: throw IllegalStateException("不支持的语言: $lang")
+        val model: com.google.mlkit.common.model.RemoteModel = TranslateRemoteModel.Builder(tag).build()
+        RemoteModelManager.getInstance().download(model, DownloadConditions.Builder().build()).await()
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        // 源语言未知时按英语兜底（最常见外文视频）
+        val s = LangMap.mlkit(if (srcLang.isBlank()) "en" else srcLang)
+        val t = LangMap.mlkit(tgtLang)
+        ensureModel(s)
+        ensureModel(t)
+        val opts = TranslatorOptions.Builder().setSourceLanguage(s).setTargetLanguage(t).build()
+        val translator = Translation.getClient(opts)
+        try {
+            return lines.map { if (it.isBlank()) "" else translator.translate(it).await() }
+        } finally {
+            translator.close()
+        }
+    }
+}
+
+/** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
+class OpenAiCompatEngine(
+    private val baseUrl: String,
+    private val apiKey: String,
+    private val model: String,
+) : TranslationEngine {
+    override val id = "openai"
+    override val displayName = model.ifEmpty { "OpenAI 兼容" }
+
+    private fun endpoint(path: String): String {
+        val b = baseUrl.trimEnd('/')
+        return if (b.endsWith("/v1")) b + path else "$b/v1$path"
+    }
+
+    override suspend fun listModels(): List<String> {
+        val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"))
+        val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
+        return (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.sorted()
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        // 分批：每批 30 行，避免长输出截断/超时
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
+            out += translateBatch(batch, srcLang, tgtLang)
+            i += 30
+        }
+        return out
+    }
+
+    private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        val src = LangMap.display(srcLang)
+        val tgt = LangMap.display(tgtLang)
+        val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
+        val sys = "You are a professional subtitle translator. Translate each numbered line from $src to $tgt. " +
+            "Reply with the exact same `index|translation` format, one per line, nothing else. " +
+            "Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged."
+        val payload = JSONObject()
+            .put("model", model)
+            .put("temperature", 0.2)
+            .put(
+                "messages", JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", sys))
+                    .put(JSONObject().put("role", "user").put("content", numbered))
+            )
+        val body = post(
+            endpoint("/chat/completions"),
+            mapOf("Authorization" to "Bearer $apiKey"),
+            payload.toString(),
+        )
+        val content = JSONObject(body).getJSONArray("choices")
+            .getJSONObject(0).getJSONObject("message").getString("content")
+        return parseNumbered(content, lines.size)
+    }
+
+    private fun parseNumbered(content: String, size: Int): List<String> {
+        val out = Array(size) { "" }
+        Regex("(?m)^\\s*(\\d+)\\s*\\|(.*)$").findAll(content).forEach { m ->
+            val i = m.groupValues[1].toIntOrNull()
+            if (i != null && i in 0 until size) out[i] = m.groupValues[2].trim()
+        }
+        return out.toList()
+    }
+}
+
+/** Google Gemini */
+class GeminiEngine(
+    private val apiKey: String,
+    private val model: String,
+    private val baseUrl: String = "https://generativelanguage.googleapis.com",
+) : TranslationEngine {
+    override val id = "gemini"
+    override val displayName = model.ifEmpty { "Gemini" }
+
+    override suspend fun listModels(): List<String> {
+        val body = get("$baseUrl/v1beta/models?key=$apiKey", emptyMap())
+        val arr = JSONObject(body).optJSONArray("models") ?: return emptyList()
+        val out = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val m = arr.getJSONObject(i)
+            val methods = m.optJSONArray("supportedGenerationMethods") ?: continue
+            var ok = false
+            for (j in 0 until methods.length()) if (methods.getString(j) == "generateContent") ok = true
+            if (ok) out += m.optString("name").removePrefix("models/")
+        }
+        return out.sorted()
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        // 分批：每批 30 行
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < lines.size) {
+            val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
+            out += translateBatch(batch, srcLang, tgtLang)
+            i += 30
+        }
+        return out
+    }
+
+    private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        val src = LangMap.display(srcLang)
+        val tgt = LangMap.display(tgtLang)
+        val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
+        val sys = "Translate each numbered subtitle line from $src to $tgt. " +
+            "Reply with exactly `index|translation` per line, nothing else. Preserve tone."
+        val payload = JSONObject().put(
+            "contents",
+            JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$numbered"))))
+        )
+        val body = post(
+            "$baseUrl/v1beta/models/$model:generateContent?key=$apiKey",
+            emptyMap(),
+            payload.toString(),
+        )
+        val text = JSONObject(body).getJSONArray("candidates").getJSONObject(0)
+            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+        return parseNumbered(text, lines.size)
+    }
+
+    private fun parseNumbered(content: String, size: Int): List<String> {
+        val out = Array(size) { "" }
+        Regex("(?m)^\\s*(\\d+)\\s*\\|(.*)$").findAll(content).forEach { m ->
+            val i = m.groupValues[1].toIntOrNull()
+            if (i != null && i in 0 until size) out[i] = m.groupValues[2].trim()
+        }
+        return out.toList()
+    }
+}
+
+/** Google Cloud Translation API v2（key 即用，固定引擎） */
+class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
+    override val id = "gcloud"
+    override val displayName = "Google 翻译 API"
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        // v2 支持多 q 参数一次 128 段
+        val out = mutableListOf<String>()
+        val chunks = lines.chunked(64)
+        for (chunk in chunks) {
+            val sb = StringBuilder("https://translation.googleapis.com/language/translate/v2?key=$apiKey")
+                .append("&target=zh-CN")
+            if (!srcLang.startsWith("zh")) sb.append("&source=").append(srcLang.substringBefore('-'))
+            for (l in chunk) sb.append("&q=").append(java.net.URLEncoder.encode(l, "UTF-8"))
+            val body = get(sb.toString(), emptyMap())
+            val arr = JSONObject(body).getJSONObject("data").getJSONArray("translations")
+            for (i in 0 until arr.length()) out += arr.getJSONObject(i).optString("translatedText")
+        }
+        return out
+    }
+}
+
+/** Microsoft Azure Translator（key + region，固定引擎） */
+class AzureEngine(private val apiKey: String, private val region: String) : TranslationEngine {
+    override val id = "azure"
+    override val displayName = "微软翻译 API"
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        val out = mutableListOf<String>()
+        for (chunk in lines.chunked(50)) {
+            val arr = JSONArray()
+            chunk.forEach { arr.put(JSONObject().put("Text", it)) }
+            val url = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=zh-Hans" +
+                if (!srcLang.startsWith("zh")) "&from=${srcLang.substringBefore('-')}" else ""
+            val body = post(
+                url,
+                mapOf("Ocp-Apim-Subscription-Key" to apiKey, "Ocp-Apim-Subscription-Region" to region),
+                arr.toString(),
+            )
+            val resArr = JSONArray(body)
+            for (i in 0 until resArr.length()) {
+                out += resArr.getJSONObject(i).getJSONArray("translations").getJSONObject(0).getString("text")
+            }
+        }
+        return out
+    }
+}
+
+/** 引擎工厂：从 ApiProfile 构建实例 */
+object EngineFactory {
+    fun fromProfile(p: io.translatetube.local.data.ApiProfile): TranslationEngine {
+        val key = Crypto.decrypt(p.apiKey)
+        return when (p.type) {
+            "OPENAI" -> OpenAiCompatEngine(p.baseUrl, key, p.model)
+            "GEMINI" -> GeminiEngine(key, p.model, p.baseUrl.ifEmpty { "https://generativelanguage.googleapis.com" })
+            "GCLOUD" -> GoogleCloudEngine(key)
+            "AZURE" -> AzureEngine(key, p.region)
+            else -> throw IllegalStateException("未知类型 ${p.type}")
+        }
+    }
+}

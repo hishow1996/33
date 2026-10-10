@@ -1,0 +1,16 @@
+# 构建产物
+.gradle/
+build/
+app/build/
+
+# 本机配置（含本机 SDK 路径）
+local.properties
+
+# 大模型资产（超过 GitHub 100MB 限制，用 scripts/download_models.sh 拉取）
+app/src/main/assets/tts/model.int8.onnx
+app/src/main/assets/tts/voices.bin
+app/src/main/assets/tts/espeak-ng-data/
+app/src/main/assets/tts/dict/
+app/src/main/assets/whisper/base-encoder.int8.onnx
+app/src/main/assets/whisper/base-decoder.int8.onnx
+app/libs/*.aar
