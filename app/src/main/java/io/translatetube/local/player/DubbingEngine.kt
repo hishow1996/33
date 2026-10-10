@@ -213,7 +213,7 @@ class DubbingEngine(
                         .build()
                     created = newTrack
                     val written = newTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                    if (written < 0 || released || playbackGeneration.get() != generation) {
+                    if (written != samples.size || released || playbackGeneration.get() != generation) {
                         newTrack.release()
                         created = null
                         return@execute
@@ -234,6 +234,12 @@ class DubbingEngine(
                     created = null
                 } catch (e: Exception) {
                     try { created?.release() } catch (_: Exception) {}
+                    // 音频设备/AudioTrack 初始化失败时回退原声，避免 UI 误以为配音仍在播放而静音原声。
+                    if (playbackGeneration.get() == generation) {
+                        noAudio.add(idx)
+                        if (_currentLine.value == idx) _currentLine.value = -1
+                    }
+                    android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx", e)
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
