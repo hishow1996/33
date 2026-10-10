@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 行级预合成配音引擎：
@@ -38,6 +39,8 @@ class DubbingEngine(
     private var lines: List<SubLine> = emptyList()
     private var speed = 1.0f
     @Volatile private var track: AudioTrack? = null
+    private val playbackGeneration = AtomicInteger(0)
+    @Volatile private var released = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
@@ -181,43 +184,73 @@ class DubbingEngine(
     /** 播放某一行（先停上一行）。
      *  AudioTrack 创建/写入/播放（含文件 load IO）全部在专用线程，不阻塞调用方（主线程 tick）。 */
     fun playAt(idx: Int, volume: Float = 1.0f) {
+        if (released) return
         stop()
         _currentLine.value = idx
-        audioExec.execute {
-            try {
-                val (samples, sr) = load(idx) ?: return@execute
-                val t = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .setAudioFormat(AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                        .setSampleRate(sr)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build())
-                    .setTransferMode(AudioTrack.MODE_STATIC)
-                    .setBufferSizeInBytes(samples.size * 4)
-                    .build()
-                t.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                t.setVolume(volume)
-                t.play()
-                track = t
-            } catch (_: Exception) {}
+        val generation = playbackGeneration.incrementAndGet()
+        try {
+            audioExec.execute {
+                var created: AudioTrack? = null
+                try {
+                    val (samples, sr) = load(idx) ?: return@execute
+                    // 空标记表示此行没有可用配音，保留原声，不创建零长度 AudioTrack。
+                    if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
+                    created = AudioTrack.Builder()
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build()
+                        )
+                        .setAudioFormat(AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                            .setSampleRate(sr)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build())
+                        .setTransferMode(AudioTrack.MODE_STATIC)
+                        .setBufferSizeInBytes(samples.size * 4)
+                        .build()
+                    val written = created.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                    if (written < 0 || released || playbackGeneration.get() != generation) {
+                        created.release()
+                        created = null
+                        return@execute
+                    }
+                    // 所有 AudioTrack 的创建、替换和播放都在同一线程，避免快速切行时旧音轨迟到启动。
+                    track?.let { old ->
+                        try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
+                    }
+                    track = created
+                    created.setVolume(volume)
+                    created.play()
+                    created = null
+                } catch (e: Exception) {
+                    try { created?.release() } catch (_: Exception) {}
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            _currentLine.value = -1
         }
     }
 
     fun stop() {
+        playbackGeneration.incrementAndGet()
+        _currentLine.value = -1
         val old = track
         track = null
+        if (released) {
+            try { old?.release() } catch (_: Exception) {}
+            return
+        }
         if (old != null) {
-            audioExec.execute {
-                try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
+            try {
+                audioExec.execute {
+                    try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
+                }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                try { old.release() } catch (_: Exception) {}
             }
         }
-        _currentLine.value = -1
     }
 
     /** 当前时间对应行下标（二分）；-1=间隙 */
@@ -239,8 +272,25 @@ class DubbingEngine(
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
     fun release() {
-        synthJob?.cancel(); stop()
-        tts?.close(); tts = null
-        audioExec.shutdownNow()
+        if (released) return
+        released = true
+        playbackGeneration.incrementAndGet()
+        synthJob?.cancel()
+        tts?.close()
+        tts = null
+        _currentLine.value = -1
+        val old = track
+        track = null
+        if (old != null) {
+            try {
+                audioExec.execute {
+                    try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
+                }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                try { old.release() } catch (_: Exception) {}
+            }
+        }
+        // 正常关闭队列：已排队任务会看到 generation/released 状态并退出，清理任务仍能执行。
+        audioExec.shutdown()
     }
 }
