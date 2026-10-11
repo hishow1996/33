@@ -104,37 +104,48 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(profiles, key = { it.id }) { p ->
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(
-                        if (activeId == p.id && p.enabled) SurfaceHigh else SurfaceDark
-                    ).clickable(enabled = p.enabled) { setActive(p.id) }.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (activeId == p.id && p.enabled) SurfaceHigh else SurfaceDark)
+                        .clickable(enabled = p.enabled) { setActive(p.id) }
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    RadioButton(
-                        selected = activeId == p.id,
-                        onClick = { if (p.enabled) setActive(p.id) },
-                        colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                        Text("${typeLabel(p.type)} · ${if (p.type == "BAIDU") "AppID: ${p.model}" else p.model.ifEmpty { "未选模型" }}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = activeId == p.id,
+                            onClick = { if (p.enabled) setActive(p.id) },
+                            colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+                        )
+                        Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                            Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "${typeLabel(p.type)} · ${if (p.type == "BAIDU") "AppID: ${p.model}" else p.model.ifEmpty { "未选模型" }}",
+                                color = SubText, style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Switch(
+                            checked = p.enabled,
+                            onCheckedChange = { en ->
+                                scope.launch {
+                                    db.apiProfileDao().upsert(p.copy(enabled = en))
+                                    if (!en && activeId == p.id) setActive(-1L)
+                                }
+                            },
+                            colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
+                        )
                     }
-                    Switch(
-                        checked = p.enabled,
-                        onCheckedChange = { en ->
-                            scope.launch {
-                                db.apiProfileDao().upsert(p.copy(enabled = en))
-                                if (!en && activeId == p.id) setActive(-1L)
-                            }
-                        },
-                        colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
-                    )
-                    TextButton(onClick = { editing = p }) { Text("编辑", color = BrandBright) }
-                    TextButton(onClick = {
-                        if (activeId == p.id) setActive(-1L)
-                        scope.launch { db.apiProfileDao().delete(p.id) }
-                    }) {
-                        Text("删", color = DangerRed)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = { editing = p }) { Text("编辑配置", color = BrandBright) }
+                        TextButton(onClick = {
+                            if (activeId == p.id) setActive(-1L)
+                            scope.launch { db.apiProfileDao().delete(p.id) }
+                        }) { Text("删除", color = DangerRed) }
                     }
                 }
             }
