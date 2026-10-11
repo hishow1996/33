@@ -63,13 +63,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             TranslateTubeTheme {
                 var screen by remember { mutableStateOf(Screen.HOME) }
-                var splashVisible by remember { mutableStateOf(true) }
+                var splashVisible by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.S) }
                 val req by playReq
 
                 // 展示品牌启动页后再进入首页/链接目标页；外部 YouTube 链接不会丢失。
                 LaunchedEffect(Unit) {
-                    delay(1400)
-                    splashVisible = false
+                    // On Android 12+ the system splash page already contains the brand mark.
+                    // Older Android versions use this Compose fallback, with no long fixed delay.
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                        delay(500)
+                        splashVisible = false
+                    }
                 }
                 LaunchedEffect(req) { if (req != null) screen = Screen.PLAYER }
 

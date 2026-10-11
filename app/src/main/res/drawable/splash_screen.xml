@@ -1,10 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Shown by Android before the first Compose frame is ready. -->
+    <!-- Match the Compose brand splash so the pre-Compose starting window does not flash
+         a separate, smaller launcher icon first. -->
     <item android:drawable="@android:color/white" />
-    <item>
+    <item
+        android:width="176dp"
+        android:height="176dp"
+        android:gravity="center">
         <bitmap
-            android:gravity="center"
+            android:gravity="fill"
             android:src="@mipmap/ic_launcher_fg" />
     </item>
+    <item
+        android:drawable="@drawable/splash_branding"
+        android:width="100dp"
+        android:height="40dp"
+        android:gravity="bottom|center_horizontal"
+        android:bottom="52dp" />
 </layer-list>
