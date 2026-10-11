@@ -61,7 +61,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
         Section("语音模型") {
-            Text("配音与无字幕转写需要对应模型，各自独立下载（Wi-Fi 建议）。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+            Text("配音和无字幕转写使用不同模型；未下载时可在对应卡片中下载。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(10.dp))
 
             // —— 配音模型 ——
@@ -160,10 +160,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                     ) { Text("去开启") }
                 }
             }
-        }
-
-        Section("语音转写") {
-            Text("没有可用字幕时，可使用 Whisper base 识别视频语音并生成字幕。首次使用需要下载转写模型，建议连接 Wi-Fi。", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
 
         Section("存储") {
