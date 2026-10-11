@@ -6,8 +6,6 @@ import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.TranslateRemoteModel
-import io.translatetube.local.player.NotificationManagerCompat_c
-import io.translatetube.local.yt.NewPipeRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,8 +20,6 @@ class TranslateTubeApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        NewPipeRepo.init(this)
-        NotificationManagerCompat_c.create(this)
         prefetchTranslateModels()
     }
 
