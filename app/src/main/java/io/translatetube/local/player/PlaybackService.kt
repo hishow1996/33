@@ -436,8 +436,9 @@ class PlaybackService : MediaSessionService() {
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationCacheKey = "$key|zh|$selectedTranslationId"
             val sourceSubtitleCacheKey = "$key|source|youtube"
-            // 先读本地缓存，再决定是否请求 YouTube 字幕。之前每次重试都先下载字幕，
-            // 即使译文已经缓存，也会重复发起字幕网络请求。
+            // 明确显示字幕获取/读取阶段，不能让流程从分析视频直接跳到翻译。
+            ui.update { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
+            // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
             val cached = db.subtitleCacheDao().get(translationCacheKey)
             val sourceCached = if (cached == null && videoId != null && importedLines.isNullOrEmpty()) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
@@ -453,6 +454,7 @@ class PlaybackService : MediaSessionService() {
                     srcLang = sourceCached.srcLang
                     android.util.Log.i("PlaybackService", "Using cached source subtitles for $videoId (${lines!!.size} cues)")
                 } else {
+                    ui.update { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
                     NewPipeRepo.subtitles(videoId)?.let { (fetchedLines, lang) ->
                         lines = fetchedLines
                         srcLang = lang
@@ -532,7 +534,7 @@ class PlaybackService : MediaSessionService() {
                 // ---- 3. 翻译 ----
                 val orig = lines!!
                 if (orig.isNotEmpty() && srcLang != "zh") {
-                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "准备翻译（${orig.size} 行）…") }
+                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${orig.size} 行）…") }
                     translateLines(key, orig, srcLang)
                 }
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
@@ -907,7 +909,21 @@ class PlaybackService : MediaSessionService() {
         }
 
         if (d != null && st.dubbingOn) {
-            if (dubLine >= 0 && d.isPrepared(dubLine)) {
+            val activeLine = st.lines.getOrNull(dubLine)
+            // If a translated line was synthesized to an empty PCM file, do not keep
+            // the source muted: fall back to audible original audio and explain why.
+            if (dubLine >= 0 && activeLine?.zh?.isNotBlank() == true && d.isSilent(dubLine)) {
+                if (d.currentLineIdx() >= 0) d.stop()
+                pm.originalVolume = 1f
+                if (st.muteOriginal || st.noModelHint == null) {
+                    ui.update {
+                        it.copy(
+                            muteOriginal = false,
+                            noModelHint = "部分字幕未能合成配音，已自动恢复原声，避免出现无声片段。请检查系统文字转语音引擎/语音数据，或重新下载 Kokoro 配音模型。"
+                        )
+                    }
+                }
+            } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
                 if (d.currentLineIdx() != dubLine) {
                     d.playAt(dubLine, if (st.muteOriginal) 1f else 0.35f)
                 }
