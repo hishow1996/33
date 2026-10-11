@@ -64,19 +64,34 @@ private fun get(url: String, headers: Map<String, String>): String {
 object MlKitModelCoordinator {
     private val locks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
 
+    /** 播放时只检查模型，不允许隐式下载。 */
     suspend fun ensureDownloaded(languageTag: String) {
         val language = TranslateLanguage.fromLanguageTag(languageTag)
-            ?: throw IllegalStateException("不支持的语言: $languageTag")
+            ?: throw IllegalStateException("不支持的离线翻译语言: $languageTag")
+        val model = TranslateRemoteModel.Builder(language).build()
+        if (!RemoteModelManager.getInstance().isModelDownloaded(model).await()) {
+            throw IllegalStateException("离线翻译包 $languageTag 尚未下载，请到设置中手动下载，或切换在线翻译引擎。")
+        }
+    }
+
+    /** 由设置页面主动调用，用户明确操作后才下载。 */
+    suspend fun downloadLanguage(languageTag: String, onProgress: (String) -> Unit = {}) {
+        val language = TranslateLanguage.fromLanguageTag(languageTag)
+            ?: throw IllegalStateException("不支持的离线翻译语言: $languageTag")
         val model = TranslateRemoteModel.Builder(language).build()
         val lock = locks.computeIfAbsent(language) { kotlinx.coroutines.sync.Mutex() }
         lock.withLock {
             val manager = RemoteModelManager.getInstance()
-            if (!manager.isModelDownloaded(model).await()) {
-                manager.download(model, DownloadConditions.Builder().build()).await()
+            if (manager.isModelDownloaded(model).await()) {
+                onProgress("$languageTag 已下载")
+                return
             }
+            onProgress("正在下载 $languageTag 离线翻译包…")
+            manager.download(model, DownloadConditions.Builder().build()).await()
             if (!manager.isModelDownloaded(model).await()) {
-                throw IllegalStateException("翻译模型下载完成后仍不可用: $languageTag")
+                throw IllegalStateException("$languageTag 离线翻译包下载后仍不可用")
             }
+            onProgress("$languageTag 已下载")
         }
     }
 }
