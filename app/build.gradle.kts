@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -7,8 +9,8 @@ plugins {
 
 // Release 签名仅从本机 signing.properties 或环境变量读取，不将密钥和密码写入仓库。
 val signingPropsFile = rootProject.file("signing.properties")
-val signingProps = java.util.Properties().apply {
-    if (signingPropsFile.isFile) signingPropsFile.inputStream().use { load(it) }
+val signingProps = Properties().apply {
+    if (signingPropsFile.isFile) signingPropsFile.inputStream().use { properties -> load(properties) }
 }
 fun signingValue(envName: String, propertyName: String): String? =
     System.getenv(envName)?.takeIf { it.isNotBlank() }
