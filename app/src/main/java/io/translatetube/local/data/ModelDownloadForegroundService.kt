@@ -91,7 +91,7 @@ class ModelDownloadForegroundService : Service() {
 
     private fun buildNotification(text: String, ongoing: Boolean = true): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle("大象翻译 · 模型下载")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
