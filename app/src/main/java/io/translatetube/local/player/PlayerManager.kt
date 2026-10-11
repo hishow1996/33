@@ -95,7 +95,10 @@ class PlayerManager(private val ctx: Context) {
             .setArtworkUri(artworkUrl?.let { Uri.parse(it) })
             .build()
 
-    /** YouTube：videoOnly(最高码率) + audio 合并；失败回退 muxed */
+    /**
+     * YouTube：优先使用单文件 muxed 流，避免旧设备在自适应音视频轨合并时崩溃/黑屏。
+     * 只有没有 muxed 流时才退回分离音视频轨。
+     */
     fun setYouTubeSource(
         videoOnly: List<Pair<String, Int>>,
         audioUrl: String,
@@ -104,10 +107,22 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
     ) {
-        val meta = buildMetadata(title, artist, artworkUrl)
-        val v = videoOnly.maxByOrNull { it.second }?.first
-        if (v != null) {
+        errorSink.value = null
+
+        // 单文件流兼容性最好：只需一个 MediaSource，不需要 MergingMediaSource 对齐两条时间轴。
+        if (!muxedUrl.isNullOrBlank()) {
             try {
+                setUriSource(Uri.parse(muxedUrl), title, artist, artworkUrl)
+                return
+            } catch (e: Exception) {
+                android.util.Log.w("PlayerManager", "Muxed YouTube stream setup failed; trying adaptive streams", e)
+            }
+        }
+
+        val v = videoOnly.maxByOrNull { it.second }?.first
+        if (!v.isNullOrBlank() && audioUrl.isNotBlank()) {
+            try {
+                val meta = buildMetadata(title, artist, artworkUrl)
                 val vs = ProgressiveMediaSource.Factory(httpFactory)
                     .createMediaSource(MediaItem.Builder().setUri(v).setMediaMetadata(meta).build())
                 val asrc = ProgressiveMediaSource.Factory(httpFactory)
@@ -115,9 +130,15 @@ class PlayerManager(private val ctx: Context) {
                 player.setMediaSource(MergingMediaSource(vs, asrc))
                 player.prepare()
                 return
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.e("PlayerManager", "Adaptive YouTube stream setup failed", e)
+                errorSink.value = "无法初始化 YouTube 音视频流：${e.message ?: e.javaClass.simpleName}"
+            }
         }
-        if (muxedUrl != null) setUriSource(Uri.parse(muxedUrl), title, artist, artworkUrl)
+
+        if (muxedUrl.isNullOrBlank()) {
+            errorSink.value = "YouTube 没有提供可播放的合并音视频流，且分离音视频流不可用"
+        }
     }
 
     /** 本地文件 / 直链 */
