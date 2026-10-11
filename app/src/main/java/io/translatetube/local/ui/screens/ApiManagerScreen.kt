@@ -43,7 +43,13 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
-        db.apiProfileDao().all().collect { profiles = it }
+        db.apiProfileDao().all().collect { list ->
+            profiles = list
+            // 已删除或停用的配置不能继续作为当前引擎，自动回退到始终可用的本地引擎。
+            if (activeId >= 0L && list.none { it.id == activeId && it.enabled }) {
+                setActive(-1L)
+            }
+        }
     }
 
     Column(Modifier.fillMaxSize().background(BgDark).systemBarsPadding().padding(16.dp)) {
@@ -112,11 +118,19 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                     }
                     Switch(
                         checked = p.enabled,
-                        onCheckedChange = { en -> scope.launch { db.apiProfileDao().upsert(p.copy(enabled = en)) } },
+                        onCheckedChange = { en ->
+                            scope.launch {
+                                db.apiProfileDao().upsert(p.copy(enabled = en))
+                                if (!en && activeId == p.id) setActive(-1L)
+                            }
+                        },
                         colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
                     )
                     TextButton(onClick = { editing = p }) { Text("编辑", color = BrandBright) }
-                    TextButton(onClick = { scope.launch { db.apiProfileDao().delete(p.id) } }) {
+                    TextButton(onClick = {
+                        if (activeId == p.id) setActive(-1L)
+                        scope.launch { db.apiProfileDao().delete(p.id) }
+                    }) {
                         Text("删", color = DangerRed)
                     }
                 }
