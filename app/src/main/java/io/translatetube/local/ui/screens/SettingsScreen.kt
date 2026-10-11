@@ -235,7 +235,6 @@ private fun ModelRow(
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceHigh).padding(13.dp)) {
         Text(title, color = OnBg, style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(3.dp))
-        Text(subtitle, color = SubText, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(9.dp))
         when {
             state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
