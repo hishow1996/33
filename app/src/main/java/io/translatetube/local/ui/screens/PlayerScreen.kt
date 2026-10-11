@@ -227,6 +227,15 @@ fun PlayerScreen(
                 },
             )
 
+            if (state.error != null || state.progress.isNotBlank()) {
+                Text(
+                    state.error ?: state.progress,
+                    color = if (state.error != null) WarnYellow else SubText,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
+
             Spacer(Modifier.height(6.dp))
 
             // ===== 双语字幕列表 =====
