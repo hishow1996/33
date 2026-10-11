@@ -36,6 +36,8 @@ class DubbingEngine(
     }
 
     private var tts: TtsEngine? = null
+    /** Called when the selected engine fails; the service reports this without switching engines. */
+    @Volatile var onSynthesisError: ((String) -> Unit)? = null
     private var lines: List<SubLine> = emptyList()
     private var speed = 1.0f
     @Volatile private var track: AudioTrack? = null
@@ -74,7 +76,16 @@ class DubbingEngine(
         // 从未缓存的最早行开始排
         for (i in lines.indices) {
             val file = cacheFile(i)
-            if (validCache(file) && file.length() == 8L) noAudio.add(i)
+            if (validCache(file) && file.length() == 8L) {
+                if (lines[i].zh.isNullOrBlank()) {
+                    // Empty output is expected for a subtitle line with no translated text.
+                    noAudio.add(i)
+                } else {
+                    // An empty PCM created by a previous failed TTS run is not a successful
+                    // cache hit. Remove it and retry using the currently selected engine.
+                    file.delete()
+                }
+            }
             if (!cached(i)) pending.offer(i)
         }
         startSynthLoop()
@@ -97,8 +108,10 @@ class DubbingEngine(
                 }
                 try {
                     val audio = tts!!.synth(text, speed, line.speakerId)
-                    if (audio.sampleRate <= 0 || audio.samples.isEmpty()) {
-                        writeCache(idx, audio.sampleRate.coerceAtLeast(16000), FloatArray(0))
+                    if (audio.sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
+                        val reason = "所选引擎返回空音频或无效采样率（${audio.sampleRate} Hz）"
+                        onSynthesisError?.invoke("第 ${idx + 1} 句：$reason")
+                        writeCache(idx, audio.sampleRate.coerceIn(8_000, 192_000), FloatArray(0))
                         noAudio.add(idx)
                     } else {
                         writeCache(idx, audio.sampleRate, audio.samples)
@@ -108,7 +121,8 @@ class DubbingEngine(
                     bumpPrepared(idx)
                 } catch (e: Exception) {
                     // 合成失败时写入空标记，保证准备进度不会永久卡在这一行；该行回退原声。
-                    android.util.Log.e("DubbingEngine", "synth fail line $idx", e)
+                    android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
+                    onSynthesisError?.invoke("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
                         writeCache(idx, 16000, FloatArray(0))
                         noAudio.add(idx)
@@ -259,7 +273,8 @@ class DubbingEngine(
                         noAudio.add(idx)
                         if (_currentLine.value == idx) _currentLine.value = -1
                     }
-                    android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx", e)
+                    android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
+                    onSynthesisError?.invoke("第 ${idx + 1} 句音频输出失败：${e.message ?: e.javaClass.simpleName}")
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
