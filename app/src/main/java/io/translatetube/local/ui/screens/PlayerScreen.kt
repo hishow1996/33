@@ -323,12 +323,14 @@ fun PlayerScreen(
     }
 
     // 字幕自动跟随滚动
-    LaunchedEffect(state.currentLine) {
+    LaunchedEffect(state.currentLine, listState.layoutInfo.viewportSize.height) {
         if (state.currentLine >= 0) {
-            // Keep the currently dubbed subtitle at the visual center; surrounding lines move around it.
+            // Re-run when the list first receives a measured viewport; otherwise the first
+            // scroll may use a zero-height viewport and leave the active subtitle off-screen.
             val viewportHeight = listState.layoutInfo.viewportSize.height
             val centerOffset = if (viewportHeight > 0) -(viewportHeight / 2) else 0
-            listState.animateScrollToItem(state.currentLine, scrollOffset = centerOffset)
+            val target = state.currentLine.coerceIn(0, (state.lines.size - 1).coerceAtLeast(0))
+            listState.animateScrollToItem(target, scrollOffset = centerOffset)
         }
     }
 }
@@ -847,7 +849,46 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                val spin = rememberInfiniteTransition(label = "orangeProgressRing")
+                val angle by spin.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 1250, easing = androidx.compose.animation.core.LinearEasing),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                    label = "orangeProgressRingAngle",
+                )
+                Canvas(Modifier.size(30.dp)) {
+                    val stroke = 4.dp.toPx()
+                    drawArc(
+                        brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                            colors = listOf(
+                                Color(0xFFFFE0B2),
+                                Color(0xFFFFB74D),
+                                Color(0xFFFF7A18),
+                                Color(0x00FF7A18),
+                            ),
+                            center = center,
+                        ),
+                        startAngle = angle,
+                        sweepAngle = 292f,
+                        useCenter = false,
+                        topLeft = androidx.compose.ui.geometry.Offset(stroke / 2f, stroke / 2f),
+                        size = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = stroke,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        ),
+                    )
+                }
+                Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
+            }
             Text(
                 pct?.let { "${(it * 100).toInt()}%" } ?: "处理中",
                 color = BrandBright,
