@@ -225,8 +225,11 @@ fun PlayerScreen(
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(state.title.ifEmpty { if (state.phase == Phase.ERROR) "加载失败" else "载入中…" }, color = OnBg, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                    Text("${if (state.sourceLang.isNotEmpty()) LangLabel(state.sourceLang) + " → " else ""}中文 · ${state.engineName}",
-                        color = SubText, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "${if (state.sourceLang.isNotEmpty()) LangLabel(state.sourceLang) + " → " else ""}中文 · ${state.engineName}" +
+                            if (state.ttsEngineName.isNotBlank()) " · 配音：${state.ttsEngineName}" else "",
+                        color = SubText, style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 if (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING) {
                     Text("配音 ${state.preparedUntil}/${state.totalLines}", color = if (state.preparedUntil >= state.totalLines && state.totalLines > 0) BrandBright else WarnYellow, style = MaterialTheme.typography.bodySmall)
