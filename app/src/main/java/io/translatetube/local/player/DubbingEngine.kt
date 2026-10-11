@@ -63,8 +63,14 @@ class DubbingEngine(
         _preparedUntil.value = 0
         noAudio.clear()
         pending.clear()
-        // 清内存缓存：防止旧会话同 idx 行的音频串台
+        // 清内存缓存：防止旧会话同 idx 行的音频串台。
         synchronized(mem) { mem.clear() }
+        // 译文或音色变化会生成新的缓存名，并清除本视频已失效的旧 PCM，避免旧配音串台及缓存无限累积。
+        val expectedCacheNames = lines.indices.map { cacheFile(it).name }.toSet()
+        cacheDir.listFiles()?.filter {
+            (it.name.endsWith(".pcm") || it.name.endsWith(".pcm.tmp")) &&
+                it.name !in expectedCacheNames
+        }?.forEach { it.delete() }
         // 从未缓存的最早行开始排
         for (i in lines.indices) {
             val file = cacheFile(i)
@@ -123,8 +129,11 @@ class DubbingEngine(
     }
 
     private fun cacheFile(idx: Int): File {
-        val voice = lines.getOrNull(idx)?.speakerId ?: -1
-        return File(cacheDir, "${idx}-v${voice}.pcm")
+        val line = lines.getOrNull(idx)
+        val voice = line?.speakerId ?: -1
+        // 同一视频同一行号可能因翻译引擎/人工修改而有不同译文；把译文指纹纳入缓存键。
+        val textHash = Integer.toHexString((line?.zh ?: "").hashCode())
+        return File(cacheDir, "${idx}-v${voice}-t${textHash}.pcm")
     }
 
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
