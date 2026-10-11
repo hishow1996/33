@@ -23,24 +23,28 @@ fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long,
     )
     val vad = Vad(null, config)
     val segs = mutableListOf<Pair<Long, Long>>()
-    val window = 512
-    var i = 0
-    while (i + window <= pcm.size) {
-        vad.acceptWaveform(pcm.copyOfRange(i, i + window))
+    try {
+        val window = 512
+        var i = 0
+        while (i + window <= pcm.size) {
+            vad.acceptWaveform(pcm.copyOfRange(i, i + window))
+            while (!vad.empty()) {
+                val s = vad.front()
+                segs += ((s.start * 1000L) / sr) to (((s.start + s.samples.size) * 1000L) / sr)
+                vad.pop()
+            }
+            i += window
+        }
+        vad.flush()
         while (!vad.empty()) {
             val s = vad.front()
             segs += ((s.start * 1000L) / sr) to (((s.start + s.samples.size) * 1000L) / sr)
             vad.pop()
         }
-        i += window
+    } finally {
+        // VAD 推理异常时也释放 native 资源。
+        runCatching { vad.release() }
     }
-    vad.flush()
-    while (!vad.empty()) {
-        val s = vad.front()
-        segs += ((s.start * 1000L) / sr) to (((s.start + s.samples.size) * 1000L) / sr)
-        vad.pop()
-    }
-    vad.release()
     // 过滤极短段 & 合并间隔 <0.4s 的相邻段
     val merged = mutableListOf<Pair<Long, Long>>()
     for ((a, b) in segs) {
