@@ -850,16 +850,16 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
             Row(
+                modifier = Modifier.weight(1f),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.weight(1f),
             ) {
                 val spin = rememberInfiniteTransition(label = "orangeProgressRing")
                 val angle by spin.animateFloat(
                     initialValue = 0f,
                     targetValue = 360f,
                     animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 1250, easing = androidx.compose.animation.core.LinearEasing),
+                        animation = tween(1250, easing = androidx.compose.animation.core.LinearEasing),
                         repeatMode = RepeatMode.Restart,
                     ),
                     label = "orangeProgressRingAngle",
@@ -868,19 +868,14 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
                     val stroke = 4.dp.toPx()
                     drawArc(
                         brush = androidx.compose.ui.graphics.Brush.sweepGradient(
-                            colors = listOf(
-                                Color(0xFFFFE0B2),
-                                Color(0xFFFFB74D),
-                                Color(0xFFFF7A18),
-                                Color(0x00FF7A18),
-                            ),
+                            listOf(Color(0xFFFFE0B2), Color(0xFFFFB74D), Color(0xFFFF7A18), Color(0x00FF7A18)),
                             center = center,
                         ),
                         startAngle = angle,
                         sweepAngle = 292f,
                         useCenter = false,
-                        topLeft = androidx.compose.ui.geometry.Offset(stroke / 2f, stroke / 2f),
-                        size = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke),
+                        topLeft = Offset(stroke / 2f, stroke / 2f),
+                        size = Size(size.width - stroke, size.height - stroke),
                         style = androidx.compose.ui.graphics.drawscope.Stroke(
                             width = stroke,
                             cap = androidx.compose.ui.graphics.StrokeCap.Round,
