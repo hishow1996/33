@@ -66,6 +66,7 @@ data class PlayerUiState(
     val error: String? = null,
     val sourceLang: String = "",
     val engineName: String = "",
+    val ttsEngineName: String = "",
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
     val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
@@ -298,7 +299,16 @@ class PlaybackService : MediaSessionService() {
         qualitySources = emptyList()
         qualityAudioUrl = ""
         lastLineIdx = Int.MIN_VALUE
-        ui.value = PlayerUiState(phase = Phase.PARSING, key = key, progress = "解析中…")
+        val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
+        val configuredTtsName = when (configuredTts) {
+            "system" -> "系统 TTS"
+            "kokoro" -> "Kokoro"
+            else -> "未知配音引擎"
+        }
+        ui.value = PlayerUiState(
+            phase = Phase.PARSING, key = key, progress = "解析中…",
+            ttsEngineName = configuredTtsName
+        )
         pm.pause()
         prepJob = scope.launch { runPipeline(key, videoId, localUri) }
     }
@@ -645,43 +655,76 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
-            // ---- 5. 配音引擎 ----
+            // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
             if (finalLines.isNotEmpty()) {
                 val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("tts_engine", "kokoro")
-                // 系统 TTS 由 Android 系统提供，不依赖 Kokoro ONNX 模型文件。
-                // 只有选用 Kokoro 神经网络引擎时，才要求用户先下载本地配音模型。
-                val selectedEngineReady = selectedTts == "system" ||
-                    io.translatetube.local.data.ModelFiles.ttsReady(this)
+                    .getString("tts_engine", "kokoro") ?: "kokoro"
+                val selectedTtsName = when (selectedTts) {
+                    "system" -> "系统 TTS"
+                    "kokoro" -> "Kokoro"
+                    else -> "未知配音引擎"
+                }
+                ui.update { it.copy(ttsEngineName = selectedTtsName) }
+
+                val selectedEngineReady = when (selectedTts) {
+                    "system" -> true
+                    "kokoro" -> io.translatetube.local.data.ModelFiles.ttsReady(this)
+                    else -> false
+                }
                 if (selectedEngineReady) {
                     try {
-                        val tts: TtsEngine = makeTts()
+                        // Pass the saved selection explicitly so a settings change during parsing
+                        // cannot cause the readiness check and actual engine to disagree.
+                        val tts: TtsEngine = makeTts(selectedTts)
                         val d = DubbingEngine(this, key, scope)
+                        d.onSynthesisError = { detail ->
+                            ui.update { state ->
+                                if (state.key == key) {
+                                    state.copy(
+                                        ttsEngineName = tts.name,
+                                        muteOriginal = false,
+                                        noModelHint = "当前选择的「${tts.name}」配音失败；应用没有切换到其他配音引擎。$detail"
+                                    )
+                                } else state
+                            }
+                            // Preserve audible source playback on failure, but never substitute
+                            // another TTS engine behind the user's back.
+                            scope.launch(Dispatchers.Main) {
+                                if (::pm.isInitialized) runCatching { pm.originalVolume = 1f }
+                            }
+                        }
+                        ui.update { it.copy(ttsEngineName = tts.name, noModelHint = null) }
                         d.attach(tts, finalLines)
                         dubbing = d
                         dubCollectJob = scope.launch {
                             d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
                         }
-                        ui.update { it.copy(noModelHint = null) }
                     } catch (e: Exception) {
-                        android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine", e)
+                        android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
                         val reason = e.message ?: e.javaClass.simpleName
                         ui.update {
                             it.copy(
-                                // TTS 初始化失败时不能继续静音原声，否则用户会听到完全无声的视频。
+                                ttsEngineName = selectedTtsName,
                                 muteOriginal = false,
                                 noModelHint = if (selectedTts == "system")
-                                    "系统 TTS 暂不可用：$reason。请在手机系统的「文字转语音」设置中选择可用引擎并安装中文语音数据；本应用已恢复原声，系统 TTS 不需要下载 Kokoro 模型。"
-                                else "Kokoro 配音引擎初始化失败：$reason",
+                                    "已选择系统 TTS，但系统配音引擎初始化失败：$reason。不会自动切换到 Kokoro。请检查手机的文字转语音服务和中文语音数据。"
+                                else
+                                    "已选择 Kokoro 模型，但初始化失败：$reason。不会自动切换到系统 TTS。请检查配音模型文件。",
                                 error = null
                             )
                         }
                         withContext(Dispatchers.Main) { pm.originalVolume = 1f }
                     }
                 } else {
-                    ui.update {
-                        it.copy(noModelHint = "当前选择的是 Kokoro 神经网络配音；下载「配音模型」后即可使用。也可以在设置中改选「系统 TTS」，无需下载此模型。")
+                    val message = when (selectedTts) {
+                        "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
+                        else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro 或系统 TTS。应用不会擅自切换引擎。"
                     }
+                    ui.update {
+                        it.copy(ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
+                            muteOriginal = false, noModelHint = message)
+                    }
+                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
                 }
             }
             // TTS 在后台按字幕顺序预合成。预热最前面的可朗读行后再启动视频，
@@ -875,13 +918,18 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun makeTts(): TtsEngine {
+    private fun makeTts(engineId: String? = null): TtsEngine {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val engine = prefs.getString("tts_engine", "kokoro")
-        return if (engine == "system") {
-            io.translatetube.local.tts.SystemTts(this)
-        } else {
-            KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
+        val selected = engineId ?: (prefs.getString("tts_engine", "kokoro") ?: "kokoro")
+        return when (selected) {
+            "system" -> io.translatetube.local.tts.SystemTts(this)
+            "kokoro" -> {
+                if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+                    throw IllegalStateException("已选择 Kokoro，但配音模型尚未就绪")
+                }
+                KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
+            }
+            else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
         }
     }
 
@@ -926,7 +974,7 @@ class PlaybackService : MediaSessionService() {
         if (d != null && st.dubbingOn) {
             // Empty audio can also mean translation is missing, engine initialization failed,
             // or an earlier run cached an empty marker. Never keep the whole video silent.
-            if (dubLine >= 0 && d.isSilent(dubLine)) {
+            if (dubLine >= 0 && activeLine?.zh?.isNotBlank() == true && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
                 if (st.muteOriginal || st.noModelHint == null) {
