@@ -16,6 +16,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.floating.FloatingManager
 
