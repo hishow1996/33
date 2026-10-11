@@ -81,6 +81,7 @@ object AudioExtract {
                     srcRate = nf.getInteger(MediaFormat.KEY_SAMPLE_RATE, srcRate)
                     srcChannels = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT, srcChannels)
                 }
+            }
             // 音频已解码，尽早释放 MediaCodec，避免后续重采样/分配大数组时占用硬件解码资源。
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
