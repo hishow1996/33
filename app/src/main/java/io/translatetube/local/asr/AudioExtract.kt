@@ -15,6 +15,7 @@ object AudioExtract {
 
     fun decodeTo16kMono(ctx: Context, src: Uri?, file: File?, maxDurationMs: Long = Long.MAX_VALUE): Pcm {
         val ex = MediaExtractor()
+        var decoder: MediaCodec? = null
         try {
             when {
                 file != null -> ex.setDataSource(file.absolutePath)
@@ -33,6 +34,7 @@ object AudioExtract {
             ex.selectTrack(trackIdx)
             val mime = fmt.getString(MediaFormat.KEY_MIME)!!
             val codec = MediaCodec.createDecoderByType(mime)
+            decoder = codec
             codec.configure(fmt, null, null, 0)
             codec.start()
 
@@ -80,7 +82,6 @@ object AudioExtract {
                     srcChannels = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT, srcChannels)
                 }
             }
-            codec.stop(); codec.release()
             val total = collected.sumOf { it.size }
             // 立体声两帧合一路，mono 只需一半容量
             val monoLen = if (srcChannels >= 2) total / 2 else total
@@ -103,6 +104,9 @@ object AudioExtract {
             val floats = FloatArray(resampled.size) { resampled[it] / 32768f }
             return Pcm(floats, 16000)
         } finally {
+            // MediaCodec 也必须在解码异常/取消路径释放，避免连续播放时耗尽硬件解码器资源。
+            runCatching { decoder?.stop() }
+            runCatching { decoder?.release() }
             ex.release()
         }
     }
