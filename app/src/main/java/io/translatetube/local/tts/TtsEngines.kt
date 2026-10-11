@@ -47,9 +47,22 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
-        val selectedSpeaker = if (speakerId >= 0) speakerId else this.speakerId
-        val audio = tts.generate(text, selectedSpeaker, speed)
-        return TtsAudio(audio.samples, audio.sampleRate)
+        val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
+        if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
+        val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
+        val safeSpeed = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
+        val sampleRate = audio.sampleRate
+        if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
+            android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=\${audio.samples.size}")
+            return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
+        }
+        // Discard NaN/Infinity and prevent invalid floats from reaching AudioTrack.
+        val clean = FloatArray(audio.samples.size) { i ->
+            val value = audio.samples[i]
+            if (value.isFinite()) value.coerceIn(-1f, 1f) else 0f
+        }
+        return TtsAudio(clean, sampleRate)
     }
 
     override fun close() = tts.release()

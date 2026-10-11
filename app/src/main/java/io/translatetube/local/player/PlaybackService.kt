@@ -496,7 +496,7 @@ class PlaybackService : MediaSessionService() {
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
                 // Prefer <=720p initially; user can choose 1080p or higher from the menu.
-                val defaultQuality = candidates.firstOrNull { it.height <= 720 } ?: candidates.first()
+                val defaultQuality = candidates.firstOrNull { it.height == 360 } ?: candidates.minByOrNull { kotlin.math.abs(it.height - 360) } ?: candidates.first()
                 ui.update {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },

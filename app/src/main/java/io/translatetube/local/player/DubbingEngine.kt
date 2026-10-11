@@ -131,19 +131,16 @@ class DubbingEngine(
     private fun cacheFile(idx: Int): File {
         val line = lines.getOrNull(idx)
         val voice = line?.speakerId ?: -1
-        // 同一视频同一行号可能因翻译引擎/人工修改而有不同译文；把译文指纹纳入缓存键。
-        val textHash = Integer.toHexString((line?.zh ?: "").hashCode())
-        // Engine-specific cache keys prevent mixing system TTS PCM with Kokoro output.
-        // v2 invalidates previous SystemTTS cache files produced by the incorrect WAV rate parser.
-        val engineTag = when (tts?.name) {
-            "系统TTS" -> "system-v2"
-            "Kokoro" -> "kokoro-v2"
-            else -> "${tts?.name ?: "unknown"}-v2"
+        fun fingerprint(value: String): String {
+            val bytes = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(value.toByteArray(Charsets.UTF_8))
+            return bytes.take(8).joinToString("") { "%02x".format(it) }
         }
-        val engineHash = Integer.toHexString(engineTag.hashCode())
-        return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
+        // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
+        val textHash = fingerprint(line?.zh ?: "")
+        val engineHash = fingerprint("\${tts?.name ?: "unknown"}-v3")
+        return File(cacheDir, "\${idx}-v\${voice}-e\${engineHash}-t\${textHash}.pcm")
     }
-
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
     private fun cached(idx: Int): Boolean =
