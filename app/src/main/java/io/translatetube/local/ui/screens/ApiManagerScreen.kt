@@ -50,10 +50,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         try {
             db.apiProfileDao().all().collect { list ->
-                profiles = list.filterNot { it.type == "AZURE" || it.type == "BAIDU" }
+                val supportedProfiles = list.filterNot { it.type == "AZURE" || it.type == "BAIDU" }
+                profiles = supportedProfiles
                 loadError = null
-                // 已删除或停用的配置不能继续作为当前引擎，自动回退到始终可用的本地引擎。
-                if (activeId >= 0L && list.none { it.id == activeId && it.enabled }) {
+                // 已删除、停用或已移除的引擎不能继续作为当前引擎，自动回退到本地引擎。
+                if (activeId >= 0L && supportedProfiles.none { it.id == activeId && it.enabled }) {
                     setActive(-1L)
                 }
             }
