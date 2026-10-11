@@ -84,9 +84,9 @@ object SpeakerDiarizer {
             val pyannote = pyannoteClass.constructors.first { it.parameterCount == 2 }
                 .newInstance(segmentation.absolutePath, 0.1f)
             val segmentationConfig = segmentationClass.constructors.first { it.parameterCount == 4 }
-                .newInstance(pyannote, 2, false, "cpu")
+                .newInstance(pyannote, 1, false, "cpu")
             val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
-                .newInstance(embedding.absolutePath, 2, false, "cpu")
+                .newInstance(embedding.absolutePath, 1, false, "cpu")
             val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
                 ?.newInstance(-1, 0.5f, true)
                 ?: clusteringClass.constructors.first { it.parameterCount == 2 }
@@ -98,11 +98,9 @@ object SpeakerDiarizer {
             try {
                 val sampleRate = diarizerClass.getMethod("sampleRate").invoke(instance) as Int
                 require(sampleRate == 16000) { "人物识别模型要求 16kHz 音频，当前为 ${sampleRate}Hz" }
-                // Keep memory bounded on mobile. For videos longer than 30 minutes, analyze the
-                // first 30 minutes; the rest will retain the default voice and can be assigned manually.
-                val limit = 16_000 * 60 * 30
-                val input = if (samples.size > limit) samples.copyOf(limit) else samples
-                val raw = diarizerClass.getMethod("process", FloatArray::class.java).invoke(instance, input)
+                // AudioExtract caps analysis at 8 minutes on low-memory devices.
+                // Avoid copyOf(): duplicating a multi-minute FloatArray can cause OOM on older phones.
+                val raw = diarizerClass.getMethod("process", FloatArray::class.java).invoke(instance, samples)
                 val count = java.lang.reflect.Array.getLength(raw)
                 val out = ArrayList<Segment>(count)
                 for (i in 0 until count) {
