@@ -40,8 +40,8 @@ val AppTypography = Typography(
 
 private val ColorScheme = lightColorScheme(
     primary = BrandBright,
-    onPrimary = BgDark,
-    primaryContainer = Brand,
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = SurfaceHigh,
     onPrimaryContainer = OnBg,
     secondary = Brand,
     onSecondary = OnBg,
@@ -55,7 +55,7 @@ private val ColorScheme = lightColorScheme(
     error = DangerRed,
 )
 
-/** 深色绿黑主题（与原版一致，固定深色） */
+/** 应用统一蓝白主题 */
 @Composable
 fun TranslateTubeTheme(content: @Composable () -> Unit) {
     MaterialTheme(
