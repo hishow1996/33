@@ -34,12 +34,17 @@ object ModelFiles {
     fun ttsDir(ctx: Context) = File(ctx.filesDir, "models/tts")
     fun asrDir(ctx: Context) = File(ctx.filesDir, "models/whisper")
 
+    // 模型文件只有存在且达到合理最小体积才视为就绪，避免截断文件触发 ONNX 原生层崩溃。
+    private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
+        file.isFile && file.length() >= minBytes
+
     fun ttsReady(ctx: Context) =
-        File(ttsDir(ctx), "model.int8.onnx").exists() && File(ttsDir(ctx), "voices.bin").exists()
+        validModel(File(ttsDir(ctx), "model.int8.onnx")) &&
+            validModel(File(ttsDir(ctx), "voices.bin"))
 
     fun asrReady(ctx: Context) =
-        File(asrDir(ctx), "base-encoder.int8.onnx").exists() &&
-            File(asrDir(ctx), "base-decoder.int8.onnx").exists()
+        validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
+            validModel(File(asrDir(ctx), "base-decoder.int8.onnx"))
 
     fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
 }
@@ -80,11 +85,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     fun download(kind: ModelKind) {
         when (kind) {
             ModelKind.TTS -> {
-                if (_tts.value.status == ModelStatus.DOWNLOADING || ModelFiles.ttsReady(ctx)) return
+                if (ttsJob?.isActive == true ||
+                    _tts.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
+                    ModelFiles.ttsReady(ctx)) return
                 ttsJob = scope.launch { runDownload(ModelKind.TTS, _tts, ttsUrls, ModelFiles.ttsDir(ctx)) }
             }
             ModelKind.ASR -> {
-                if (_asr.value.status == ModelStatus.DOWNLOADING || ModelFiles.asrReady(ctx)) return
+                if (asrJob?.isActive == true ||
+                    _asr.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
+                    ModelFiles.asrReady(ctx)) return
                 asrJob = scope.launch { runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx)) }
             }
         }
