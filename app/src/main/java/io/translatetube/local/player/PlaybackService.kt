@@ -393,8 +393,14 @@ class PlaybackService : MediaSessionService() {
                 val audioUrl: String = audioStreams.minByOrNull { a -> a.averageBitrate }?.content
                     ?: audioStreams.firstOrNull()?.content
                     ?: throw IllegalStateException("无音频流")
-                val muxed: String? = info.videoStreams.firstOrNull { v -> !v.isVideoOnly }?.content
-                val vOnly: List<Pair<String, Int>> = info.videoStreams.filter { v -> v.isVideoOnly }
+                // 优先选 MP4 单文件流：对 Android 9/旧款硬件解码器更友好，
+                // 同时避免把高分辨率 VP9/WebM 自适应流当作首选导致黑屏或设备级解码崩溃。
+                val muxed: String? = info.videoStreams
+                    .firstOrNull { v -> !v.isVideoOnly && v.format?.suffix == "mp4" }?.content
+                    ?: info.videoStreams.firstOrNull { v -> !v.isVideoOnly }?.content
+                // 无单文件流时仅选择 MP4 分离视频轨，先限制到 1080p，避免直接选到设备难以解码的超高分辨率轨。
+                val vOnly: List<Pair<String, Int>> = info.videoStreams
+                    .filter { v -> v.isVideoOnly && v.format?.suffix == "mp4" && v.height in 1..1080 }
                     .map { v -> v.content to (v.height * 1000 + v.bitrate) }
                 withContext(Dispatchers.Main) {
                     pm.setYouTubeSource(vOnly, audioUrl, muxed, meta.title, meta.channel, meta.thumbUrl)
