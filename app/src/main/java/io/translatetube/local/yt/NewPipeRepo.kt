@@ -63,6 +63,16 @@ object NewPipeRepo {
         initOnce()
     }
 
+    /** Explicit retry must discard stale/partial extraction results and fetch fresh YouTube metadata. */
+    fun invalidate(videoId: String? = null) {
+        synchronized(this) {
+            if (videoId == null || cachedId == videoId) {
+                cachedInfo = null
+                cachedId = null
+            }
+        }
+    }
+
     /** 从任意文本提取 YouTube 视频 id */
     fun extractVideoId(text: String): String? {
         val u = text.trim()
