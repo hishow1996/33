@@ -317,6 +317,11 @@ private fun ControlBar(
             )
         }
         FlowRow(Modifier.fillMaxWidth().padding(bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            AssistChip(
+                onClick = { svc?.autoAssignSpeakers() },
+                label = { Text(if (state.progress.contains("人物识别") || state.progress.contains("人物说话") || state.progress.contains("分离")) "🎭 正在识别…" else "🎭 自动区分人物") },
+                enabled = state.lines.isNotEmpty() && !state.progress.contains("人物识别") && !state.progress.contains("人物说话") && !state.progress.contains("分离"),
+            )
             AssistChip(onClick = { onImportSub() }, label = { Text("📥 导入字幕") })
             AssistChip(onClick = { onCopySub() }, label = { Text("📋 复制字幕") })
             AssistChip(onClick = { speed = 0.75f; svc?.setSpeed(0.75f) }, label = { Text("0.75x", color = if (speed == 0.75f) BrandBright else SubText) })
