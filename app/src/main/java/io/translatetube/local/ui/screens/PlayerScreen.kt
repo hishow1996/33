@@ -6,6 +6,11 @@ import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.graphicsLayer
@@ -265,9 +270,7 @@ fun PlayerScreen(
                                     Text("重试", color = BrandBright)
                                 }
                             } else {
-                                CircularProgressIndicator(color = BrandBright, modifier = Modifier.size(28.dp))
-                                Spacer(Modifier.height(10.dp))
-                                Text(phaseText(phase, state.progress), color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                                ProcessingProgressCard(state = state)
                             }
                         }
                     }
@@ -773,6 +776,77 @@ private fun speakerLabel(id: Int): String = when (id) {
     2 -> "人物4"
     3 -> "人物5"
     else -> "音色$id"
+}
+
+
+@Composable
+private fun ProcessingProgressCard(state: PlayerUiState) {
+    val (title, detail, stageIndex, fraction) = when (state.phase) {
+        Phase.PARSING -> listOf("正在分析视频", "获取视频信息与可用字幕、音轨", 0, 0f)
+        Phase.DOWNLOADING_AUDIO -> listOf("正在准备音轨", state.progress.ifBlank { "检查并读取视频音频" }, 1, progressPercent(state.progress))
+        Phase.TRANSCRIBING -> listOf("正在识别语音", state.progress.ifBlank { "把语音转换成带时间轴的文本" }, 2, progressPercent(state.progress))
+        Phase.TRANSLATING -> listOf("正在翻译字幕", state.progress.ifBlank { "逐句翻译并整理字幕时间轴" }, 3,
+            if (state.totalLines > 0) (state.lines.count { !it.zh.isNullOrBlank() }.toFloat() / state.totalLines).coerceIn(0f, 0.99f) else 0f)
+        Phase.SYNTHESIZING -> listOf("正在准备配音", state.progress.ifBlank { "按字幕顺序生成语音" }, 4,
+            if (state.totalLines > 0) (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 0.99f) else 0f)
+        else -> listOf("正在处理视频", state.progress, 0, 0f)
+    }
+    val infinite = rememberInfiniteTransition(label = "stagePulse")
+    val pulse by infinite.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800), repeatMode = RepeatMode.Reverse),
+        label = "stagePulseAlpha",
+    )
+    val pct = (fraction as Float).coerceIn(0f, 1f)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xF7FFFFFF))
+            .padding(horizontal = 18.dp, vertical = 20.dp),
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(58.dp).clip(CircleShape).background(Brand.copy(alpha = 0.10f)),
+            contentAlignment = androidx.compose.ui.Alignment.Center,
+        ) {
+            if (pct > 0f) {
+                CircularProgressIndicator(
+                    progress = { pct },
+                    modifier = Modifier.size(42.dp),
+                    color = BrandBright,
+                    strokeWidth = 4.dp,
+                )
+            } else {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(42.dp),
+                    color = BrandBright.copy(alpha = pulse),
+                    strokeWidth = 4.dp,
+                )
+            }
+            Text(if (pct > 0f) "${(pct * 100).toInt()}%" else "…", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(title as String, color = OnBg, style = MaterialTheme.typography.titleMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Spacer(Modifier.height(5.dp))
+        Text(detail as String, color = SubText, style = MaterialTheme.typography.bodySmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Spacer(Modifier.height(16.dp))
+        LinearProgressIndicator(
+            progress = { if (pct > 0f) pct else pulse },
+            modifier = Modifier.fillMaxWidth().height(4.dp),
+            color = BrandBright,
+            trackColor = Color(0xFFE7ECF3),
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("阶段 ${(stageIndex as Int) + 1}/5", color = SubText, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun progressPercent(progress: String): Float {
+    val match = Regex("(\\d+(?:\\.\\d+)?)%").find(progress) ?: return 0f
+    return (match.groupValues[1].toFloatOrNull()?.div(100f) ?: 0f).coerceIn(0f, 1f)
 }
 
 private fun phaseText(p: Phase, progress: String): String = when (p) {
