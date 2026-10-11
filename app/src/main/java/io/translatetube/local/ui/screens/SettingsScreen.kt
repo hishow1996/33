@@ -136,11 +136,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(if (canFloat) "权限已开启" else "需要开启悬浮窗权限", color = OnBg, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        if (canFloat) "可以在其他应用上方显示播放窗口" else "开启后才能使用全局悬浮播放",
-                        color = if (canFloat) BrandBright else WarnYellow,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                 }
                 if (!canFloat) {
                     Button(
