@@ -356,7 +356,7 @@ private fun SubtitleList(
         if (state.lines.isNotEmpty()) {
             item {
                 Text(
-                    "点击每行右侧音色标签可手动区分人物；多音色需要选择 Kokoro。自动说话人识别尚未接入。",
+                    "点击「自动区分人物」分析前 8 分钟的音轨；识别结果会自动分配 Kokoro 预设音色，也可逐句手动调整。",
                     color = SubText,
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
