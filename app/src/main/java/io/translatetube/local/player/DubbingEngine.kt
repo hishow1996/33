@@ -303,6 +303,7 @@ class DubbingEngine(
     fun setSpeed(s: Float) { speed = s }
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
     fun isPrepared(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx !in noAudio
+    fun isSilent(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx in noAudio
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
     fun release() {
