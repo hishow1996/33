@@ -42,9 +42,12 @@ object ModelFiles {
         validModel(File(ttsDir(ctx), "model.int8.onnx")) &&
             validModel(File(ttsDir(ctx), "voices.bin"))
 
-    fun asrReady(ctx: Context) =
+    fun asrCoreReady(ctx: Context) =
         validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
             validModel(File(asrDir(ctx), "base-decoder.int8.onnx"))
+
+    fun asrReady(ctx: Context) =
+        asrCoreReady(ctx) && validModel(File(asrDir(ctx), "silero_vad.onnx"), 512L * 1024)
 
     fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
 }
@@ -94,7 +97,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (asrJob?.isActive == true ||
                     _asr.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
                     ModelFiles.asrReady(ctx)) return
-                asrJob = scope.launch { runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx)) }
+                asrJob = scope.launch {
+                    if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
+                    else runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                }
             }
         }
     }
@@ -170,7 +176,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (kind == ModelKind.ASR) {
                     // ASR 包附带 VAD 小模型（0.6MB，双源）
                     val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
-                    if (!vad.exists()) {
+                    if (!vad.isFile || vad.length() < 512L * 1024) {
                         for (u in listOf(
                             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
@@ -178,8 +184,20 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             try {
                                 downloadTo(u, vad, expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6")
                                 break
-                            } catch (_: Exception) {}
+                            } catch (_: kotlinx.coroutines.CancellationException) {
+                                throw kotlinx.coroutines.CancellationException("VAD 下载已取消")
+                            } catch (e: Exception) {
+                                Log.w("ModelDL", "VAD 下载源失败: ${e.message}")
+                            }
                         }
+                    }
+                    if (!vad.isFile || vad.length() < 512L * 1024) {
+                        pkg.delete()
+                        state.value = ModelState(
+                            status = ModelStatus.FAILED,
+                            error = "Whisper 主模型已安装，但语音检测模型下载失败；点击重试只会补下载小型 VAD 模型。",
+                        )
+                        return
                     }
                 }
                 pkg.delete()
@@ -196,6 +214,30 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         }
         pkg.delete()
         state.value = state.value.copy(status = ModelStatus.FAILED, error = lastError ?: "全部下载源失败")
+    }
+
+    /** Whisper 主模型已经存在时，只补下载缺失/损坏的 VAD 文件，避免重新下载近 200 MB 模型包。 */
+    private suspend fun runVadOnly(state: MutableStateFlow<ModelState>) {
+        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 1)
+        val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
+        var lastError: String? = null
+        val urls = listOf(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+            "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+        )
+        for (url in urls) {
+            try {
+                downloadTo(url, vad, expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6")
+                if (!ModelFiles.asrReady(ctx)) throw java.io.IOException("VAD 模型校验失败")
+                state.value = ModelState(status = ModelStatus.READY, progress = 100, downloadedMB = vad.length() / 1048576, totalMB = vad.length() / 1048576)
+                return
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e.message ?: e.javaClass.simpleName
+            }
+        }
+        state.value = ModelState(status = ModelStatus.FAILED, error = "补下载 VAD 模型失败：${lastError ?: "网络异常"}")
     }
 
     private fun sha256(file: File): String {
