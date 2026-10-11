@@ -1,3 +1,4 @@
+import io.translatetube.build.PatchNewPipeApiTask
 import java.util.Properties
 
 plugins {
@@ -5,6 +6,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
+}
+
+// Keep the unmodified NewPipe artifact outside the app compile classpath; its calls to newer
+// Java APIs must be rewritten before D8 sees the bytecode.
+val newPipeExtractorArtifacts = configurations.create("newPipeExtractorArtifacts") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
 }
 
 // Release 签名仅从本机 signing.properties 或环境变量读取，不将密钥和密码写入仓库。
@@ -103,8 +111,9 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-extractor:1.4.1")
 
-    // YouTube 解析（纯本地，无服务器）
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
+    // Resolve NewPipe and its transitive dependencies separately. The extractor bytecode is
+    // patched at build time because its calls to Java 10/33 APIs are unavailable on Android 9.
+    add(newPipeExtractorArtifacts.name, "com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
 
     // 离线翻译（bundled 引擎，不依赖 GMS）
     implementation("com.google.mlkit:translate:17.0.3")
@@ -124,3 +133,36 @@ dependencies {
     // 模型包解压（.tar.bz2）
     implementation("org.apache.commons:commons-compress:1.26.1")
 }
+
+
+// Patch extractor bytecode for Android 9, and put its transitive dependencies on the normal app classpath.
+val newPipeExtractorResolvedArtifacts = providers.provider {
+    newPipeExtractorArtifacts.resolvedConfiguration.resolvedArtifacts.toList()
+}
+val rawNewPipeExtractor = providers.provider {
+    newPipeExtractorResolvedArtifacts.get().firstOrNull {
+        it.moduleVersion.id.group.equals("com.github.TeamNewPipe", ignoreCase = true)
+            && it.moduleVersion.id.name == "NewPipeExtractor"
+    }?.file ?: throw GradleException(
+        "Could not find com.github.TeamNewPipe:NewPipeExtractor in the resolved artifacts."
+    )
+}
+val patchNewPipeExtractor = tasks.register<PatchNewPipeApiTask>("patchNewPipeExtractor") {
+    inputJar.set(layout.file(rawNewPipeExtractor))
+    outputJar.set(layout.buildDirectory.file("patched-libs/NewPipeExtractor-android9.jar"))
+}
+dependencies.add(
+    "implementation",
+    files(patchNewPipeExtractor.flatMap { it.outputJar }).builtBy(patchNewPipeExtractor)
+)
+dependencies.add(
+    "implementation",
+    files(providers.provider {
+        newPipeExtractorResolvedArtifacts.get()
+            .filterNot {
+                it.moduleVersion.id.group.equals("com.github.TeamNewPipe", ignoreCase = true)
+                    && it.moduleVersion.id.name == "NewPipeExtractor"
+            }
+            .map { it.file }
+    })
+)
