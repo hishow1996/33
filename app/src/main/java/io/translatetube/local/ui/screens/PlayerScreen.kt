@@ -725,9 +725,10 @@ private fun SubtitleList(
                         .fillMaxWidth()
                         .graphicsLayer { scaleX = scale; scaleY = scale },
                 )
-                if (!line.zh.isNullOrBlank()) {
+                val translatedText = line.zh
+                if (!translatedText.isNullOrBlank()) {
                     Text(
-                        line.zh,
+                        translatedText,
                         color = color.copy(alpha = textAlpha),
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontSize = if (active) 24.sp else 19.sp,
