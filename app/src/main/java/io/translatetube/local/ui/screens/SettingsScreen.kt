@@ -56,9 +56,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
         val ttsState by dlManager.tts.collectAsState()
         val asrState by dlManager.asr.collectAsState()
-        // 每次下载状态变化都会重新检查文件，避免模型下载完成后页面仍显示“未下载”。
-        val ttsReady = io.translatetube.local.data.ModelFiles.ttsReady(ctx) || ttsState.status == io.translatetube.local.data.ModelStatus.READY
-        val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx) || asrState.status == io.translatetube.local.data.ModelStatus.READY
+        // 下载状态变化会触发重组；以实际文件校验结果为准，避免“状态就绪但模型文件损坏”。
+        val ttsReady = io.translatetube.local.data.ModelFiles.ttsReady(ctx)
+        val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx)
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
         Section("语音模型") {
@@ -243,7 +243,7 @@ private fun ModelRow(
     readyText: String, onDownload: () -> Unit,
 ) {
     val dl = (LocalContext.current.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload
-    val isReady = ready || state.status == io.translatetube.local.data.ModelStatus.READY
+    val isReady = ready
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceHigh).padding(13.dp)) {
         Text(title, color = OnBg, style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(3.dp))
