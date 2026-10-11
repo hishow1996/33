@@ -92,12 +92,10 @@ class SystemTts(context: Context) : TtsEngine {
 
         val languageResult = tts.setLanguage(Locale.SIMPLIFIED_CHINESE)
         if (languageResult < TextToSpeech.LANG_AVAILABLE) {
-            val fallbackResult = tts.setLanguage(Locale.getDefault())
-            if (fallbackResult < TextToSpeech.LANG_AVAILABLE) {
-                android.util.Log.e("SystemTts", "No supported TTS language installed")
-            } else {
-                android.util.Log.w("SystemTts", "Chinese TTS unavailable; using device default locale")
-            }
+            // This mode must remain the selected system TTS engine. Do not silently switch
+            // to another locale or another engine when Chinese voice data is missing.
+            runCatching { tts.shutdown() }
+            throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据")
         }
 
         tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
@@ -125,8 +123,10 @@ class SystemTts(context: Context) : TtsEngine {
 
     @Synchronized
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
-        val tts = ttsRef.get() ?: return TtsAudio(FloatArray(0), 16000)
-        if (!ok || text.isBlank()) return TtsAudio(FloatArray(0), 16000)
+        if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
+        val tts = ttsRef.get()
+            ?: throw IllegalStateException("系统 TTS 实例已经关闭")
+        if (!ok) throw IllegalStateException("系统 TTS 尚未初始化成功")
 
         val tmp = java.io.File.createTempFile("tts_", ".wav", contextCacheDir())
         val utteranceId = "system-tts-" + System.nanoTime()
@@ -138,21 +138,18 @@ class SystemTts(context: Context) : TtsEngine {
             tts.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
             val result = tts.synthesizeToFile(text, android.os.Bundle(), tmp, utteranceId)
             if (result != TextToSpeech.SUCCESS) {
-                android.util.Log.w("SystemTts", "synthesizeToFile rejected request, result=" + result)
-                return TtsAudio(FloatArray(0), 16000)
+                throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
             }
             if (!completed.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
-                android.util.Log.w("SystemTts", "Timed out waiting for system TTS synthesis")
                 runCatching { tts.stop() }
-                return TtsAudio(FloatArray(0), 16000)
+                throw IllegalStateException("系统 TTS 合成超时")
             }
             if (activeError) {
-                android.util.Log.w("SystemTts", "System TTS synthesis callback reported an error")
-                return TtsAudio(FloatArray(0), 16000)
+                throw IllegalStateException("系统 TTS 合成回调返回错误")
             }
             val audio = readWav(tmp)
             if (audio.samples.isEmpty()) {
-                android.util.Log.w("SystemTts", "System TTS produced an empty/unsupported WAV")
+                throw IllegalStateException("系统 TTS 已返回，但生成的 WAV 没有可播放音频")
             }
             return audio
         } finally {
