@@ -55,16 +55,38 @@ private fun get(url: String, headers: Map<String, String>): String {
     }
 }
 
+/**
+ * ML Kit 翻译模型下载协调器。
+ * 启动预下载和播放重试共用同一把语言锁，并在下载前检查模型是否已安装，
+ * 避免每次重新翻译/重试都重复请求同一个压缩模型包。
+ */
+object MlKitModelCoordinator {
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+    suspend fun ensureDownloaded(languageTag: String) {
+        val language = TranslateLanguage.fromLanguageTag(languageTag)
+            ?: throw IllegalStateException("不支持的语言: $languageTag")
+        val model = TranslateRemoteModel.Builder(language).build()
+        val lock = locks.computeIfAbsent(language) { kotlinx.coroutines.sync.Mutex() }
+        lock.withLock {
+            val manager = RemoteModelManager.getInstance()
+            if (!manager.isModelDownloaded(model).await()) {
+                manager.download(model, DownloadConditions.Builder().build()).await()
+            }
+            if (!manager.isModelDownloaded(model).await()) {
+                throw IllegalStateException("翻译模型下载完成后仍不可用: $languageTag")
+            }
+        }
+    }
+}
+
 /** 本地离线翻译（ML Kit bundled 引擎；语言模型首次下载后永久离线） */
 class MlKitEngine : TranslationEngine {
     override val id = "local"
     override val displayName = "本地引擎（离线）"
 
     private suspend fun ensureModel(lang: String) {
-        val tag = TranslateLanguage.fromLanguageTag(lang)
-            ?: throw IllegalStateException("不支持的语言: $lang")
-        val model: com.google.mlkit.common.model.RemoteModel = TranslateRemoteModel.Builder(tag).build()
-        RemoteModelManager.getInstance().download(model, DownloadConditions.Builder().build()).await()
+        MlKitModelCoordinator.ensureDownloaded(lang)
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
