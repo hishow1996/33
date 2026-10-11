@@ -147,7 +147,7 @@ private fun SplashScreen() {
             .background(Color.White),
     ) {
         Image(
-            painter = painterResource(id = R.drawable.splash_logo),
+            painter = painterResource(id = R.mipmap.ic_launcher_fg),
             contentDescription = "大象应用图标",
             modifier = Modifier
                 .align(Alignment.Center)
