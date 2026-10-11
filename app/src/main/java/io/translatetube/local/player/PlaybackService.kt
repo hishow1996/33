@@ -570,7 +570,7 @@ class PlaybackService : MediaSessionService() {
         speakerJob = scope.launch {
             var tempAudio: File? = null
             try {
-                ui.update { it.copy(error = null, progress = "准备人物识别音频…", phase = Phase.TRANSCRIBING) }
+                ui.update { it.copy(error = null, progress = "准备人物识别音频（为荣耀 10 限制为前 8 分钟）…", phase = Phase.TRANSCRIBING) }
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
@@ -584,7 +584,7 @@ class PlaybackService : MediaSessionService() {
                         sourceFile = null
                         sourceUri = localUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
-                    AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile)
+                    AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 8 * 60 * 1000L)
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
                     ui.update { it.copy(progress = message) }
