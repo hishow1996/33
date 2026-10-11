@@ -28,6 +28,7 @@ import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.update
 
 @Composable
 fun PlayerScreen(
@@ -54,9 +55,7 @@ fun PlayerScreen(
                 var s = PlaybackService.instance
                 if (retryRequested && s?.isReady == false) {
                     // 初始化失败的旧实例可能尚在销毁过程中，先等待它退出再重启服务。
-                    androidx.core.content.ContextCompat.stopService(
-                        ctx, android.content.Intent(ctx, PlaybackService::class.java)
-                    )
+                    ctx.stopService(android.content.Intent(ctx, PlaybackService::class.java))
                     var stopTries = 0
                     while (PlaybackService.instance != null && stopTries < 20) {
                         delay(100)
