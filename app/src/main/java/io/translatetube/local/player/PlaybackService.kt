@@ -73,6 +73,7 @@ data class PlayerUiState(
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var pm: PlayerManager
+    @Volatile private var playerReady = false
     private var session: MediaSession? = null
     private var dubbing: DubbingEngine? = null
     private var whisper: WhisperEngine? = null
@@ -104,62 +105,80 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        instance = this
-        pm = PlayerManager(this)
-        pm.onTick = { ms -> tick(ms) }
-        pm.onEnded = { ui.update { it.copy(isPlaying = false, currentLine = -1) } }
-        pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
-        NotificationManagerCompat_c.create(this)
-        // 【闪退修复】startForegroundService 要求 5 秒内 startForeground，否则系统强杀。
-        // media3 只在播放开始时才前台化，而视频解析需 5-10 秒 → 立即手动挂前台通知顶住，
-        // media3 接管时会自动用它的通知替换本条（同 service 前台槽位替换机制）。
-        val boot = NotificationCompat.Builder(this, CH_MAIN)
-            .setSmallIcon(io.translatetube.local.R.drawable.ic_stat_notify)
-            .setContentTitle("大象翻译")
-            .setContentText("正在准备…")
-            .setOngoing(true)
-            .setContentIntent(
-                android.app.PendingIntent.getActivity(
-                    this, 0,
-                    android.content.Intent(this, io.translatetube.local.MainActivity::class.java),
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        // 先尽早建立前台通知，再初始化播放器；任何初始化异常都转成页面错误，
+        // 避免点击“观看”后因 Service onCreate 抛异常而直接杀掉整个进程。
+        try {
+            NotificationManagerCompat_c.create(this)
+            val boot = NotificationCompat.Builder(this, CH_MAIN)
+                .setSmallIcon(io.translatetube.local.R.drawable.ic_stat_notify)
+                .setContentTitle("大象翻译")
+                .setContentText("正在准备…")
+                .setOngoing(true)
+                .setContentIntent(
+                    PendingIntent.getActivity(
+                        this, 0,
+                        Intent(this, io.translatetube.local.MainActivity::class.java),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
                 )
+                .build()
+            startForeground(1001, boot)
+
+            pm = PlayerManager(this)
+            pm.onTick = { ms -> tick(ms) }
+            pm.onEnded = { ui.update { it.copy(isPlaying = false, currentLine = -1) } }
+            pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
+
+            val pi = PendingIntent.getActivity(
+                this, 0, Intent(this, io.translatetube.local.MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            .build()
-        startForeground(1001, boot)
-        // 点通知栏回到应用
-        val intent = android.content.Intent(this, io.translatetube.local.MainActivity::class.java)
-        val pi = android.app.PendingIntent.getActivity(
-            this, 0, intent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-        )
-        session = MediaSession.Builder(this, pm.player)
-            .setSessionActivity(pi)
-            .build()
-        // 通知小图标：media3 1.4 的 Builder 无 setSmallIcon，保持默认（A9 彩色通知正常）
-        // 播放态/错误连到 UI 状态流
-        scope.launch {
-            pm.isPlaying.collect { playing -> ui.update { it.copy(isPlaying = playing) } }
-        }
-        scope.launch {
-            pm.errorSink.collect { err ->
-                if (err != null) ui.update { it.copy(error = err, phase = Phase.ERROR) }
+            session = MediaSession.Builder(this, pm.player)
+                .setSessionActivity(pi)
+                .build()
+
+            scope.launch {
+                pm.isPlaying.collect { playing -> ui.update { it.copy(isPlaying = playing) } }
             }
+            scope.launch {
+                pm.errorSink.collect { err ->
+                    if (err != null) ui.update { it.copy(error = err, phase = Phase.ERROR) }
+                }
+            }
+            playerReady = true
+            instance = this
+        } catch (e: Exception) {
+            playerReady = false
+            instance = this
+            val message = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+            ui.update {
+                it.copy(phase = Phase.ERROR, progress = "", error = "播放器初始化失败：$message")
+            }
+            android.util.Log.e("PlaybackService", "Playback service initialization failed", e)
         }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
-        dubbing?.release(); whisper?.close()
-        session?.release(); pm.release()
-        instance = null
+        runCatching { dubbing?.release() }
+        runCatching { whisper?.close() }
+        runCatching { session?.release() }
+        if (::pm.isInitialized) runCatching { pm.release() }
+        playerReady = false
+        if (instance === this) instance = null
         scope.cancel()
         super.onDestroy()
     }
 
     // ============ 管线入口 ============
     fun open(key: String, videoId: String?, localUri: Uri?, importedLines: List<SubLine>? = null) {
+        if (!playerReady || !::pm.isInitialized) {
+            ui.update {
+                it.copy(phase = Phase.ERROR, progress = "", error = it.error ?: "播放器服务未初始化成功，请返回主页后重试")
+            }
+            return
+        }
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
