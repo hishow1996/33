@@ -445,12 +445,10 @@ class PlaybackService : MediaSessionService() {
             if (videoId != null) {
                 val info = NewPipeRepo.streams(videoId)
                 val audioStreams: List<org.schabi.newpipe.extractor.stream.AudioStream> = info.audioStreams
-                // Playback uses the highest-bitrate available audio track; ASR can still select
-                // a smaller track separately to save storage and processing time.
-                val audioUrl: String = audioStreams.maxByOrNull { a -> a.averageBitrate }?.content
-                    ?: audioStreams.firstOrNull()?.content
-                    ?: throw IllegalStateException("YouTube 未提供音频流")
 
+                // NewPipe can occasionally expose muxed streams but omit the separate audio list.
+                // Build video candidates first; a muxed stream already contains audio and must remain
+                // playable even when audioStreams is empty.
                 // NewPipe keeps muxed streams and adaptive video-only tracks in separate lists.
                 // Include both; allow higher resolutions while preferring a compatible default for older phones.
                 val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
@@ -491,7 +489,19 @@ class PlaybackService : MediaSessionService() {
                     }
                     .sortedByDescending { it.height }
 
-                if (candidates.isEmpty()) throw IllegalStateException("YouTube 未提供可播放的视频流")
+                if (candidates.isEmpty()) {
+                    throw IllegalStateException("YouTube 未提供可播放的视频流。请检查网络/VPN 后重试")
+                }
+                val audioUrl = audioStreams.maxByOrNull { a -> a.averageBitrate }?.content
+                    ?: audioStreams.firstOrNull()?.content
+                    ?: if (candidates.any { it.muxed }) "" else {
+                        throw IllegalStateException("YouTube 未返回独立音频流或带声音的视频流，请稍后重试")
+                    }
+                android.util.Log.i(
+                    "PlaybackService",
+                    "YouTube audio tracks=" + audioStreams.size +
+                        ", usingMuxedFallback=" + (audioUrl.isBlank() && candidates.any { it.muxed })
+                )
                 android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
