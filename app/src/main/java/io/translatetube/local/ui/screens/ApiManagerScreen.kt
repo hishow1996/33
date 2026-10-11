@@ -83,10 +83,14 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(8.dp))
         }
 
+        var googleExpanded by remember { mutableStateOf(false) }
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                 .background(if (activeId == -1L || activeId == -2L) SurfaceHigh else SurfaceDark)
-                .clickable { setActive(-2L) }
+                .clickable {
+                    setActive(-2L)
+                    googleExpanded = !googleExpanded
+                }
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -101,11 +105,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             if (activeId == -1L || activeId == -2L) {
                 Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
             }
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                imageVector = if (googleExpanded) androidx.compose.material.icons.Icons.Default.ExpandLess
+                    else androidx.compose.material.icons.Icons.Default.ExpandMore,
+                contentDescription = if (googleExpanded) "收起离线语言包" else "展开离线语言包",
+                tint = SubText,
+            )
         }
         Spacer(Modifier.height(10.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { GoogleTranslateSection() }
+            if (googleExpanded) item { GoogleTranslateSection() }
             items(profiles, key = { it.id }) { p ->
                 Column(
                     Modifier.fillMaxWidth()
@@ -209,21 +220,61 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
 
             Labeled("名称") { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 DeepSeek") }) }
 
+            var typeMenuExpanded by remember { mutableStateOf(false) }
+            val typeOptions = listOf(
+                "OPENAI" to "OpenAI 兼容",
+                "GEMINI" to "Gemini 大模型",
+                "GCLOUD" to "Google 翻译 API",
+            )
             Labeled("服务类型") {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    listOf("OPENAI" to "OpenAI 兼容", "GEMINI" to "Gemini 大模型", "GCLOUD" to "Google 翻译 API").forEach { (v, label) ->
-                        FilterChip(
-                            selected = type == v,
-                            onClick = { type = v; models = null; model = "" },
-                            label = { Text(label) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Brand, selectedLabelColor = androidx.compose.ui.graphics.Color.White,
-                            ),
-                        )
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = typeOptions.firstOrNull { it.first == type }?.second ?: "OpenAI 兼容",
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().clickable { typeMenuExpanded = true },
+                        trailingIcon = {
+                            IconButton(onClick = { typeMenuExpanded = !typeMenuExpanded }) {
+                                Icon(
+                                    imageVector = if (typeMenuExpanded) androidx.compose.material.icons.Icons.Default.ExpandLess
+                                        else androidx.compose.material.icons.Icons.Default.ExpandMore,
+                                    contentDescription = "选择服务类型",
+                                    tint = SubText,
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BrandBright,
+                            unfocusedBorderColor = SurfaceHigh,
+                            focusedTextColor = OnBg,
+                            unfocusedTextColor = OnBg,
+                        ),
+                    )
+                    DropdownMenu(
+                        expanded = typeMenuExpanded,
+                        onDismissRequest = { typeMenuExpanded = false },
+                        modifier = Modifier.fillMaxWidth(0.86f).heightIn(max = 240.dp)
+                            .background(SurfaceDark),
+                    ) {
+                        typeOptions.forEach { (value, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label, color = if (type == value) BrandBright else OnBg) },
+                                trailingIcon = {
+                                    if (type == value) Icon(
+                                        imageVector = androidx.compose.material.icons.Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = BrandBright,
+                                    )
+                                },
+                                onClick = {
+                                    type = value
+                                    models = null
+                                    model = ""
+                                    typeMenuExpanded = false
+                                },
+                            )
+                        }
                     }
                 }
             }
