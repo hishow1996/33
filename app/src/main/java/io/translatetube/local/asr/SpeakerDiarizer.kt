@@ -79,8 +79,10 @@ object SpeakerDiarizer {
                 .newInstance(pyannote, 2, false, "cpu")
             val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
                 .newInstance(embedding.absolutePath, 2, false, "cpu")
-            val clustering = clusteringClass.constructors.first { it.parameterCount == 3 }
-                .newInstance(-1, 0.5f, true)
+            val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
+                ?.newInstance(-1, 0.5f, true)
+                ?: clusteringClass.constructors.first { it.parameterCount == 2 }
+                    .newInstance(-1, 0.5f)
             val config = configClass.constructors.first { it.parameterCount == 5 }
                 .newInstance(segmentationConfig, embeddingConfig, clustering, 0.2f, 0.5f)
             val instance = diarizerClass.constructors.first { it.parameterCount == 2 }
