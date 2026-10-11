@@ -558,6 +558,7 @@ class PlaybackService : MediaSessionService() {
     fun autoAssignSpeakers() {
         if (speakerJob?.isActive == true) return
         val originalLines = ui.value.lines
+        val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
             return
@@ -601,8 +602,10 @@ class PlaybackService : MediaSessionService() {
                     // Kokoro 的默认音色用于第一位说话人，其余说话人映射到不同预设音色。
                     val voice = when {
                         speaker == 0 -> -1
-                        speaker in 1..14 -> speaker - 1
-                        speaker in 15..53 -> speaker
+                        speaker in 1..53 -> {
+                            val candidate = speaker - 1
+                            if (candidate >= preferredVoice) candidate + 1 else candidate
+                        }
                         else -> -1
                     }
                     line.copy(speakerId = voice)
