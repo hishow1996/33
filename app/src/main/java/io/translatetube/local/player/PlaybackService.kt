@@ -13,6 +13,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import io.translatetube.local.R
 import io.translatetube.local.asr.AudioExtract
+import io.translatetube.local.asr.SpeakerDiarizer
 import io.translatetube.local.asr.WhisperEngine
 import io.translatetube.local.asr.vadSegments
 import io.translatetube.local.data.AppDatabase
@@ -82,6 +83,7 @@ class PlaybackService : MediaSessionService() {
     private var importedLines: List<SubLine>? = null
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
+    private var speakerJob: Job? = null
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -159,6 +161,7 @@ class PlaybackService : MediaSessionService() {
     // ============ 管线入口 ============
     fun open(key: String, videoId: String?, localUri: Uri?, importedLines: List<SubLine>? = null) {
         prepJob?.cancel()
+        speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
         dubbing?.release(); dubbing = null
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
@@ -548,6 +551,106 @@ class PlaybackService : MediaSessionService() {
      * 手动为某条字幕指定 Kokoro 音色。修改后重建配音缓存队列，
      * 文件缓存按音色分开，避免修改人物音色后仍播放旧声音。
      */
+    /**
+     * 从当前视频音轨执行本地说话人分离，并把说话人编号映射到不同 Kokoro 预设音色。
+     * 模型仅在用户点击自动区分时下载，不会拖慢普通视频打开流程。
+     */
+    fun autoAssignSpeakers() {
+        if (speakerJob?.isActive == true) return
+        val originalLines = ui.value.lines
+        if (originalLines.isEmpty()) {
+            ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
+            return
+        }
+        speakerJob = scope.launch {
+            var tempAudio: File? = null
+            try {
+                ui.update { it.copy(error = null, progress = "准备人物识别音频…", phase = Phase.TRANSCRIBING) }
+                val pcm = withContext(Dispatchers.IO) {
+                    val sourceFile: File?
+                    val sourceUri: Uri?
+                    if (videoId != null) {
+                        val stream = NewPipeRepo.audioForAsr(videoId!!)
+                            ?: throw IllegalStateException("无法获取当前视频的音频流")
+                        tempAudio = downloadAudio(stream.content)
+                        sourceFile = tempAudio
+                        sourceUri = null
+                    } else {
+                        sourceFile = null
+                        sourceUri = localUri ?: throw IllegalStateException("找不到当前视频文件")
+                    }
+                    AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile)
+                }
+                val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
+                    ui.update { it.copy(progress = message) }
+                }
+                if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
+                val updated = originalLines.map { line ->
+                    val start = line.startMs / 1000f
+                    val end = line.endMs / 1000f
+                    val duration = (end - start).coerceAtLeast(0.01f)
+                    val overlapBySpeaker = segments.asSequence()
+                        .mapNotNull { seg ->
+                            val overlap = (minOf(end, seg.endSec) - maxOf(start, seg.startSec)).coerceAtLeast(0f)
+                            if (overlap > 0f) seg.speaker to overlap else null
+                        }
+                        .groupBy({ it.first }, { it.second })
+                        .mapValues { (_, overlaps) -> overlaps.sum() }
+                    val best = overlapBySpeaker.maxByOrNull { it.value }
+                    val speaker = if (best != null && best.value >= minOf(0.25f, duration * 0.2f)) best.key else -1
+                    // Kokoro 的默认音色用于第一位说话人，其余说话人映射到不同预设音色。
+                    val voice = when (speaker) {
+                        0 -> -1
+                        1 -> 0
+                        2 -> 1
+                        3 -> 2
+                        4 -> 3
+                        else -> -1
+                    }
+                    line.copy(speakerId = voice)
+                }
+                val distinctVoices = updated.map { it.speakerId }.distinct().size
+                ui.update {
+                    it.copy(lines = updated, progress = "已区分人物，使用 $distinctVoices 种音色", phase = Phase.SYNTHESIZING,
+                        totalLines = updated.size, preparedUntil = 0, currentLine = -1)
+                }
+                dubbing?.release()
+                dubbing = null
+                if (io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
+                    val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                    d.attach(makeTts(), updated)
+                    dubbing = d
+                    dubCollectJob?.cancel()
+                    dubCollectJob = scope.launch {
+                        d.preparedUntil.collect { n -> ui.update { state -> state.copy(preparedUntil = n) } }
+                    }
+                }
+                val arr = org.json.JSONArray()
+                for (line in updated) arr.put(
+                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
+                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
+                )
+                if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
+                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            "$videoKey|zh|${prefs.getLong("active_api_id", -1L)}",
+                            ui.value.sourceLang, arr.toString(), System.currentTimeMillis()
+                        )
+                    )
+                }
+                lastLineIdx = Int.MIN_VALUE
+                ui.update { it.copy(phase = Phase.READY, progress = "人物区分完成：已识别 ${segments.map { s -> s.speaker }.distinct().size} 位说话人") }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ui.update { it.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}") }
+            } finally {
+                tempAudio?.delete()
+            }
+        }
+    }
+
     fun setLineSpeaker(index: Int, speakerId: Int) {
         val oldLines = ui.value.lines
         if (index !in oldLines.indices) return
