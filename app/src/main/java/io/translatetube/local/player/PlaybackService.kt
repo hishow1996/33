@@ -583,18 +583,39 @@ class PlaybackService : MediaSessionService() {
                         ui.update { it.copy(noModelHint = null) }
                     } catch (e: Exception) {
                         android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine", e)
+                        val reason = e.message ?: e.javaClass.simpleName
                         ui.update {
                             it.copy(
-                                noModelHint = null,
-                                error = if (selectedTts == "system")
-                                    "系统 TTS 初始化失败，请检查手机是否已安装并启用中文语音数据：${e.message ?: e.javaClass.simpleName}"
-                                else "Kokoro 配音引擎初始化失败：${e.message ?: e.javaClass.simpleName}"
+                                // TTS 初始化失败时不能继续静音原声，否则用户会听到完全无声的视频。
+                                muteOriginal = false,
+                                noModelHint = if (selectedTts == "system")
+                                    "系统 TTS 暂不可用：$reason。请在手机系统的「文字转语音」设置中选择可用引擎并安装中文语音数据；本应用已恢复原声，系统 TTS 不需要下载 Kokoro 模型。"
+                                else "Kokoro 配音引擎初始化失败：$reason",
+                                error = null
                             )
                         }
+                        withContext(Dispatchers.Main) { pm.originalVolume = 1f }
                     }
                 } else {
                     ui.update {
                         it.copy(noModelHint = "当前选择的是 Kokoro 神经网络配音；下载「配音模型」后即可使用。也可以在设置中改选「系统 TTS」，无需下载此模型。")
+                    }
+                }
+            }
+            // TTS 在后台按字幕顺序预合成。预热最前面的可朗读行后再启动视频，
+            // 避免原声已被静音、系统 TTS 却还没合成出第一句时出现长时间无声。
+            val startupDubbing = dubbing
+            if (startupDubbing != null) {
+                val firstSpeech = finalLines.indexOfFirst { !it.zh.isNullOrBlank() }
+                if (firstSpeech >= 0) {
+                    val targetPrepared = minOf(finalLines.size, firstSpeech + 2)
+                    val deadlineNs = System.nanoTime() + 12_000_000_000L
+                    while (startupDubbing.preparedUntil.value < targetPrepared && System.nanoTime() < deadlineNs) {
+                        kotlinx.coroutines.delay(100)
+                    }
+                    if (startupDubbing.preparedUntil.value <= firstSpeech) {
+                        android.util.Log.w("PlaybackService", "TTS startup buffer timed out before first spoken line")
+                        ui.update { it.copy(progress = "配音仍在准备，已先开始视频播放") }
                     }
                 }
             }
