@@ -3,6 +3,9 @@ package io.translatetube.local.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -178,20 +181,31 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val needsRegion = type == "AZURE"
     val fixedEngine = type == "GCLOUD" || type == "AZURE" || type == "BAIDU"
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    val configuration = LocalConfiguration.current
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
         val scope = rememberCoroutineScope()
         Column(
-            Modifier.clip(RoundedCornerShape(16.dp)).background(SurfaceDark).padding(16.dp)
+            Modifier.fillMaxWidth(0.94f)
+                .heightIn(max = (configuration.screenHeightDp * 0.84f).dp)
+                .clip(RoundedCornerShape(20.dp)).background(SurfaceDark)
                 .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 16.dp)
         ) {
             Text(if (initial == null) "添加翻译 API" else "编辑 API", style = MaterialTheme.typography.titleLarge, color = OnBg)
             Spacer(Modifier.height(10.dp))
 
             Labeled("名称") { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 DeepSeek") }) }
 
-            Labeled("类型") {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("OPENAI" to "OpenAI兼容", "GEMINI" to "Gemini大模型", "GCLOUD" to "Google翻译API", "AZURE" to "微软Azure", "BAIDU" to "百度翻译").forEach { (v, label) ->
+            Labeled("服务类型") {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    listOf("OPENAI" to "OpenAI 兼容", "GEMINI" to "Gemini 大模型", "GCLOUD" to "Google 翻译 API", "AZURE" to "微软 Azure", "BAIDU" to "百度翻译").forEach { (v, label) ->
                         FilterChip(
                             selected = type == v,
                             onClick = { type = v; models = null; model = "" },
@@ -238,10 +252,13 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             // —— 模型拉取（OpenAI兼容 / Gemini）——
             if (!fixedEngine) {
                 Labeled("翻译模型") {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
-                            model, { model = it }, Modifier.weight(1f), singleLine = true,
-                            placeholder = { Text("手动填或点右侧拉取") },
+                            value = model,
+                            onValueChange = { model = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text("填写模型名称") },
                         )
                         Button(
                             onClick = {
@@ -265,7 +282,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             },
                             enabled = !pulling && (apiKey.isNotBlank() || !needsKey),
                             colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
-                        ) { Text(if (pulling) "拉取中…" else "⬇ 拉取模型") }
+                        , modifier = Modifier.fillMaxWidth()) { Text(if (pulling) "拉取中…" else "↓ 拉取可用模型") }
                     }
                 }
                 pullError?.let {
