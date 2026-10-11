@@ -25,15 +25,32 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
-    var canFloat by remember { mutableStateOf(FloatingManager(ctx).canDraw()) }
-
+    val floatingManager = remember { FloatingManager(ctx) }
+    var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) canFloat = floatingManager.canDraw()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     Column(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(16.dp)
+            .verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        TextButton(onClick = onBack) { Text("← 返回", color = OnBg) }
-        Text("设置", style = MaterialTheme.typography.headlineMedium, color = OnBg)
-        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
+                Text("‹ 返回", color = SubText, style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.weight(1f))
+            Text("大象翻译", color = SubText, style = MaterialTheme.typography.labelLarge)
+        }
+        Text("设置", style = MaterialTheme.typography.headlineLarge, color = OnBg)
+        Spacer(Modifier.height(4.dp))
+        Text("管理语音、翻译与播放体验", color = SubText, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(14.dp))
 
         // ===== 语音模型（方案 B：软件内下载） =====
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
@@ -48,22 +65,15 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             Spacer(Modifier.height(10.dp))
 
             // —— 配音模型 ——
-            ModelRow(
-                title = "🎙 配音模型（Kokoro v1.1）",
-                state = ttsState,
-                ready = ttsReady,
-                pkgMB = 140,
-                readyText = "已就绪 · 中文配音可用",
-            )
-            Spacer(Modifier.height(10.dp))
-            // —— 转写模型 ——
-            ModelRow(
-                title = "📝 转写模型（Whisper base）",
-                state = asrState,
-                ready = asrReady,
-                pkgMB = 198,
-                readyText = "已就绪 · 无字幕视频可转写",
-            )
+            ModelRow(title = "配音模型", subtitle = "Kokoro v1.1 · 中文神经网络配音",
+                state = ttsState, ready = ttsReady, pkgMB = 140,
+                readyText = "已就绪，可使用神经网络配音",
+                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS })
+            Spacer(Modifier.height(8.dp))
+            ModelRow(title = "语音转写模型", subtitle = "Whisper base · 用于没有字幕的视频",
+                state = asrState, ready = asrReady, pkgMB = 198,
+                readyText = "已就绪，可识别视频语音",
+                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR })
         }
 
         // 下载确认弹窗（规格：右侧确定 / 左侧取消，显示包大小）
@@ -117,9 +127,17 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             Text("切换后对下一次打开的视频生效（当前视频不变）。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
         }
 
-        Section("翻译源") {
-            TextButton(onClick = onApiManager) { Text("管理云翻译 API（OpenAI/Gemini/谷歌/Azure）→", color = BrandBright) }
-            Text("默认使用本地离线引擎。添加 API 后自动优先使用（失败会回退本地）。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Section("翻译引擎") {
+            Text("选择离线翻译或配置在线服务。", color = SubText, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHigh)
+                .clickable(onClick = onApiManager).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("翻译引擎与 API", color = OnBg, style = MaterialTheme.typography.titleSmall)
+                    Text("本地离线、Google、OpenAI 兼容及其他服务", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("›", color = BrandBright, style = MaterialTheme.typography.headlineMedium)
+            }
         }
 
         Section("悬浮窗") {
@@ -134,8 +152,8 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             Text("悬浮窗播放需要系统「显示在其他应用上层」权限。", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
 
-        Section("语音转写（无字幕视频）") {
-            Text("Whisper base 多语言模型已内置（约 160MB）。无字幕视频会自动转写，速度约为实时的 0.5-1 倍。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Section("语音转写") {
+            Text("没有可用字幕时，可使用 Whisper base 识别视频语音并生成字幕。首次使用需要下载转写模型，建议连接 Wi-Fi。", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
 
         Section("存储") {
@@ -166,15 +184,13 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceDark)
-            .padding(14.dp).padding(bottom = 6.dp)
-    ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = BrandBright)
-        Spacer(Modifier.height(8.dp))
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(SurfaceDark)
+        .padding(horizontal = 16.dp, vertical = 15.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = OnBg)
+        Spacer(Modifier.height(12.dp))
         content()
     }
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(10.dp))
 }
 
 @Composable
@@ -182,32 +198,33 @@ private fun EngineOption(
     id: String, title: String, desc: String,
     current: String, onPick: (String) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-            .clickable { onPick(id) }
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = current == id, onClick = { onPick(id) }, colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
-        Column {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        .background(if (current == id) SurfaceHigh else SurfaceDark)
+        .clickable { onPick(id) }.padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected = current == id, onClick = { onPick(id) },
+            colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
+        Column(Modifier.weight(1f).padding(end = 6.dp)) {
             Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
             Text(desc, color = SubText, style = MaterialTheme.typography.bodySmall)
         }
+        if (current == id) Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
     }
 }
 
 @Composable
 private fun ModelRow(
-    title: String,
-    state: io.translatetube.local.data.ModelState,
-    ready: Boolean,
-    pkgMB: Int,
-    readyText: String,
+    title: String, subtitle: String,
+    state: io.translatetube.local.data.ModelState, ready: Boolean, pkgMB: Int,
+    readyText: String, onDownload: () -> Unit,
 ) {
     val dl = (LocalContext.current.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceDark).padding(12.dp)) {
-        Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-        Spacer(Modifier.height(4.dp))
+    val isReady = ready || state.status == io.translatetube.local.data.ModelStatus.READY
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceHigh).padding(13.dp)) {
+        Text(title, color = OnBg, style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(3.dp))
+        Text(subtitle, color = SubText, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(9.dp))
         when {
             state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
                 Text(
@@ -233,8 +250,17 @@ private fun ModelRow(
                     dl.download(if (title.contains("配音")) io.translatetube.local.data.ModelKind.TTS else io.translatetube.local.data.ModelKind.ASR)
                 }) { Text("重试", color = BrandBright) }
             }
-            ready -> Text("✅ $readyText", color = BrandBright, style = MaterialTheme.typography.bodySmall)
-            else -> Text("未下载 · 压缩包约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall)
+            isReady -> Text("●  $readyText", color = BrandBright, style = MaterialTheme.typography.bodySmall)
+            else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("尚未下载", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    Text("下载约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.labelSmall)
+                }
+                Button(onClick = onDownload, shape = RoundedCornerShape(11.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg)) {
+                    Text("下载模型")
+                }
+            }
         }
     }
 }
