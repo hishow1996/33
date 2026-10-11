@@ -15,9 +15,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -62,6 +59,9 @@ import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun PlayerScreen(
@@ -325,16 +325,39 @@ fun PlayerScreen(
         }
     }
 
-    // 字幕自动跟随滚动
-    LaunchedEffect(state.currentLine, listState.layoutInfo.viewportSize.height) {
-        if (state.currentLine >= 0) {
-            // Re-run when the list first receives a measured viewport; otherwise the first
-            // scroll may use a zero-height viewport and leave the active subtitle off-screen.
-            val viewportHeight = listState.layoutInfo.viewportSize.height
-            val centerOffset = if (viewportHeight > 0) -(viewportHeight / 2) else 0
-            val target = state.currentLine.coerceIn(0, (state.lines.size - 1).coerceAtLeast(0))
-            listState.animateScrollToItem(target, scrollOffset = centerOffset)
-        }
+    // 字幕只在当前配音行接近可视区域边缘时滚动，避免每句都重新启动滚动动画。
+    // 用 rememberUpdatedState 让长生命周期协程始终读取最新播放行，不会闭包住旧 state。
+    val autoScrollTarget = rememberUpdatedState(state.currentLine to state.lines.size)
+    LaunchedEffect(state.key) {
+        snapshotFlow { autoScrollTarget.value }
+            .distinctUntilChanged()
+            .collectLatest { (target, lineCount) ->
+                if (target !in 0 until lineCount) return@collectLatest
+
+                // 等待 LazyColumn 完成测量；避免初次 viewport 为 0 时错过第一条字幕。
+                listState.layoutInfo.let { info ->
+                    if (info.viewportSize.height <= 0 || info.totalItemsCount <= target) {
+                        snapshotFlow {
+                            listState.layoutInfo.viewportSize.height to listState.layoutInfo.totalItemsCount
+                        }.first { (height, itemCount) -> height > 0 && itemCount > target }
+                    }
+                }
+
+                val info = listState.layoutInfo
+                val viewportHeight = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
+                val topGuard = info.viewportStartOffset + (viewportHeight * 0.20f).toInt()
+                val bottomGuard = info.viewportStartOffset + (viewportHeight * 0.76f).toInt()
+                val item = info.visibleItemsInfo.firstOrNull { it.index == target }
+                val itemBottom = item?.let { it.offset + it.size } ?: Int.MIN_VALUE
+
+                // 行仍处于舒适阅读区时不滚动；需要滚动时把当前行放在屏幕上方约 1/3。
+                if (item == null || item.offset < topGuard || itemBottom > bottomGuard) {
+                    listState.animateScrollToItem(
+                        target,
+                        scrollOffset = -(viewportHeight * 0.30f).toInt(),
+                    )
+                }
+            }
     }
 }
 
@@ -669,7 +692,7 @@ private fun SubtitleList(
         state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 180.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (state.lines.isEmpty() && state.phase == Phase.READY) {
             item {
@@ -680,76 +703,58 @@ private fun SubtitleList(
         }
         itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
             val active = i == state.currentLine
-            val distance = if (state.currentLine >= 0) kotlin.math.abs(i - state.currentLine) else Int.MAX_VALUE
-            val targetAlpha = when {
-                state.currentLine < 0 -> 0.72f
-                distance == 0 -> 1f
-                distance == 1 -> 0.54f
-                distance == 2 -> 0.30f
-                distance == 3 -> 0.18f
-                else -> 0.10f
-            }
-            val textAlpha by animateFloatAsState(
-                targetValue = targetAlpha,
-                animationSpec = tween(420),
-                label = "subtitleFocusFade",
-            )
-            val scale by animateFloatAsState(
-                targetValue = if (active) 1f else 0.97f,
-                animationSpec = tween(360),
-                label = "subtitleFocusScale",
-            )
-            val background by animateColorAsState(
-                targetValue = if (active) SurfaceHigh.copy(alpha = 0.28f) else Color.Transparent,
-                animationSpec = tween(320),
-                label = "subtitleFocusBackground",
-            )
-            val color by animateColorAsState(
-                targetValue = if (active) OnBg else SubText,
-                animationSpec = tween(320),
-                label = "subtitleFocusText",
-            )
+            val activeDub = active && state.dubbingOn
+            val translatedText = line.zh?.takeIf { it.isNotBlank() } ?: "正在翻译…"
+
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(background)
-                    .animateContentSize(tween(300))
+                    .clip(RoundedCornerShape(14.dp))
+                    // 配音行采用浅色底，中文使用黑色粗体，保证对比度和可读性。
+                    .background(
+                        when {
+                            activeDub -> Color(0xFFF6F7F9)
+                            active -> SurfaceHigh.copy(alpha = 0.30f)
+                            else -> Color.Transparent
+                        }
+                    )
                     .clickable { svc?.seek(line.startMs) }
-                    .padding(horizontal = 16.dp, vertical = if (active) 16.dp else 10.dp),
+                    .padding(horizontal = 14.dp, vertical = if (activeDub) 14.dp else 10.dp),
                 horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             ) {
-                Text(
-                    line.text,
-                    color = color.copy(alpha = textAlpha),
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontSize = if (active) 17.sp else 15.sp,
-                        fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-                    ),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer { scaleX = scale; scaleY = scale },
-                )
-                val translatedText = line.zh
-                if (!translatedText.isNullOrBlank()) {
+                // 普通行只显示中文；只有当前正在跟随的配音行才额外显示原文。
+                if (activeDub && line.text.isNotBlank()) {
                     Text(
-                        translatedText,
-                        color = color.copy(alpha = textAlpha),
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (active) 24.sp else 19.sp,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                        line.text,
+                        color = Color(0xFF626873),
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
                         ),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .graphicsLayer { scaleX = scale; scaleY = scale }
-                            .padding(top = 4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
                     )
                 }
+                Text(
+                    translatedText,
+                    color = when {
+                        activeDub -> Color(0xFF111318)
+                        active -> OnBg
+                        else -> SubText
+                    },
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = if (activeDub) 23.sp else if (active) 19.sp else 17.sp,
+                        fontWeight = when {
+                            activeDub -> FontWeight.Black
+                            active -> FontWeight.SemiBold
+                            else -> FontWeight.Normal
+                        },
+                    ),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 if (active) {
-                    Spacer(Modifier.height(8.dp))
-                    // Keep speaker assignment available without the bulky "人物1·默认" chip.
+                    Spacer(Modifier.height(7.dp))
                     Surface(
                         onClick = {
                             val ids = listOf(-1, 0, 1, 2, 3)
@@ -757,8 +762,8 @@ private fun SubtitleList(
                             svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
                         },
                         shape = RoundedCornerShape(50),
-                        color = SurfaceHigh.copy(alpha = 0.75f),
-                        contentColor = SubText,
+                        color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
+                        contentColor = if (activeDub) Color(0xFF30343B) else SubText,
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
