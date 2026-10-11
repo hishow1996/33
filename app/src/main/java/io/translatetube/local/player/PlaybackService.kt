@@ -599,12 +599,10 @@ class PlaybackService : MediaSessionService() {
                     val best = overlapBySpeaker.maxByOrNull { it.value }
                     val speaker = if (best != null && best.value >= minOf(0.25f, duration * 0.2f)) best.key else -1
                     // Kokoro 的默认音色用于第一位说话人，其余说话人映射到不同预设音色。
-                    val voice = when (speaker) {
-                        0 -> -1
-                        1 -> 0
-                        2 -> 1
-                        3 -> 2
-                        4 -> 3
+                    val voice = when {
+                        speaker == 0 -> -1
+                        speaker in 1..14 -> speaker - 1
+                        speaker in 15..53 -> speaker
                         else -> -1
                     }
                     line.copy(speakerId = voice)
