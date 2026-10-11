@@ -38,6 +38,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # Install SDK packages in a separate shell step so each package is a distinct sdkmanager argument.
       - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses
