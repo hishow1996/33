@@ -184,8 +184,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             try {
                                 downloadTo(u, vad, expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6")
                                 break
-                            } catch (_: kotlinx.coroutines.CancellationException) {
-                                throw kotlinx.coroutines.CancellationException("VAD 下载已取消")
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
                             } catch (e: Exception) {
                                 Log.w("ModelDL", "VAD 下载源失败: ${e.message}")
                             }
