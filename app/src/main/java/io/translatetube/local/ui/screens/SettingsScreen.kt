@@ -281,7 +281,7 @@ private fun ModelRow(
                     Text("下载约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.labelSmall)
                 }
                 Button(onClick = onDownload, shape = RoundedCornerShape(11.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg)) {
+                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White)) {
                     Text("下载模型")
                 }
             }
