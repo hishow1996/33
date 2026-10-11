@@ -842,21 +842,15 @@ class PlaybackService : MediaSessionService() {
                 translated = engine!!.translate(batch, src, tgt)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                if (engine !is MlKitEngine) {
-                    // 当前批次出错时降级本地翻译；后续批次也沿用该引擎，避免重复失败请求。
-                    try {
-                        engine = MlKitEngine()
-                        engineName = "本地引擎（API失败降级）"
-                        ui.update { it.copy(engineName = engineName) }
-                        translated = engine!!.translate(batch, src, tgt)
-                    } catch (fallbackError: Exception) {
-                        if (fallbackError is kotlinx.coroutines.CancellationException) throw fallbackError
-                        android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", fallbackError)
-                        translated = null
-                    }
-                } else {
-                    android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", e)
+                android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", e)
+                // 不自动切换 ML Kit，在线引擎失败时也不在后台下载离线模型。
+                ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        error = "当前翻译引擎失败：${e.message ?: "未知错误"}。请检查网络/API，或在设置中手动下载离线翻译包后选择本地引擎。"
+                    )
                 }
+                translated = null
             }
 
             if (translated != null) {
