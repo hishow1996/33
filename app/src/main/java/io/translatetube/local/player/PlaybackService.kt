@@ -212,6 +212,8 @@ class PlaybackService : MediaSessionService() {
         dubbing?.release(); dubbing = null
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.importedLines = importedLines
+        // A manual retry starts with a fresh extractor result instead of reusing stale stream metadata.
+        if (videoId != null) NewPipeRepo.invalidate(videoId)
         qualityJob?.cancel()
         qualitySources = emptyList()
         qualityAudioUrl = ""
