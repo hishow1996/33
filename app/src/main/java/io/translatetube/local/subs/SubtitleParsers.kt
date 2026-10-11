@@ -75,10 +75,10 @@ object SubtitleParsers {
         }
         val out = mutableListOf<SubLine>()
         val cueRegex = Regex(
-            """<p\\b([^>]*)>(.*?)</p\\s*>""",
+            "<p\\b([^>]*)>(.*?)</p\\s*>",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
         )
-        val attributeRegex = Regex("""([A-Za-z_:][\\w:.-]*)\\s*=\\s*["']([^"']*)["']""")
+        val attributeRegex = Regex("([A-Za-z_:][\\w:.-]*)\\s*=\\s*[\"']([^\"']*)[\"']")
         cueRegex.findAll(src).forEach { match ->
             val attrs = attributeRegex.findAll(match.groupValues[1])
                 .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
@@ -88,12 +88,12 @@ object SubtitleParsers {
                 ?: return@forEach
             if (end <= start) return@forEach
             val body = match.groupValues[2].replace(
-                Regex("""<br\\s*/?>""", RegexOption.IGNORE_CASE), "\\n"
+                Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n"
             )
             val text = android.text.Html.fromHtml(
                 body,
                 android.text.Html.FROM_HTML_MODE_LEGACY,
-            ).toString().replace('\\u00a0', ' ').trim()
+            ).toString().replace('\u00a0', ' ').trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return mergeDuplicate(out)
@@ -113,12 +113,12 @@ object SubtitleParsers {
 
     /** 自动识别格式解析（vtt/srt/xml），输出保证按 startMs 单调有序（lineAt 二分前提） */
     fun parseAuto(src: String): List<SubLine> {
-        val t = src.removePrefix("\\uFEFF").trimStart()
+        val t = src.removePrefix("\uFEFF").trimStart()
         val parsed = when {
             t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t)
             t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t)
             t.startsWith("<?xml") || t.startsWith("<tt", ignoreCase = true) ||
-                Regex("""<tt[\\s>]""", RegexOption.IGNORE_CASE).containsMatchIn(t) ->
+                Regex("<tt[\\s>]", RegexOption.IGNORE_CASE).containsMatchIn(t) ->
                 parseTtml(t).ifEmpty { parseTimedTextXml(t) }
             else -> parseSrt(t)
         }
