@@ -22,7 +22,6 @@ private val http: OkHttpClient = OkHttpClient.Builder()
     .build()
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
-private val FORM = "application/x-www-form-urlencoded; charset=utf-8".toMediaType()
 
 private fun post(url: String, headers: Map<String, String>, body: String): String {
     val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
@@ -34,18 +33,6 @@ private fun post(url: String, headers: Map<String, String>, body: String): Strin
     }
 }
 
-private fun postForm(url: String, headers: Map<String, String>, fields: Map<String, String>): String {
-    val body = fields.entries.joinToString("&") { (k, v) ->
-        java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
-    }.toRequestBody(FORM)
-    val b = Request.Builder().url(url).post(body)
-    headers.forEach { (k, v) -> b.header(k, v) }
-    http.newCall(b.build()).execute().use { resp ->
-        val text = resp.body?.string() ?: throw IllegalStateException("空响应")
-        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}: ${text.take(300)}")
-        return text
-    }
-}
 private fun get(url: String, headers: Map<String, String>): String {
     val b = Request.Builder().url(url).get()
     headers.forEach { (k, v) -> b.header(k, v) }
@@ -286,60 +273,6 @@ class GoogleWebEngine : TranslationEngine {
         return out
     }
 }
-/** Bing 网页翻译免密钥接口。需要联网，非官方接口可能随时变更或限流。 */
-class MicrosoftWebEngine : TranslationEngine {
-    override val id = "ms-web"
-    override val displayName = "微软翻译（免费在线）"
-
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        val from = if (srcLang.isBlank() || srcLang == "auto") "auto-detect" else srcLang.substringBefore('-')
-        val to = when (tgtLang) { "zh", "zh-CN", "zh-Hans" -> "zh-Hans"; "zh-TW", "zh-Hant" -> "zh-Hant"; else -> tgtLang.substringBefore('-') }
-        val out = ArrayList<String>(lines.size)
-        for (line in lines) {
-            if (line.isBlank()) { out += ""; continue }
-            val body = postForm(
-                "https://www.bing.com/ttranslatev3?isVertical=1&&IG=translator& IID=translator.5028.1".replace(" ", ""),
-                mapOf("User-Agent" to "Mozilla/5.0", "Referer" to "https://www.bing.com/translator"),
-                mapOf("fromLang" to from, "to" to to, "text" to line),
-            )
-            val arr = JSONArray(body)
-            val translated = arr.optJSONObject(0)?.optJSONArray("translations")?.optJSONObject(0)?.optString("text").orEmpty()
-            if (translated.isBlank()) throw IllegalStateException("微软网页翻译未返回译文")
-            out += translated
-        }
-        return out
-    }
-}
-
-/** 百度网页翻译免密钥接口。依赖网页端非公开接口，可能失效或触发访问限制。 */
-class BaiduWebEngine : TranslationEngine {
-    override val id = "baidu-web"
-    override val displayName = "百度翻译（免费在线）"
-
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        val from = when {
-            srcLang.isBlank() || srcLang == "auto" -> "auto"
-            srcLang.startsWith("zh") -> "zh"
-            else -> srcLang.substringBefore('-')
-        }
-        val to = when { tgtLang.startsWith("zh") -> "zh"; tgtLang.startsWith("en") -> "en"; else -> tgtLang.substringBefore('-') }
-        val out = ArrayList<String>(lines.size)
-        for (line in lines) {
-            if (line.isBlank()) { out += ""; continue }
-            val body = postForm(
-                "https://fanyi.baidu.com/transapi?from=$from&to=$to",
-                mapOf("User-Agent" to "Mozilla/5.0", "Referer" to "https://fanyi.baidu.com/"),
-                mapOf("from" to from, "to" to to, "query" to line, "source" to "txt"),
-            )
-            val json = JSONObject(body)
-            val data = json.optJSONArray("data") ?: throw IllegalStateException("百度网页翻译返回格式异常")
-            val translated = (0 until data.length()).mapNotNull { data.optJSONObject(it)?.optString("dst") }.joinToString("")
-            if (translated.isBlank()) throw IllegalStateException("百度网页翻译未返回译文")
-            out += translated
-        }
-        return out
-    }
-}
 /** Google Cloud Translation API v2（key 即用，固定引擎） */
 class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
     override val id = "gcloud"
@@ -362,80 +295,6 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
     }
 }
 
-/** Microsoft Azure Translator（key + region，固定引擎） */
-class AzureEngine(private val apiKey: String, private val region: String) : TranslationEngine {
-    override val id = "azure"
-    override val displayName = "微软翻译 API"
-
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        val out = mutableListOf<String>()
-        for (chunk in lines.chunked(50)) {
-            val arr = JSONArray()
-            chunk.forEach { arr.put(JSONObject().put("Text", it)) }
-            val url = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=zh-Hans" +
-                if (!srcLang.startsWith("zh")) "&from=${srcLang.substringBefore('-')}" else ""
-            val body = post(
-                url,
-                mapOf("Ocp-Apim-Subscription-Key" to apiKey, "Ocp-Apim-Subscription-Region" to region),
-                arr.toString(),
-            )
-            val resArr = JSONArray(body)
-            for (i in 0 until resArr.length()) {
-                out += resArr.getJSONObject(i).getJSONArray("translations").getJSONObject(0).getString("text")
-            }
-        }
-        return out
-    }
-}
-
-/** 百度翻译开放平台（appid+密钥，MD5 签名；q 内换行天然支持批量） */
-class BaiduEngine(private val appid: String, private val secret: String) : TranslationEngine {
-    override val id = "baidu"
-    override val displayName = "百度翻译"
-
-    override suspend fun listModels(): List<String>? = null
-
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        val from = if (srcLang.isBlank() || srcLang == "auto") "auto" else srcLang.substringBefore('-')
-        val to = "zh"
-        val out = mutableListOf<String>()
-        // 单次 q 上限 6000 字节：按 20 行/5500 字节分批
-        var i = 0
-        while (i < lines.size) {
-            val batch = mutableListOf<String>()
-            var bytes = 0
-            while (i < lines.size && batch.size < 20) {
-                val b = lines[i].toByteArray(Charsets.UTF_8).size + 1
-                if (bytes + b > 5500 && batch.isNotEmpty()) break
-                batch += lines[i]; bytes += b; i++
-            }
-            val q = batch.joinToString("\n")
-            val salt = (System.currentTimeMillis() / 1000).toString()
-            val sign = md5(appid + q + salt + secret)
-            val form = "q=${java.net.URLEncoder.encode(q, "UTF-8")}&from=$from&to=$to&appid=$appid&salt=$salt&sign=$sign"
-            val body = post(
-                "https://fanyi-api.baidu.com/api/trans/vip/translate",
-                emptyMap(),
-                form,
-            )
-            val res = JSONObject(body)
-            res.optString("error_code").takeIf { it.isNotEmpty() }?.let {
-                throw IllegalStateException("百度 API 错误 $it: ${res.optString("error_msg")}")
-            }
-            val arr = res.getJSONArray("trans_result")
-            for (j in 0 until arr.length()) {
-                out += arr.getJSONObject(j).optString("dst").replace("\n", " ")
-            }
-        }
-        return out
-    }
-
-    private fun md5(s: String): String {
-        val d = java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
-        return d.joinToString("") { "%02x".format(it) }
-    }
-}
-
 /** 引擎工厂：从 ApiProfile 构建实例 */
 object EngineFactory {
     fun fromProfile(p: io.translatetube.local.data.ApiProfile): TranslationEngine {
@@ -444,8 +303,6 @@ object EngineFactory {
             "OPENAI" -> OpenAiCompatEngine(p.baseUrl, key, p.model)
             "GEMINI" -> GeminiEngine(key, p.model, p.baseUrl.ifEmpty { "https://generativelanguage.googleapis.com" })
             "GCLOUD" -> GoogleCloudEngine(key)
-            "AZURE" -> AzureEngine(key, p.region)
-            "BAIDU" -> BaiduEngine(p.model.ifEmpty { "" }, key)  // model 字段存 AppID
             else -> throw IllegalStateException("未知类型 ${p.type}")
         }
     }
