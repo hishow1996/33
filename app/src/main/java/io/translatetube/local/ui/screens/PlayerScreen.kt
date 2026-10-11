@@ -86,13 +86,16 @@ fun PlayerScreen(
                 } else {
                     s.open(key, videoId, localUri)
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Do not let a non-fatal runtime/linkage error in service startup terminate the
+                // Compose coroutine and process. VM-fatal conditions must still propagate.
+                if (e is VirtualMachineError || e is ThreadDeath) throw e
                 android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 PlaybackService.ui.update {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
-                        error = "无法启动播放器：${e.message ?: e.javaClass.simpleName}"
+                        error = "无法启动播放器（${e.javaClass.simpleName}）：${e.message ?: "未知错误"}"
                     )
                 }
             }

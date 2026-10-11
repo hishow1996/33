@@ -157,12 +157,15 @@ class PlaybackService : MediaSessionService() {
             }
             playerReady = true
             instance = this
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Player/MediaSession startup can fail with LinkageError on older Android builds.
+            // Keep those failures visible in the player page instead of killing the app process.
+            if (e is VirtualMachineError || e is ThreadDeath) throw e
             playerReady = false
             instance = this
             val message = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
             ui.update {
-                it.copy(phase = Phase.ERROR, progress = "", error = "播放器初始化失败：$message")
+                it.copy(phase = Phase.ERROR, progress = "", error = "播放器初始化失败（${e.javaClass.simpleName}）：$message")
             }
             android.util.Log.e("PlaybackService", "Playback service initialization failed", e)
             // 不保留一个无法播放的前台服务实例；页面仍可显示错误并在用户点击重试时重新启动。
@@ -440,8 +443,20 @@ class PlaybackService : MediaSessionService() {
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            e.printStackTrace()
-            ui.update { it.copy(phase = Phase.ERROR, error = e.message ?: "未知错误") }
+            android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
+            ui.update { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
+        } catch (e: Throwable) {
+            // A non-fatal Error (for example, an extractor/library linkage error) must be shown
+            // as a playback failure rather than escaping a Dispatchers.Default coroutine.
+            if (e is VirtualMachineError || e is ThreadDeath) throw e
+            android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=$key", e)
+            ui.update {
+                it.copy(
+                    phase = Phase.ERROR,
+                    progress = "",
+                    error = "视频解析/播放器异常（${e.javaClass.simpleName}）：${e.message ?: "请查看崩溃日志"}"
+                )
+            }
         } finally {
             transientAudio?.delete()
         }
