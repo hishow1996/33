@@ -67,7 +67,7 @@ class DubbingEngine(
         synchronized(mem) { mem.clear() }
         // 从未缓存的最早行开始排
         for (i in lines.indices) {
-            val file = File(cacheDir, "$i.pcm")
+            val file = cacheFile(i)
             if (validCache(file) && file.length() == 8L) noAudio.add(i)
             if (!cached(i)) pending.offer(i)
         }
@@ -90,7 +90,7 @@ class DubbingEngine(
                     continue
                 }
                 try {
-                    val audio = tts!!.synth(text, speed)
+                    val audio = tts!!.synth(text, speed, line.speakerId)
                     if (audio.sampleRate <= 0 || audio.samples.isEmpty()) {
                         writeCache(idx, audio.sampleRate.coerceAtLeast(16000), FloatArray(0))
                         noAudio.add(idx)
@@ -122,15 +122,20 @@ class DubbingEngine(
         _preparedUntil.value = n
     }
 
+    private fun cacheFile(idx: Int): File {
+        val voice = lines.getOrNull(idx)?.speakerId ?: -1
+        return File(cacheDir, "${idx}-v${voice}.pcm")
+    }
+
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
     private fun cached(idx: Int): Boolean =
-        synchronized(mem) { mem.containsKey(idx) } || validCache(File(cacheDir, "$idx.pcm"))
+        synchronized(mem) { mem.containsKey(idx) } || validCache(cacheFile(idx))
 
     /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
     private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
-        val target = File(cacheDir, "$idx.pcm")
-        val temp = File(cacheDir, "$idx.pcm.tmp")
+        val target = cacheFile(idx)
+        val temp = File(cacheDir, target.name + ".tmp")
         temp.delete()
         java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
             out.writeInt(sampleRate)
@@ -155,7 +160,7 @@ class DubbingEngine(
     /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。 */
     private fun load(idx: Int): Pair<FloatArray, Int>? {
         synchronized(mem) { mem[idx]?.let { return it } }
-        val f = File(cacheDir, "$idx.pcm")
+        val f = cacheFile(idx)
         if (!validCache(f)) return null
         return try {
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
