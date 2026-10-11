@@ -352,16 +352,48 @@ class PlaybackService : MediaSessionService() {
             }
 
             // ---- 2. 字幕行 ----
-            var lines: List<SubLine>? = null
-            if (videoId != null) {
-                NewPipeRepo.subtitles(videoId)?.let { (l, lang) ->
-                    lines = l; srcLang = lang
-                }
-            }
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationCacheKey = "$key|zh|$selectedTranslationId"
+            val sourceSubtitleCacheKey = "$key|source|youtube"
+            // 先读本地缓存，再决定是否请求 YouTube 字幕。之前每次重试都先下载字幕，
+            // 即使译文已经缓存，也会重复发起字幕网络请求。
             val cached = db.subtitleCacheDao().get(translationCacheKey)
+            val sourceCached = if (cached == null && videoId != null && importedLines.isNullOrEmpty()) {
+                db.subtitleCacheDao().get(sourceSubtitleCacheKey)
+            } else null
+            var lines: List<SubLine>? = null
+            if (cached == null && importedLines.isNullOrEmpty() && videoId != null) {
+                if (sourceCached != null) {
+                    val sourceArr = org.json.JSONArray(sourceCached.linesJson)
+                    lines = (0 until sourceArr.length()).map { i ->
+                        val o = sourceArr.getJSONObject(i)
+                        SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"))
+                    }
+                    srcLang = sourceCached.srcLang
+                    android.util.Log.i("PlaybackService", "Using cached source subtitles for $videoId (${lines!!.size} cues)")
+                } else {
+                    NewPipeRepo.subtitles(videoId)?.let { (fetchedLines, lang) ->
+                        lines = fetchedLines
+                        srcLang = lang
+                        // 缓存原始字幕独立于翻译服务，API 切换或翻译失败后也不必重新下载。
+                        val sourceArr = org.json.JSONArray()
+                        for (line in fetchedLines) {
+                            sourceArr.put(
+                                org.json.JSONObject()
+                                    .put("s", line.startMs)
+                                    .put("e", line.endMs)
+                                    .put("t", line.text)
+                            )
+                        }
+                        db.subtitleCacheDao().put(
+                            io.translatetube.local.data.SubtitleCacheEntity(
+                                sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
+                            )
+                        )
+                    }
+                }
+            }
 
             if (lines == null && cached == null) {
                 if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
