@@ -14,7 +14,7 @@ data class TtsAudio(val samples: FloatArray, val sampleRate: Int)
 
 interface TtsEngine {
     val name: String
-    fun synth(text: String, speed: Float = 1.0f): TtsAudio
+    fun synth(text: String, speed: Float = 1.0f, speakerId: Int = -1): TtsAudio
     fun close()
 }
 
@@ -46,8 +46,9 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
         tts = OfflineTts(null, config)
     }
 
-    override fun synth(text: String, speed: Float): TtsAudio {
-        val audio = tts.generate(text, speakerId, speed)
+    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+        val selectedSpeaker = if (speakerId >= 0) speakerId else this.speakerId
+        val audio = tts.generate(text, selectedSpeaker, speed)
         return TtsAudio(audio.samples, audio.sampleRate)
     }
 
@@ -77,7 +78,7 @@ class SystemTts(context: Context) : TtsEngine {
         ready.await()
     }
 
-    override fun synth(text: String, speed: Float): TtsAudio {
+    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
         if (!ok) return TtsAudio(FloatArray(0), 16000)
         val tmp = java.io.File.createTempFile("tts_", ".wav", contextCacheDir())
         val r = ttsRef.get()?.synthesizeToFile(text, android.os.Bundle(), null, tmp.absolutePath) ?: -1
