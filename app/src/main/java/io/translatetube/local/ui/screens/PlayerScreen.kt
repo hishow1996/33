@@ -13,10 +13,23 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPictureAlt
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -143,6 +156,27 @@ fun PlayerScreen(
         }
     }
 
+    fun startFloatingWindow() {
+        if (!floating.canDraw()) {
+            floatingGranted = false
+            runCatching {
+                ctx.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:${ctx.packageName}")
+                    )
+                )
+            }
+            return
+        }
+        (tv.parent as? ViewGroup)?.removeView(tv)
+        val host = FrameLayout(ctx).apply {
+            addView(tv, FrameLayout.LayoutParams(-1, -1))
+        }
+        floating.show(host, 640, 360)
+        isFloating = true
+    }
+
     // 系统返回键：存进度回主页，而不是退出应用
     androidx.activity.compose.BackHandler {
         exitFloating()
@@ -170,7 +204,7 @@ fun PlayerScreen(
                     .padding(horizontal = 8.dp, vertical = 2.dp))
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(state.title.ifEmpty { "载入中…" }, color = OnBg, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                    Text(state.title.ifEmpty { if (state.phase == Phase.ERROR) "加载失败" else "载入中…" }, color = OnBg, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                     Text("${if (state.sourceLang.isNotEmpty()) LangLabel(state.sourceLang) + " → " else ""}中文 · ${state.engineName}",
                         color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
@@ -196,7 +230,12 @@ fun PlayerScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
                 if (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING) {
-                    VideoOverlayControls(state = state)
+                    VideoOverlayControls(
+                        state = state,
+                        isFloating = isFloating,
+                        onStartFloat = { startFloatingWindow() },
+                        onExitFloat = { exitFloating() },
+                    )
                 }
                 // 阶段进度覆盖层
                 val phase = state.phase
@@ -239,28 +278,9 @@ fun PlayerScreen(
                 Spacer(Modifier.height(6.dp))
             }
 
-            // ===== 控制条 =====
+            // ===== 简洁的音频与字幕工具面板 =====
             ControlBar(
                 state = state,
-                onStartFloat = {
-                    if (!floating.canDraw()) {
-                        floatingGranted = false
-                        ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
-                    } else {
-                        (tv.parent as? ViewGroup)?.removeView(tv)
-                        val host = FrameLayout(ctx).apply { addView(tv, FrameLayout.LayoutParams(-1, -1)) }
-                        floating.show(host, 640, 360)
-                        isFloating = true
-                    }
-                },
-                onExitFloat = {
-                    floating.hide()
-                    (tv.parent as? ViewGroup)?.removeView(tv)
-                    frame.addView(tv, FrameLayout.LayoutParams(-1, -1))
-                    isFloating = false
-                },
-                isFloating = isFloating,
-                floatingGranted = floatingGranted,
                 onImportSub = { subPicker.launch(arrayOf("*/*")) },
                 onCopySub = {
                     val sb = StringBuilder()
@@ -272,23 +292,12 @@ fun PlayerScreen(
                     if (text.isNotEmpty()) {
                         val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                                 as android.content.ClipboardManager
-                        cm.setPrimaryClip(
-                            android.content.ClipData.newPlainText("subtitles", text)
-                        )
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("subtitles", text))
                     }
                 },
             )
 
-            if (state.error != null || state.progress.isNotBlank()) {
-                Text(
-                    state.error ?: state.progress,
-                    color = if (state.error != null) WarnYellow else SubText,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                )
-            }
-
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
 
             // ===== 双语字幕列表 =====
             SubtitleList(state, PlaybackService.instance, listState)
@@ -304,11 +313,19 @@ fun PlayerScreen(
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(state: PlayerUiState) {
+private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
+    state: PlayerUiState,
+    isFloating: Boolean,
+    onStartFloat: () -> Unit,
+    onExitFloat: () -> Unit,
+) {
     val svc = PlaybackService.instance
     var pos by remember(state.key) { mutableStateOf(0f) }
     var scrubbing by remember(state.key) { mutableStateOf(false) }
     var qualityExpanded by remember { mutableStateOf(false) }
+    var speedExpanded by remember { mutableStateOf(false) }
+    var speed by remember(state.key) { mutableStateOf(1.0f) }
+    val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
 
     LaunchedEffect(state.key) {
         while (true) {
@@ -325,49 +342,102 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(sta
         Modifier
             .align(androidx.compose.ui.Alignment.BottomCenter)
             .fillMaxWidth()
-            .background(Color(0xC9000000))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .background(Color(0xB8000000))
+            .padding(horizontal = 6.dp, vertical = 3.dp),
     ) {
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            TextButton(
+            IconButton(
                 onClick = { svc?.playPause() },
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.size(38.dp),
             ) {
-                Text(if (state.isPlaying) "❚❚" else "▶", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Icon(
+                    imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (state.isPlaying) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
             }
             Text(
-                SubtitleParsers.fmtTime((svc?.position() ?: 0L).coerceAtLeast(0L)),
+                "${SubtitleParsers.fmtTime((pos * (svc?.duration() ?: 0L)).toLong())} / ${SubtitleParsers.fmtTime(state.durationMs)}",
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
             )
             Spacer(Modifier.weight(1f))
-            if (state.qualityOptions.isNotEmpty()) {
-                Box {
-                    TextButton(
-                        onClick = { qualityExpanded = true },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                    ) {
-                        Text("清晰度 ${state.selectedQuality}", color = Color.White, style = MaterialTheme.typography.labelMedium)
-                    }
-                    DropdownMenu(
-                        expanded = qualityExpanded,
-                        onDismissRequest = { qualityExpanded = false },
-                    ) {
-                        state.qualityOptions.forEach { quality ->
-                            DropdownMenuItem(
-                                text = { Text(if (quality == state.selectedQuality) "✓ $quality" else quality) },
-                                onClick = {
-                                    qualityExpanded = false
-                                    svc?.selectQuality(quality)
-                                },
-                            )
-                        }
+            Box {
+                IconButton(
+                    onClick = { qualityExpanded = true },
+                    enabled = state.qualityOptions.isNotEmpty(),
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.HighQuality,
+                        contentDescription = "选择清晰度",
+                        tint = if (state.qualityOptions.isNotEmpty()) Color.White else Color(0xFF777777),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = qualityExpanded,
+                    onDismissRequest = { qualityExpanded = false },
+                ) {
+                    state.qualityOptions.forEach { quality ->
+                        DropdownMenuItem(
+                            text = { Text(if (quality == state.selectedQuality) "✓ $quality" else quality) },
+                            onClick = {
+                                qualityExpanded = false
+                                svc?.selectQuality(quality)
+                            },
+                        )
                     }
                 }
+            }
+            Box {
+                IconButton(
+                    onClick = { speedExpanded = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Speed,
+                        contentDescription = "播放倍速",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = speedExpanded,
+                    onDismissRequest = { speedExpanded = false },
+                ) {
+                    speedOptions.forEach { value ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (value == speed) "✓ ${value}×" else "${value}×"
+                                )
+                            },
+                            onClick = {
+                                speed = value
+                                svc?.setSpeed(value)
+                                speedExpanded = false
+                            },
+                        )
+                    }
+                }
+            }
+            IconButton(
+                onClick = { if (isFloating) onExitFloat() else onStartFloat() },
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PictureInPictureAlt,
+                    contentDescription = if (isFloating) "关闭悬浮窗" else "打开悬浮窗",
+                    tint = if (isFloating) BrandBright else Color.White,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
         Slider(
@@ -381,6 +451,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(sta
                 if (duration > 0L) svc?.seek((pos * duration).toLong())
                 scrubbing = false
             },
+            modifier = Modifier.height(22.dp),
             colors = SliderDefaults.colors(
                 thumbColor = BrandBright,
                 activeTrackColor = BrandBright,
@@ -390,67 +461,128 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(sta
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun ControlBar(
     state: PlayerUiState,
-    onStartFloat: () -> Unit,
-    onExitFloat: () -> Unit,
-    isFloating: Boolean,
-    floatingGranted: Boolean,
     onImportSub: () -> Unit,
     onCopySub: () -> Unit,
 ) {
-    val ctx = LocalContext.current
     val svc = PlaybackService.instance
-    var speed by remember { mutableStateOf(1.0f) }
-    Column(Modifier.fillMaxWidth()) {
-        FlowRow(
-            Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+    val isSpeakerBusy = state.progress.contains("人物识别") ||
+        state.progress.contains("人物说话") ||
+        state.progress.contains("分离")
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = SurfaceDark,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            AssistChip(
-                onClick = { svc?.toggleDub() },
-                label = { Text(if (state.dubbingOn) "🔊 配音开" else "🔇 配音关") },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = if (state.dubbingOn) SurfaceHigh else SurfaceDark,
-                    labelColor = if (state.dubbingOn) BrandBright else SubText,
-                ),
-            )
-            AssistChip(onClick = { svc?.toggleMute() }, label = {
-                Text(if (state.muteOriginal) "原声静音" else "原声压低") })
-            AssistChip(onClick = { svc?.toggleAudioOnly() }, label = { Text(if (state.audioOnly) "🎧 仅听中" else "🎧 仅听") })
-            AssistChip(
-                onClick = {
-                    if (!floatingGranted) {
-                        // 无悬浮窗权限：直接引导到系统授权页
-                        runCatching {
-                            ctx.startActivity(
-                                android.content.Intent(
-                                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    android.net.Uri.parse("package:${ctx.packageName}")
-                                )
-                            )
-                        }
-                    } else if (isFloating) onExitFloat() else onStartFloat()
-                },
-                label = { Text(if (isFloating) "关浮窗" else if (floatingGranted) "悬浮窗" else "悬浮窗(需授权)") },
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                PlayerToolTile(
+                    modifier = Modifier.weight(1f),
+                    icon = if (state.dubbingOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                    label = if (state.dubbingOn) "配音开启" else "配音关闭",
+                    selected = state.dubbingOn,
+                    onClick = { svc?.toggleDub() },
+                )
+                PlayerToolTile(
+                    modifier = Modifier.weight(1f),
+                    icon = if (state.muteOriginal) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                    label = if (state.muteOriginal) "原声静音" else "原声压低",
+                    selected = state.muteOriginal,
+                    onClick = { svc?.toggleMute() },
+                )
+                PlayerToolTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Headphones,
+                    label = "仅听",
+                    selected = state.audioOnly,
+                    onClick = { svc?.toggleAudioOnly() },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                PlayerToolTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Face,
+                    label = if (isSpeakerBusy) "识别中" else "区分人物",
+                    selected = false,
+                    enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
+                    onClick = { svc?.autoAssignSpeakers() },
+                )
+                PlayerToolTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Subtitles,
+                    label = "导入字幕",
+                    selected = false,
+                    onClick = onImportSub,
+                )
+                PlayerToolTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.ContentCopy,
+                    label = "复制字幕",
+                    selected = false,
+                    enabled = state.lines.isNotEmpty(),
+                    onClick = onCopySub,
+                )
+            }
         }
-        FlowRow(Modifier.fillMaxWidth().padding(bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AssistChip(
-                onClick = { svc?.autoAssignSpeakers() },
-                label = { Text(if (state.progress.contains("人物识别") || state.progress.contains("人物说话") || state.progress.contains("分离")) "🎭 正在识别…" else "🎭 自动区分人物") },
-                enabled = state.lines.isNotEmpty() && !state.progress.contains("人物识别") && !state.progress.contains("人物说话") && !state.progress.contains("分离"),
+    }
+}
+
+@Composable
+private fun PlayerToolTile(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                when {
+                    !enabled -> Color.Transparent
+                    selected -> SurfaceHigh
+                    else -> Color.Transparent
+                }
             )
-            AssistChip(onClick = { onImportSub() }, label = { Text("📥 导入字幕") })
-            AssistChip(onClick = { onCopySub() }, label = { Text("📋 复制字幕") })
-            AssistChip(onClick = { speed = 0.75f; svc?.setSpeed(0.75f) }, label = { Text("0.75x", color = if (speed == 0.75f) BrandBright else SubText) })
-            AssistChip(onClick = { speed = 1.0f; svc?.setSpeed(1.0f) }, label = { Text("1x", color = if (speed == 1.0f) BrandBright else SubText) })
-            AssistChip(onClick = { speed = 1.25f; svc?.setSpeed(1.25f) }, label = { Text("1.25x", color = if (speed == 1.25f) BrandBright else SubText) })
-            AssistChip(onClick = { speed = 1.5f; svc?.setSpeed(1.5f) }, label = { Text("1.5x", color = if (speed == 1.5f) BrandBright else SubText) })
-            AssistChip(onClick = { speed = 2.0f; svc?.setSpeed(2.0f) }, label = { Text("2x", color = if (speed == 2.0f) BrandBright else SubText) })
-        }
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 3.dp, vertical = 7.dp),
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = when {
+                !enabled -> SubText.copy(alpha = 0.35f)
+                selected -> BrandBright
+                else -> SubText
+            },
+            modifier = Modifier.size(19.dp),
+        )
+        Text(
+            text = label,
+            color = when {
+                !enabled -> SubText.copy(alpha = 0.4f)
+                selected -> BrandBright
+                else -> SubText
+            },
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
     }
 }
 

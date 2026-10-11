@@ -64,6 +64,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures {
@@ -77,6 +78,9 @@ android {
 }
 
 dependencies {
+    // Backport newer Java library APIs used by NewPipeExtractor to Android 7–12.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
     // 本地 aar：sherpa-onnx（TTS Kokoro + ASR Whisper 推理引擎）
     implementation(files("libs/sherpa-onnx.aar"))
 
@@ -86,6 +90,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
