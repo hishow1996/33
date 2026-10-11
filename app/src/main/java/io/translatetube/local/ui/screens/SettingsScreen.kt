@@ -233,21 +233,42 @@ private fun ModelRow(
         Spacer(Modifier.height(9.dp))
         when {
             state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
-                Text(
-                    "下载中 ${state.progress}%（${state.downloadedMB}/${state.totalMB} MB）",
-                    color = BrandBright, style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { state.progress / 100f },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    color = Brand, trackColor = SurfaceHigh,
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(
+                        progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.size(42.dp),
+                        color = BrandBright,
+                        trackColor = SurfaceDark,
+                        strokeWidth = 4.dp,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "下载中 ${state.progress}%（${state.downloadedMB}/${state.totalMB} MB）",
+                            color = BrandBright, style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text("下载完成后自动安装", color = SubText, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
             state.status == io.translatetube.local.data.ModelStatus.EXTRACTING -> {
-                Text("解压安装中…", color = BrandBright, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Brand, trackColor = SurfaceHigh)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(42.dp),
+                        color = BrandBright,
+                        trackColor = SurfaceDark,
+                        strokeWidth = 4.dp,
+                    )
+                    Text("解压安装中…", color = BrandBright, style = MaterialTheme.typography.bodySmall)
+                }
             }
             state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
                 Text("下载失败：${state.error ?: "网络异常"}", color = DangerRed, style = MaterialTheme.typography.bodySmall)

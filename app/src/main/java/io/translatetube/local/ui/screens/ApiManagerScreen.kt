@@ -87,10 +87,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                 .background(if (activeId == -1L || activeId == -2L) SurfaceHigh else SurfaceDark)
-                .clickable {
-                    setActive(-2L)
-                    googleExpanded = !googleExpanded
-                }
+                .clickable { googleExpanded = !googleExpanded }
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -220,7 +217,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
 
             Labeled("名称") { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 DeepSeek") }) }
 
-            var typeMenuExpanded by remember { mutableStateOf(false) }
+            var typePickerExpanded by remember { mutableStateOf(false) }
             val typeOptions = listOf(
                 "OPENAI" to "OpenAI 兼容",
                 "GEMINI" to "Gemini 大模型",
@@ -233,11 +230,11 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                         onValueChange = {},
                         readOnly = true,
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().clickable { typeMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth().clickable { typePickerExpanded = true },
                         trailingIcon = {
-                            IconButton(onClick = { typeMenuExpanded = !typeMenuExpanded }) {
+                            IconButton(onClick = { typePickerExpanded = !typePickerExpanded }) {
                                 Icon(
-                                    imageVector = if (typeMenuExpanded) androidx.compose.material.icons.Icons.Default.ExpandLess
+                                    imageVector = if (typePickerExpanded) androidx.compose.material.icons.Icons.Default.ExpandLess
                                         else androidx.compose.material.icons.Icons.Default.ExpandMore,
                                     contentDescription = "选择服务类型",
                                     tint = SubText,
@@ -251,30 +248,63 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             unfocusedTextColor = OnBg,
                         ),
                     )
-                    DropdownMenu(
-                        expanded = typeMenuExpanded,
-                        onDismissRequest = { typeMenuExpanded = false },
-                        modifier = Modifier.fillMaxWidth(0.86f).heightIn(max = 240.dp)
-                            .background(SurfaceDark),
-                    ) {
-                        typeOptions.forEach { (value, label) ->
-                            DropdownMenuItem(
-                                text = { Text(label, color = if (type == value) BrandBright else OnBg) },
-                                trailingIcon = {
-                                    if (type == value) Icon(
-                                        imageVector = androidx.compose.material.icons.Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = BrandBright,
-                                    )
-                                },
-                                onClick = {
-                                    type = value
-                                    models = null
-                                    model = ""
-                                    typeMenuExpanded = false
-                                },
-                            )
-                        }
+                    if (typePickerExpanded) {
+                        AlertDialog(
+                            onDismissRequest = { typePickerExpanded = false },
+                            title = { Text("选择服务类型", color = OnBg, style = MaterialTheme.typography.titleLarge) },
+                            text = {
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    items(typeOptions, key = { it.first }) { (value, label) ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(if (type == value) SurfaceHigh else SurfaceDark)
+                                                .clickable {
+                                                    type = value
+                                                    models = null
+                                                    model = ""
+                                                    typePickerExpanded = false
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 13.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            RadioButton(
+                                                selected = type == value,
+                                                onClick = {
+                                                    type = value
+                                                    models = null
+                                                    model = ""
+                                                    typePickerExpanded = false
+                                                },
+                                                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+                                            )
+                                            Text(
+                                                label,
+                                                color = if (type == value) BrandBright else OnBg,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                            if (type == value) {
+                                                Icon(
+                                                    imageVector = androidx.compose.material.icons.Icons.Default.Check,
+                                                    contentDescription = "当前选择",
+                                                    tint = BrandBright,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { typePickerExpanded = false }) {
+                                    Text("完成", color = BrandBright)
+                                }
+                            },
+                            containerColor = SurfaceDark,
+                        )
                     }
                 }
             }
