@@ -142,14 +142,24 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
         Section("悬浮窗") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (canFloat) "✅ 已授权" else "⚠️ 未授权", color = if (canFloat) BrandBright else WarnYellow, modifier = Modifier.weight(1f))
+                Column(Modifier.weight(1f)) {
+                    Text(if (canFloat) "权限已开启" else "需要开启悬浮窗权限", color = OnBg, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (canFloat) "可以在其他应用上方显示播放窗口" else "开启后才能使用全局悬浮播放",
+                        color = if (canFloat) BrandBright else WarnYellow,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 if (!canFloat) {
-                    Button(onClick = {
-                        ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:${ctx.packageName}")))
-                    }, colors = ButtonDefaults.buttonColors(containerColor = Brand)) { Text("去授权") }
+                    Button(
+                        onClick = {
+                            ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + ctx.packageName)))
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Brand),
+                        shape = RoundedCornerShape(12.dp),
+                    ) { Text("去开启") }
                 }
             }
-            Text("悬浮窗播放需要系统「显示在其他应用上层」权限。", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
 
         Section("语音转写") {
@@ -157,27 +167,44 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         }
 
         Section("存储") {
-            var cacheSize by remember { mutableStateOf("") }
-            var cacheCleared by remember { mutableStateOf(false) }
-            LaunchedEffect(cacheCleared) {
-                cacheSize = formatCacheSize(ctx)
-            }
+            var cacheSize by remember { mutableStateOf(formatCacheSize(ctx)) }
+            var showClearConfirm by remember { mutableStateOf(false) }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("配音/字幕缓存：$cacheSize", color = OnBg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                Button(
-                    onClick = {
-                        clearAppCache(ctx)
-                        cacheCleared = !cacheCleared
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
-                ) { Text("清理") }
+                Column(Modifier.weight(1f)) {
+                    Text("临时缓存", color = OnBg, style = MaterialTheme.typography.titleSmall)
+                    Text("当前占用 $cacheSize", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(
+                    onClick = { showClearConfirm = true },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
+                ) { Text("清理缓存") }
             }
-            Text("清理后已配音的视频再次观看时需要重新合成；不影响观看历史与收藏。", color = SubText, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(5.dp))
+            Text("清理会删除配音音频和转写临时文件，不会删除历史记录或收藏。", color = SubText, style = MaterialTheme.typography.bodySmall)
+            if (showClearConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showClearConfirm = false },
+                    title = { Text("清理临时缓存？", color = OnBg) },
+                    text = { Text("已生成的配音音频可能需要重新合成。历史记录和收藏不会受影响。", color = SubText) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            clearAppCache(ctx)
+                            cacheSize = formatCacheSize(ctx)
+                            showClearConfirm = false
+                        }) { Text("确认清理", color = DangerRed) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showClearConfirm = false }) { Text("取消", color = SubText) }
+                    },
+                    containerColor = SurfaceDark,
+                )
+            }
         }
 
         Section("关于") {
-            Text("大象翻译 v1.0.2", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-            Text("离线翻译 · 本地神经配音 · 悬浮窗 · 无订阅", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+            Text("大象翻译 v" + io.translatetube.local.BuildConfig.VERSION_NAME, color = OnBg, style = MaterialTheme.typography.titleSmall)
+            Text("离线翻译 · 本地神经配音 · 悬浮播放", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
