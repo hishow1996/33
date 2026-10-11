@@ -81,11 +81,15 @@ object AudioExtract {
                     srcRate = nf.getInteger(MediaFormat.KEY_SAMPLE_RATE, srcRate)
                     srcChannels = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT, srcChannels)
                 }
-            }
+            // 音频已解码，尽早释放 MediaCodec，避免后续重采样/分配大数组时占用硬件解码资源。
+            runCatching { decoder?.stop() }
+            runCatching { decoder?.release() }
+            decoder = null
+
             val total = collected.sumOf { it.size }
             // 立体声两帧合一路，mono 只需一半容量
             val monoLen = if (srcChannels >= 2) total / 2 else total
-            val mono = ShortArray(monoLen)
+            var mono = ShortArray(monoLen)
             var w = 0
             for (chunk in collected) {
                 if (srcChannels >= 2) {
@@ -100,8 +104,12 @@ object AudioExtract {
                     w += n
                 }
             }
-            val resampled = resample(mono, srcRate, 16000)
+            // 不再保留原始解码块；减少长音频重采样阶段的瞬时内存峰值。
+            collected.clear()
+            var resampled = resample(mono, srcRate, 16000)
+            mono = ShortArray(0)
             val floats = FloatArray(resampled.size) { resampled[it] / 32768f }
+            resampled = ShortArray(0)
             return Pcm(floats, 16000)
         } finally {
             // MediaCodec 也必须在解码异常/取消路径释放，避免连续播放时耗尽硬件解码器资源。
