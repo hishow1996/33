@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.floating.FloatingManager
 
@@ -25,6 +26,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
+    val translationScope = rememberCoroutineScope()
+    var translationPackStatus by remember { mutableStateOf("") }
+    var downloadingTranslationPack by remember { mutableStateOf(false) }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -126,6 +130,67 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                 Text("0-53 为模型内声音编号，男女声交替，可试听后选定", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
             }
             Text("切换后对下一次打开的视频生效（当前视频不变）。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+        }
+
+        Section("离线翻译包") {
+            Text("离线包需手动下载。未下载时请使用在线翻译；播放时不会自动下载任何离线翻译模型。",
+                color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+            val packs = listOf(
+                Triple("英语 ↔ 中文", "en", "zh"),
+                Triple("日语 ↔ 中文", "ja", "zh"),
+                Triple("韩语 ↔ 中文", "ko", "zh"),
+                Triple("法语 ↔ 中文", "fr", "zh"),
+                Triple("德语 ↔ 中文", "de", "zh"),
+                Triple("西班牙语 ↔ 中文", "es", "zh"),
+                Triple("俄语 ↔ 中文", "ru", "zh")
+            )
+            packs.forEach { pack ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHigh)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(pack.first, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                        Text("下载后可离线翻译；每种语言模型只需下载一次", color = SubText,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(
+                        enabled = !downloadingTranslationPack,
+                        onClick = {
+                            downloadingTranslationPack = true
+                            translationPackStatus = "正在准备 ${pack.first} 离线包…"
+                            translationScope.launch {
+                                try {
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                        io.translatetube.local.translate.MlKitModelCoordinator.downloadLanguage(pack.second) { msg ->
+                                            translationPackStatus = msg
+                                        }
+                                        if (pack.third != pack.second) {
+                                            io.translatetube.local.translate.MlKitModelCoordinator.downloadLanguage(pack.third) { msg ->
+                                                translationPackStatus = msg
+                                            }
+                                        }
+                                    }
+                                    translationPackStatus = "${pack.first} 离线翻译包已就绪"
+                                } catch (e: Exception) {
+                                    translationPackStatus = "下载失败：${e.message ?: "请检查网络后重试"}"
+                                } finally {
+                                    downloadingTranslationPack = false
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Brand)
+                    ) { Text("下载") }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+            if (translationPackStatus.isNotBlank()) {
+                Text(translationPackStatus, color = if (translationPackStatus.startsWith("下载失败")) DangerRed else BrandBright,
+                    style = MaterialTheme.typography.bodySmall)
+            }
         }
 
         Section("翻译引擎") {
