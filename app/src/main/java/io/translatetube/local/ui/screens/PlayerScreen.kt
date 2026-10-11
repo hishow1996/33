@@ -52,23 +52,35 @@ fun PlayerScreen(
             if (retryRequested) handledRetryNonce = retryNonce
             try {
                 var s = PlaybackService.instance
+                if (retryRequested && s?.isReady == false) {
+                    // 初始化失败的旧实例可能尚在销毁过程中，先等待它退出再重启服务。
+                    androidx.core.content.ContextCompat.stopService(
+                        ctx, android.content.Intent(ctx, PlaybackService::class.java)
+                    )
+                    var stopTries = 0
+                    while (PlaybackService.instance != null && stopTries < 20) {
+                        delay(100)
+                        stopTries++
+                    }
+                    s = null
+                }
                 if (s == null) {
                     androidx.core.content.ContextCompat.startForegroundService(
                         ctx, android.content.Intent(ctx, PlaybackService::class.java)
                     )
-                    var tries = 0
-                    while (PlaybackService.instance == null && tries < 50) {
-                        delay(100)
-                        tries++
-                    }
-                    s = PlaybackService.instance
                 }
-                if (s == null) {
+                var tries = 0
+                while ((PlaybackService.instance == null || !PlaybackService.instance!!.isReady) && tries < 50) {
+                    delay(100)
+                    tries++
+                }
+                s = PlaybackService.instance
+                if (s == null || !s.isReady) {
                     PlaybackService.ui.update {
                         it.copy(
                             phase = Phase.ERROR,
                             progress = "",
-                            error = "播放器服务启动超时，请返回主页后重试"
+                            error = "播放器服务启动失败或超时，请检查系统状态后点击重试"
                         )
                     }
                 } else {
