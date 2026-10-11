@@ -18,7 +18,8 @@ permissions:
 
 concurrency:
   group: android-apk-${{ github.ref }}
-  cancel-in-progress: false
+  # Newer commits supersede stale APK builds; don't let a slow cache-upload step block the newest fix.
+  cancel-in-progress: true
 
 jobs:
   build:
