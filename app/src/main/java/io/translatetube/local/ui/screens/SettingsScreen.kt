@@ -56,8 +56,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
         val ttsState by dlManager.tts.collectAsState()
         val asrState by dlManager.asr.collectAsState()
-        var ttsReady by remember { mutableStateOf(io.translatetube.local.data.ModelFiles.ttsReady(ctx)) }
-        var asrReady by remember { mutableStateOf(io.translatetube.local.data.ModelFiles.asrReady(ctx)) }
+        // 每次下载状态变化都会重新检查文件，避免模型下载完成后页面仍显示“未下载”。
+        val ttsReady = io.translatetube.local.data.ModelFiles.ttsReady(ctx) || ttsState.status == io.translatetube.local.data.ModelStatus.READY
+        val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx) || asrState.status == io.translatetube.local.data.ModelStatus.READY
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
         Section("语音模型") {
