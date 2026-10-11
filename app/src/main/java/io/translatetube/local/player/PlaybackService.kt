@@ -97,6 +97,9 @@ class PlaybackService : MediaSessionService() {
         const val CH_MAIN = "playback"
     }
 
+    /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
+    val isReady: Boolean get() = playerReady && ::pm.isInitialized
+
     /** 主线程把画面 TextureView 交给播放器 */
     fun attachSurface(tv: android.view.TextureView) {
         // Service 初始化失败时，PlayerScreen 仍可能尝试挂载 TextureView。
@@ -162,6 +165,8 @@ class PlaybackService : MediaSessionService() {
                 it.copy(phase = Phase.ERROR, progress = "", error = "播放器初始化失败：$message")
             }
             android.util.Log.e("PlaybackService", "Playback service initialization failed", e)
+            // 不保留一个无法播放的前台服务实例；页面仍可显示错误并在用户点击重试时重新启动。
+            stopSelf()
         }
     }
 
