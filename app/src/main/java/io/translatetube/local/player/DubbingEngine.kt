@@ -138,8 +138,9 @@ class DubbingEngine(
         }
         // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
         val textHash = fingerprint(line?.zh ?: "")
-        val engineHash = fingerprint("${tts?.name ?: "unknown"}-v3")
-        return File(cacheDir, "\${idx}-v\${voice}-e\${engineHash}-t\${textHash}.pcm")
+        // v4 forces a clean cache after fixing the old escaped interpolation bug.
+        val engineHash = fingerprint("${tts?.name ?: "unknown"}-v4")
+        return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
