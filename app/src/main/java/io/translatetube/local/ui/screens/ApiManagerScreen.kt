@@ -173,7 +173,8 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     var pullError by remember { mutableStateOf<String?>(null) }
 
     val needsBaseUrl = type == "OPENAI"
-    val needsKey = type != "AZURE"
+    // Azure Translator 同样需要订阅密钥；区域不能替代 API Key。
+    val needsKey = true
     val needsRegion = type == "AZURE"
     val fixedEngine = type == "GCLOUD" || type == "AZURE" || type == "BAIDU"
 
@@ -218,7 +219,16 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             if (needsKey) Labeled(if (type == "BAIDU") "密钥" else "API Key") {
                 OutlinedTextField(
                     apiKey, { apiKey = it }, Modifier.fillMaxWidth(), singleLine = true,
-                    placeholder = { Text(if (type == "BAIDU") "百度翻译开放平台的密钥" else "sk-…（本地加密存储）") },
+                    placeholder = {
+                        Text(
+                            when (type) {
+                                "BAIDU" -> "百度翻译开放平台的密钥"
+                                "AZURE" -> "Azure Translator 订阅密钥"
+                                "GCLOUD" -> "Google Cloud API Key"
+                                else -> "API Key（本地加密存储）"
+                            }
+                        )
+                    },
                 )
             }
             if (needsRegion) Labeled("区域") {
@@ -297,7 +307,11 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             )
                         )
                     },
-                    enabled = name.isNotBlank() || type.isNotBlank(),
+                    enabled = (!needsBaseUrl || baseUrl.isNotBlank()) &&
+                        apiKey.isNotBlank() &&
+                        (!needsRegion || region.isNotBlank()) &&
+                        (type != "BAIDU" || model.isNotBlank()) &&
+                        (fixedEngine || model.isNotBlank()),
                     colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
                 ) { Text("保存") }
             }
