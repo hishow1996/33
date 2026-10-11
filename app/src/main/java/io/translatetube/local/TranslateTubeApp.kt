@@ -2,16 +2,11 @@ package io.translatetube.local
 
 import android.app.Application
 import android.util.Log
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.common.model.RemoteModelManager
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.TranslateRemoteModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 class TranslateTubeApp : Application() {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -33,12 +28,10 @@ class TranslateTubeApp : Application() {
             val langs = listOf("en", "zh", "ja", "ko", "es", "fr", "de", "ru")
             for (l in langs) {
                 try {
-                    val tag = TranslateLanguage.fromLanguageTag(l) ?: continue
-                    RemoteModelManager.getInstance()
-                        .download(TranslateRemoteModel.Builder(tag).build(), DownloadConditions.Builder().build())
-                        .addOnFailureListener { Log.w("TT", "翻译模型预下载失败: $l ${it.message}") }
-                        .await() // 串行逐个下载，避免并发被限
-                } catch (_: Exception) {
+                    // 与播放页翻译共用下载协调器；模型已经存在时不再请求下载包。
+                    io.translatetube.local.translate.MlKitModelCoordinator.ensureDownloaded(l)
+                } catch (e: Exception) {
+                    Log.w("TT", "翻译模型预下载失败: $l ${e.message}")
                 }
             }
             Log.i("TT", "翻译模型预下载流程完成")
