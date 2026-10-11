@@ -85,21 +85,53 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
     )
 
+    private fun startBackgroundDownloadService() {
+        val intent = android.content.Intent(ctx, ModelDownloadForegroundService::class.java)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                ctx.startForegroundService(intent)
+            } else {
+                ctx.startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e("ModelDL", "无法启动后台下载前台服务", e)
+            throw IllegalStateException("无法启动后台下载服务，请检查系统后台运行权限后重试", e)
+        }
+    }
+
     fun download(kind: ModelKind) {
         when (kind) {
             ModelKind.TTS -> {
                 if (ttsJob?.isActive == true ||
                     _tts.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
                     ModelFiles.ttsReady(ctx)) return
-                ttsJob = scope.launch { runDownload(ModelKind.TTS, _tts, ttsUrls, ModelFiles.ttsDir(ctx)) }
+                startBackgroundDownloadService()
+                ttsJob = scope.launch {
+                    try {
+                        runDownload(ModelKind.TTS, _tts, ttsUrls, ModelFiles.ttsDir(ctx))
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("ModelDL", "TTS 下载任务异常", e)
+                        _tts.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
+                    }
+                }
             }
             ModelKind.ASR -> {
                 if (asrJob?.isActive == true ||
                     _asr.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
                     ModelFiles.asrReady(ctx)) return
+                startBackgroundDownloadService()
                 asrJob = scope.launch {
-                    if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
-                    else runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                    try {
+                        if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
+                        else runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("ModelDL", "ASR 下载任务异常", e)
+                        _asr.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
+                    }
                 }
             }
         }
