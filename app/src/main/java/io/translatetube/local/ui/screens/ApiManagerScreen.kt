@@ -87,7 +87,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             }
         }
         Text(
-            "微软和百度的官方翻译接口可通过「+ 添加」配置；通常需要申请对应密钥/AppID，但有各自的免费额度。它们是联网服务，不是离线模型。",
+            "Google 翻译（免密钥）是非正式在线接口；Google Cloud Translation、微软 Azure Translator 和百度翻译是需要配置凭据的官方 API。Google Gemini 则是大模型服务，不等同于 Google 翻译。各服务的费用和免费额度以服务商政策为准。",
             color = SubText,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -139,8 +139,8 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 }
 
 private fun typeLabel(t: String) = when (t) {
-    "OPENAI" -> "OpenAI 兼容"; "GEMINI" -> "Google Gemini"
-    "GCLOUD" -> "谷歌翻译 API（需密钥）"; "AZURE" -> "微软翻译 API（免费额度/需密钥）"; "BAIDU" -> "百度翻译（免费额度/需 AppID）"
+    "OPENAI" -> "OpenAI 兼容大模型"; "GEMINI" -> "Google Gemini 大模型"
+    "GCLOUD" -> "Google Cloud Translation 官方翻译 API（需密钥）"; "AZURE" -> "微软 Azure Translator（需密钥/区域）"; "BAIDU" -> "百度翻译 API（需 AppID/密钥）"
     else -> t
 }
 
@@ -176,7 +176,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
 
             Labeled("类型") {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("OPENAI" to "OpenAI兼容", "GEMINI" to "Gemini", "GCLOUD" to "谷歌", "AZURE" to "微软Azure", "BAIDU" to "百度").forEach { (v, label) ->
+                    listOf("OPENAI" to "OpenAI兼容", "GEMINI" to "Gemini大模型", "GCLOUD" to "Google翻译API", "AZURE" to "微软Azure", "BAIDU" to "百度翻译").forEach { (v, label) ->
                         FilterChip(
                             selected = type == v,
                             onClick = { type = v; models = null; model = "" },
