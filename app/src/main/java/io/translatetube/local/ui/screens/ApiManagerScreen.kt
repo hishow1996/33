@@ -50,7 +50,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         try {
             db.apiProfileDao().all().collect { list ->
-                profiles = list
+                profiles = list.filterNot { it.type == "AZURE" || it.type == "BAIDU" }
                 loadError = null
                 // 已删除或停用的配置不能继续作为当前引擎，自动回退到始终可用的本地引擎。
                 if (activeId >= 0L && list.none { it.id == activeId && it.enabled }) {
@@ -112,7 +112,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             }
         }
         Text(
-            "Google 翻译（免密钥）是非正式在线接口；Google Cloud Translation、微软 Azure Translator 和百度翻译是需要配置凭据的官方 API。Google Gemini 则是大模型服务，不等同于 Google 翻译。各服务的费用和免费额度以服务商政策为准。",
+            "Google 翻译（免密钥）是非正式在线接口；Google Cloud Translation 是需要配置凭据的官方 API。Google Gemini 则是大模型服务，不等同于 Google 翻译。各服务的费用和免费额度以服务商政策为准。",
             color = SubText,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -137,7 +137,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         Column(Modifier.weight(1f).padding(start = 4.dp)) {
                             Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
                             Text(
-                                "${typeLabel(p.type)} · ${if (p.type == "BAIDU") "AppID: ${p.model}" else p.model.ifEmpty { "未选模型" }}",
+                                "${typeLabel(p.type)} · ${p.model.ifEmpty { "未选模型" }}",
                                 color = SubText, style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -184,7 +184,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
 private fun typeLabel(t: String) = when (t) {
     "OPENAI" -> "OpenAI 兼容大模型"; "GEMINI" -> "Google Gemini 大模型"
-    "GCLOUD" -> "Google Cloud Translation 官方翻译 API（需密钥）"; "AZURE" -> "微软 Azure Translator（需密钥/区域）"; "BAIDU" -> "百度翻译 API（需 AppID/密钥）"
+    "GCLOUD" -> "Google Cloud Translation 官方翻译 API（需密钥）"
     else -> t
 }
 
@@ -206,8 +206,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val needsBaseUrl = type == "OPENAI"
     // Azure Translator 同样需要订阅密钥；区域不能替代 API Key。
     val needsKey = true
-    val needsRegion = type == "AZURE"
-    val fixedEngine = type == "GCLOUD" || type == "AZURE" || type == "BAIDU"
+    val fixedEngine = type == "GCLOUD"
 
     val configuration = LocalConfiguration.current
     androidx.compose.ui.window.Dialog(
@@ -233,7 +232,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    listOf("OPENAI" to "OpenAI 兼容", "GEMINI" to "Gemini 大模型", "GCLOUD" to "Google 翻译 API", "AZURE" to "微软 Azure", "BAIDU" to "百度翻译").forEach { (v, label) ->
+                    listOf("OPENAI" to "OpenAI 兼容", "GEMINI" to "Gemini 大模型", "GCLOUD" to "Google 翻译 API").forEach { (v, label) ->
                         FilterChip(
                             selected = type == v,
                             onClick = { type = v; models = null; model = "" },
@@ -252,29 +251,18 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     placeholder = { Text("https://api.deepseek.com（填到域名即可）") },
                 )
             }
-            if (type == "BAIDU") Labeled("AppID（百度翻译开放平台）") {
-                OutlinedTextField(
-                    model, { model = it }, Modifier.fillMaxWidth(), singleLine = true,
-                    placeholder = { Text("百度翻译开放平台的 AppID") },
-                )
-            }
-            if (needsKey) Labeled(if (type == "BAIDU") "密钥" else "API Key") {
+            if (needsKey) Labeled("API Key") {
                 OutlinedTextField(
                     apiKey, { apiKey = it }, Modifier.fillMaxWidth(), singleLine = true,
                     placeholder = {
                         Text(
                             when (type) {
-                                "BAIDU" -> "百度翻译开放平台的密钥"
-                                "AZURE" -> "Azure Translator 订阅密钥"
                                 "GCLOUD" -> "Google Cloud API Key"
                                 else -> "API Key（本地加密存储）"
                             }
                         )
                     },
                 )
-            }
-            if (needsRegion) Labeled("区域") {
-                OutlinedTextField(region, { region = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 eastasia") })
             }
 
             // —— 模型拉取（OpenAI兼容 / Gemini）——
@@ -355,8 +343,6 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     },
                     enabled = (!needsBaseUrl || baseUrl.isNotBlank()) &&
                         apiKey.isNotBlank() &&
-                        (!needsRegion || region.isNotBlank()) &&
-                        (type != "BAIDU" || model.isNotBlank()) &&
                         (fixedEngine || model.isNotBlank()),
                     colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
                 ) { Text("保存") }
