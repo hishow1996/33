@@ -85,17 +85,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
     )
 
-    private fun startBackgroundDownloadService() {
+    private fun startBackgroundDownloadService(): Boolean {
         val intent = android.content.Intent(ctx, ModelDownloadForegroundService::class.java)
-        try {
+        return try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 ctx.startForegroundService(intent)
             } else {
                 ctx.startService(intent)
             }
+            true
         } catch (e: Exception) {
             Log.e("ModelDL", "无法启动后台下载前台服务", e)
-            throw IllegalStateException("无法启动后台下载服务，请检查系统后台运行权限后重试", e)
+            false
         }
     }
 
@@ -105,7 +106,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (ttsJob?.isActive == true ||
                     _tts.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
                     ModelFiles.ttsReady(ctx)) return
-                startBackgroundDownloadService()
+                if (!startBackgroundDownloadService()) {
+                    _tts.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
+                    return
+                }
                 ttsJob = scope.launch {
                     try {
                         runDownload(ModelKind.TTS, _tts, ttsUrls, ModelFiles.ttsDir(ctx))
@@ -121,7 +125,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (asrJob?.isActive == true ||
                     _asr.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
                     ModelFiles.asrReady(ctx)) return
-                startBackgroundDownloadService()
+                if (!startBackgroundDownloadService()) {
+                    _asr.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
+                    return
+                }
                 asrJob = scope.launch {
                     try {
                         if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
