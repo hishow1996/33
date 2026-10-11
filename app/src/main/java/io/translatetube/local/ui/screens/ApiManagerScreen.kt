@@ -103,11 +103,10 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
             }
             Spacer(Modifier.width(6.dp))
-            Icon(
-                imageVector = if (googleExpanded) androidx.compose.material.icons.Icons.Default.ExpandLess
-                    else androidx.compose.material.icons.Icons.Default.ExpandMore,
-                contentDescription = if (googleExpanded) "收起离线语言包" else "展开离线语言包",
-                tint = SubText,
+            Text(
+                if (googleExpanded) "⌃" else "⌄",
+                color = SubText,
+                style = MaterialTheme.typography.titleLarge,
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -233,11 +232,10 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                         modifier = Modifier.fillMaxWidth().clickable { typePickerExpanded = true },
                         trailingIcon = {
                             IconButton(onClick = { typePickerExpanded = !typePickerExpanded }) {
-                                Icon(
-                                    imageVector = if (typePickerExpanded) androidx.compose.material.icons.Icons.Default.ExpandLess
-                                        else androidx.compose.material.icons.Icons.Default.ExpandMore,
-                                    contentDescription = "选择服务类型",
-                                    tint = SubText,
+                                Text(
+                                    if (typePickerExpanded) "⌃" else "⌄",
+                                    color = SubText,
+                                    style = MaterialTheme.typography.titleLarge,
                                 )
                             }
                         },
@@ -288,11 +286,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                                 modifier = Modifier.weight(1f),
                                             )
                                             if (type == value) {
-                                                Icon(
-                                                    imageVector = androidx.compose.material.icons.Icons.Default.Check,
-                                                    contentDescription = "当前选择",
-                                                    tint = BrandBright,
-                                                )
+                                                Text("✓", color = BrandBright, style = MaterialTheme.typography.titleMedium)
                                             }
                                         }
                                     }
