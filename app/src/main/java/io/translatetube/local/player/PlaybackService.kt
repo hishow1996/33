@@ -557,6 +557,10 @@ class PlaybackService : MediaSessionService() {
      */
     fun autoAssignSpeakers() {
         if (speakerJob?.isActive == true) return
+        if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
+            ui.update { it.copy(error = "多人物区分配音需要 Kokoro 音色模型，请切换配音引擎后重试") }
+            return
+        }
         val originalLines = ui.value.lines
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         if (originalLines.isEmpty()) {
@@ -653,6 +657,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     fun setLineSpeaker(index: Int, speakerId: Int) {
+        if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
+            ui.update { it.copy(error = "多人物音色切换需要 Kokoro 音色模型，请切换配音引擎后重试") }
+            return
+        }
         val oldLines = ui.value.lines
         if (index !in oldLines.indices) return
         if (oldLines[index].speakerId == speakerId) return
