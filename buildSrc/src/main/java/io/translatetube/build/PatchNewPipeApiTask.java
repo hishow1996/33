@@ -51,7 +51,7 @@ public abstract class PatchNewPipeApiTask extends DefaultTask {
         Path outputPath = getOutputJar().get().getAsFile().toPath();
         Files.createDirectories(outputPath.getParent());
 
-        int[] patched = new int[4];
+        int[] patched = new int[14];
         try (JarFile input = new JarFile(inputPath.toFile());
              JarOutputStream output = new JarOutputStream(Files.newOutputStream(outputPath))) {
             Enumeration<JarEntry> entries = input.entries();
@@ -99,6 +99,86 @@ public abstract class PatchNewPipeApiTask extends DefaultTask {
                                             && COLLECTOR.equals(desc)) {
                                         owner = COMPAT;
                                         patched[2]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/stream/Collectors".equals(owner)
+                                            && "toUnmodifiableSet".equals(method)
+                                            && COLLECTOR.equals(desc)) {
+                                        owner = COMPAT;
+                                        patched[12]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/stream/Collectors".equals(owner)
+                                            && "toUnmodifiableMap".equals(method)
+                                            && (("(Ljava/util/function/Function;Ljava/util/function/Function;)Ljava/util/stream/Collector;").equals(desc)
+                                                || "(Ljava/util/function/Function;Ljava/util/function/Function;Ljava/util/function/BinaryOperator;)Ljava/util/stream/Collector;".equals(desc))) {
+                                        owner = COMPAT;
+                                        patched[13]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/List".equals(owner)
+                                            && "of".equals(method)) {
+                                        owner = COMPAT;
+                                        method = "listOf";
+                                        isInterface = false;
+                                        patched[4]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Set".equals(owner)
+                                            && "of".equals(method)) {
+                                        owner = COMPAT;
+                                        method = "setOf";
+                                        isInterface = false;
+                                        patched[5]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Map".equals(owner)
+                                            && "of".equals(method)) {
+                                        owner = COMPAT;
+                                        method = "mapOf";
+                                        isInterface = false;
+                                        patched[6]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Map".equals(owner)
+                                            && "ofEntries".equals(method)
+                                            && "([Ljava/util/Map$Entry;)Ljava/util/Map;".equals(desc)) {
+                                        owner = COMPAT;
+                                        method = "mapOfEntries";
+                                        isInterface = false;
+                                        patched[7]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/List".equals(owner)
+                                            && "copyOf".equals(method)
+                                            && "(Ljava/util/Collection;)Ljava/util/List;".equals(desc)) {
+                                        owner = COMPAT;
+                                        method = "listCopyOf";
+                                        isInterface = false;
+                                        patched[8]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Set".equals(owner)
+                                            && "copyOf".equals(method)
+                                            && "(Ljava/util/Collection;)Ljava/util/Set;".equals(desc)) {
+                                        owner = COMPAT;
+                                        method = "setCopyOf";
+                                        isInterface = false;
+                                        patched[9]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Map".equals(owner)
+                                            && "copyOf".equals(method)
+                                            && "(Ljava/util/Map;)Ljava/util/Map;".equals(desc)) {
+                                        owner = COMPAT;
+                                        method = "mapCopyOf";
+                                        isInterface = false;
+                                        patched[10]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Objects".equals(owner)
+                                            && "requireNonNullElse".equals(method)
+                                            && "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;".equals(desc)) {
+                                        owner = COMPAT;
+                                        method = "requireNonNullElse";
+                                        patched[11]++;
+                                    } else if (opcode == Opcodes.INVOKESTATIC
+                                            && "java/util/Objects".equals(owner)
+                                            && "requireNonNullElseGet".equals(method)
+                                            && "(Ljava/lang/Object;Ljava/util/function/Supplier;)Ljava/lang/Object;".equals(desc)) {
+                                        owner = COMPAT;
+                                        method = "requireNonNullElseGet";
+                                        patched[11]++;
                                     } else if (opcode == Opcodes.INVOKEVIRTUAL
                                             && "java/lang/String".equals(owner)
                                             && "isBlank".equals(method)
@@ -132,8 +212,9 @@ public abstract class PatchNewPipeApiTask extends DefaultTask {
             getLogger().warn("No Collectors.toUnmodifiableList() calls were found in NewPipeExtractor.");
         }
         getLogger().lifecycle(
-            "Android 9 compatibility patch applied to NewPipeExtractor: URL decode={}, URL encode={}, unmodifiable lists={}, String.isBlank={}",
-            patched[0], patched[1], patched[2], patched[3]
+            "Android 9 compatibility patch applied to NewPipeExtractor: URL decode={}, URL encode={}, lists={}, isBlank={}, List.of={}, Set.of={}, Map.of={}, Map.ofEntries={}, copyOf calls={}, Objects null-default calls={}, unmodifiable sets={}, unmodifiable maps={}",
+            patched[0], patched[1], patched[2], patched[3], patched[4], patched[5], patched[6],
+            patched[7], patched[8] + patched[9] + patched[10], patched[11], patched[12], patched[13]
         );
     }
 
