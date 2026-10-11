@@ -98,8 +98,14 @@ class PlaybackService : MediaSessionService() {
 
     /** 主线程把画面 TextureView 交给播放器 */
     fun attachSurface(tv: android.view.TextureView) {
+        // Service 初始化失败时，PlayerScreen 仍可能尝试挂载 TextureView。
+        // 在投递到主线程前后都检查，避免访问尚未初始化的 lateinit PlayerManager。
+        if (!playerReady || !::pm.isInitialized) return
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            pm.player.setVideoTextureView(tv)
+            if (playerReady && ::pm.isInitialized) {
+                runCatching { pm.player.setVideoTextureView(tv) }
+                    .onFailure { android.util.Log.w("PlaybackService", "Attach video surface failed", it) }
+            }
         }
     }
 
