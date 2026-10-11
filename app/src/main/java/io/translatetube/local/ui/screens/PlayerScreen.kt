@@ -177,7 +177,7 @@ fun PlayerScreen(
                 // 阶段进度覆盖层
                 val phase = state.phase
                 if (phase != Phase.READY && phase != Phase.SYNTHESIZING) {
-                    Box(Modifier.fillMaxSize().background(Color(0xD9ECFAF1)), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    Box(Modifier.fillMaxSize().background(Color(0xD9F4F8FF)), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                             if (phase == Phase.ERROR) {
                                 Text("加载失败", color = OnBg, style = MaterialTheme.typography.titleMedium)
@@ -421,7 +421,7 @@ private fun SubtitleList(
                     )
                 }
                 if (!zh.isNullOrEmpty()) {
-                    Text(zh, color = if (active) OnBg else Color(0xFF4A5E52), style = MaterialTheme.typography.bodyLarge)
+                    Text(zh, color = if (active) OnBg else SubText, style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
