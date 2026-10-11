@@ -115,6 +115,8 @@ object SpeakerDiarizer {
             )
         } catch (e: java.lang.reflect.InvocationTargetException) {
             throw IllegalStateException("说话人分离模型初始化或推理失败：${e.targetException.message}", e.targetException)
+        } catch (e: LinkageError) {
+            throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
         }
     }
 
