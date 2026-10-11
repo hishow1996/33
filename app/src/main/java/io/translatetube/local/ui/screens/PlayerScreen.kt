@@ -353,17 +353,40 @@ private fun SubtitleList(
                     .clickable { svc?.seek(line.startMs) }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
-                Text(
-                    line.text,
-                    color = if (active) BrandBright else SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    Text(
+                        line.text,
+                        color = if (active) BrandBright else SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    val voiceIds = listOf(-1, 0, 1, 2, 3)
+                    val voiceIndex = voiceIds.indexOf(line.speakerId).let { if (it < 0) 0 else it }
+                    AssistChip(
+                        onClick = { svc?.setLineSpeaker(i, voiceIds[(voiceIndex + 1) % voiceIds.size]) },
+                        label = { Text("🎙 ${speakerLabel(line.speakerId)}") },
+                    )
+                }
                 if (!zh.isNullOrEmpty()) {
                     Text(zh, color = if (active) OnBg else Color(0xFF4A5E52), style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
     }
+}
+
+private fun speakerLabel(id: Int): String = when (id) {
+    -1 -> "人物1·默认"
+    0 -> "人物2"
+    1 -> "人物3"
+    2 -> "人物4"
+    3 -> "人物5"
+    else -> "音色$id"
 }
 
 private fun phaseText(p: Phase, progress: String): String = when (p) {
