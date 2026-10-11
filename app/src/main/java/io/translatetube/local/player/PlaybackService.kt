@@ -201,7 +201,7 @@ class PlaybackService : MediaSessionService() {
                     // 入库缓存
                     val arr = org.json.JSONArray()
                     for (l in lines) arr.put(
-                        org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "")
+                        org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "").put("sp", l.speakerId)
                     )
                     if (lines.count { !it.zh.isNullOrEmpty() } > lines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
@@ -316,7 +316,7 @@ class PlaybackService : MediaSessionService() {
                 val restored = mutableListOf<SubLine>()
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
-                    restored += SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"), o.optString("zh").ifEmpty { null })
+                    restored += SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"), o.optString("zh").ifEmpty { null }, o.optInt("sp", -1))
                 }
                 lines = restored
                 srcLang = cached.srcLang
@@ -544,6 +544,58 @@ class PlaybackService : MediaSessionService() {
     }
 
     // ============ UI 控制命令 ============
+    /**
+     * 手动为某条字幕指定 Kokoro 音色。修改后重建配音缓存队列，
+     * 文件缓存按音色分开，避免修改人物音色后仍播放旧声音。
+     */
+    fun setLineSpeaker(index: Int, speakerId: Int) {
+        val oldLines = ui.value.lines
+        if (index !in oldLines.indices) return
+        if (oldLines[index].speakerId == speakerId) return
+        val updated = oldLines.mapIndexed { i, line ->
+            if (i == index) line.copy(speakerId = speakerId) else line
+        }
+        dubCollectJob?.cancel()
+        dubbing?.release()
+        dubbing = null
+        ui.update {
+            it.copy(lines = updated, preparedUntil = 0, totalLines = updated.size,
+                currentLine = -1, phase = Phase.SYNTHESIZING, progress = "更新人物音色…")
+        }
+        scope.launch {
+            try {
+                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                d.attach(makeTts(), updated)
+                dubbing = d
+                dubCollectJob = scope.launch {
+                    d.preparedUntil.collect { n ->
+                        ui.update { state -> state.copy(preparedUntil = n,
+                            phase = if (n >= updated.size) Phase.READY else Phase.SYNTHESIZING,
+                            progress = if (n >= updated.size) "" else "正在准备多人物配音…") }
+                    }
+                }
+                val arr = org.json.JSONArray()
+                for (line in updated) arr.put(
+                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
+                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
+                )
+                if (updated.isNotEmpty() && updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
+                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+                    val src = ui.value.sourceLang
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            "$videoKey|zh|\${prefs.getLong("active_api_id", -1L)}", src,
+                            arr.toString(), System.currentTimeMillis()
+                        )
+                    )
+                }
+                lastLineIdx = Int.MIN_VALUE
+            } catch (e: Exception) {
+                ui.update { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：\${e.message}") }
+            }
+        }
+    }
+
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn
         ui.update { it.copy(dubbingOn = nowOn) }
