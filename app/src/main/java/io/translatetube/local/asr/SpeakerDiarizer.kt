@@ -37,6 +37,14 @@ object SpeakerDiarizer {
         onProgress: (String) -> Unit = {},
     ): List<Segment> = withContext(Dispatchers.IO) {
         require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
+        // Check the bundled AAR before downloading ~45 MB of models.
+        try {
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization", true, javaClass.classLoader)
+        } catch (e: ClassNotFoundException) {
+            throw IllegalStateException("当前内置 sherpa-onnx.aar 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色", e)
+        } catch (e: LinkageError) {
+            throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
+        }
         onProgress("下载人物识别模型…")
         val dir = File(context.filesDir, "models/speaker").apply { mkdirs() }
         val segmentation = File(dir, "segmentation.onnx")
