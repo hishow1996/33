@@ -717,7 +717,22 @@ class PlaybackService : MediaSessionService() {
             throw e
         } catch (e: Exception) {
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
-            ui.update { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
+            // A TTS constructor can fail before the subtitle list is published to UI.
+            // Restore original volume immediately so default mute never silences the whole video.
+            if (ui.value.dubbingOn) {
+                runCatching { pm.originalVolume = 1f }
+                ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = e.message ?: "视频解析或配音初始化失败",
+                        muteOriginal = false,
+                        noModelHint = "配音初始化失败，已恢复视频原声。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro 请检查模型文件是否完整。"
+                    )
+                }
+            } else {
+                ui.update { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
+            }
         } catch (e: Throwable) {
             // A non-fatal Error (for example, an extractor/library linkage error) must be shown
             // as a playback failure rather than escaping a Dispatchers.Default coroutine.
