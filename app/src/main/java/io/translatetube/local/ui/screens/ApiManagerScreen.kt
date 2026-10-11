@@ -161,6 +161,7 @@ private fun typeLabel(t: String) = when (t) {
     else -> t
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (ApiProfile) -> Unit) {
     var name by remember { mutableStateOf(initial?.name ?: "") }
@@ -282,7 +283,8 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             },
                             enabled = !pulling && (apiKey.isNotBlank() || !needsKey),
                             colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
-                        , modifier = Modifier.fillMaxWidth()) { Text(if (pulling) "拉取中…" else "↓ 拉取可用模型") }
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(if (pulling) "拉取中…" else "↓ 拉取可用模型") }
                     }
                 }
                 pullError?.let {
