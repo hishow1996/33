@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build release APK
+    name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -65,10 +65,19 @@ jobs:
             -o app/libs/sherpa-onnx.aar \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
 
-      - name: Build release APK
-        run: ./gradlew --no-daemon assembleRelease
+      - name: Build debug and release APKs
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
 
-      - name: Upload APK
+      # Debug APKs are signed with Android's debug key and can be installed directly.
+      - name: Upload installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: elephant-translate-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: elephant-translate-release-apk
