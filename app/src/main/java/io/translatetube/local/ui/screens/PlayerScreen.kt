@@ -40,10 +40,16 @@ fun PlayerScreen(
     val state by PlaybackService.ui.collectAsState()
     val listState = rememberLazyListState()
 
+    // 错误时允许用户显式重试同一个视频；不监听 phase，避免失败后自动重试循环。
+    var retryNonce by remember { mutableStateOf(0) }
+    var handledRetryNonce by remember { mutableStateOf(0) }
+
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri) {
+    LaunchedEffect(videoId, localUri, retryNonce) {
         val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
-        if (state.key != key) {
+        val retryRequested = retryNonce != handledRetryNonce
+        if (state.key != key || retryRequested) {
+            if (retryRequested) handledRetryNonce = retryNonce
             try {
                 var s = PlaybackService.instance
                 if (s == null) {
@@ -183,6 +189,10 @@ fun PlayerScreen(
                                 Text("加载失败", color = OnBg, style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.height(6.dp))
                                 Text(state.error ?: "", color = SubText, style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { retryNonce++ }) {
+                                    Text("重试", color = BrandBright)
+                                }
                             } else {
                                 CircularProgressIndicator(color = BrandBright, modifier = Modifier.size(28.dp))
                                 Spacer(Modifier.height(10.dp))
@@ -289,12 +299,15 @@ private fun ControlBar(
     val ctx = LocalContext.current
     val svc = PlaybackService.instance
     var pos by remember { mutableStateOf(0f) }
+    var scrubbing by remember { mutableStateOf(false) }
     var speed by remember { mutableStateOf(1.0f) }
     LaunchedEffect(Unit) {
         while (true) {
-            val d = PlaybackService.instance?.duration() ?: 0L
-            val p = PlaybackService.instance?.position() ?: 0L
-            pos = if (d > 0) (p.toFloat() / d).coerceIn(0f, 1f) else 0f
+            if (!scrubbing) {
+                val d = PlaybackService.instance?.duration() ?: 0L
+                val p = PlaybackService.instance?.position() ?: 0L
+                pos = if (d > 0) (p.toFloat() / d).coerceIn(0f, 1f) else 0f
+            }
             delay(500)
         }
     }
@@ -302,9 +315,13 @@ private fun ControlBar(
         Slider(
             value = pos,
             onValueChange = { v ->
+                scrubbing = true
                 pos = v
-                val d = svc?.duration() ?: 0L
-                if (d > 0) svc?.seek((v * d).toLong())
+            },
+            onValueChangeFinished = {
+                val d = PlaybackService.instance?.duration() ?: 0L
+                if (d > 0) PlaybackService.instance?.seek((pos * d).toLong())
+                scrubbing = false
             },
             colors = SliderDefaults.colors(
                 thumbColor = BrandBright, activeTrackColor = Brand,
