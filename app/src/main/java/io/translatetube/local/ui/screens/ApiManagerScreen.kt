@@ -58,7 +58,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Text("翻译引擎", style = MaterialTheme.typography.titleLarge, color = OnBg, modifier = Modifier.weight(1f))
             Button(
                 onClick = { adding = true },
-                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
+                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
             ) { Text("+ 添加") }
         }
         Text("点击条目左侧圆点选择引擎；切换会用于后续重新翻译的字幕。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等。", color = SubText, style = MaterialTheme.typography.bodySmall)
@@ -196,7 +196,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             onClick = { type = v; models = null; model = "" },
                             label = { Text(label) },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Brand, selectedLabelColor = OnBg,
+                                selectedContainerColor = Brand, selectedLabelColor = androidx.compose.ui.graphics.Color.White,
                             ),
                         )
                     }
@@ -254,7 +254,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                 }
                             },
                             enabled = !pulling && (apiKey.isNotBlank() || !needsKey),
-                            colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
+                            colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
                         ) { Text(if (pulling) "拉取中…" else "⬇ 拉取模型") }
                     }
                 }
@@ -298,7 +298,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                         )
                     },
                     enabled = name.isNotBlank() || type.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
+                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
                 ) { Text("保存") }
             }
         }
