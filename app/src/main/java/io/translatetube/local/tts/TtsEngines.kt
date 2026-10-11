@@ -55,79 +55,147 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     override fun close() = tts.release()
 }
 
-/** 系统 TTS（华为自带，兜底） */
+/** 系统 TTS：等待合成回调完成后再读取 WAV，避免读到尚未写完的文件。 */
 class SystemTts(context: Context) : TtsEngine {
     private val appCtx = context.applicationContext
     override val name = "系统TTS"
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
     private val ready = java.util.concurrent.CountDownLatch(1)
     @Volatile private var ok = false
+    @Volatile private var activeUtteranceId: String? = null
+    @Volatile private var activeLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var activeError = false
 
     init {
         val tts = TextToSpeech(appCtx) { status ->
             ok = status == TextToSpeech.SUCCESS
-            if (ok) {
-                try {
-                    ttsRef.get()?.language = Locale.SIMPLIFIED_CHINESE
-                    ttsRef.get()?.setSpeechRate(1.0f)
-                } catch (_: Exception) {}
-            }
             ready.countDown()
         }
         ttsRef.set(tts)
-        ready.await()
-    }
-
-    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
-        if (!ok) return TtsAudio(FloatArray(0), 16000)
-        val tmp = java.io.File.createTempFile("tts_", ".wav", contextCacheDir())
-        val r = ttsRef.get()?.synthesizeToFile(text, android.os.Bundle(), null, tmp.absolutePath) ?: -1
-        if (r < 0) { tmp.delete(); return TtsAudio(FloatArray(0), 16000) }
-        // synthesizeToFile 异步：轮询完成（一行字幕通常 <5s）
-        val deadline = System.currentTimeMillis() + 8_000
-        while (System.currentTimeMillis() < deadline) {
-            if (tmp.length() > 44) { Thread.sleep(80); break }
-            Thread.sleep(50)
+        if (!ready.await(15, java.util.concurrent.TimeUnit.SECONDS) || !ok) {
+            runCatching { tts.shutdown() }
+            throw IllegalStateException("系统 TTS 初始化失败")
         }
-        val pcm = readWav(tmp)
-        tmp.delete()
-        return pcm
+
+        val languageResult = tts.setLanguage(Locale.SIMPLIFIED_CHINESE)
+        if (languageResult < TextToSpeech.LANG_AVAILABLE) {
+            val fallbackResult = tts.setLanguage(Locale.getDefault())
+            if (fallbackResult < TextToSpeech.LANG_AVAILABLE) {
+                android.util.Log.e("SystemTts", "No supported TTS language installed")
+            } else {
+                android.util.Log.w("SystemTts", "Chinese TTS unavailable; using device default locale")
+            }
+        }
+
+        tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+
+            override fun onDone(utteranceId: String?) {
+                if (utteranceId == activeUtteranceId) activeLatch?.countDown()
+            }
+
+            override fun onError(utteranceId: String?) {
+                if (utteranceId == activeUtteranceId) {
+                    activeError = true
+                    activeLatch?.countDown()
+                }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                if (utteranceId == activeUtteranceId) {
+                    activeError = true
+                    activeLatch?.countDown()
+                }
+            }
+        })
     }
 
-    private fun contextCacheDir(): java.io.File {
-        val f = java.io.File(appCtx.cacheDir, "tts_tmp").apply { mkdirs() }
-        return f
+    @Synchronized
+    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+        val tts = ttsRef.get() ?: return TtsAudio(FloatArray(0), 16000)
+        if (!ok || text.isBlank()) return TtsAudio(FloatArray(0), 16000)
+
+        val tmp = java.io.File.createTempFile("tts_", ".wav", contextCacheDir())
+        val utteranceId = "system-tts-" + System.nanoTime()
+        val completed = java.util.concurrent.CountDownLatch(1)
+        activeUtteranceId = utteranceId
+        activeLatch = completed
+        activeError = false
+        try {
+            tts.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
+            val result = tts.synthesizeToFile(text, android.os.Bundle(), tmp, utteranceId)
+            if (result != TextToSpeech.SUCCESS) {
+                android.util.Log.w("SystemTts", "synthesizeToFile rejected request, result=" + result)
+                return TtsAudio(FloatArray(0), 16000)
+            }
+            if (!completed.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                android.util.Log.w("SystemTts", "Timed out waiting for system TTS synthesis")
+                runCatching { tts.stop() }
+                return TtsAudio(FloatArray(0), 16000)
+            }
+            if (activeError) {
+                android.util.Log.w("SystemTts", "System TTS synthesis callback reported an error")
+                return TtsAudio(FloatArray(0), 16000)
+            }
+            val audio = readWav(tmp)
+            if (audio.samples.isEmpty()) {
+                android.util.Log.w("SystemTts", "System TTS produced an empty/unsupported WAV")
+            }
+            return audio
+        } finally {
+            activeUtteranceId = null
+            activeLatch = null
+            tmp.delete()
+        }
     }
 
-    /** RIFF chunk 遍历解析（兼容带扩展头的 WAV），找 fmt 采样率 + data 负载 */
+    private fun contextCacheDir(): java.io.File =
+        java.io.File(appCtx.cacheDir, "tts_tmp").apply { mkdirs() }
+
+    /** Traverse RIFF chunks; sample rate is fmt data +4, not the byteRate field. */
     private fun readWav(f: java.io.File): TtsAudio {
         val bytes = f.readBytes()
         if (bytes.size < 44) return TtsAudio(FloatArray(0), 16000)
         var offset = 12
-        var sr = 16000
+        var sampleRate = 16000
         var dataStart = -1
         var dataLen = 0
-        val le = java.nio.ByteOrder.LITTLE_ENDIAN
-        fun i32(p: Int) = ((bytes[p].toInt() and 0xFF) or ((bytes[p + 1].toInt() and 0xFF) shl 8) or
-            ((bytes[p + 2].toInt() and 0xFF) shl 16) or ((bytes[p + 3].toInt() and 0xFF) shl 24))
+        fun i32(p: Int): Int =
+            (bytes[p].toInt() and 0xFF) or
+                ((bytes[p + 1].toInt() and 0xFF) shl 8) or
+                ((bytes[p + 2].toInt() and 0xFF) shl 16) or
+                ((bytes[p + 3].toInt() and 0xFF) shl 24)
+
         while (offset + 8 <= bytes.size) {
             val id = String(bytes, offset, 4, Charsets.US_ASCII)
-            val size = i32(offset + 4)
+            val chunkSize = i32(offset + 4).coerceAtLeast(0)
+            val chunkDataStart = offset + 8
+            val available = (bytes.size - chunkDataStart).coerceAtLeast(0)
+            val safeSize = chunkSize.coerceAtMost(available)
             when (id) {
-                "fmt " -> sr = i32(offset + 16)
-                "data" -> { dataStart = offset + 8; dataLen = size.coerceAtMost(bytes.size - dataStart); }
+                "fmt " -> if (safeSize >= 16) {
+                    // WAVEFORMAT: format(2), channels(2), sampleRate(4), byteRate(4)...
+                    sampleRate = i32(chunkDataStart + 4).takeIf { it in 8_000..192_000 } ?: 16_000
+                }
+                "data" -> {
+                    dataStart = chunkDataStart
+                    dataLen = safeSize
+                }
             }
             if (dataStart >= 0) break
-            offset += 8 + size + (size and 1)
+            offset = chunkDataStart + safeSize + (safeSize and 1)
         }
-        if (dataStart < 0) return TtsAudio(FloatArray(0), sr)
-        val bb = java.nio.ByteBuffer.wrap(bytes, dataStart, dataLen).order(le)
-        val n = dataLen / 2
-        val samples = FloatArray(n) { bb.short / 32768f }
-        return TtsAudio(samples, sr)
+        if (dataStart < 0 || dataLen < 2) return TtsAudio(FloatArray(0), sampleRate)
+        val count = dataLen / 2
+        val bb = java.nio.ByteBuffer.wrap(bytes, dataStart, count * 2)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val samples = FloatArray(count) { bb.short / 32768f }
+        return TtsAudio(samples, sampleRate)
     }
 
     override fun close() {
+        activeLatch?.countDown()
         try { ttsRef.get()?.stop(); ttsRef.get()?.shutdown() } catch (_: Exception) {}
+        ttsRef.set(null)
     }
 }

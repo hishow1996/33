@@ -480,7 +480,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     }
                 },
         ) {
-            val height = 2.dp.toPx()
+            val height = 1.5.dp.toPx()
             val centerY = size.height / 2f
             val radius = CornerRadius(height / 2f, height / 2f)
             drawRoundRect(
@@ -500,7 +500,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             }
             drawCircle(
                 color = BrandBright,
-                radius = 3.dp.toPx(),
+                radius = 2.4.dp.toPx(),
                 center = Offset(activeWidth.coerceIn(0f, size.width), centerY),
             )
         }

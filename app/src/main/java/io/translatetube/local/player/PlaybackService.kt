@@ -265,7 +265,7 @@ class PlaybackService : MediaSessionService() {
         // 导入新字幕前先停止并释放旧配音引擎，避免旧任务与新字幕共用同一缓存目录。
         dubbing?.release()
         dubbing = null
-        pm.originalVolume = 1f
+        pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
         lastLineIdx = Int.MIN_VALUE
         try {
             val text = contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
@@ -452,10 +452,18 @@ class PlaybackService : MediaSessionService() {
                     ?: throw IllegalStateException("YouTube 未提供音频流")
 
                 // NewPipe keeps muxed streams and adaptive video-only tracks in separate lists.
-                // Including both is essential: 720p/1080p are commonly video-only DASH streams.
+                // Include both; allow higher resolutions while preferring a compatible default for older phones.
                 val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
-                    .filter { v -> v.height in 1..1080 }
+                    .filter { v -> v.height in 1..2160 }
                     .distinctBy { v -> "${v.height}|${v.content}|${v.isVideoOnly}" }
+
+                android.util.Log.i(
+                    "PlaybackService",
+                    "YouTube stream inventory: muxed=" + info.videoStreams.size +
+                        ", videoOnly=" + info.videoOnlyStreams.size +
+                        ", muxedRes=" + info.videoStreams.map { it.height }.distinct().sorted() +
+                        ", videoOnlyRes=" + info.videoOnlyStreams.map { it.height }.distinct().sorted()
+                )
 
                 val candidates = allVideoStreams
                     .groupBy { it.height }
@@ -483,10 +491,12 @@ class PlaybackService : MediaSessionService() {
                     }
                     .sortedByDescending { it.height }
 
-                if (candidates.isEmpty()) throw IllegalStateException("YouTube 未提供可播放的 1080p 以下视频流")
+                if (candidates.isEmpty()) throw IllegalStateException("YouTube 未提供可播放的视频流")
+                android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
-                val defaultQuality = candidates.first()
+                // Prefer <=720p initially; user can choose 1080p or higher from the menu.
+                val defaultQuality = candidates.firstOrNull { it.height <= 720 } ?: candidates.first()
                 ui.update {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },

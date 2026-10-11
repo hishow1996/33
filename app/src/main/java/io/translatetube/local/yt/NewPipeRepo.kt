@@ -51,8 +51,11 @@ object NewPipeRepo {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             if (cachedId == videoId && cachedInfo != null) return@withContext cachedInfo!!
             initOnce()
+            // Use the regular watch endpoint for all video IDs (including Shorts IDs). This exposes
+            // the normal adaptiveFormats/videoOnlyStreams data used by the quality selector.
             val i = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
-            cachedInfo = i; cachedId = videoId
+            cachedInfo = i
+            cachedId = videoId
             i
         }
 

@@ -133,7 +133,15 @@ class DubbingEngine(
         val voice = line?.speakerId ?: -1
         // 同一视频同一行号可能因翻译引擎/人工修改而有不同译文；把译文指纹纳入缓存键。
         val textHash = Integer.toHexString((line?.zh ?: "").hashCode())
-        return File(cacheDir, "${idx}-v${voice}-t${textHash}.pcm")
+        // Engine-specific cache keys prevent mixing system TTS PCM with Kokoro output.
+        // v2 invalidates previous SystemTTS cache files produced by the incorrect WAV rate parser.
+        val engineTag = when (tts?.name) {
+            "系统TTS" -> "system-v2"
+            "Kokoro" -> "kokoro-v2"
+            else -> "${tts?.name ?: "unknown"}-v2"
+        }
+        val engineHash = Integer.toHexString(engineTag.hashCode())
+        return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
 
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
