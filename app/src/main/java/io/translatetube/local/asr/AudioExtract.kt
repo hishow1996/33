@@ -13,7 +13,7 @@ object AudioExtract {
 
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
 
-    fun decodeTo16kMono(ctx: Context, src: Uri?, file: File?): Pcm {
+    fun decodeTo16kMono(ctx: Context, src: Uri?, file: File?, maxDurationMs: Long = Long.MAX_VALUE): Pcm {
         val ex = MediaExtractor()
         try {
             when {
@@ -39,6 +39,8 @@ object AudioExtract {
             var srcRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             var srcChannels = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             val collected = ArrayList<ShortArray>()
+            val maxSourceSamples = if (maxDurationMs == Long.MAX_VALUE) Int.MAX_VALUE.toLong() else (srcRate.toLong() * srcChannels * maxDurationMs / 1000L).coerceAtLeast(1L)
+            var collectedSamples = 0L
             val info = MediaCodec.BufferInfo()
             var sawInputEOS = false
             var sawOutputEOS = false
@@ -60,11 +62,17 @@ object AudioExtract {
                 val outIdx = codec.dequeueOutputBuffer(info, 10_000)
                 if (outIdx >= 0) {
                     val ob = codec.getOutputBuffer(outIdx)!!
-                    val shorts = ShortArray(info.size / 2)
-                    ob.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-                    collected += shorts
+                    val available = info.size / 2
+                    val remaining = (maxSourceSamples - collectedSamples).coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val take = minOf(available, remaining)
+                    if (take > 0) {
+                        val shorts = ShortArray(take)
+                        ob.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts, 0, take)
+                        collected += shorts
+                        collectedSamples += take
+                    }
                     codec.releaseOutputBuffer(outIdx, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEOS = true
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 || collectedSamples >= maxSourceSamples) sawOutputEOS = true
                 } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     // 解码器实际输出格式可能与容器声明不同（如 opus 48k）
                     val nf = codec.outputFormat
