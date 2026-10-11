@@ -99,7 +99,7 @@ fun HomeScreen(
                     }
                 },
                 enabled = link.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = OnBg),
+                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
             ) { Text("观看") }
