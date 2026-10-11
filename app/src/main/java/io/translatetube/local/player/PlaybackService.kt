@@ -972,6 +972,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         if (d != null && st.dubbingOn) {
+            val activeLine = st.lines.getOrNull(dubLine)
             // Empty audio can also mean translation is missing, engine initialization failed,
             // or an earlier run cached an empty marker. Never keep the whole video silent.
             if (dubLine >= 0 && activeLine?.zh?.isNotBlank() == true && d.isSilent(dubLine)) {
