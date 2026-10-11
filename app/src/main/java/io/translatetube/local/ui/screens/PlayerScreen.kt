@@ -6,6 +6,13 @@ import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -666,14 +673,49 @@ private fun SubtitleList(
         }
         itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
             val active = i == state.currentLine
+            val distance = if (state.currentLine >= 0) kotlin.math.abs(i - state.currentLine) else Int.MAX_VALUE
+            val targetAlpha = when {
+                state.currentLine < 0 -> 1f
+                distance == 0 -> 1f
+                distance == 1 -> 0.72f
+                distance == 2 -> 0.48f
+                distance == 3 -> 0.32f
+                else -> 0.22f
+            }
+            val textAlpha by animateFloatAsState(
+                targetValue = targetAlpha,
+                animationSpec = tween(durationMillis = 380),
+                label = "subtitleFocusFade",
+            )
+            val textScale by animateFloatAsState(
+                targetValue = if (active) 1f else 0.985f,
+                animationSpec = tween(durationMillis = 380),
+                label = "subtitleFocusScale",
+            )
+            val rowColor by animateColorAsState(
+                targetValue = if (active) SurfaceHigh.copy(alpha = 0.55f) else Color.Transparent,
+                animationSpec = tween(durationMillis = 320),
+                label = "subtitleFocusBackground",
+            )
+            val originalColor by animateColorAsState(
+                targetValue = if (active) OnBg else SubText,
+                animationSpec = tween(durationMillis = 320),
+                label = "subtitleOriginalColor",
+            )
+            val translatedColor by animateColorAsState(
+                targetValue = if (active) OnBg else SubText,
+                animationSpec = tween(durationMillis = 320),
+                label = "subtitleTranslatedColor",
+            )
             val zh = line.zh
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (active) SurfaceHigh else Color.Transparent)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(rowColor)
+                    .animateContentSize(animationSpec = tween(300))
                     .clickable { svc?.seek(line.startMs) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = if (active) 10.dp else 7.dp),
             ) {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -682,9 +724,17 @@ private fun SubtitleList(
                 ) {
                     Text(
                         line.text,
-                        color = if (active) BrandBright else SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
+                        color = originalColor.copy(alpha = textAlpha),
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = if (active) 17.sp else 15.sp,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .graphicsLayer {
+                                scaleX = textScale
+                                scaleY = textScale
+                            },
                     )
                     Spacer(Modifier.width(8.dp))
                     val voiceIds = listOf(-1, 0, 1, 2, 3)
@@ -695,7 +745,21 @@ private fun SubtitleList(
                     )
                 }
                 if (!zh.isNullOrEmpty()) {
-                    Text(zh, color = if (active) OnBg else SubText, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        zh,
+                        color = translatedColor.copy(alpha = textAlpha),
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = if (active) 22.sp else 18.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                scaleX = textScale
+                                scaleY = textScale
+                            }
+                            .padding(top = if (active) 2.dp else 0.dp),
+                    )
                 }
             }
         }
