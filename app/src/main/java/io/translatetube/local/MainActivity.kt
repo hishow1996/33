@@ -13,6 +13,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,32 +63,42 @@ class MainActivity : ComponentActivity() {
         setContent {
             TranslateTubeTheme {
                 var screen by remember { mutableStateOf(Screen.HOME) }
+                var splashVisible by remember { mutableStateOf(true) }
                 val req by playReq
 
+                // 展示品牌启动页后再进入首页/链接目标页；外部 YouTube 链接不会丢失。
+                LaunchedEffect(Unit) {
+                    delay(1400)
+                    splashVisible = false
+                }
                 LaunchedEffect(req) { if (req != null) screen = Screen.PLAYER }
 
-                // 全局大屏适配：内容限宽居中（平板/折叠屏不拉伸变形）
-                Box(
-                    Modifier.fillMaxSize().background(BgDark),
-                    contentAlignment = Alignment.TopCenter,
-                ) {
-                    Box(Modifier.widthIn(max = 720.dp)) {
-                        when (screen) {
-                            Screen.HOME -> HomeScreen(
-                                onPlay = { r -> playReq.value = r },
-                                onSettings = { screen = Screen.SETTINGS },
-                            )
-                            Screen.PLAYER -> PlayerScreen(
-                                videoId = req?.videoId,
-                                localUri = req?.localUri?.let(Uri::parse),
-                                onBack = { screen = Screen.HOME },
-                                onGoSettings = { screen = Screen.SETTINGS },
-                            )
-                            Screen.SETTINGS -> SettingsScreen(
-                                onBack = { screen = Screen.HOME },
-                                onApiManager = { screen = Screen.API },
-                            )
-                            Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })
+                if (splashVisible) {
+                    SplashScreen()
+                } else {
+                    // 全局大屏适配：内容限宽居中（平板/折叠屏不拉伸变形）
+                    Box(
+                        Modifier.fillMaxSize().background(BgDark),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        Box(Modifier.widthIn(max = 720.dp)) {
+                            when (screen) {
+                                Screen.HOME -> HomeScreen(
+                                    onPlay = { r -> playReq.value = r },
+                                    onSettings = { screen = Screen.SETTINGS },
+                                )
+                                Screen.PLAYER -> PlayerScreen(
+                                    videoId = req?.videoId,
+                                    localUri = req?.localUri?.let(Uri::parse),
+                                    onBack = { screen = Screen.HOME },
+                                    onGoSettings = { screen = Screen.SETTINGS },
+                                )
+                                Screen.SETTINGS -> SettingsScreen(
+                                    onBack = { screen = Screen.HOME },
+                                    onApiManager = { screen = Screen.API },
+                                )
+                                Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })
+                            }
                         }
                     }
                 }
@@ -116,5 +136,34 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SplashScreen() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White),
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.splash_logo),
+            contentDescription = "大象应用图标",
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(176.dp),
+            contentScale = ContentScale.Fit,
+        )
+
+        Text(
+            text = "大象",
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 52.dp),
+            color = Color(0xFF18221D),
+            fontSize = 40.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 5.sp,
+        )
     }
 }
