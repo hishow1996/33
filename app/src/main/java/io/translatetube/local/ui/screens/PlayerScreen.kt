@@ -44,16 +44,40 @@ fun PlayerScreen(
     LaunchedEffect(videoId, localUri) {
         val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
         if (state.key != key) {
-            var s = PlaybackService.instance
-            if (s == null) {
-                androidx.core.content.ContextCompat.startForegroundService(
-                    ctx, android.content.Intent(ctx, PlaybackService::class.java)
-                )
-                var tries = 0
-                while (PlaybackService.instance == null && tries < 50) { delay(100); tries++ }
-                s = PlaybackService.instance
+            try {
+                var s = PlaybackService.instance
+                if (s == null) {
+                    androidx.core.content.ContextCompat.startForegroundService(
+                        ctx, android.content.Intent(ctx, PlaybackService::class.java)
+                    )
+                    var tries = 0
+                    while (PlaybackService.instance == null && tries < 50) {
+                        delay(100)
+                        tries++
+                    }
+                    s = PlaybackService.instance
+                }
+                if (s == null) {
+                    PlaybackService.ui.update {
+                        it.copy(
+                            phase = Phase.ERROR,
+                            progress = "",
+                            error = "播放器服务启动超时，请返回主页后重试"
+                        )
+                    }
+                } else {
+                    s.open(key, videoId, localUri)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
+                PlaybackService.ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "无法启动播放器：${e.message ?: e.javaClass.simpleName}"
+                    )
+                }
             }
-            s?.open(key, videoId, localUri)
         }
     }
 
