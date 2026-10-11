@@ -533,16 +533,37 @@ class PlaybackService : MediaSessionService() {
 
             // ---- 5. 配音引擎 ----
             if (finalLines.isNotEmpty()) {
-                if (io.translatetube.local.data.ModelFiles.ttsReady(this)) {
-                    val tts: TtsEngine = makeTts()
-                    val d = DubbingEngine(this, key, scope)
-                    d.attach(tts, finalLines)
-                    dubbing = d
-                    dubCollectJob = scope.launch {
-                        d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
+                    .getString("tts_engine", "kokoro")
+                // 系统 TTS 由 Android 系统提供，不依赖 Kokoro ONNX 模型文件。
+                // 只有选用 Kokoro 神经网络引擎时，才要求用户先下载本地配音模型。
+                val selectedEngineReady = selectedTts == "system" ||
+                    io.translatetube.local.data.ModelFiles.ttsReady(this)
+                if (selectedEngineReady) {
+                    try {
+                        val tts: TtsEngine = makeTts()
+                        val d = DubbingEngine(this, key, scope)
+                        d.attach(tts, finalLines)
+                        dubbing = d
+                        dubCollectJob = scope.launch {
+                            d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                        }
+                        ui.update { it.copy(noModelHint = null) }
+                    } catch (e: Exception) {
+                        android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine", e)
+                        ui.update {
+                            it.copy(
+                                noModelHint = null,
+                                error = if (selectedTts == "system")
+                                    "系统 TTS 初始化失败，请检查手机是否已安装并启用中文语音数据：${e.message ?: e.javaClass.simpleName}"
+                                else "Kokoro 配音引擎初始化失败：${e.message ?: e.javaClass.simpleName}"
+                            )
+                        }
                     }
                 } else {
-                    ui.update { it.copy(noModelHint = "下载「配音模型」后即可中文配音（设置 → 语音模型）") }
+                    ui.update {
+                        it.copy(noModelHint = "当前选择的是 Kokoro 神经网络配音；下载「配音模型」后即可使用。也可以在设置中改选「系统 TTS」，无需下载此模型。")
+                    }
                 }
             }
             saveHistory(meta)
