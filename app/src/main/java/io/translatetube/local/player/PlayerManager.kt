@@ -141,6 +141,42 @@ class PlayerManager(private val ctx: Context) {
         }
     }
 
+    /** 为指定清晰度加载流；视频轨分离时与音频轨合并播放。 */
+    fun setYouTubeQuality(
+        videoUrl: String,
+        audioUrl: String,
+        muxed: Boolean,
+        title: String = "",
+        artist: String = "",
+        artworkUrl: String? = null,
+    ) {
+        errorSink.value = null
+        if (muxed) {
+            setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
+            return
+        }
+        if (videoUrl.isBlank() || audioUrl.isBlank()) {
+            errorSink.value = "该清晰度缺少视频或音频流"
+            return
+        }
+        try {
+            val meta = buildMetadata(title, artist, artworkUrl)
+            val videoSource = ProgressiveMediaSource.Factory(httpFactory)
+                .createMediaSource(
+                    MediaItem.Builder().setUri(videoUrl).setMediaMetadata(meta).build()
+                )
+            val audioSource = ProgressiveMediaSource.Factory(httpFactory)
+                .createMediaSource(
+                    MediaItem.Builder().setUri(audioUrl).setMediaMetadata(meta).build()
+                )
+            player.setMediaSource(MergingMediaSource(videoSource, audioSource))
+            player.prepare()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerManager", "YouTube quality setup failed", e)
+            errorSink.value = "无法初始化 ${title.ifEmpty { "YouTube" }} 视频流：${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
     /** 本地文件 / 直链 */
     fun setUriSource(uri: Uri, title: String = "", artist: String = "", artworkUrl: String? = null) {
         player.setMediaItem(

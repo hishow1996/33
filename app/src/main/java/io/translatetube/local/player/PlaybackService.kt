@@ -69,6 +69,15 @@ data class PlayerUiState(
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
     val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
+    val qualityOptions: List<String> = emptyList(),
+    val selectedQuality: String = "",
+)
+
+private data class YouTubeQualitySource(
+    val label: String,
+    val height: Int,
+    val url: String,
+    val muxed: Boolean,
 )
 
 class PlaybackService : MediaSessionService() {
@@ -82,6 +91,9 @@ class PlaybackService : MediaSessionService() {
     private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
+    @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
+    @Volatile private var qualityAudioUrl: String = ""
+    private var qualityJob: Job? = null
     private var importedLines: List<SubLine>? = null
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
@@ -200,10 +212,50 @@ class PlaybackService : MediaSessionService() {
         dubbing?.release(); dubbing = null
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.importedLines = importedLines
+        qualityJob?.cancel()
+        qualitySources = emptyList()
+        qualityAudioUrl = ""
         lastLineIdx = Int.MIN_VALUE
         ui.value = PlayerUiState(phase = Phase.PARSING, key = key, progress = "解析中…")
         pm.pause()
         prepJob = scope.launch { runPipeline(key, videoId, localUri) }
+    }
+
+    /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
+    fun selectQuality(label: String) {
+        val source = qualitySources.firstOrNull { it.label == label } ?: return
+        if (!::pm.isInitialized || source.label == ui.value.selectedQuality) return
+        qualityJob?.cancel()
+        qualityJob = scope.launch {
+            val positionMs = withContext(Dispatchers.Main) { pm.position() }
+            val wasPlaying = withContext(Dispatchers.Main) { pm.player.isPlaying }
+            ui.update { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
+            try {
+                withContext(Dispatchers.Main) {
+                    pm.setYouTubeQuality(
+                        videoUrl = source.url,
+                        audioUrl = qualityAudioUrl,
+                        muxed = source.muxed,
+                        title = ui.value.title,
+                        artist = ui.value.channel,
+                        artworkUrl = ui.value.thumbUrl,
+                    )
+                    pm.seekTo(positionMs)
+                    if (wasPlaying) pm.play() else pm.pause()
+                    ui.update { it.copy(selectedQuality = source.label, progress = "") }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
+                ui.update {
+                    it.copy(
+                        progress = "",
+                        error = "切换清晰度失败：${e.message ?: e.javaClass.simpleName}",
+                    )
+                }
+            }
+        }
     }
 
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
@@ -396,17 +448,46 @@ class PlaybackService : MediaSessionService() {
                 val audioUrl: String = audioStreams.minByOrNull { a -> a.averageBitrate }?.content
                     ?: audioStreams.firstOrNull()?.content
                     ?: throw IllegalStateException("无音频流")
-                // 优先选 MP4 单文件流：对 Android 9/旧款硬件解码器更友好，
-                // 同时避免把高分辨率 VP9/WebM 自适应流当作首选导致黑屏或设备级解码崩溃。
-                val muxed: String? = info.videoStreams
-                    .firstOrNull { v -> !v.isVideoOnly && v.format?.suffix == "mp4" }?.content
-                    ?: info.videoStreams.firstOrNull { v -> !v.isVideoOnly }?.content
-                // 无单文件流时仅选择 MP4 分离视频轨，先限制到 1080p，避免直接选到设备难以解码的超高分辨率轨。
-                val vOnly: List<Pair<String, Int>> = info.videoStreams
-                    .filter { v -> v.isVideoOnly && v.format?.suffix == "mp4" && v.height in 1..1080 }
-                    .map { v -> v.content to (v.height * 1000 + v.bitrate) }
+
+                // Android 9 兼容优先：列出 MP4 清晰度，并优先使用同分辨率的合并音视频流。
+                val allVideoStreams = info.videoStreams.filter { v -> v.height > 0 && v.height <= 1080 }
+                val mp4Streams = allVideoStreams.filter { v ->
+                    v.format?.suffix?.equals("mp4", ignoreCase = true) == true
+                }
+                val candidates = (if (mp4Streams.isNotEmpty()) mp4Streams else allVideoStreams)
+                    .groupBy { it.height }
+                    .mapNotNull { (height, streams) ->
+                        val chosen = streams.firstOrNull { !it.isVideoOnly } ?: streams.firstOrNull()
+                        chosen?.let {
+                            YouTubeQualitySource(
+                                label = "${height}p",
+                                height = height,
+                                url = it.content,
+                                muxed = !it.isVideoOnly,
+                            )
+                        }
+                    }
+                    .sortedByDescending { it.height }
+
+                if (candidates.isEmpty()) throw IllegalStateException("YouTube 未提供可播放的 1080p 以下视频流")
+                qualitySources = candidates
+                qualityAudioUrl = audioUrl
+                val defaultQuality = candidates.first()
+                ui.update {
+                    it.copy(
+                        qualityOptions = candidates.map { q -> q.label },
+                        selectedQuality = defaultQuality.label,
+                    )
+                }
                 withContext(Dispatchers.Main) {
-                    pm.setYouTubeSource(vOnly, audioUrl, muxed, meta.title, meta.channel, meta.thumbUrl)
+                    pm.setYouTubeQuality(
+                        videoUrl = defaultQuality.url,
+                        audioUrl = audioUrl,
+                        muxed = defaultQuality.muxed,
+                        title = meta.title,
+                        artist = meta.channel,
+                        artworkUrl = meta.thumbUrl,
+                    )
                 }
             } else {
                 withContext(Dispatchers.Main) {

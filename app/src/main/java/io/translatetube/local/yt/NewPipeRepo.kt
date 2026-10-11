@@ -51,7 +51,7 @@ object NewPipeRepo {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             if (cachedId == videoId && cachedInfo != null) return@withContext cachedInfo!!
             initOnce()
-            val i = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
+            val i = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/shorts/$videoId")
             cachedInfo = i; cachedId = videoId
             i
         }

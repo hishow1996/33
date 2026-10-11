@@ -195,6 +195,9 @@ fun PlayerScreen(
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
+                if (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING) {
+                    VideoOverlayControls(state = state)
+                }
                 // 阶段进度覆盖层
                 val phase = state.phase
                 if (phase != Phase.READY && phase != Phase.SYNTHESIZING) {
@@ -300,6 +303,93 @@ fun PlayerScreen(
     }
 }
 
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(state: PlayerUiState) {
+    val svc = PlaybackService.instance
+    var pos by remember(state.key) { mutableStateOf(0f) }
+    var scrubbing by remember(state.key) { mutableStateOf(false) }
+    var qualityExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.key) {
+        while (true) {
+            if (!scrubbing) {
+                val duration = svc?.duration() ?: 0L
+                val position = svc?.position() ?: 0L
+                pos = if (duration > 0L) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+            }
+            delay(300)
+        }
+    }
+
+    Column(
+        Modifier
+            .align(androidx.compose.ui.Alignment.BottomCenter)
+            .fillMaxWidth()
+            .background(Color(0xC9000000))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextButton(
+                onClick = { svc?.playPause() },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+                Text(if (state.isPlaying) "❚❚" else "▶", color = Color.White, style = MaterialTheme.typography.titleMedium)
+            }
+            Text(
+                SubtitleParsers.fmtTime((svc?.position() ?: 0L).coerceAtLeast(0L)),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.weight(1f))
+            if (state.qualityOptions.isNotEmpty()) {
+                Box {
+                    TextButton(
+                        onClick = { qualityExpanded = true },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text("清晰度 ${state.selectedQuality}", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    }
+                    DropdownMenu(
+                        expanded = qualityExpanded,
+                        onDismissRequest = { qualityExpanded = false },
+                    ) {
+                        state.qualityOptions.forEach { quality ->
+                            DropdownMenuItem(
+                                text = { Text(if (quality == state.selectedQuality) "✓ $quality" else quality) },
+                                onClick = {
+                                    qualityExpanded = false
+                                    svc?.selectQuality(quality)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Slider(
+            value = pos,
+            onValueChange = { value ->
+                scrubbing = true
+                pos = value
+            },
+            onValueChangeFinished = {
+                val duration = svc?.duration() ?: 0L
+                if (duration > 0L) svc?.seek((pos * duration).toLong())
+                scrubbing = false
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = BrandBright,
+                activeTrackColor = BrandBright,
+                inactiveTrackColor = Color(0x66FFFFFF),
+            ),
+        )
+    }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun ControlBar(
@@ -313,46 +403,12 @@ private fun ControlBar(
 ) {
     val ctx = LocalContext.current
     val svc = PlaybackService.instance
-    var pos by remember { mutableStateOf(0f) }
-    var scrubbing by remember { mutableStateOf(false) }
     var speed by remember { mutableStateOf(1.0f) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            if (!scrubbing) {
-                val d = PlaybackService.instance?.duration() ?: 0L
-                val p = PlaybackService.instance?.position() ?: 0L
-                pos = if (d > 0) (p.toFloat() / d).coerceIn(0f, 1f) else 0f
-            }
-            delay(500)
-        }
-    }
     Column(Modifier.fillMaxWidth()) {
-        Slider(
-            value = pos,
-            onValueChange = { v ->
-                scrubbing = true
-                pos = v
-            },
-            onValueChangeFinished = {
-                val d = PlaybackService.instance?.duration() ?: 0L
-                if (d > 0) PlaybackService.instance?.seek((pos * d).toLong())
-                scrubbing = false
-            },
-            colors = SliderDefaults.colors(
-                thumbColor = BrandBright, activeTrackColor = Brand,
-                inactiveTrackColor = SurfaceHigh,
-            ),
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Text(SubtitleParsers.fmtTime((pos * (PlaybackService.instance?.duration() ?: 0L)).toLong()), color = SubText, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.weight(1f))
-            Text(SubtitleParsers.fmtTime(state.durationMs), color = SubText, style = MaterialTheme.typography.bodySmall)
-        }
         FlowRow(
             Modifier.fillMaxWidth().padding(vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            AssistChip(onClick = { svc?.playPause() }, label = { Text(if (state.isPlaying) "⏸ 暂停" else "▶ 播放") })
             AssistChip(
                 onClick = { svc?.toggleDub() },
                 label = { Text(if (state.dubbingOn) "🔊 配音开" else "🔇 配音关") },
