@@ -70,7 +70,8 @@ fun PlayerScreen(
                     )
                 }
                 var tries = 0
-                while ((PlaybackService.instance == null || !PlaybackService.instance!!.isReady) && tries < 50) {
+                while (tries < 50) {
+                    if (PlaybackService.instance?.isReady == true) break
                     delay(100)
                     tries++
                 }
