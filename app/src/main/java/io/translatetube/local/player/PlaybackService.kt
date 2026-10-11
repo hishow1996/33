@@ -194,30 +194,47 @@ class PlaybackService : MediaSessionService() {
     private fun updateProcessingNotification(state: PlayerUiState) {
         if (!playerReady && state.phase == Phase.IDLE) return
         val (title, detail) = when (state.phase) {
-            Phase.PARSING -> "正在分析视频" to "正在获取视频信息与字幕"
-            Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "请稍候…" }
+            Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
+            Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
             Phase.TRANSCRIBING -> "正在识别语音" to state.progress.ifBlank { "正在生成字幕时间轴" }
-            Phase.TRANSLATING -> "正在翻译字幕" to state.progress.ifBlank { "正在逐句翻译" }
-            Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) "已准备 ${state.preparedUntil}/${state.totalLines} 行配音" else state.progress.ifBlank { "正在准备语音" }
+            Phase.TRANSLATING -> "正在翻译字幕" to state.progress.ifBlank {
+                if (state.totalLines > 0) "已翻译 ${state.lines.count { !it.zh.isNullOrBlank() }}/${state.totalLines} 行" else "正在逐句翻译"
+            }
+            Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
+                "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+            } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> if (state.isPlaying) "正在播放" to state.title.ifBlank { "视频配音已准备完成" } else "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
             Phase.ERROR -> "处理遇到问题" to (state.error ?: "打开应用查看详情")
             else -> "大象翻译" to "等待开始"
         }
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        val indeterminate = state.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING) ||
-            (state.phase == Phase.TRANSLATING && state.totalLines <= 0) ||
-            (state.phase == Phase.SYNTHESIZING && state.totalLines <= 0)
-        val total = state.totalLines.coerceAtLeast(1)
-        val progress = when (state.phase) {
-            Phase.TRANSLATING -> state.lines.count { !it.zh.isNullOrBlank() }.coerceIn(0, total)
-            Phase.SYNTHESIZING -> state.preparedUntil.coerceIn(0, total)
-            else -> 0
+
+        // Only publish determinate progress when it comes from a measurable source:
+        // downloaded bytes, completed ASR segments, translated lines, or prepared TTS lines.
+        // Do not use Android's indeterminate notification animation as a fake progress display.
+        val measuredPercent: Int? = when (state.phase) {
+            Phase.DOWNLOADING_AUDIO -> percentFromProgress(state.progress)
+            Phase.TRANSCRIBING -> ratioPercentFromProgress(state.progress)
+                ?: percentFromProgress(state.progress)
+            Phase.TRANSLATING -> ratioPercentFromProgress(state.progress)
+                ?: if (state.totalLines > 0) {
+                    (state.lines.count { !it.zh.isNullOrBlank() } * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                } else null
+            Phase.SYNTHESIZING -> if (state.totalLines > 0) {
+                (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+            } else ratioPercentFromProgress(state.progress)
+            else -> null
         }
+        val displayDetail = if (
+            measuredPercent != null &&
+            !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detail)
+        ) "$detail · $measuredPercent%" else detail
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val notification = NotificationCompat.Builder(this, CH_MAIN)
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setContentTitle(title)
-            .setContentText(detail)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentText(displayDetail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
             .setOngoing(state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE))
             .setOnlyAlertOnce(true)
             .setContentIntent(
@@ -228,16 +245,24 @@ class PlaybackService : MediaSessionService() {
                 )
             )
             .apply {
-                if (state.phase in setOf(Phase.TRANSLATING, Phase.SYNTHESIZING)) {
-                    setProgress(total, progress, indeterminate)
-                } else if (indeterminate) {
-                    setProgress(0, 0, true)
-                } else {
-                    setProgress(0, 0, false)
-                }
+                // max=0 clears the old bar when this stage has no reliable percentage.
+                if (measuredPercent != null) setProgress(100, measuredPercent.coerceIn(0, 100), false)
             }
             .build()
         manager.notify(1001, notification)
+    }
+
+    private fun percentFromProgress(progress: String): Int? {
+        val match = Regex("(\\d+(?:\\.\\d+)?)%").find(progress) ?: return null
+        return match.groupValues[1].toFloatOrNull()?.toInt()?.coerceIn(0, 100)
+    }
+
+    private fun ratioPercentFromProgress(progress: String): Int? {
+        val match = Regex("(\\d+)\\s*/\\s*(\\d+)").find(progress) ?: return null
+        val current = match.groupValues[1].toIntOrNull() ?: return null
+        val total = match.groupValues[2].toIntOrNull() ?: return null
+        if (total <= 0) return null
+        return (current * 100f / total).toInt().coerceIn(0, 100)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -709,6 +734,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
+    /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
     private suspend fun translateLines(key: String, lines: List<SubLine>, srcLang: String) {
         val db = AppDatabase.get(this)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
@@ -732,28 +758,64 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) { /* 坏配置 → 落到本地 */ }
         }
         if (engine == null) {
-            engine = MlKitEngine(); engineName = "本地引擎（离线）"
+            engine = MlKitEngine()
+            engineName = "本地引擎（离线）"
         }
-        ui.update { it.copy(engineName = engineName) }
+        ui.update {
+            it.copy(
+                engineName = engineName,
+                lines = lines,
+                totalLines = lines.size,
+                progress = "翻译中 0/${lines.size} 行",
+            )
+        }
 
         val src = if (srcLang == "auto") "" else srcLang
-        val results = try {
-            engine!!.translate(plain, src, tgt)
-        } catch (e: Exception) {
-            if (engine !is MlKitEngine) {
-                // API 失败 → 降级本地
-                try {
-                    engine = MlKitEngine(); ui.update { it.copy(engineName = "本地引擎（API失败降级）") }
-                    engine!!.translate(plain, src, tgt)
-                } catch (e2: Exception) { null }
-            } else null
-        }
-        if (results != null) {
-            for (i in lines.indices) lines[i].zh = results.getOrNull(i)
+        val batchSize = 10
+        var completed = 0
+        for (start in lines.indices step batchSize) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val end = minOf(start + batchSize, lines.size)
+            val batch = plain.subList(start, end)
+            var translated: List<String>? = null
+            try {
+                translated = engine!!.translate(batch, src, tgt)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (engine !is MlKitEngine) {
+                    // 当前批次出错时降级本地翻译；后续批次也沿用该引擎，避免重复失败请求。
+                    try {
+                        engine = MlKitEngine()
+                        engineName = "本地引擎（API失败降级）"
+                        ui.update { it.copy(engineName = engineName) }
+                        translated = engine!!.translate(batch, src, tgt)
+                    } catch (fallbackError: Exception) {
+                        if (fallbackError is kotlinx.coroutines.CancellationException) throw fallbackError
+                        android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", fallbackError)
+                        translated = null
+                    }
+                } else {
+                    android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", e)
+                }
+            }
+
+            if (translated != null) {
+                for (index in start until end) {
+                    lines[index].zh = translated.getOrNull(index - start)
+                }
+            }
+            completed = end
+            ui.update {
+                it.copy(
+                    lines = lines.toList(),
+                    totalLines = lines.size,
+                    progress = "翻译中 $completed/${lines.size} 行",
+                )
+            }
         }
     }
 
-    private suspend fun downloadAudio(url: String): File {
+        private suspend fun downloadAudio(url: String): File {
         val f = File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         val maxBytes = 512L * 1024 * 1024
         val client = OkHttpClient.Builder()
