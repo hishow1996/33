@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -38,6 +39,7 @@ class DubbingEngine(
     private var tts: TtsEngine? = null
     /** Called when the selected engine fails; the service reports this without switching engines. */
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
+    private val synthesisErrorReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var speed = 1.0f
     @Volatile private var track: AudioTrack? = null
@@ -61,6 +63,7 @@ class DubbingEngine(
     fun attach(tts: TtsEngine, lines: List<SubLine>) {
         this.tts = tts
         this.lines = lines
+        synthesisErrorReported.set(false)
         _totalLines.value = lines.size
         _preparedUntil.value = 0
         noAudio.clear()
@@ -110,7 +113,7 @@ class DubbingEngine(
                     val audio = tts!!.synth(text, speed, line.speakerId)
                     if (audio.sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
                         val reason = "所选引擎返回空音频或无效采样率（${audio.sampleRate} Hz）"
-                        onSynthesisError?.invoke("第 ${idx + 1} 句：$reason")
+                        reportSynthesisError("第 ${idx + 1} 句：$reason")
                         writeCache(idx, audio.sampleRate.coerceIn(8_000, 192_000), FloatArray(0))
                         noAudio.add(idx)
                     } else {
@@ -122,7 +125,7 @@ class DubbingEngine(
                 } catch (e: Exception) {
                     // 合成失败时写入空标记，保证准备进度不会永久卡在这一行；该行回退原声。
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
-                    onSynthesisError?.invoke("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
+                    reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
                         writeCache(idx, 16000, FloatArray(0))
                         noAudio.add(idx)
@@ -132,6 +135,12 @@ class DubbingEngine(
                     }
                 }
             }
+        }
+    }
+
+    private fun reportSynthesisError(message: String) {
+        if (synthesisErrorReported.compareAndSet(false, true)) {
+            onSynthesisError?.invoke(message)
         }
     }
 
@@ -274,7 +283,7 @@ class DubbingEngine(
                         if (_currentLine.value == idx) _currentLine.value = -1
                     }
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
-                    onSynthesisError?.invoke("第 ${idx + 1} 句音频输出失败：${e.message ?: e.javaClass.simpleName}")
+                    reportSynthesisError("第 ${idx + 1} 句音频输出失败：${e.message ?: e.javaClass.simpleName}")
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
