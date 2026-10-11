@@ -22,6 +22,7 @@ import io.translatetube.local.data.ApiProfile
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.translate.Crypto
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.ui.theme.*
@@ -34,6 +35,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val db = remember { AppDatabase.get(ctx) }
     var profiles by remember { mutableStateOf<List<ApiProfile>>(emptyList()) }
+    var loadError by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ApiProfile?>(null) }
     var adding by remember { mutableStateOf(false) }
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
@@ -46,12 +48,21 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
-        db.apiProfileDao().all().collect { list ->
-            profiles = list
-            // 已删除或停用的配置不能继续作为当前引擎，自动回退到始终可用的本地引擎。
-            if (activeId >= 0L && list.none { it.id == activeId && it.enabled }) {
-                setActive(-1L)
+        try {
+            db.apiProfileDao().all().collect { list ->
+                profiles = list
+                loadError = null
+                // 已删除或停用的配置不能继续作为当前引擎，自动回退到始终可用的本地引擎。
+                if (activeId >= 0L && list.none { it.id == activeId && it.enabled }) {
+                    setActive(-1L)
+                }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            // 数据库/旧版本结构异常要显示出来，不应因 LaunchedEffect 未处理的异常带崩整个页面。
+            android.util.Log.e("ApiManagerScreen", "读取 API 配置失败", e)
+            loadError = "API 配置暂时无法读取，请返回后重试。"
         }
     }
 
@@ -66,6 +77,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         }
         Text("点击条目左侧圆点选择引擎；切换会用于后续重新翻译的字幕。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等。", color = SubText, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(8.dp))
+
+        loadError?.let {
+            Text(it, color = WarnYellow, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+        }
 
         // 本地引擎选项（始终可用）
         Row(

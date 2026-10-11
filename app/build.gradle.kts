@@ -34,8 +34,8 @@ android {
         applicationId = "io.translatetube.local"
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.0.5"
+        versionCode = 8
+        versionName = "1.0.6"
         ndk {
             // arm64 单架构（304MB 传输上限内；v7a 版存档）
             abiFilters += "arm64-v8a"

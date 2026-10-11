@@ -11,6 +11,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 enum class SourceType { YOUTUBE, LOCAL }
@@ -113,7 +115,7 @@ interface ApiProfileDao {
 
 @Database(
     entities = [VideoEntity::class, SubtitleCacheEntity::class, ApiProfile::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -123,8 +125,31 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         @Volatile private var inst: AppDatabase? = null
+
+        // 版本 1 的部分安装可能没有 api_profiles 表。只补建缺失表，保留视频历史与字幕缓存。
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `api_profiles` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `type` TEXT NOT NULL,
+                        `baseUrl` TEXT NOT NULL,
+                        `apiKey` TEXT NOT NULL,
+                        `model` TEXT NOT NULL,
+                        `region` TEXT NOT NULL,
+                        `enabled` INTEGER NOT NULL,
+                        `charsUsed` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun get(ctx: Context): AppDatabase = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(ctx, AppDatabase::class.java, "translatetube.db")
+                .addMigrations(MIGRATION_1_2)
                 .fallbackToDestructiveMigration()
                 .build().also { inst = it }
         }
