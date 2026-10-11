@@ -15,8 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.floating.FloatingManager
 
@@ -27,40 +25,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
-    val translationScope = rememberCoroutineScope()
-    var translationPackStatus by remember { mutableStateOf("") }
-    var downloadingTranslationPack by remember { mutableStateOf(false) }
-    var translationPackStates by remember { mutableStateOf(mapOf<String, String>()) }
-    val translationPacks = remember {
-        listOf(
-            Triple("英语 ↔ 中文", "en", "zh"),
-            Triple("日语 ↔ 中文", "ja", "zh"),
-            Triple("韩语 ↔ 中文", "ko", "zh"),
-            Triple("法语 ↔ 中文", "fr", "zh"),
-            Triple("德语 ↔ 中文", "de", "zh"),
-            Triple("西班牙语 ↔ 中文", "es", "zh"),
-            Triple("俄语 ↔ 中文", "ru", "zh")
-        )
-    }
-    LaunchedEffect(Unit) {
-        try {
-            val manager = com.google.mlkit.common.model.RemoteModelManager.getInstance()
-            val installed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                translationPacks.associate { pack ->
-                    val source = com.google.mlkit.nl.translate.TranslateLanguage.fromLanguageTag(pack.second)
-                        ?.let { manager.isModelDownloaded(com.google.mlkit.nl.translate.TranslateRemoteModel.Builder(it).build()).await() }
-                        ?: false
-                    val target = com.google.mlkit.nl.translate.TranslateLanguage.fromLanguageTag(pack.third)
-                        ?.let { manager.isModelDownloaded(com.google.mlkit.nl.translate.TranslateRemoteModel.Builder(it).build()).await() }
-                        ?: false
-                    pack.second to if (source && target) "ready" else "missing"
-                }
-            }
-            translationPackStates = installed
-        } catch (_: Exception) {
-            translationPackStates = translationPacks.associate { it.second to "unknown" }
-        }
-    }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -85,7 +49,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         }
         Text("设置", style = MaterialTheme.typography.headlineLarge, color = OnBg)
         Spacer(Modifier.height(4.dp))
-        Text("管理语音、翻译与播放体验", color = SubText, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(14.dp))
 
         // ===== 语音模型（方案 B：软件内下载） =====
@@ -98,18 +61,14 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
         Section("语音模型") {
-            Text("配音和无字幕转写使用不同模型；未下载时可在对应卡片中下载。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(10.dp))
 
             // —— 配音模型 ——
-            ModelRow(title = "配音模型", subtitle = "Kokoro v1.1 · 中文神经网络配音",
+            ModelRow(title = "配音模型",
                 state = ttsState, ready = ttsReady, pkgMB = 140,
-                readyText = "已就绪，可使用神经网络配音",
                 onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS })
             Spacer(Modifier.height(8.dp))
-            ModelRow(title = "语音转写模型", subtitle = "Whisper base · 用于没有字幕的视频",
+            ModelRow(title = "语音转写模型",
                 state = asrState, ready = asrReady, pkgMB = 198,
-                readyText = "已就绪，可识别视频语音",
                 onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR })
         }
 
@@ -145,10 +104,10 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         }
 
         Section("配音引擎") {
-            EngineOption("kokoro", "Kokoro 神经网络（推荐）", "自然度高，首次合成略慢", ttsEngine) { e ->
+            EngineOption("kokoro", "Kokoro 神经网络（推荐）", ttsEngine) { e ->
                 ttsEngine = e; prefs.edit().putString("tts_engine", e).apply()
             }
-            EngineOption("system", "系统 TTS", "速度快，朗读腔", ttsEngine) { e ->
+            EngineOption("system", "系统 TTS", ttsEngine) { e ->
                 ttsEngine = e; prefs.edit().putString("tts_engine", e).apply()
             }
             if (ttsEngine == "kokoro") {
@@ -159,124 +118,15 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                     valueRange = 0f..53f,
                     colors = SliderDefaults.colors(thumbColor = BrandBright, activeTrackColor = Brand),
                 )
-                Text("0-53 为模型内声音编号，男女声交替，可试听后选定", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
-            }
-            Text("切换后对下一次打开的视频生效（当前视频不变）。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
-        }
-
-        Section("离线翻译包") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("语言模型", color = OnBg, style = MaterialTheme.typography.titleSmall)
-                    Text("手动下载一次，之后可离线使用", color = SubText, style = MaterialTheme.typography.bodySmall)
-                }
-                val readyCount = translationPackStates.values.count { it == "ready" }
-                Text("$" + "readyCount/7 已就绪", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-            }
-            Spacer(Modifier.height(8.dp))
-            translationPacks.forEachIndexed { index, pack ->
-                val state = translationPackStates[pack.second] ?: "checking"
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(SurfaceHigh),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            when (pack.second) {
-                                "en" -> "EN"
-                                "ja" -> "日"
-                                "ko" -> "韩"
-                                "fr" -> "FR"
-                                "de" -> "DE"
-                                "es" -> "ES"
-                                else -> "RU"
-                            },
-                            color = BrandBright,
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
-                    Column(Modifier.weight(1f).padding(start = 11.dp, end = 8.dp)) {
-                        Text(pack.first, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            when (state) {
-                                "ready" -> "已就绪 · 可离线翻译"
-                                "checking" -> "正在检查模型状态…"
-                                "downloading" -> "正在下载与安装…"
-                                "failed" -> "下载失败，可重试"
-                                "unknown" -> "状态暂不可用"
-                                else -> "尚未下载"
-                            },
-                            color = when (state) {
-                                "ready" -> BrandBright
-                                "failed" -> DangerRed
-                                else -> SubText
-                            },
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    when (state) {
-                        "ready" -> Text("✓", color = BrandBright, style = MaterialTheme.typography.titleLarge)
-                        "downloading" -> CircularProgressIndicator(
-                            modifier = Modifier.size(21.dp), strokeWidth = 2.dp, color = BrandBright
-                        )
-                        else -> {
-                            TextButton(
-                                enabled = !downloadingTranslationPack && state != "checking",
-                                onClick = {
-                                    downloadingTranslationPack = true
-                                    translationPackStates = translationPackStates + (pack.second to "downloading")
-                                    translationPackStatus = ""
-                                    translationScope.launch {
-                                        try {
-                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                io.translatetube.local.translate.MlKitModelCoordinator.downloadLanguage(pack.second) { msg ->
-                                                    translationPackStatus = msg
-                                                }
-                                                if (pack.third != pack.second) {
-                                                    io.translatetube.local.translate.MlKitModelCoordinator.downloadLanguage(pack.third) { msg ->
-                                                        translationPackStatus = msg
-                                                    }
-                                                }
-                                            }
-                                            translationPackStates = translationPackStates + (pack.second to "ready")
-                                            translationPackStatus = "${pack.first} 已就绪"
-                                        } catch (e: Exception) {
-                                            translationPackStates = translationPackStates + (pack.second to "failed")
-                                            translationPackStatus = "下载失败：${e.message ?: "请检查网络后重试"}"
-                                        } finally {
-                                            downloadingTranslationPack = false
-                                        }
-                                    }
-                                },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
-                            ) {
-                                Text(if (state == "failed") "重试" else "下载", color = BrandBright,
-                                    style = MaterialTheme.typography.labelLarge)
-                            }
-                        }
-                    }
-                }
-                if (index < translationPacks.lastIndex) HorizontalDivider(color = SurfaceHigh, thickness = 1.dp)
-            }
-            if (translationPackStatus.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(translationPackStatus,
-                    color = if (translationPackStatus.startsWith("下载失败")) DangerRed else SubText,
-                    style = MaterialTheme.typography.bodySmall)
             }
         }
 
         Section("翻译引擎") {
-            Text("选择离线翻译或配置在线服务。", color = SubText, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHigh)
                 .clickable(onClick = onApiManager).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("翻译引擎与 API", color = OnBg, style = MaterialTheme.typography.titleSmall)
-                    Text("本地离线、Google、OpenAI 兼容及其他服务", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
                 Text("›", color = BrandBright, style = MaterialTheme.typography.headlineMedium)
             }
@@ -319,7 +169,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                 ) { Text("清理缓存") }
             }
             Spacer(Modifier.height(5.dp))
-            Text("清理会删除配音音频和转写临时文件，不会删除历史记录或收藏。", color = SubText, style = MaterialTheme.typography.bodySmall)
             if (showClearConfirm) {
                 AlertDialog(
                     onDismissRequest = { showClearConfirm = false },
@@ -342,7 +191,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
         Section("关于") {
             Text("大象翻译 v" + io.translatetube.local.BuildConfig.VERSION_NAME, color = OnBg, style = MaterialTheme.typography.titleSmall)
-            Text("离线翻译 · 本地神经配音 · 悬浮播放", color = SubText, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -360,7 +208,7 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 
 @Composable
 private fun EngineOption(
-    id: String, title: String, desc: String,
+    id: String, title: String,
     current: String, onPick: (String) -> Unit,
 ) {
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -371,7 +219,6 @@ private fun EngineOption(
             colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
         Column(Modifier.weight(1f).padding(end = 6.dp)) {
             Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-            Text(desc, color = SubText, style = MaterialTheme.typography.bodySmall)
         }
         if (current == id) Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
     }
@@ -379,9 +226,9 @@ private fun EngineOption(
 
 @Composable
 private fun ModelRow(
-    title: String, subtitle: String,
+    title: String,
     state: io.translatetube.local.data.ModelState, ready: Boolean, pkgMB: Int,
-    readyText: String, onDownload: () -> Unit,
+    onDownload: () -> Unit,
 ) {
     val dl = (LocalContext.current.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload
     val isReady = ready
@@ -415,7 +262,7 @@ private fun ModelRow(
                     dl.download(if (title.contains("配音")) io.translatetube.local.data.ModelKind.TTS else io.translatetube.local.data.ModelKind.ASR)
                 }) { Text("重试", color = BrandBright) }
             }
-            isReady -> Text("●  $readyText", color = BrandBright, style = MaterialTheme.typography.bodySmall)
+            isReady -> Text("✓ 已下载", color = BrandBright, style = MaterialTheme.typography.bodyMedium)
             else -> Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("尚未下载", color = SubText, style = MaterialTheme.typography.bodySmall)

@@ -25,7 +25,7 @@ import io.translatetube.local.translate.Crypto
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.LangMap
 import io.translatetube.local.translate.MlKitEngine
-import io.translatetube.local.translate.GoogleWebEngine
+import io.translatetube.local.translate.GoogleHybridEngine
 import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
 import io.translatetube.local.tts.TtsEngine
@@ -805,9 +805,9 @@ class PlaybackService : MediaSessionService() {
         var engine: TranslationEngine? = null
         var engineName = ""
 
-        // -2 为免密钥 Google 在线引擎；-1 或失效配置回落 ML Kit。
-        if (activeId == -2L) {
-            engine = GoogleWebEngine()
+        // Keep old preference values valid while treating local and online translation as one Google engine.
+        if (activeId == -1L || activeId == -2L) {
+            engine = GoogleHybridEngine(this)
             engineName = engine.displayName
         }
         val active = profiles.firstOrNull { it.id == activeId }
@@ -847,7 +847,7 @@ class PlaybackService : MediaSessionService() {
                 ui.update {
                     it.copy(
                         phase = Phase.ERROR,
-                        error = "当前翻译引擎失败：${e.message ?: "未知错误"}。请检查网络/API，或在设置中手动下载离线翻译包后选择本地引擎。"
+                        error = "翻译失败：${e.message ?: "未知错误"}。请检查网络，或在 Google 翻译中下载对应离线语言包。"
                     )
                 }
                 translated = null
@@ -986,9 +986,9 @@ class PlaybackService : MediaSessionService() {
                 }
                 pm.originalVolume = if (st.muteOriginal) 0f else 0.15f
             } else if (dubLine >= 0) {
-                // 播放追上合成：原声顶上，等后台补齐。
+                // While TTS is preparing this line, preserve source audio; mute it only when dubbing is ready.
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = if (st.muteOriginal) 0f else 1f
+                pm.originalVolume = 1f
             } else {
                 // 字幕间隙不播放配音；按“原声静音”开关决定是否保留原音。
                 if (d.currentLineIdx() >= 0) d.stop()

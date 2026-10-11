@@ -76,7 +76,6 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
             ) { Text("+ 添加") }
         }
-        Text("点击条目左侧圆点选择引擎；切换会用于后续重新翻译的字幕。OpenAI 兼容类型支持 DeepSeek/智谱/Kimi/Ollama 等。", color = SubText, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(8.dp))
 
         loadError?.let {
@@ -84,42 +83,29 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(8.dp))
         }
 
-        // 本地引擎选项（始终可用）
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(
-                if (activeId == -1L) SurfaceHigh else SurfaceDark
-            ).clickable { setActive(-1L) }.padding(12.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                .background(if (activeId == -1L || activeId == -2L) SurfaceHigh else SurfaceDark)
+                .clickable { setActive(-2L) }
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RadioButton(selected = activeId == -1L, onClick = { setActive(-1L) }, colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
-            Column(Modifier.weight(1f)) {
-                Text("本地引擎（离线）", color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                Text("免费 · 断网可用 · ML Kit", color = SubText, style = MaterialTheme.typography.bodySmall)
+            GoogleTranslateIcon()
+            Spacer(Modifier.width(10.dp))
+            RadioButton(
+                selected = activeId == -1L || activeId == -2L,
+                onClick = { setActive(-2L) },
+                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+            )
+            Text("Google 翻译", color = OnBg, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            if (activeId == -1L || activeId == -2L) {
+                Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
             }
         }
-        Spacer(Modifier.height(8.dp))
-
-        // 免密钥在线引擎：独立负数 ID，避免与数据库自增配置冲突。
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(
-                if (activeId == -2L) SurfaceHigh else SurfaceDark
-            ).clickable { setActive(-2L) }.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RadioButton(selected = activeId == -2L, onClick = { setActive(-2L) }, colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
-            Column(Modifier.weight(1f)) {
-                Text("Google 翻译（免费在线）", color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                Text("免 API Key · 需要联网 · 非正式接口，可能受限", color = SubText, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        Text(
-            "Google 翻译（免密钥）是非正式在线接口；Google Cloud Translation 是需要配置凭据的官方 API。Google Gemini 则是大模型服务，不等同于 Google 翻译。各服务的费用和免费额度以服务商政策为准。",
-            color = SubText,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { GoogleTranslateSection() }
             items(profiles, key = { it.id }) { p ->
                 Column(
                     Modifier.fillMaxWidth()
@@ -137,10 +123,6 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         )
                         Column(Modifier.weight(1f).padding(start = 4.dp)) {
                             Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                "${typeLabel(p.type)} · ${p.model.ifEmpty { "未选模型" }}",
-                                color = SubText, style = MaterialTheme.typography.bodySmall,
-                            )
                         }
                         Switch(
                             checked = p.enabled,

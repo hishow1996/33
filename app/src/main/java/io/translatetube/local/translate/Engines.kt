@@ -1,5 +1,10 @@
 package io.translatetube.local.translate
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import kotlinx.coroutines.CancellationException
+
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -273,6 +278,56 @@ class GoogleWebEngine : TranslationEngine {
         return out
     }
 }
+
+/** Google unified engine: online first, downloaded ML Kit language packs offline/fallback. */
+class GoogleHybridEngine(private val context: Context) : TranslationEngine {
+    override val id = "google-hybrid"
+    override val displayName = "Google 翻译"
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (!hasValidatedNetwork()) {
+            return try {
+                MlKitEngine().translate(lines, srcLang, tgtLang)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw IllegalStateException(
+                    "当前没有可用网络，且所需离线语言包尚未下载。请联网后在 Google 翻译中下载离线包。",
+                    e,
+                )
+            }
+        }
+        return try {
+            GoogleWebEngine().translate(lines, srcLang, tgtLang)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (onlineError: Exception) {
+            try {
+                MlKitEngine().translate(lines, srcLang, tgtLang)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (offlineError: Exception) {
+                throw IllegalStateException(
+                    "Google 在线翻译暂不可用，且离线语言包无法使用。请检查网络，或在 Google 翻译中下载离线包。",
+                    offlineError,
+                ).also { it.addSuppressed(onlineError) }
+            }
+        }
+    }
+
+    private fun hasValidatedNetwork(): Boolean {
+        return try {
+            val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = manager.activeNetwork ?: return false
+            val capabilities = manager.getNetworkCapabilities(network) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } catch (_: Exception) {
+            false
+        }
+    }
+}
+
 /** Google Cloud Translation API v2（key 即用，固定引擎） */
 class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
     override val id = "gcloud"
