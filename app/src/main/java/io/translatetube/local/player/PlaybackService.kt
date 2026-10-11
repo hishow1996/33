@@ -162,6 +162,11 @@ class PlaybackService : MediaSessionService() {
             scope.launch {
                 pm.isPlaying.collect { playing -> ui.update { it.copy(isPlaying = playing) } }
             }
+            // Processing belongs to the foreground service, not the visible Activity.
+            // Keep the ongoing notification current so users can switch apps and return later.
+            scope.launch {
+                ui.collect { state -> updateProcessingNotification(state) }
+            }
             scope.launch {
                 pm.errorSink.collect { err ->
                     if (err != null) ui.update { it.copy(error = err, phase = Phase.ERROR) }
@@ -183,6 +188,56 @@ class PlaybackService : MediaSessionService() {
             // 不保留一个无法播放的前台服务实例；页面仍可显示错误并在用户点击重试时重新启动。
             stopSelf()
         }
+    }
+
+
+    private fun updateProcessingNotification(state: PlayerUiState) {
+        if (!playerReady && state.phase == Phase.IDLE) return
+        val (title, detail) = when (state.phase) {
+            Phase.PARSING -> "正在分析视频" to "正在获取视频信息与字幕"
+            Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "请稍候…" }
+            Phase.TRANSCRIBING -> "正在识别语音" to state.progress.ifBlank { "正在生成字幕时间轴" }
+            Phase.TRANSLATING -> "正在翻译字幕" to state.progress.ifBlank { "正在逐句翻译" }
+            Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) "已准备 ${state.preparedUntil}/${state.totalLines} 行配音" else state.progress.ifBlank { "正在准备语音" }
+            Phase.READY -> if (state.isPlaying) "正在播放" to state.title.ifBlank { "视频配音已准备完成" } else "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
+            Phase.ERROR -> "处理遇到问题" to (state.error ?: "打开应用查看详情")
+            else -> "大象翻译" to "等待开始"
+        }
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val indeterminate = state.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING) ||
+            (state.phase == Phase.TRANSLATING && state.totalLines <= 0) ||
+            (state.phase == Phase.SYNTHESIZING && state.totalLines <= 0)
+        val total = state.totalLines.coerceAtLeast(1)
+        val progress = when (state.phase) {
+            Phase.TRANSLATING -> state.lines.count { !it.zh.isNullOrBlank() }.coerceIn(0, total)
+            Phase.SYNTHESIZING -> state.preparedUntil.coerceIn(0, total)
+            else -> 0
+        }
+        val notification = NotificationCompat.Builder(this, CH_MAIN)
+            .setSmallIcon(R.drawable.ic_stat_notify)
+            .setContentTitle(title)
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setOngoing(state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE))
+            .setOnlyAlertOnce(true)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0,
+                    Intent(this, io.translatetube.local.MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            .apply {
+                if (state.phase in setOf(Phase.TRANSLATING, Phase.SYNTHESIZING)) {
+                    setProgress(total, progress, indeterminate)
+                } else if (indeterminate) {
+                    setProgress(0, 0, true)
+                } else {
+                    setProgress(0, 0, false)
+                }
+            }
+            .build()
+        manager.notify(1001, notification)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
