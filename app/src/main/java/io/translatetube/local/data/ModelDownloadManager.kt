@@ -368,9 +368,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
             if (required.any { name ->
                     val file = File(staging, name)
-                    !file.isFile || file.length() <= 0L
+                    // 这些模型文件正常体积均远大于 1 MB；过小通常意味着下载/解压不完整。
+                    !file.isFile || file.length() < 1L * 1024 * 1024
                 }) {
-                throw java.io.IOException("模型包缺少必要文件，已取消安装")
+                throw java.io.IOException("模型包缺少必要文件或文件体积异常，已取消安装")
             }
 
             val old = File(parent, destDir.name + ".old")
