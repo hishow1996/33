@@ -41,15 +41,19 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
-                Text("‹ 返回", color = SubText, style = MaterialTheme.typography.titleMedium)
-            }
-            Spacer(Modifier.weight(1f))
-            Text("大象翻译", color = SubText, style = MaterialTheme.typography.labelLarge)
+            Text(
+                "‹",
+                color = SubText,
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = onBack)
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
         }
-        Text("设置", style = MaterialTheme.typography.headlineLarge, color = OnBg)
-        Spacer(Modifier.height(4.dp))
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(18.dp))
 
         // ===== 语音模型（方案 B：软件内下载） =====
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
@@ -104,14 +108,22 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         }
 
         Section("配音引擎") {
-            EngineOption("kokoro", "Kokoro 神经网络（推荐）", ttsEngine) { e ->
-                ttsEngine = e; prefs.edit().putString("tts_engine", e).apply()
+            EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
             }
+            HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE5EAF0), thickness = 1.dp)
             EngineOption("system", "系统 TTS", ttsEngine) { e ->
-                ttsEngine = e; prefs.edit().putString("tts_engine", e).apply()
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
             }
             if (ttsEngine == "kokoro") {
-                Text("中文声音试听序号：${speaker.toInt()}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("中文音色", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.weight(1f))
+                    Text("${speaker.toInt()}", color = BrandBright, style = MaterialTheme.typography.labelLarge)
+                }
                 Slider(
                     value = speaker, onValueChange = { speaker = it },
                     onValueChangeFinished = { prefs.edit().putInt("kokoro_speaker", speaker.toInt()).apply() },
@@ -122,28 +134,38 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         }
 
         Section("翻译引擎") {
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHigh)
-                .clickable(onClick = onApiManager).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("翻译引擎与 API", color = OnBg, style = MaterialTheme.typography.titleSmall)
-                }
-                Text("›", color = BrandBright, style = MaterialTheme.typography.headlineMedium)
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onApiManager)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "翻译引擎与 API",
+                    color = OnBg,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
             }
         }
 
         Section("悬浮窗") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(if (canFloat) "权限已开启" else "需要开启悬浮窗权限", color = OnBg, style = MaterialTheme.typography.titleSmall)
-                }
-                if (!canFloat) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("悬浮窗权限", color = OnBg, style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f))
+                if (canFloat) {
+                    Text("已开启", color = BrandBright, style = MaterialTheme.typography.labelLarge)
+                } else {
                     Button(
                         onClick = {
                             ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + ctx.packageName)))
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Brand),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     ) { Text("去开启") }
                 }
             }
@@ -154,7 +176,8 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             var showClearConfirm by remember { mutableStateOf(false) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("临时缓存", color = OnBg, style = MaterialTheme.typography.titleSmall)
+                    Text("临时缓存", color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                    Spacer(Modifier.height(3.dp))
                     Text("当前占用 $cacheSize", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
                 OutlinedButton(
@@ -185,20 +208,25 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         }
 
         Section("关于") {
-            Text("大象翻译 v" + io.translatetube.local.BuildConfig.VERSION_NAME, color = OnBg, style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("大象翻译", color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.weight(1f))
+                Text("v" + io.translatetube.local.BuildConfig.VERSION_NAME, color = SubText, style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }
 
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(SurfaceDark)
-        .padding(horizontal = 16.dp, vertical = 15.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = OnBg)
-        Spacer(Modifier.height(12.dp))
+    Column(Modifier.fillMaxWidth().padding(top = 7.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = SubText)
+        Spacer(Modifier.height(7.dp))
         content()
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFDDE5EF), thickness = 1.dp)
+        Spacer(Modifier.height(8.dp))
     }
-    Spacer(Modifier.height(10.dp))
 }
 
 @Composable
@@ -206,16 +234,22 @@ private fun EngineOption(
     id: String, title: String,
     current: String, onPick: (String) -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-        .background(if (current == id) SurfaceHigh else SurfaceDark)
-        .clickable { onPick(id) }.padding(horizontal = 8.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected = current == id, onClick = { onPick(id) },
-            colors = RadioButtonDefaults.colors(selectedColor = BrandBright))
-        Column(Modifier.weight(1f).padding(end = 6.dp)) {
-            Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-        }
-        if (current == id) Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+    Row(
+        Modifier.fillMaxWidth().clickable { onPick(id) }.padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(
+            selected = current == id,
+            onClick = { onPick(id) },
+            colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+        )
+        Text(
+            title,
+            color = OnBg,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f).padding(start = 4.dp),
+        )
+        if (current == id) Text("当前", color = BrandBright, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -226,11 +260,15 @@ private fun ModelRow(
     onDownload: () -> Unit,
 ) {
     val dl = (LocalContext.current.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload
-    val isReady = ready
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceHigh).padding(13.dp)) {
-        Text(title, color = OnBg, style = MaterialTheme.typography.titleSmall)
-        Spacer(Modifier.height(3.dp))
-        Spacer(Modifier.height(9.dp))
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f))
+            if (ready) {
+                Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        Spacer(Modifier.height(7.dp))
         when {
             state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
                 Row(
@@ -240,14 +278,14 @@ private fun ModelRow(
                 ) {
                     CircularProgressIndicator(
                         progress = { (state.progress / 100f).coerceIn(0f, 1f) },
-                        modifier = Modifier.size(42.dp),
+                        modifier = Modifier.size(36.dp),
                         color = BrandBright,
-                        trackColor = SurfaceDark,
-                        strokeWidth = 4.dp,
+                        trackColor = androidx.compose.ui.graphics.Color(0xFFE5EAF0),
+                        strokeWidth = 3.dp,
                     )
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "下载中 ${state.progress}%（${state.downloadedMB}/${state.totalMB} MB）",
+                            "下载中 ${state.progress}% · ${state.downloadedMB}/${state.totalMB} MB",
                             color = BrandBright, style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(Modifier.height(3.dp))
@@ -262,30 +300,41 @@ private fun ModelRow(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(42.dp),
+                        modifier = Modifier.size(36.dp),
                         color = BrandBright,
-                        trackColor = SurfaceDark,
-                        strokeWidth = 4.dp,
+                        trackColor = androidx.compose.ui.graphics.Color(0xFFE5EAF0),
+                        strokeWidth = 3.dp,
                     )
-                    Text("解压安装中…", color = BrandBright, style = MaterialTheme.typography.bodySmall)
+                    Text("正在安装模型", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
             }
             state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
-                Text("下载失败：${state.error ?: "网络异常"}", color = DangerRed, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(6.dp))
-                TextButton(onClick = {
-                    dl.download(if (title.contains("配音")) io.translatetube.local.data.ModelKind.TTS else io.translatetube.local.data.ModelKind.ASR)
-                }) { Text("重试", color = BrandBright) }
-            }
-            isReady -> Text("✓ 已下载", color = BrandBright, style = MaterialTheme.typography.bodyMedium)
-            else -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("尚未下载", color = SubText, style = MaterialTheme.typography.bodySmall)
-                    Text("下载约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.labelSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        state.error ?: "下载失败，请检查网络",
+                        color = DangerRed,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            dl.download(if (title.contains("配音")) io.translatetube.local.data.ModelKind.TTS else io.translatetube.local.data.ModelKind.ASR)
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    ) { Text("重试", color = BrandBright) }
                 }
-                Button(onClick = onDownload, shape = RoundedCornerShape(11.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White)) {
-                    Text("下载模型")
+            }
+            ready -> {
+                Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
+            }
+            else -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = onDownload,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    ) { Text("下载", color = BrandBright) }
                 }
             }
         }
