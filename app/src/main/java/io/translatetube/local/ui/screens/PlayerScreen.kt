@@ -321,7 +321,10 @@ fun PlayerScreen(
     // 字幕自动跟随滚动
     LaunchedEffect(state.currentLine) {
         if (state.currentLine >= 0) {
-            listState.animateScrollToItem((state.currentLine - 3).coerceAtLeast(0))
+            // Keep the currently dubbed subtitle at the visual center; surrounding lines move around it.
+            val viewportHeight = listState.layoutInfo.viewportSize.height
+            val centerOffset = if (viewportHeight > 0) -(viewportHeight / 2) else 0
+            listState.animateScrollToItem(state.currentLine, scrollOffset = centerOffset)
         }
     }
 }
@@ -656,110 +659,107 @@ private fun SubtitleList(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp),
+        contentPadding = PaddingValues(vertical = 180.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (state.lines.isNotEmpty()) {
-            item {
-                Text(
-                    "点击「自动区分人物」分析前 3 分钟的音轨；识别结果会自动分配 Kokoro 预设音色，也可逐句手动调整。",
-                    color = SubText,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-        }
         if (state.lines.isEmpty() && state.phase == Phase.READY) {
-            item { Text("无字幕内容", color = MutedGreen, style = MaterialTheme.typography.bodyMedium) }
+            item {
+                Box(Modifier.fillMaxWidth().height(180.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    Text("无字幕内容", color = MutedGreen, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
         }
         itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
             val active = i == state.currentLine
             val distance = if (state.currentLine >= 0) kotlin.math.abs(i - state.currentLine) else Int.MAX_VALUE
             val targetAlpha = when {
-                state.currentLine < 0 -> 1f
+                state.currentLine < 0 -> 0.72f
                 distance == 0 -> 1f
-                distance == 1 -> 0.72f
-                distance == 2 -> 0.48f
-                distance == 3 -> 0.32f
-                else -> 0.22f
+                distance == 1 -> 0.54f
+                distance == 2 -> 0.30f
+                distance == 3 -> 0.18f
+                else -> 0.10f
             }
             val textAlpha by animateFloatAsState(
                 targetValue = targetAlpha,
-                animationSpec = tween(durationMillis = 380),
+                animationSpec = tween(420),
                 label = "subtitleFocusFade",
             )
-            val textScale by animateFloatAsState(
-                targetValue = if (active) 1f else 0.985f,
-                animationSpec = tween(durationMillis = 380),
+            val scale by animateFloatAsState(
+                targetValue = if (active) 1f else 0.97f,
+                animationSpec = tween(360),
                 label = "subtitleFocusScale",
             )
-            val rowColor by animateColorAsState(
-                targetValue = if (active) SurfaceHigh.copy(alpha = 0.55f) else Color.Transparent,
-                animationSpec = tween(durationMillis = 320),
+            val background by animateColorAsState(
+                targetValue = if (active) SurfaceHigh.copy(alpha = 0.28f) else Color.Transparent,
+                animationSpec = tween(320),
                 label = "subtitleFocusBackground",
             )
-            val originalColor by animateColorAsState(
+            val color by animateColorAsState(
                 targetValue = if (active) OnBg else SubText,
-                animationSpec = tween(durationMillis = 320),
-                label = "subtitleOriginalColor",
+                animationSpec = tween(320),
+                label = "subtitleFocusText",
             )
-            val translatedColor by animateColorAsState(
-                targetValue = if (active) OnBg else SubText,
-                animationSpec = tween(durationMillis = 320),
-                label = "subtitleTranslatedColor",
-            )
-            val zh = line.zh
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(rowColor)
-                    .animateContentSize(animationSpec = tween(300))
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(background)
+                    .animateContentSize(tween(300))
                     .clickable { svc?.seek(line.startMs) }
-                    .padding(horizontal = 10.dp, vertical = if (active) 10.dp else 7.dp),
+                    .padding(horizontal = 16.dp, vertical = if (active) 16.dp else 10.dp),
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             ) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                ) {
+                Text(
+                    line.text,
+                    color = color.copy(alpha = textAlpha),
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = if (active) 17.sp else 15.sp,
+                        fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                    ),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer { scaleX = scale; scaleY = scale },
+                )
+                if (!line.zh.isNullOrBlank()) {
                     Text(
-                        line.text,
-                        color = originalColor.copy(alpha = textAlpha),
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontSize = if (active) 17.sp else 15.sp,
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .graphicsLayer {
-                                scaleX = textScale
-                                scaleY = textScale
-                            },
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    val voiceIds = listOf(-1, 0, 1, 2, 3)
-                    val voiceIndex = voiceIds.indexOf(line.speakerId).let { if (it < 0) 0 else it }
-                    AssistChip(
-                        onClick = { svc?.setLineSpeaker(i, voiceIds[(voiceIndex + 1) % voiceIds.size]) },
-                        label = { Text("🎙 ${speakerLabel(line.speakerId)}") },
-                    )
-                }
-                if (!zh.isNullOrEmpty()) {
-                    Text(
-                        zh,
-                        color = translatedColor.copy(alpha = textAlpha),
+                        line.zh,
+                        color = color.copy(alpha = textAlpha),
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (active) 22.sp else 18.sp,
+                            fontSize = if (active) 24.sp else 19.sp,
                             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                         ),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .graphicsLayer {
-                                scaleX = textScale
-                                scaleY = textScale
-                            }
-                            .padding(top = if (active) 2.dp else 0.dp),
+                            .graphicsLayer { scaleX = scale; scaleY = scale }
+                            .padding(top = 4.dp),
                     )
+                }
+                if (active) {
+                    Spacer(Modifier.height(8.dp))
+                    // Keep speaker assignment available without the bulky "人物1·默认" chip.
+                    Surface(
+                        onClick = {
+                            val ids = listOf(-1, 0, 1, 2, 3)
+                            val index = ids.indexOf(line.speakerId).let { if (it < 0) 0 else it }
+                            svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
+                        },
+                        shape = RoundedCornerShape(50),
+                        color = SurfaceHigh.copy(alpha = 0.75f),
+                        contentColor = SubText,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(Icons.Filled.Face, contentDescription = "切换配音人物", modifier = Modifier.size(16.dp))
+                            Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
+                            Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
+                        }
+                    }
                 }
             }
         }
