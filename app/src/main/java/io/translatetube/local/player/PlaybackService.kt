@@ -584,14 +584,14 @@ class PlaybackService : MediaSessionService() {
                     val src = ui.value.sourceLang
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
-                            "$videoKey|zh|\${prefs.getLong("active_api_id", -1L)}", src,
+                            "$videoKey|zh|${prefs.getLong("active_api_id", -1L)}", src,
                             arr.toString(), System.currentTimeMillis()
                         )
                     )
                 }
                 lastLineIdx = Int.MIN_VALUE
             } catch (e: Exception) {
-                ui.update { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：\${e.message}") }
+                ui.update { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：${e.message}") }
             }
         }
     }
