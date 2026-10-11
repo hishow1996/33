@@ -36,7 +36,7 @@ fun GoogleTranslateIcon() {
             contentAlignment = Alignment.Center,
         ) { Text("文", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
         Box(Modifier.align(Alignment.BottomStart).padding(start = 3.dp, bottom = 3.dp)
-            .size(5.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF34A853)))
+            .size(5.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF34A853))) {}
     }
 }
 
