@@ -909,10 +909,9 @@ class PlaybackService : MediaSessionService() {
         }
 
         if (d != null && st.dubbingOn) {
-            val activeLine = st.lines.getOrNull(dubLine)
-            // If a translated line was synthesized to an empty PCM file, do not keep
-            // the source muted: fall back to audible original audio and explain why.
-            if (dubLine >= 0 && activeLine?.zh?.isNotBlank() == true && d.isSilent(dubLine)) {
+            // Empty audio can also mean translation is missing, engine initialization failed,
+            // or an earlier run cached an empty marker. Never keep the whole video silent.
+            if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
                 if (st.muteOriginal || st.noModelHint == null) {
@@ -938,8 +937,21 @@ class PlaybackService : MediaSessionService() {
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
         } else {
-            // Manual mute must work even when no subtitle track or TTS engine is available.
-            pm.originalVolume = if (st.muteOriginal) 0f else 1f
+            // If dubbing is enabled but the TTS engine could not be created, restore source audio
+            // rather than honoring the default mute and leaving the entire video silent.
+            if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty()) {
+                pm.originalVolume = 1f
+                if (st.noModelHint == null) {
+                    ui.update {
+                        it.copy(
+                            muteOriginal = false,
+                            noModelHint = "配音引擎未能启动，已恢复视频原声。系统 TTS 请检查手机的文字转语音服务与中文语音数据；Kokoro 请检查配音模型是否完整。"
+                        )
+                    }
+                }
+            } else {
+                pm.originalVolume = if (st.muteOriginal) 0f else 1f
+            }
         }
 
         // Keep the displayed duration synchronized with ExoPlayer in case the extractor metadata
