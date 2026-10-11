@@ -5,8 +5,11 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -28,6 +31,10 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -361,8 +368,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     modifier = Modifier.size(22.dp),
                 )
             }
+            val trackDuration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
             Text(
-                "${SubtitleParsers.fmtTime((pos * (svc?.duration() ?: 0L)).toLong())} / ${SubtitleParsers.fmtTime(state.durationMs)}",
+                "${SubtitleParsers.fmtTime((pos * trackDuration).toLong())} / ${SubtitleParsers.fmtTime(trackDuration)}",
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
@@ -440,24 +448,62 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 )
             }
         }
-        Slider(
-            value = pos,
-            onValueChange = { value ->
-                scrubbing = true
-                pos = value
-            },
-            onValueChangeFinished = {
-                val duration = svc?.duration() ?: 0L
-                if (duration > 0L) svc?.seek((pos * duration).toLong())
-                scrubbing = false
-            },
-            modifier = Modifier.height(22.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = BrandBright,
-                activeTrackColor = BrandBright,
-                inactiveTrackColor = Color(0x66FFFFFF),
-            ),
-        )
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(14.dp)
+                .pointerInput(state.key, state.durationMs) {
+                    detectTapGestures { offset ->
+                        val duration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
+                        if (duration > 0L && size.width > 0) {
+                            pos = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                            svc?.seek((pos * duration).toLong())
+                            scrubbing = false
+                        }
+                    }
+                }
+                .pointerInput(state.key, state.durationMs) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            scrubbing = true
+                            if (size.width > 0) pos = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        },
+                        onDragEnd = {
+                            val duration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
+                            if (duration > 0L) svc?.seek((pos * duration).toLong())
+                            scrubbing = false
+                        },
+                        onDragCancel = { scrubbing = false },
+                    ) { change, _ ->
+                        change.consume()
+                        if (size.width > 0) pos = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                    }
+                },
+        ) {
+            val height = 2.dp.toPx()
+            val centerY = size.height / 2f
+            val radius = CornerRadius(height / 2f, height / 2f)
+            drawRoundRect(
+                color = Color(0x66FFFFFF),
+                topLeft = Offset(0f, centerY - height / 2f),
+                size = Size(size.width, height),
+                cornerRadius = radius,
+            )
+            val activeWidth = size.width * pos.coerceIn(0f, 1f)
+            if (activeWidth > 0f) {
+                drawRoundRect(
+                    color = BrandBright,
+                    topLeft = Offset(0f, centerY - height / 2f),
+                    size = Size(activeWidth, height),
+                    cornerRadius = radius,
+                )
+            }
+            drawCircle(
+                color = BrandBright,
+                radius = 3.dp.toPx(),
+                center = Offset(activeWidth.coerceIn(0f, size.width), centerY),
+            )
+        }
     }
 }
 
@@ -488,14 +534,22 @@ private fun ControlBar(
                 PlayerToolTile(
                     modifier = Modifier.weight(1f),
                     icon = if (state.dubbingOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                    label = if (state.dubbingOn) "配音开启" else "配音关闭",
-                    selected = state.dubbingOn,
+                    label = when {
+                        state.lines.isEmpty() -> "等待字幕"
+                        state.noModelHint?.contains("配音模型") == true -> "配音模型未就绪"
+                        state.dubbingOn -> "配音开启"
+                        else -> "配音关闭"
+                    },
+                    selected = state.dubbingOn && state.lines.isNotEmpty() &&
+                        state.noModelHint?.contains("配音模型") != true,
+                    enabled = state.lines.isNotEmpty() &&
+                        state.noModelHint?.contains("配音模型") != true,
                     onClick = { svc?.toggleDub() },
                 )
                 PlayerToolTile(
                     modifier = Modifier.weight(1f),
                     icon = if (state.muteOriginal) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
-                    label = if (state.muteOriginal) "原声静音" else "原声压低",
+                    label = if (state.muteOriginal) "原声静音" else if (state.dubbingOn) "原声压低" else "原声开启",
                     selected = state.muteOriginal,
                     onClick = { svc?.toggleMute() },
                 )

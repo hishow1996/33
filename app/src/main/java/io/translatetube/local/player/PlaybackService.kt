@@ -445,19 +445,33 @@ class PlaybackService : MediaSessionService() {
             if (videoId != null) {
                 val info = NewPipeRepo.streams(videoId)
                 val audioStreams: List<org.schabi.newpipe.extractor.stream.AudioStream> = info.audioStreams
-                val audioUrl: String = audioStreams.minByOrNull { a -> a.averageBitrate }?.content
+                // Playback uses the highest-bitrate available audio track; ASR can still select
+                // a smaller track separately to save storage and processing time.
+                val audioUrl: String = audioStreams.maxByOrNull { a -> a.averageBitrate }?.content
                     ?: audioStreams.firstOrNull()?.content
-                    ?: throw IllegalStateException("无音频流")
+                    ?: throw IllegalStateException("YouTube 未提供音频流")
 
-                // Android 9 兼容优先：列出 MP4 清晰度，并优先使用同分辨率的合并音视频流。
-                val allVideoStreams = info.videoStreams.filter { v -> v.height > 0 && v.height <= 1080 }
-                val mp4Streams = allVideoStreams.filter { v ->
-                    v.format?.suffix?.equals("mp4", ignoreCase = true) == true
-                }
-                val candidates = (if (mp4Streams.isNotEmpty()) mp4Streams else allVideoStreams)
+                // NewPipe keeps muxed streams and adaptive video-only tracks in separate lists.
+                // Including both is essential: 720p/1080p are commonly video-only DASH streams.
+                val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
+                    .filter { v -> v.height in 1..1080 }
+                    .distinctBy { v -> "${v.height}|${v.content}|${v.isVideoOnly}" }
+
+                val candidates = allVideoStreams
                     .groupBy { it.height }
                     .mapNotNull { (height, streams) ->
-                        val chosen = streams.firstOrNull { !it.isVideoOnly } ?: streams.firstOrNull()
+                        val chosen = streams.sortedWith(
+                            compareBy<org.schabi.newpipe.extractor.stream.VideoStream> { v ->
+                                val mp4 = v.format?.suffix?.equals("mp4", ignoreCase = true) == true
+                                when {
+                                    !v.isVideoOnly && mp4 -> 0 // Most compatible: one-file MP4
+                                    !v.isVideoOnly -> 1      // Other muxed stream
+                                    mp4 -> 2                 // Adaptive MP4 video
+                                    else -> 3                 // Adaptive WebM/other formats
+                                }
+                            }.thenByDescending { v -> v.bitrate }
+                        ).firstOrNull()
+
                         chosen?.let {
                             YouTubeQualitySource(
                                 label = "${height}p",
@@ -688,14 +702,22 @@ class PlaybackService : MediaSessionService() {
             } else if (dubLine >= 0) {
                 // 播放追上合成：原声顶上，等后台补齐。
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = 1f
+                pm.originalVolume = if (st.muteOriginal) 0f else 1f
             } else {
                 // 字幕间隙不播放配音；按“原声静音”开关决定是否保留原音。
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
         } else {
-            pm.originalVolume = 1f
+            // Manual mute must work even when no subtitle track or TTS engine is available.
+            pm.originalVolume = if (st.muteOriginal) 0f else 1f
+        }
+
+        // Keep the displayed duration synchronized with ExoPlayer in case the extractor metadata
+        // omitted or misreported the duration. This also prevents a permanent 00:00:00 total time.
+        val actualDuration = if (::pm.isInitialized) pm.duration() else 0L
+        if (actualDuration > 0L && ui.value.durationMs != actualDuration) {
+            ui.update { it.copy(durationMs = actualDuration) }
         }
     }
 
@@ -864,11 +886,18 @@ class PlaybackService : MediaSessionService() {
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn
         ui.update { it.copy(dubbingOn = nowOn) }
-        if (!nowOn) { dubbing?.stop(); pm.originalVolume = 1f }
-        else lastLineIdx = Int.MIN_VALUE
+        if (!nowOn) {
+            dubbing?.stop()
+            pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+        } else {
+            lastLineIdx = Int.MIN_VALUE
+        }
     }
     fun toggleMute() {
-        ui.update { it.copy(muteOriginal = !it.muteOriginal) }
+        val nowMuted = !ui.value.muteOriginal
+        ui.update { it.copy(muteOriginal = nowMuted) }
+        // Apply this immediately; tick() will refine it to the ducked mix volume when dubbing is active.
+        pm.originalVolume = if (nowMuted) 0f else 1f
         lastLineIdx = Int.MIN_VALUE
     }
     fun toggleAudioOnly() {
