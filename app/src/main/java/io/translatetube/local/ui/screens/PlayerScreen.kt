@@ -339,6 +339,16 @@ private fun SubtitleList(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
+        if (state.lines.isNotEmpty()) {
+            item {
+                Text(
+                    "点击每行右侧音色标签可手动区分人物；多音色需要选择 Kokoro。自动说话人识别尚未接入。",
+                    color = SubText,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+        }
         if (state.lines.isEmpty() && state.phase == Phase.READY) {
             item { Text("无字幕内容", color = MutedGreen, style = MaterialTheme.typography.bodyMedium) }
         }
