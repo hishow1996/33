@@ -37,23 +37,30 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     }
     Column(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+            .verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 "‹",
-                color = SubText,
+                color = OnBg,
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .clickable(onClick = onBack)
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                    .wrapContentSize(Alignment.Center),
             )
-            Spacer(Modifier.width(10.dp))
-            Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
+            Spacer(Modifier.width(8.dp))
+            Column {
+                Text("设置", style = MaterialTheme.typography.headlineSmall, color = OnBg)
+                Text("管理翻译、语音和应用空间", style = MaterialTheme.typography.bodySmall, color = SubText)
+            }
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(2.dp))
 
         // ===== 语音模型（方案 B：软件内下载） =====
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
@@ -112,7 +119,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE5EAF0), thickness = 1.dp)
+            HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFF343B46), thickness = 1.dp)
             EngineOption("system", "系统 TTS", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
@@ -219,13 +226,20 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(top = 7.dp)) {
-        Text(title, style = MaterialTheme.typography.labelLarge, color = SubText)
-        Spacer(Modifier.height(7.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(SurfaceDark)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = OnBg,
+        )
+        Spacer(Modifier.height(12.dp))
         content()
-        Spacer(Modifier.height(10.dp))
-        HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFDDE5EF), thickness = 1.dp)
-        Spacer(Modifier.height(8.dp))
     }
 }
 
