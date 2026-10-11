@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -254,6 +255,8 @@ class PlaybackService : MediaSessionService() {
         if (Regex("[\\u4e00-\\u9fff]").containsMatchIn(t)) "zh" else "en"
 
     private suspend fun runPipeline(key: String, videoId: String?, localUri: Uri?) {
+        // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
+        var transientAudio: File? = null
         try {
             var meta = VideoEntity(
                 key = key, videoId = videoId, localUri = localUri?.toString(), title = "", channel = "",
@@ -307,7 +310,7 @@ class PlaybackService : MediaSessionService() {
                 ui.update { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
                 val audioFile = if (videoId != null) {
                     val audioStream = NewPipeRepo.audioForAsr(videoId) ?: throw IllegalStateException("无法获取音频流")
-                    downloadAudio(audioStream.content)
+                    downloadAudio(audioStream.content).also { transientAudio = it }
                 } else {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -326,7 +329,10 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 // 转写完成：释放临时音频文件
-                if (audioFile is File) audioFile.delete()
+                if (audioFile is File) {
+                    audioFile.delete()
+                    if (transientAudio == audioFile) transientAudio = null
+                }
                 lines = asrLines.mapIndexed { i, (a, b, text) -> SubLine(i, a, b, text) }
                 srcLang = whisper?.lastLang?.takeIf { it.isNotBlank() } ?: "en"
                 }
@@ -425,6 +431,8 @@ class PlaybackService : MediaSessionService() {
         } catch (e: Exception) {
             e.printStackTrace()
             ui.update { it.copy(phase = Phase.ERROR, error = e.message ?: "未知错误") }
+        } finally {
+            transientAudio?.delete()
         }
     }
 
@@ -474,33 +482,46 @@ class PlaybackService : MediaSessionService() {
     }
 
     private suspend fun downloadAudio(url: String): File {
-        val f = File(cacheDir, "asr_audio_${System.currentTimeMillis()}.bin")
+        val f = File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
+        val maxBytes = 512L * 1024 * 1024
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
         val req = Request.Builder().url(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0")
             .build()
-        withContext(Dispatchers.IO) {
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
-                val total = resp.body?.contentLength() ?: -1
-                resp.body!!.byteStream().use { ins ->
-                    f.outputStream().use { out ->
-                        val buf = ByteArray(64 * 1024)
-                        var got = 0L
-                        while (true) {
-                            val n = ins.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n); got += n
-                            if (total > 0) {
-                                ui.update { it.copy(progress = "下载音频 %.0f%%".format(got * 100f / total)) }
+        try {
+            withContext(Dispatchers.IO) {
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
+                    val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
+                    val total = body.contentLength()
+                    if (total > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
+                    body.byteStream().use { ins ->
+                        f.outputStream().buffered().use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            var got = 0L
+                            while (true) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                val n = ins.read(buf)
+                                if (n < 0) break
+                                got += n
+                                if (got > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
+                                out.write(buf, 0, n)
+                                if (total > 0) {
+                                    ui.update { it.copy(progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))) }
+                                }
                             }
+                            out.flush()
                         }
                     }
+                    if (!f.isFile || f.length() == 0L) throw IllegalStateException("音频下载结果为空")
                 }
             }
+            return f
+        } catch (e: Exception) {
+            f.delete()
+            throw e
         }
-        return f
     }
 
     private fun makeTts(): TtsEngine {
