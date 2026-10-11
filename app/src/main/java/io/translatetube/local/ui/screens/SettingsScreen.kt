@@ -120,10 +120,10 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                 Slider(
                     value = speaker, onValueChange = { speaker = it },
                     onValueChangeFinished = { prefs.edit().putInt("kokoro_speaker", speaker.toInt()).apply() },
-                    valueRange = 0f..54f,
+                    valueRange = 0f..53f,
                     colors = SliderDefaults.colors(thumbColor = BrandBright, activeTrackColor = Brand),
                 )
-                Text("0-54 为模型内声音编号，男女声交替，可试听后选定", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+                Text("0-53 为模型内声音编号，男女声交替，可试听后选定", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
             }
             Text("切换后对下一次打开的视频生效（当前视频不变）。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
         }
