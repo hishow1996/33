@@ -60,20 +60,66 @@ object SubtitleParsers {
         val out = mutableListOf<SubLine>()
         val re = Regex("""<text[^>]*start="([\d.]+)"[^>]*(?:dur="([\d.]+)")?[^>]*>(.*?)</text>""", RegexOption.DOT_MATCHES_ALL)
         re.findAll(src).forEachIndexed { i, m ->
-            val start = (m.groupValues[1].toDoubleOrNull() ?: 0.0).toLong() * 1000
-            val dur = (m.groupValues[2].toDoubleOrNull() ?: 3.0).toLong() * 1000
+            val start = ((m.groupValues[1].toDoubleOrNull() ?: 0.0) * 1000.0).toLong()
+            val dur = ((m.groupValues[2].toDoubleOrNull() ?: 3.0) * 1000.0).toLong()
             val text = android.text.Html.fromHtml(m.groupValues[3], android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
             if (text.isNotEmpty()) out += SubLine(i, start, start + dur, text)
         }
         return out
     }
 
+    /** YouTube/NewPipe TTML：从 p 标签提取 begin/end/dur。 */
+    fun parseTtml(src: String): List<SubLine> {
+        if (!src.contains("<tt", ignoreCase = true) && !src.contains("<p", ignoreCase = true)) {
+            return emptyList()
+        }
+        val out = mutableListOf<SubLine>()
+        val cueRegex = Regex(
+            """<p\\b([^>]*)>(.*?)</p\\s*>""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        )
+        val attributeRegex = Regex("""([A-Za-z_:][\\w:.-]*)\\s*=\\s*["']([^"']*)["']""")
+        cueRegex.findAll(src).forEach { match ->
+            val attrs = attributeRegex.findAll(match.groupValues[1])
+                .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+            val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) } ?: return@forEach
+            val end = attrs["end"]?.let { parseTtmlTime(it) }
+                ?: attrs["dur"]?.let { parseTtmlTime(it)?.let(start::plus) }
+                ?: return@forEach
+            if (end <= start) return@forEach
+            val body = match.groupValues[2].replace(
+                Regex("""<br\\s*/?>""", RegexOption.IGNORE_CASE), "\\n"
+            )
+            val text = android.text.Html.fromHtml(
+                body,
+                android.text.Html.FROM_HTML_MODE_LEGACY,
+            ).toString().replace('\\u00a0', ' ').trim()
+            if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
+        }
+        return mergeDuplicate(out)
+    }
+
+    private fun parseTtmlTime(value: String): Long? {
+        val time = value.trim()
+        return when {
+            time.endsWith("ms", ignoreCase = true) ->
+                time.dropLast(2).trim().toDoubleOrNull()?.toLong()
+            time.endsWith("s", ignoreCase = true) ->
+                ((time.dropLast(1).trim().toDoubleOrNull() ?: return null) * 1000.0).toLong()
+            time.contains(":") -> runCatching { parseTs(time) }.getOrNull()
+            else -> ((time.toDoubleOrNull() ?: return null) * 1000.0).toLong()
+        }
+    }
+
     /** 自动识别格式解析（vtt/srt/xml），输出保证按 startMs 单调有序（lineAt 二分前提） */
     fun parseAuto(src: String): List<SubLine> {
-        val t = src.trimStart()
+        val t = src.removePrefix("\\uFEFF").trimStart()
         val parsed = when {
             t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t)
-            t.startsWith("<?xml") || t.startsWith("<transcript") -> parseTimedTextXml(t)
+            t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t)
+            t.startsWith("<?xml") || t.startsWith("<tt", ignoreCase = true) ||
+                Regex("""<tt[\\s>]""", RegexOption.IGNORE_CASE).containsMatchIn(t) ->
+                parseTtml(t).ifEmpty { parseTimedTextXml(t) }
             else -> parseSrt(t)
         }
         return parsed.sortedBy { it.startMs }.mapIndexed { i, l -> l.copy(index = i) }
