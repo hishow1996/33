@@ -783,24 +783,56 @@ private fun speakerLabel(id: Int): String = when (id) {
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
-    val (title, detail, stageIndex, fraction) = when (state.phase) {
-        Phase.PARSING -> listOf("正在分析视频", "获取视频信息与可用字幕、音轨", 0, 0f)
-        Phase.DOWNLOADING_AUDIO -> listOf("正在准备音轨", state.progress.ifBlank { "检查并读取视频音频" }, 1, progressPercent(state.progress))
-        Phase.TRANSCRIBING -> listOf("正在识别语音", state.progress.ifBlank { "把语音转换成带时间轴的文本" }, 2, progressPercent(state.progress))
-        Phase.TRANSLATING -> listOf("正在翻译字幕", state.progress.ifBlank { "逐句翻译并整理字幕时间轴" }, 3,
-            if (state.totalLines > 0) (state.lines.count { !it.zh.isNullOrBlank() }.toFloat() / state.totalLines).coerceIn(0f, 0.99f) else 0f)
-        Phase.SYNTHESIZING -> listOf("正在准备配音", state.progress.ifBlank { "按字幕顺序生成语音" }, 4,
-            if (state.totalLines > 0) (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 0.99f) else 0f)
-        else -> listOf("正在处理视频", state.progress, 0, 0f)
+    val title: String
+    val detail: String
+    val stageIndex: Int
+    val fraction: Float?
+
+    when (state.phase) {
+        Phase.PARSING -> {
+            title = "正在分析视频"
+            detail = state.progress.ifBlank { "获取视频信息与可用字幕、音轨" }
+            stageIndex = 0
+            fraction = null
+        }
+        Phase.DOWNLOADING_AUDIO -> {
+            title = "正在准备音轨"
+            detail = state.progress.ifBlank { "检查并读取视频音频" }
+            stageIndex = 1
+            fraction = progressPercent(state.progress)
+        }
+        Phase.TRANSCRIBING -> {
+            title = "正在识别语音"
+            detail = state.progress.ifBlank { "把语音转换成带时间轴的文本" }
+            stageIndex = 2
+            fraction = progressRatio(state.progress) ?: progressPercent(state.progress)
+        }
+        Phase.TRANSLATING -> {
+            title = "正在翻译字幕"
+            detail = state.progress.ifBlank { "逐句翻译并整理字幕时间轴" }
+            stageIndex = 3
+            fraction = progressRatio(state.progress)
+                ?: if (state.totalLines > 0) {
+                    (state.lines.count { !it.zh.isNullOrBlank() }.toFloat() / state.totalLines).coerceIn(0f, 1f)
+                } else null
+        }
+        Phase.SYNTHESIZING -> {
+            title = "正在准备配音"
+            detail = state.progress.ifBlank { "按字幕顺序生成语音" }
+            stageIndex = 4
+            fraction = if (state.totalLines > 0) {
+                (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            } else null
+        }
+        else -> {
+            title = "正在处理视频"
+            detail = state.progress
+            stageIndex = 0
+            fraction = null
+        }
     }
-    val infinite = rememberInfiniteTransition(label = "stagePulse")
-    val pulse by infinite.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(800), repeatMode = RepeatMode.Reverse),
-        label = "stagePulseAlpha",
-    )
-    val pct = (fraction as Float).coerceIn(0f, 1f)
+
+    val pct = fraction?.coerceIn(0f, 1f)
     Column(
         Modifier
             .fillMaxWidth()
@@ -810,45 +842,57 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             .padding(horizontal = 18.dp, vertical = 20.dp),
         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
     ) {
-        Box(
-            Modifier.size(58.dp).clip(CircleShape).background(Brand.copy(alpha = 0.10f)),
-            contentAlignment = androidx.compose.ui.Alignment.Center,
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            if (pct > 0f) {
-                CircularProgressIndicator(
-                    progress = { pct },
-                    modifier = Modifier.size(42.dp),
-                    color = BrandBright,
-                    strokeWidth = 4.dp,
-                )
-            } else {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(42.dp),
-                    color = BrandBright.copy(alpha = pulse),
-                    strokeWidth = 4.dp,
-                )
-            }
-            Text(if (pct > 0f) "${(pct * 100).toInt()}%" else "…", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+            Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
+            Text(
+                pct?.let { "${(it * 100).toInt()}%" } ?: "处理中",
+                color = BrandBright,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
-        Spacer(Modifier.height(14.dp))
-        Text(title as String, color = OnBg, style = MaterialTheme.typography.titleMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        Spacer(Modifier.height(5.dp))
-        Text(detail as String, color = SubText, style = MaterialTheme.typography.bodySmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            detail,
+            color = SubText,
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Spacer(Modifier.height(16.dp))
+        // Determinate-only indicator: it never animates on its own. When no reliable
+        // numeric measurement exists, keep it at zero and show the real stage text above.
         LinearProgressIndicator(
-            progress = { if (pct > 0f) pct else pulse },
-            modifier = Modifier.fillMaxWidth().height(4.dp),
+            progress = { pct ?: 0f },
+            modifier = Modifier.fillMaxWidth().height(5.dp),
             color = BrandBright,
             trackColor = Color(0xFFE7ECF3),
         )
         Spacer(Modifier.height(10.dp))
-        Text("阶段 ${(stageIndex as Int) + 1}/5", color = SubText, style = MaterialTheme.typography.labelSmall)
+        Text(
+            if (pct != null) "阶段 ${stageIndex + 1}/5 · 实际进度 ${(pct * 100).toInt()}%"
+            else "阶段 ${stageIndex + 1}/5 · 当前阶段暂无精确百分比",
+            color = SubText,
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
 }
 
-private fun progressPercent(progress: String): Float {
-    val match = Regex("(\\d+(?:\\.\\d+)?)%").find(progress) ?: return 0f
-    return (match.groupValues[1].toFloatOrNull()?.div(100f) ?: 0f).coerceIn(0f, 1f)
+private fun progressPercent(progress: String): Float? {
+    val match = Regex("(\\d+(?:\\.\\d+)?)%").find(progress) ?: return null
+    return (match.groupValues[1].toFloatOrNull()?.div(100f))?.coerceIn(0f, 1f)
+}
+
+private fun progressRatio(progress: String): Float? {
+    val match = Regex("(\\d+)\\s*/\\s*(\\d+)").find(progress) ?: return null
+    val current = match.groupValues[1].toFloatOrNull() ?: return null
+    val total = match.groupValues[2].toFloatOrNull() ?: return null
+    if (total <= 0f) return null
+    return (current / total).coerceIn(0f, 1f)
 }
 
 private fun phaseText(p: Phase, progress: String): String = when (p) {
