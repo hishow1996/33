@@ -740,7 +740,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 
     // Hide the seekbar and player tools after a short idle period, whether playing or paused.
     // Leave dropdown menus interactive; tapping the video toggles the controls back on.
-    LaunchedEffect(state.key, controlsVisible, qualityExpanded, speedExpanded, scrubbing) {
+    LaunchedEffect(state.key, state.isPlaying, controlsVisible, qualityExpanded, speedExpanded, scrubbing) {
         if (!controlsVisible || qualityExpanded || speedExpanded || scrubbing) return@LaunchedEffect
         delay(3_000)
         controlsVisible = false
