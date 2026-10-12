@@ -249,17 +249,15 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth()
+            .padding(vertical = 7.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(SurfaceDark)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
     ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleSmall,
-            color = BrandBright,
-        )
-        Spacer(Modifier.height(8.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium, color = OnBg)
+        Spacer(Modifier.height(12.dp))
         content()
-        Spacer(Modifier.height(8.dp))
-        HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
     }
 }
 
