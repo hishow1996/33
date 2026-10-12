@@ -704,7 +704,12 @@ private fun SubtitleList(
         itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
             val active = i == state.currentLine
             val activeDub = active && state.dubbingOn
-            val translatedText = line.zh?.takeIf { it.isNotBlank() } ?: "正在翻译…"
+            val translatedText = line.zh
+                ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                ?.takeIf { it.isNotBlank() }
+                ?: "正在翻译…"
+            val showOriginalText = activeDub && line.text.isNotBlank() &&
+                subtitleComparisonKey(line.text) != subtitleComparisonKey(translatedText)
 
             Column(
                 Modifier
@@ -723,7 +728,7 @@ private fun SubtitleList(
                 horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             ) {
                 // 普通行只显示中文；只有当前正在跟随的配音行才额外显示原文。
-                if (activeDub && line.text.isNotBlank()) {
+                if (showOriginalText) {
                     Text(
                         line.text,
                         color = Color(0xFF626873),
@@ -780,6 +785,9 @@ private fun SubtitleList(
         }
     }
 }
+
+private fun subtitleComparisonKey(text: String): String =
+    text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
 
 private fun speakerLabel(id: Int): String = when (id) {
     -1 -> "人物1·默认"

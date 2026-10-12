@@ -125,6 +125,48 @@ object SubtitleParsers {
         return parsed.sortedBy { it.startMs }.mapIndexed { i, l -> l.copy(index = i) }
     }
 
+    /**
+     * Clean common duplicated translator output such as "你好，你好" or
+     * "这是结果。这是结果。" without touching ordinary non-repeated clauses.
+     * Also used when reading the existing translation cache so old bad results do not remain visible.
+     */
+    fun cleanTranslatedText(translated: String?): String? {
+        val value = translated
+            ?.replace('\u00a0', ' ')
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+
+        val chunks = Regex("(?<=[。！？!?；;，,])").split(value)
+        val collapsed = ArrayList<String>(chunks.size)
+        var previousKey = ""
+        var removedDuplicate = false
+        for (chunk in chunks) {
+            val key = chunk.lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
+            val hasChinese = Regex("[\\u4E00-\\u9FFF]").containsMatchIn(key)
+            if (hasChinese && key.length >= 2 && key == previousKey) {
+                removedDuplicate = true
+                continue
+            }
+            collapsed += chunk
+            if (key.isNotEmpty()) previousKey = key
+        }
+        var cleaned = if (removedDuplicate) collapsed.joinToString("") else value
+
+        // Some providers repeat a whole Chinese translation without punctuation: "你好你好".
+        val compact = cleaned.replace(Regex("\\s+"), "")
+        if (compact.length >= 4 && compact.length % 2 == 0) {
+            val half = compact.length / 2
+            val first = compact.substring(0, half)
+            val second = compact.substring(half)
+            if (first == second && Regex("[\\u4E00-\\u9FFF]").containsMatchIn(first) && first.length >= 2) {
+                cleaned = first
+            }
+        }
+        return cleaned.trim().ifEmpty { null }
+    }
+
     /** ASS/SSA（Dialogue: 0:00:01.00,0:00:04.00,...） */
     fun parseAss(src: String): List<SubLine> {
         val out = mutableListOf<SubLine>()
@@ -146,8 +188,15 @@ object SubtitleParsers {
         val out = mutableListOf<SubLine>()
         for (l in lines) {
             val last = out.lastOrNull()
-            if (last != null && last.text == l.text && (l.startMs - last.endMs) in 0..400) {
-                out[out.size - 1] = last.copy(endMs = l.endMs)
+            val sameText = last != null &&
+                last.text.replace(Regex("\\s+"), " ").trim() ==
+                l.text.replace(Regex("\\s+"), " ").trim()
+            val gap = if (last != null) l.startMs - last.endMs else Long.MIN_VALUE
+            val startDelta = if (last != null) l.startMs - last.startMs else Long.MAX_VALUE
+            // Duplicate cues may overlap (same start time) rather than being exactly adjacent.
+            val duplicateTiming = gap in 0..400 || (gap < 0 && startDelta in 0..250)
+            if (sameText && duplicateTiming && last != null) {
+                out[out.size - 1] = last.copy(endMs = maxOf(last.endMs, l.endMs))
             } else out += l
         }
         return out

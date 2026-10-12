@@ -27,6 +27,7 @@ data class ModelState(
     val downloadedMB: Long = 0,
     val totalMB: Long = 0,
     val error: String? = null,
+    val stageMessage: String? = null,
 )
 
 /** 模型文件就绪判定与路径（engine 加载的单一事实来源） */
@@ -160,7 +161,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = if (kind == ModelKind.TTS) 140 else 198)
         val pkg = File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp")
         var lastError: String? = null
-        for (url in urls) {
+        for ((sourceIndex, url) in urls.withIndex()) {
+            // Reset the phase before every fallback source. Otherwise an extraction error leaves
+            // the UI stuck on "installing" while the manager is downloading the next mirror.
+            state.value = ModelState(
+                status = ModelStatus.DOWNLOADING,
+                progress = 0,
+                totalMB = if (kind == ModelKind.TTS) 140 else 198,
+                stageMessage = if (sourceIndex == 0) "正在下载模型包…" else "正在切换下载源（${sourceIndex + 1}/${urls.size}）…",
+            )
             try {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
@@ -184,13 +193,17 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                     out.write(buf, 0, n)
                                     val pct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
                                     state.value = state.value.copy(
-                                        progress = pct, downloadedMB = got / 1048576, totalMB = total / 1048576,
+                                        progress = pct,
+                                        downloadedMB = got / 1048576,
+                                        totalMB = total / 1048576,
+                                        stageMessage = "正在下载模型包…",
                                     )
                                 }
                             }
                         }
                     }
                 }
+                state.value = state.value.copy(progress = 99, stageMessage = "正在校验模型压缩包…")
                 // TTS 压缩包有 GitHub Release API 公布的 SHA-256；镜像下载也必须通过相同校验。
                 // Whisper 压缩包当前上游没有提供可直接核验的 asset digest，因此仍依赖 HTTPS、大小限制和解压结构校验。
                 val expectedArchiveSha256 = when (kind) {
@@ -206,11 +219,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     }
                 }
 
-                // 解压（原子：先解到 .extract 再整体 rename 内容）
-                state.value = state.value.copy(status = ModelStatus.EXTRACTING, progress = 100)
+                // 解压（原子：先解到 .extract 再整体 rename 内容）。定期更新状态，避免大模型
+                // 解压时看起来像完全卡住。
+                state.value = state.value.copy(
+                    status = ModelStatus.EXTRACTING,
+                    progress = 0,
+                    stageMessage = "正在解压并安装模型…",
+                )
                 withContext(Dispatchers.IO) {
                     destDir.mkdirs()
-                    extractTarBz2(pkg, destDir)
+                    extractTarBz2(pkg, destDir) { extractedBytes ->
+                        val handledMB = extractedBytes / (1024L * 1024L)
+                        state.value = state.value.copy(
+                            stageMessage = "正在解压并安装模型（已处理 ${handledMB} MB）",
+                        )
+                    }
                 }
                 if (kind == ModelKind.ASR) {
                     // ASR 包附带 VAD 小模型（0.6MB，双源）
@@ -239,8 +262,19 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         return
                     }
                 }
+                val installed = if (kind == ModelKind.TTS) {
+                    ModelFiles.ttsReady(ctx)
+                } else {
+                    ModelFiles.asrReady(ctx)
+                }
+                if (!installed) throw java.io.IOException("模型文件安装后完整性检查未通过")
                 pkg.delete()
-                state.value = state.value.copy(status = ModelStatus.READY, progress = 100)
+                state.value = state.value.copy(
+                    status = ModelStatus.READY,
+                    progress = 100,
+                    stageMessage = null,
+                    error = null,
+                )
                 Log.i("ModelDL", "$kind 就绪")
                 return
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -338,7 +372,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         }
     }
 
-    private fun extractTarBz2(pkg: File, destDir: File) {
+    private fun extractTarBz2(
+        pkg: File,
+        destDir: File,
+        onProgress: ((Long) -> Unit)? = null,
+    ) {
         val parent = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型父目录")
         val staging = File(parent, destDir.name + ".extract")
@@ -347,6 +385,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val rootPath = staging.canonicalFile.path + File.separator
         val maxExtractedBytes = 1024L * 1024 * 1024
         var extractedBytes = 0L
+        val progressStep = 8L * 1024 * 1024
+        var nextProgressAt = progressStep
 
         try {
             TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
@@ -393,6 +433,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 throw java.io.IOException("解压后的模型超过大小限制")
                             }
                             out.write(buffer, 0, count)
+                            if (extractedBytes >= nextProgressAt) {
+                                onProgress?.invoke(extractedBytes)
+                                nextProgressAt = (extractedBytes / progressStep + 1L) * progressStep
+                            }
                         }
                         if (fileBytes != entry.size) throw java.io.IOException("模型文件长度校验失败")
                     }

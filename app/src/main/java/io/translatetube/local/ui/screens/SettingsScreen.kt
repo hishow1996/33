@@ -284,6 +284,9 @@ private fun ModelRow(
         }
         Spacer(Modifier.height(7.dp))
         when {
+            ready -> {
+                Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
+            }
             state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -303,7 +306,7 @@ private fun ModelRow(
                             color = BrandBright, style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(Modifier.height(3.dp))
-                        Text("下载完成后自动安装", color = SubText, style = MaterialTheme.typography.labelSmall)
+                        Text(state.stageMessage ?: "下载完成后自动安装", color = SubText, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -319,7 +322,7 @@ private fun ModelRow(
                         trackColor = androidx.compose.ui.graphics.Color(0xFFE5EAF0),
                         strokeWidth = 3.dp,
                     )
-                    Text("正在安装模型", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    Text(state.stageMessage ?: "正在安装模型", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
             }
             state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
@@ -337,9 +340,6 @@ private fun ModelRow(
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     ) { Text("重试", color = BrandBright) }
                 }
-            }
-            ready -> {
-                Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
             }
             else -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {

@@ -536,7 +536,14 @@ class PlaybackService : MediaSessionService() {
                 val restored = mutableListOf<SubLine>()
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
-                    restored += SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"), o.optString("zh").ifEmpty { null }, o.optInt("sp", -1))
+                    val originalText = o.getString("t")
+                    val cachedTranslation = o.optString("zh")
+                        .takeIf { it.isNotBlank() }
+                        ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                    restored += SubLine(
+                        i, o.getLong("s"), o.getLong("e"),
+                        originalText, cachedTranslation, o.optInt("sp", -1),
+                    )
                 }
                 lines = restored
                 srcLang = cached.srcLang
@@ -855,7 +862,9 @@ class PlaybackService : MediaSessionService() {
 
             if (translated != null) {
                 for (index in start until end) {
-                    lines[index].zh = translated.getOrNull(index - start)
+                    lines[index].zh = SubtitleParsers.cleanTranslatedText(
+                        translated.getOrNull(index - start)
+                    )
                 }
             }
             completed = end
