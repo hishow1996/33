@@ -83,8 +83,8 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             )
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text("翻译引擎", style = MaterialTheme.typography.titleLarge, color = OnBg)
-                Text("管理在线翻译服务", style = MaterialTheme.typography.bodySmall, color = SubText)
+                Text("API 管理", style = MaterialTheme.typography.titleLarge, color = OnBg)
+                Text("配置翻译服务与模型", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
             Button(
                 onClick = { adding = true },
