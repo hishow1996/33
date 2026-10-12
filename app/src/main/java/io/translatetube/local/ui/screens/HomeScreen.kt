@@ -62,7 +62,12 @@ fun HomeScreen(onPlay: (PlayRequest) -> Unit, onSettings: () -> Unit) {
     ) {
         Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).clip(RoundedCornerShape(13.dp)).background(Brand), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Translate, contentDescription = "大象翻译", tint = Color.White, modifier = Modifier.size(26.dp))
+                Image(
+                    painter = painterResource(id = io.translatetube.local.R.drawable.splash_logo),
+                    contentDescription = "大象翻译",
+                    modifier = Modifier.fillMaxSize().padding(2.dp),
+                    contentScale = ContentScale.Fit,
+                )
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
