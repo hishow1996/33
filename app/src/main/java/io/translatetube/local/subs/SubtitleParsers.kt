@@ -155,16 +155,18 @@ object SubtitleParsers {
         var cleaned = if (removedDuplicate) collapsed.joinToString("") else value
 
         // Some providers repeat a whole Chinese translation without punctuation: "你好你好".
-        val compact = cleaned.replace(Regex("\\s+"), "")
+        // Ignore trailing sentence punctuation for the duplicate check, then keep one copy of it.
+        val trailingPunctuation = cleaned.takeLastWhile { it in "。！？!?；;，,、:：" }
+        val compact = cleaned.dropLast(trailingPunctuation.length).replace(Regex("\\s+"), "")
         if (compact.length >= 4 && compact.length % 2 == 0) {
             val half = compact.length / 2
             val first = compact.substring(0, half)
             val second = compact.substring(half)
             if (first == second && Regex("[\\u4E00-\\u9FFF]").containsMatchIn(first) && first.length >= 2) {
-                cleaned = first
+                cleaned = first + trailingPunctuation
             }
         }
-        return cleaned.trim().ifEmpty { null }
+        return cleaned.trim().takeIf { it.isNotEmpty() }
     }
 
     /** ASS/SSA（Dialogue: 0:00:01.00,0:00:04.00,...） */
