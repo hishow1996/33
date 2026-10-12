@@ -10,6 +10,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Translate
@@ -311,10 +313,11 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
                     Text(title, color = OnBg, style = MaterialTheme.typography.titleLarge)
                     Text(subtitle, color = SubText, style = MaterialTheme.typography.bodyMedium)
                 }
-                Text(
-                    if (expanded) "⌃" else "›",
-                    color = SubText,
-                    style = MaterialTheme.typography.headlineMedium,
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "收起设置项" else "展开设置项",
+                    tint = SubText,
+                    modifier = Modifier.size(24.dp),
                 )
             }
             if (expanded) {
