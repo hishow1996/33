@@ -175,29 +175,86 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    val selectedProfile = activeId == p.id && p.enabled
+                    var profileMenuExpanded by remember(p.id) { mutableStateOf(false) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(
-                            selected = activeId == p.id,
-                            onClick = { if (p.enabled) setActive(p.id) },
-                            colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
-                        )
-                        Column(
-                            Modifier.weight(1f).padding(start = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                            Text(typeLabel(p.type), color = SubText, style = MaterialTheme.typography.bodySmall)
+                        if (selectedProfile) {
+                            Box(
+                                Modifier.size(52.dp).clip(RoundedCornerShape(15.dp)).background(SurfaceHigh),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("API", color = BrandBright, style = MaterialTheme.typography.titleMedium)
+                            }
+                        } else {
+                            RadioButton(
+                                selected = activeId == p.id,
+                                onClick = { if (p.enabled) setActive(p.id) },
+                                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+                            )
                         }
-                        Switch(
-                            checked = p.enabled,
-                            onCheckedChange = { en ->
-                                scope.launch {
-                                    db.apiProfileDao().upsert(p.copy(enabled = en))
-                                    if (!en && activeId == p.id) setActive(-1L)
+                        Column(
+                            Modifier.weight(1f).padding(start = if (selectedProfile) 12.dp else 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(p.name, color = OnBg, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (selectedProfile) "当前服务 · ${typeLabel(p.type)}" else typeLabel(p.type),
+                                color = SubText,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                            )
+                        }
+                        if (selectedProfile) {
+                            Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                            Spacer(Modifier.width(6.dp))
+                            Box {
+                                Text(
+                                    "•••",
+                                    color = SubText,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.clickable { profileMenuExpanded = true }
+                                        .padding(horizontal = 5.dp, vertical = 8.dp),
+                                )
+                                DropdownMenu(
+                                    expanded = profileMenuExpanded,
+                                    onDismissRequest = { profileMenuExpanded = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("编辑配置") },
+                                        onClick = { profileMenuExpanded = false; editing = p },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("停用服务") },
+                                        onClick = {
+                                            profileMenuExpanded = false
+                                            scope.launch {
+                                                db.apiProfileDao().upsert(p.copy(enabled = false))
+                                                if (activeId == p.id) setActive(-1L)
+                                            }
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("删除配置") },
+                                        onClick = {
+                                            profileMenuExpanded = false
+                                            if (activeId == p.id) setActive(-1L)
+                                            scope.launch { db.apiProfileDao().delete(p.id) }
+                                        },
+                                    )
                                 }
-                            },
-                            colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
-                        )
+                            }
+                        } else {
+                            Switch(
+                                checked = p.enabled,
+                                onCheckedChange = { en ->
+                                    scope.launch {
+                                        db.apiProfileDao().upsert(p.copy(enabled = en))
+                                        if (!en && activeId == p.id) setActive(-1L)
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
+                            )
+                        }
                     }
                     if (activeId == p.id && p.enabled) {
                         var inlineUrl by remember(p.id, p.baseUrl) { mutableStateOf(p.baseUrl) }
@@ -335,17 +392,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        TextButton(onClick = { editing = p }) { Text("编辑配置", color = BrandBright) }
-                        TextButton(onClick = {
-                            if (activeId == p.id) setActive(-1L)
-                            scope.launch { db.apiProfileDao().delete(p.id) }
-                        }) { Text("删除", color = DangerRed) }
-                    }
+
                 }
             }
         }
