@@ -411,7 +411,10 @@ fun PlayerScreen(
     // 字幕只在当前配音行接近可视区域边缘时滚动，避免每句都重新启动滚动动画。
     // 用 rememberUpdatedState 让长生命周期协程始终读取最新播放行，不会闭包住旧 state。
     val autoScrollTarget = rememberUpdatedState(state.currentLine to state.lines.size)
-    LaunchedEffect(state.key) {
+    LaunchedEffect(state.key, state.phase, subtitlesVisible) {
+        // The list is intentionally absent on the parsing screen and when subtitles are hidden.
+        // Do not wait for a LazyColumn viewport that is not composed.
+        if (state.phase != Phase.READY || !subtitlesVisible) return@LaunchedEffect
         snapshotFlow { autoScrollTarget.value }
             .distinctUntilChanged()
             .collectLatest { (target, lineCount) ->
