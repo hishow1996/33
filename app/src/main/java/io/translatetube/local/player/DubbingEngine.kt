@@ -291,6 +291,45 @@ class DubbingEngine(
         }
     }
 
+    /** Pause/resume the live voice track with the video; preserve playback head on pause. */
+    fun pausePlayback() {
+        if (released) return
+        // Invalidate a line that is still loading/being created so it cannot start after pause.
+        playbackGeneration.incrementAndGet()
+        val active = track
+        if (active == null) {
+            _currentLine.value = -1
+            return
+        }
+        try {
+            active.pause()
+        } catch (e: Exception) {
+            if (track === active) track = null
+            _currentLine.value = -1
+            try { active.release() } catch (_: Exception) {}
+            android.util.Log.w("DubbingEngine", "Unable to pause voice track", e)
+        }
+    }
+
+    fun resumePlayback() {
+        if (released) return
+        val active = track
+        if (active == null) {
+            // A track may have been in its creation path when pause occurred. Let the next
+            // video tick start the correct line for the current timestamp.
+            _currentLine.value = -1
+            return
+        }
+        try {
+            active.play()
+        } catch (e: Exception) {
+            if (track === active) track = null
+            _currentLine.value = -1
+            try { active.release() } catch (_: Exception) {}
+            android.util.Log.w("DubbingEngine", "Unable to resume voice track", e)
+        }
+    }
+
     fun stop() {
         playbackGeneration.incrementAndGet()
         _currentLine.value = -1

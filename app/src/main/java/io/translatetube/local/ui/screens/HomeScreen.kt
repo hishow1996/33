@@ -77,13 +77,13 @@ fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
-                Modifier.size(52.dp).clip(RoundedCornerShape(17.dp)).background(Brand),
+                Modifier.size(52.dp).clip(RoundedCornerShape(17.dp)).background(Color.White),
                 contentAlignment = Alignment.Center
             ) {
                 Image(
                     painter = painterResource(id = io.translatetube.local.R.drawable.elephant_logo),
                     contentDescription = "大象翻译图标",
-                    modifier = Modifier.fillMaxSize().padding(3.dp),
+                    modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
                 )
             }

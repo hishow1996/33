@@ -4,15 +4,6 @@
     android:height="512dp"
     android:viewportWidth="600"
     android:viewportHeight="600">
-    <path android:fillColor="#F2F6FD" android:pathData="M0,0h600v600H0z" />
-    <path
-        android:fillColor="#E7ECF5"
-        android:pathData="M94,34 C62,34 30,60 30,94 L30,510 C30,542 58,568 92,568 L508,568 C542,568 570,542 570,510 L570,94 C570,60 542,34 508,34 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:strokeColor="#E5EAF2"
-        android:strokeWidth="2.2"
-        android:pathData="M94,40 C62,40 36,64 36,96 L36,504 C36,536 61,560 94,560 L506,560 C539,560 564,536 564,504 L564,96 C564,64 540,40 506,40 Z" />
     <path
         android:fillColor="#3967B1"
         android:fillType="evenOdd"

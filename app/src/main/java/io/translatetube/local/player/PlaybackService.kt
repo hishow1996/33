@@ -152,6 +152,15 @@ class PlaybackService : MediaSessionService() {
             pm.onEnded = { ui.update { it.copy(isPlaying = false, currentLine = -1) } }
             pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
 
+            // Keep dubbed AudioTrack locked to ExoPlayer's playback state. This callback
+            // runs with the player's state change, so voice stops immediately on pause and
+            // resumes from the paused sample position instead of finishing the current line.
+            pm.player.addListener(object : androidx.media3.common.Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (isPlaying) dubbing?.resumePlayback() else dubbing?.pausePlayback()
+                }
+            })
+
             val pi = PendingIntent.getActivity(
                 this, 0, Intent(this, io.translatetube.local.MainActivity::class.java),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
