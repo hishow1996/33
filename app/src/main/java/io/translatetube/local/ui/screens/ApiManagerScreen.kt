@@ -9,6 +9,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -16,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -69,7 +71,12 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(BgDark).systemBarsPadding().padding(horizontal = 18.dp, vertical = 14.dp)) {
+    Column(
+        Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(28.dp)).background(Color(0xFFF2F6FC))
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
         Row(
             Modifier.fillMaxWidth().padding(bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -86,12 +93,16 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Text("API 管理", style = MaterialTheme.typography.titleLarge, color = OnBg)
                 Text("配置翻译服务与模型", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
-            Button(
+            Surface(
                 onClick = { adding = true },
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
-            ) { Text("添加") }
+                shape = CircleShape,
+                color = Color.White,
+                border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
+            ) {
+                Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                    Text("+", color = BrandBright, style = MaterialTheme.typography.headlineMedium)
+                }
+            }
         }
 
         loadError?.let {
@@ -101,8 +112,8 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
         var googleExpanded by remember { mutableStateOf(false) }
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                .background(if (activeId == -1L || activeId == -2L) SelectedBlue else SurfaceDark)
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
+                .background(Color.White)
                 .clickable { googleExpanded = !googleExpanded }
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -158,8 +169,8 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             items(profiles, key = { it.id }) { p ->
                 Column(
                     Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(if (activeId == p.id && p.enabled) SelectedBlue else SurfaceDark)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.White)
                         .clickable(enabled = p.enabled) { setActive(p.id) }
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -188,6 +199,142 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                             colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
                         )
                     }
+                    if (activeId == p.id && p.enabled) {
+                        var inlineUrl by remember(p.id, p.baseUrl) { mutableStateOf(p.baseUrl) }
+                        var inlineKey by remember(p.id, p.apiKey) { mutableStateOf(Crypto.decrypt(p.apiKey)) }
+                        var inlineModel by remember(p.id, p.model) { mutableStateOf(p.model) }
+                        var showInlineKey by remember(p.id) { mutableStateOf(false) }
+                        var checkingConnection by remember(p.id) { mutableStateOf(false) }
+                        var connectionMessage by remember(p.id) { mutableStateOf<String?>(null) }
+
+                        HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 5.dp))
+                        if (p.type == "OPENAI") {
+                            Text("服务地址", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.height(5.dp))
+                            OutlinedTextField(
+                                value = inlineUrl,
+                                onValueChange = { inlineUrl = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                shape = RoundedCornerShape(15.dp),
+                                placeholder = { Text("https://api.example.com/v1") },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = BrandBright,
+                                    unfocusedBorderColor = Color(0xFFF0F3F8),
+                                    focusedContainerColor = Color(0xFFF6F8FC),
+                                    unfocusedContainerColor = Color(0xFFF6F8FC),
+                                ),
+                            )
+                            Spacer(Modifier.height(9.dp))
+                        }
+                        Text("API Key", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(5.dp))
+                        OutlinedTextField(
+                            value = inlineKey,
+                            onValueChange = { inlineKey = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(15.dp),
+                            visualTransformation = if (showInlineKey) VisualTransformation.None else PasswordVisualTransformation(),
+                            placeholder = { Text("输入 API Key") },
+                            trailingIcon = {
+                                TextButton(
+                                    onClick = { showInlineKey = !showInlineKey },
+                                    contentPadding = PaddingValues(horizontal = 8.dp),
+                                ) { Text(if (showInlineKey) "隐藏" else "显示", color = BrandBright) }
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = BrandBright,
+                                unfocusedBorderColor = Color(0xFFF0F3F8),
+                                focusedContainerColor = Color(0xFFF6F8FC),
+                                unfocusedContainerColor = Color(0xFFF6F8FC),
+                            ),
+                        )
+                        if (p.type != "GCLOUD") {
+                            Spacer(Modifier.height(9.dp))
+                            Text("模型名称", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.height(5.dp))
+                            OutlinedTextField(
+                                value = inlineModel,
+                                onValueChange = { inlineModel = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                shape = RoundedCornerShape(15.dp),
+                                placeholder = { Text("选择或填写模型") },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = BrandBright,
+                                    unfocusedBorderColor = Color(0xFFF0F3F8),
+                                    focusedContainerColor = Color(0xFFF6F8FC),
+                                    unfocusedContainerColor = Color(0xFFF6F8FC),
+                                ),
+                            )
+                        }
+                        if (connectionMessage != null) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(connectionMessage!!, color = if (connectionMessage!!.startsWith("连接成功")) Color(0xFF21945A) else DangerRed, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.height(11.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedButton(
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                enabled = !checkingConnection && p.type != "GCLOUD",
+                                onClick = {
+                                    checkingConnection = true
+                                    connectionMessage = null
+                                    val testProfile = p.copy(
+                                        baseUrl = inlineUrl.trim(),
+                                        apiKey = Crypto.encrypt(inlineKey.trim()),
+                                        model = inlineModel.trim(),
+                                    )
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            val available = EngineFactory.fromProfile(testProfile).listModels()
+                                            withContext(Dispatchers.Main) {
+                                                connectionMessage = if (available != null) {
+                                                    "连接成功 · 返回 " + available.size + " 个模型"
+                                                } else {
+                                                    "接口未返回模型列表，请确认服务配置"
+                                                }
+                                                checkingConnection = false
+                                            }
+                                        } catch (e: Exception) {
+                                            withContext(Dispatchers.Main) {
+                                                connectionMessage = "连接失败 · " + (e.message ?: "请检查地址和 API Key")
+                                                checkingConnection = false
+                                            }
+                                        }
+                                    }
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
+                            ) { Text(if (checkingConnection) "测试中…" else "测试连接") }
+                            Button(
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                enabled = (p.type != "OPENAI" || inlineUrl.isNotBlank()) &&
+                                    inlineKey.isNotBlank() && (p.type == "GCLOUD" || inlineModel.isNotBlank()),
+                                onClick = {
+                                    val saved = p.copy(
+                                        baseUrl = inlineUrl.trim(),
+                                        apiKey = Crypto.encrypt(inlineKey.trim()),
+                                        model = inlineModel.trim(),
+                                    )
+                                    scope.launch(Dispatchers.IO) {
+                                        db.apiProfileDao().upsert(saved)
+                                        withContext(Dispatchers.Main) {
+                                            connectionMessage = "配置已保存"
+                                        }
+                                    }
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White),
+                            ) { Text("保存配置") }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
