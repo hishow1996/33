@@ -40,7 +40,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 @Composable
-@Composable
 fun HomeScreen(
     onPlay: (PlayRequest) -> Unit,
     onSettings: () -> Unit,
