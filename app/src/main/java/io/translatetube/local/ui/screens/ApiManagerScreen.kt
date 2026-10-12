@@ -266,7 +266,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
                         HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 5.dp))
                         if (p.type == "OPENAI") {
-                            Text("服务地址", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                            Text("服务地址", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                             Spacer(Modifier.height(5.dp))
                             OutlinedTextField(
                                 value = inlineUrl,
@@ -284,7 +284,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                             )
                             Spacer(Modifier.height(9.dp))
                         }
-                        Text("API Key", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                        Text("API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.height(5.dp))
                         OutlinedTextField(
                             value = inlineKey,
@@ -309,7 +309,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         )
                         if (p.type != "GCLOUD") {
                             Spacer(Modifier.height(9.dp))
-                            Text("模型名称", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                            Text("模型名称", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                             Spacer(Modifier.height(5.dp))
                             OutlinedTextField(
                                 value = inlineModel,
