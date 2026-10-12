@@ -6,8 +6,8 @@
         <item name="android:navigationBarColor">#FFFFFF</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowSplashScreenBackground">#FFFFFF</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_fg</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">#FFFFFF</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/elephant_logo</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#F2F6FD</item>
         <item name="android:windowSplashScreenBrandingImage">@drawable/splash_branding</item>
         <item name="android:windowSplashScreenAnimationDuration">0</item>
     </style>
