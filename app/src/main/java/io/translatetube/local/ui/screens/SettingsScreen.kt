@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.ui.theme.*
@@ -37,7 +38,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     }
     Column(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(28.dp)).background(Color(0xFFF2F6FC))
+            .verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Row(
@@ -71,65 +74,31 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx)
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
-        Section("模型管理") {
-            Text(
-                if (ttsEngine == "system") "系统 TTS 不需要配音模型；语音转写模型可单独下载。"
-                else "配音模型用于离线合成语音，语音转写模型用于生成字幕。",
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Spacer(Modifier.height(8.dp))
-            if (ttsEngine == "kokoro") {
-                ModelRow(
-                    title = "配音模型",
-                    state = ttsState,
-                    ready = ttsReady,
-                    pkgMB = 140,
-                    onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS },
+
+
+
+
+
+
+
+
+Section("翻译引擎") {
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onApiManager)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "翻译引擎与 API",
+                    color = OnBg,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
                 )
-                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+                Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
             }
-            ModelRow(
-                title = "语音转写模型",
-                state = asrState,
-                ready = asrReady,
-                pkgMB = 198,
-                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR },
-            )
         }
 
-        // 下载确认弹窗（规格：右侧确定 / 左侧取消，显示包大小）
-        confirmKind?.let { kind ->
-            val name = if (kind == io.translatetube.local.data.ModelKind.TTS) "配音模型（Kokoro）" else "转写模型（Whisper）"
-            val size = if (kind == io.translatetube.local.data.ModelKind.TTS) "140MB（解压后约 207MB）" else "198MB（解压后约 154MB）"
-            androidx.compose.material3.AlertDialog(
-                onDismissRequest = { confirmKind = null },
-                title = { Text("确定下载吗？", color = OnBg) },
-                text = {
-                    Column {
-                        Text(name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                        Spacer(Modifier.height(4.dp))
-                        Text("下载包大小：$size", color = SubText, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(4.dp))
-                        Text("建议使用 Wi-Fi 网络，下载完成后自动解压安装。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
-                    }
-                },
-                // 左：取消
-                dismissButton = {
-                    TextButton(onClick = { confirmKind = null }) { Text("取消", color = SubText) }
-                },
-                // 右：确定
-                confirmButton = {
-                    TextButton(onClick = {
-                        dlManager.download(kind)
-                        confirmKind = null
-                    }) { Text("确定", color = BrandBright) }
-                },
-                containerColor = SurfaceDark,
-            )
-        }
-
-        Section("配音设置") {
+Section("配音设置") {
             EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
@@ -162,20 +131,62 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             }
         }
 
-        Section("翻译设置") {
-            Row(
-                Modifier.fillMaxWidth().clickable(onClick = onApiManager)
-                    .padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "翻译引擎与 API",
-                    color = OnBg,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.weight(1f),
+Section("模型管理") {
+            Text(
+                if (ttsEngine == "system") "系统 TTS 不需要配音模型；语音转写模型可单独下载。"
+                else "配音模型用于离线合成语音，语音转写模型用于生成字幕。",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            if (ttsEngine == "kokoro") {
+                ModelRow(
+                    title = "配音模型",
+                    state = ttsState,
+                    ready = ttsReady,
+                    pkgMB = 140,
+                    onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS },
                 )
-                Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
+                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
             }
+            ModelRow(
+                title = "语音转写模型",
+                state = asrState,
+                ready = asrReady,
+                pkgMB = 198,
+                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR },
+            )
+        }
+
+// 下载确认弹窗（规格：右侧确定 / 左侧取消，显示包大小）
+        confirmKind?.let { kind ->
+            val name = if (kind == io.translatetube.local.data.ModelKind.TTS) "配音模型（Kokoro）" else "转写模型（Whisper）"
+            val size = if (kind == io.translatetube.local.data.ModelKind.TTS) "140MB（解压后约 207MB）" else "198MB（解压后约 154MB）"
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirmKind = null },
+                title = { Text("确定下载吗？", color = OnBg) },
+                text = {
+                    Column {
+                        Text(name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(4.dp))
+                        Text("下载包大小：$size", color = SubText, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text("建议使用 Wi-Fi 网络，下载完成后自动解压安装。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                // 左：取消
+                dismissButton = {
+                    TextButton(onClick = { confirmKind = null }) { Text("取消", color = SubText) }
+                },
+                // 右：确定
+                confirmButton = {
+                    TextButton(onClick = {
+                        dlManager.download(kind)
+                        confirmKind = null
+                    }) { Text("确定", color = BrandBright) }
+                },
+                containerColor = SurfaceDark,
+            )
         }
 
         Section("播放体验") {
@@ -248,16 +259,62 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-            .padding(vertical = 7.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(SurfaceDark)
-            .padding(horizontal = 16.dp, vertical = 15.dp),
+    var expanded by remember { mutableStateOf(false) }
+    val subtitle = when (title) {
+        "翻译引擎", "翻译设置" -> "Google 翻译 · API 配置"
+        "配音设置" -> "Kokoro 模型 · 系统 TTS · 音色"
+        "模型管理" -> "下载状态 · 安装进度 · 重试"
+        "播放体验" -> "悬浮窗权限 · 播放相关选项"
+        "存储管理" -> "临时缓存 · 清理空间"
+        else -> "版本信息"
+    }
+    val glyph = when (title) {
+        "翻译引擎", "翻译设置" -> "文A"
+        "配音设置" -> "≋"
+        "模型管理" -> "↓"
+        "播放体验" -> "▣"
+        "存储管理" -> "▤"
+        else -> "ⓘ"
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        color = Color.White,
+        shape = RoundedCornerShape(20.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F3F8)),
+        tonalElevation = 0.dp,
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = OnBg)
-        Spacer(Modifier.height(12.dp))
-        content()
+        Column {
+            Row(
+                Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(52.dp).clip(RoundedCornerShape(15.dp)).background(SurfaceHigh),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(glyph, color = BrandBright, style = MaterialTheme.typography.titleLarge)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(title, color = OnBg, style = MaterialTheme.typography.titleLarge)
+                    Text(subtitle, color = SubText, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    if (expanded) "⌃" else "›",
+                    color = SubText,
+                    style = MaterialTheme.typography.headlineMedium,
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = OutlineSoft)
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp),
+                ) {
+                    content()
+                }
+            }
+        }
     }
 }
 
