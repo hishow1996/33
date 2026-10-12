@@ -12,6 +12,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -81,13 +86,12 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Modifier.fillMaxWidth().padding(bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                "‹",
-                color = OnBg,
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onBack).wrapContentSize(Alignment.Center),
-            )
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "返回", tint = OnBg)
+            }
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text("API 管理", style = MaterialTheme.typography.titleLarge, color = OnBg)
@@ -100,7 +104,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
             ) {
                 Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                    Text("+", color = BrandBright, style = MaterialTheme.typography.headlineMedium)
+                    Icon(Icons.Filled.Add, contentDescription = "添加 API", tint = BrandBright)
                 }
             }
         }
@@ -133,10 +137,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
             }
             Spacer(Modifier.width(6.dp))
-            Text(
-                if (googleExpanded) "⌃" else "⌄",
-                color = SubText,
-                style = MaterialTheme.typography.titleLarge,
+            Icon(
+                imageVector = if (googleExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (googleExpanded) "收起 Google 翻译设置" else "展开 Google 翻译设置",
+                tint = SubText,
+                modifier = Modifier.size(24.dp),
             )
         }
         Spacer(Modifier.height(10.dp))
