@@ -231,7 +231,7 @@ fun PlayerScreen(
     Box(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
     ) {
-        if (state.phase != Phase.READY && state.phase != Phase.SYNTHESIZING) {
+        if (state.phase != Phase.READY) {
             VideoParsingPage(
                 state = state,
                 onBack = { exitFloating(); PlaybackService.instance?.saveProgress(); onBack() },
@@ -316,7 +316,7 @@ fun PlayerScreen(
                     .fillMaxWidth()
                     .aspectRatio(state.videoAspect)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(SurfaceHigh)
+                    .background(Color(0xFF172033))
             ) {
                 AndroidView(
                     factory = {
@@ -460,7 +460,12 @@ private fun VideoParsingPage(
         Phase.READY -> 5
     }
     val steps = listOf("获取视频信息", "解析视频资源", "下载或读取字幕", "翻译字幕", "生成配音")
-    val fraction = progressRatio(state.progress) ?: progressPercent(state.progress)
+    val fraction = when (state.phase) {
+        Phase.SYNTHESIZING -> if (state.totalLines > 0) {
+            (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+        } else null
+        else -> progressRatio(state.progress) ?: progressPercent(state.progress)
+    }
     val mainTitle = when (state.phase) {
         Phase.ERROR -> "视频处理失败"
         Phase.PARSING -> "正在处理视频"
