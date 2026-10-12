@@ -19,23 +19,23 @@ val OpenSans = FontFamily(
     Font(R.font.opensans_extrabold, FontWeight.ExtraBold),
 )
 
-private fun os(weight: FontWeight, size: Int): androidx.compose.ui.text.TextStyle =
-    androidx.compose.ui.text.TextStyle(
-        fontFamily = OpenSans,
-        fontWeight = weight,
-        fontSize = size.sp,
-    )
+private fun os(weight: FontWeight, size: Int): TextStyle =
+    TextStyle(fontFamily = OpenSans, fontWeight = weight, fontSize = size.sp)
 
+// 全局明确每一级文字的字号与字重，避免页面各自使用不同的默认样式。
 val AppTypography = Typography(
-    displaySmall = os(FontWeight.ExtraBold, 34),
-    headlineMedium = os(FontWeight.Bold, 26),
-    titleLarge = os(FontWeight.Bold, 21),
-    titleMedium = os(FontWeight.SemiBold, 17),
-    bodyLarge = os(FontWeight.Normal, 16),
+    displaySmall = os(FontWeight.ExtraBold, 32),
+    headlineMedium = os(FontWeight.Bold, 25),
+    headlineSmall = os(FontWeight.Bold, 22),
+    titleLarge = os(FontWeight.Bold, 20),
+    titleMedium = os(FontWeight.SemiBold, 16),
+    titleSmall = os(FontWeight.SemiBold, 14),
+    bodyLarge = os(FontWeight.Normal, 15),
     bodyMedium = os(FontWeight.Normal, 14),
     bodySmall = os(FontWeight.Normal, 12),
-    labelLarge = os(FontWeight.SemiBold, 14),
+    labelLarge = os(FontWeight.SemiBold, 13),
     labelMedium = os(FontWeight.SemiBold, 12),
+    labelSmall = os(FontWeight.SemiBold, 11),
 )
 
 private val ColorScheme = lightColorScheme(
@@ -49,9 +49,9 @@ private val ColorScheme = lightColorScheme(
     onBackground = OnBg,
     surface = SurfaceDark,
     onSurface = OnBg,
-    surfaceVariant = SurfaceHigh,
+    surfaceVariant = SelectedBlue,
     onSurfaceVariant = SubText,
-    outline = MutedGreen,
+    outline = OutlineSoft,
     error = DangerRed,
 )
 
