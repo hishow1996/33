@@ -79,7 +79,7 @@ fun GoogleTranslateSection() {
         }
     }
 
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(SurfaceDark).padding(14.dp),
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceDark).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("离线语言包", color = OnBg, style = MaterialTheme.typography.titleMedium)
@@ -91,8 +91,8 @@ fun GoogleTranslateSection() {
 
         packs.forEachIndexed { index, pack ->
             val state = states[pack.source] ?: "checking"
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceHigh)
-                .padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                .padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(34.dp).clip(RoundedCornerShape(9.dp)).background(SurfaceDark),
                     contentAlignment = Alignment.Center) {
                     Text(pack.badge, color = BrandBright, style = MaterialTheme.typography.labelLarge)
@@ -136,7 +136,7 @@ fun GoogleTranslateSection() {
                         }) { Text(if (state == "failed") "重试" else "下载", color = BrandBright) }
                 }
             }
-            if (index < packs.lastIndex) HorizontalDivider(color = SurfaceDark, thickness = 1.dp)
+            if (index < packs.lastIndex) HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
         }
         if (downloadMessage.isNotBlank()) Text(downloadMessage, color = DangerRed, style = MaterialTheme.typography.bodyMedium)
     }
