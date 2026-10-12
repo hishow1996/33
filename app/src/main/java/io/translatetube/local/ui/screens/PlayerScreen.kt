@@ -216,7 +216,7 @@ fun PlayerScreen(
             .background(BgDark)
             .systemBarsPadding()
     ) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 10.dp).clip(RoundedCornerShape(26.dp)).background(Color(0xFFF2F6FC)).padding(horizontal = 8.dp)) {
             // ===== 顶部栏 =====
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text("←", color = OnBg, style = MaterialTheme.typography.titleLarge, modifier = Modifier
