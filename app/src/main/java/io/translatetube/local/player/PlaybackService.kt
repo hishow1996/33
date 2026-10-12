@@ -371,7 +371,11 @@ class PlaybackService : MediaSessionService() {
                 try {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${lines.size} 行）…") }
                     val srcLang = detectLangFromText(lines.firstOrNull()?.text ?: "")
-                    translateLines(videoKey, lines, srcLang)
+                    if (isChineseLanguage(srcLang)) {
+                        lines.forEach { it.zh = SubtitleParsers.cleanTranslatedText(it.text) }
+                    } else {
+                        translateLines(videoKey, lines, srcLang)
+                    }
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
@@ -405,6 +409,12 @@ class PlaybackService : MediaSessionService() {
     /** 从首行文本猜语言（仅含 CJK 判 zh，否则 en） */
     private fun detectLangFromText(t: String): String =
         if (Regex("[\\u4e00-\\u9fff]").containsMatchIn(t)) "zh" else "en"
+
+    /** Chinese subtitle tracks must not be translated into Chinese again. */
+    private fun isChineseLanguage(tag: String): Boolean {
+        val normalized = tag.trim().lowercase()
+        return normalized.startsWith("zh") || normalized == "cmn" || normalized.startsWith("yue")
+    }
 
     private suspend fun runPipeline(key: String, videoId: String?, localUri: Uri?) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
@@ -550,9 +560,13 @@ class PlaybackService : MediaSessionService() {
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 val orig = lines!!
-                if (orig.isNotEmpty() && srcLang != "zh") {
+                if (orig.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${orig.size} 行）…") }
                     translateLines(key, orig, srcLang)
+                } else if (orig.isNotEmpty()) {
+                    // Already-Chinese source subtitles are the Chinese display track; copying them
+                    // avoids both self-translation duplicates and a "正在翻译…" placeholder.
+                    orig.forEach { it.zh = SubtitleParsers.cleanTranslatedText(it.text) }
                 }
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
                 if (orig.count { !it.zh.isNullOrEmpty() } > orig.size / 2) {
