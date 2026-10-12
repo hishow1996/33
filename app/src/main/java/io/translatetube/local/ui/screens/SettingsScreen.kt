@@ -37,8 +37,8 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     }
     Column(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
+            .verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
@@ -56,7 +56,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             )
             Spacer(Modifier.width(8.dp))
             Column {
-                Text("设置", style = MaterialTheme.typography.headlineSmall, color = OnBg)
+                Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
                 Text("管理翻译、语音和应用空间", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
         }
@@ -71,13 +71,13 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx)
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
-        Section("语音模型") {
+        Section("模型管理") {
 
             // —— 配音模型 ——
             ModelRow(title = "配音模型",
                 state = ttsState, ready = ttsReady, pkgMB = 140,
                 onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS })
-            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
             ModelRow(title = "语音转写模型",
                 state = asrState, ready = asrReady, pkgMB = 198,
                 onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR })
@@ -114,7 +114,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             )
         }
 
-        Section("配音引擎") {
+        Section("配音设置") {
             EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
@@ -140,7 +140,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             }
         }
 
-        Section("翻译引擎") {
+        Section("翻译设置") {
             Row(
                 Modifier.fillMaxWidth().clickable(onClick = onApiManager)
                     .padding(vertical = 10.dp),
@@ -156,7 +156,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             }
         }
 
-        Section("悬浮窗") {
+        Section("播放体验") {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -178,7 +178,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             }
         }
 
-        Section("存储") {
+        Section("存储管理") {
             var cacheSize by remember { mutableStateOf(formatCacheSize(ctx)) }
             var showClearConfirm by remember { mutableStateOf(false) }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -214,7 +214,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             }
         }
 
-        Section("关于") {
+        Section("关于应用") {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("大象翻译", color = OnBg, style = MaterialTheme.typography.bodyLarge)
                 Spacer(Modifier.weight(1f))
@@ -227,19 +227,17 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(15.dp))
-            .background(SurfaceDark)
-            .padding(horizontal = 15.dp, vertical = 13.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp),
     ) {
         Text(
             title,
             style = MaterialTheme.typography.titleSmall,
-            color = OnBg,
+            color = BrandBright,
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
         content()
+        Spacer(Modifier.height(8.dp))
+        HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
     }
 }
 
