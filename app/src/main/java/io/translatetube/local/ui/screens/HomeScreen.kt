@@ -57,10 +57,10 @@ fun HomeScreen(
 
     Column(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp)
+            .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            Modifier.fillMaxWidth().padding(bottom = 20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -79,15 +79,15 @@ fun HomeScreen(
             }
         }
 
-        Text("开始观看", color = OnBg, style = MaterialTheme.typography.headlineMedium)
+        Text("开始观看", color = OnBg, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(5.dp))
-        Text("粘贴视频链接，自动处理字幕与中文配音", color = SubText, style = MaterialTheme.typography.bodyMedium)
+        Text("粘贴链接，开始字幕翻译与中文配音", color = SubText, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(16.dp))
 
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = SurfaceDark,
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(18.dp),
             tonalElevation = 0.dp,
         ) {
             Column(Modifier.padding(16.dp)) {
@@ -148,7 +148,7 @@ fun HomeScreen(
 
         Spacer(Modifier.height(26.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("视频记录", color = OnBg, style = MaterialTheme.typography.titleLarge)
+            Text("视频记录", color = OnBg, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
             Row(
                 Modifier.clip(RoundedCornerShape(11.dp)).background(Color(0xFFE8EEF7)).padding(3.dp),
@@ -235,7 +235,7 @@ private fun VideoRow(
 ) {
     Row(
         Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(15.dp))
+            .clip(RoundedCornerShape(13.dp))
             .background(SurfaceDark)
             .combinedClickable(
                 onClick = {
