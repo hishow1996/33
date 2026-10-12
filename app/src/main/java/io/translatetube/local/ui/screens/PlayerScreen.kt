@@ -734,8 +734,27 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     var scrubbing by remember(state.key) { mutableStateOf(false) }
     var qualityExpanded by remember { mutableStateOf(false) }
     var speedExpanded by remember { mutableStateOf(false) }
+    var controlsVisible by remember(state.key) { mutableStateOf(true) }
     var speed by remember(state.key) { mutableStateOf(1.0f) }
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+
+    // Hide the seekbar and player tools after a short idle period, whether playing or paused.
+    // Leave dropdown menus interactive; tapping the video toggles the controls back on.
+    LaunchedEffect(state.key, controlsVisible, qualityExpanded, speedExpanded, scrubbing) {
+        if (!controlsVisible || qualityExpanded || speedExpanded || scrubbing) return@LaunchedEffect
+        delay(3_000)
+        controlsVisible = false
+    }
+
+    // This transparent tap target sits behind the controls, so tapping a button or seeking
+    // keeps its own gesture; a tap on the actual picture toggles the overlay.
+    Box(
+        Modifier.fillMaxSize().pointerInput(state.key, state.isPlaying, controlsVisible) {
+            detectTapGestures {
+                controlsVisible = if (controlsVisible) false else true
+            }
+        }
+    )
 
     LaunchedEffect(state.key) {
         while (true) {
@@ -762,13 +781,14 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    Column(
-        Modifier.align(androidx.compose.ui.Alignment.BottomCenter)
-            .fillMaxWidth()
-            .background(Color(0xB8172033))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Canvas(
+    if (controlsVisible) {
+        Column(
+            Modifier.align(androidx.compose.ui.Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color(0xB8172033))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Canvas(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(12.dp)
@@ -886,6 +906,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 }
             }
         }
+    }
     }
 }
 
@@ -1077,15 +1098,6 @@ private fun SubtitleList(
                         .padding(horizontal = 14.dp, vertical = if (activeDub) 17.dp else 11.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
-                    if (showOriginalText) {
-                        Text(
-                            line.text,
-                            color = Color(0xFF626873),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 5.dp),
-                        )
-                    }
                     Text(
                         translatedText,
                         color = when {
@@ -1107,6 +1119,16 @@ private fun SubtitleList(
                             scaleY = dubbingScale
                         },
                     )
+                    if (showOriginalText) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            line.text,
+                            color = Color(0xFF626873),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                     if (active) {
                         Spacer(Modifier.height(7.dp))
                         Surface(
