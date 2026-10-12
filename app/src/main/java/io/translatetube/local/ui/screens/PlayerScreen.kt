@@ -384,12 +384,15 @@ fun PlayerScreen(
             Spacer(Modifier.height(10.dp))
 
             if (subtitlesVisible) {
-                SubtitleList(
-                    state = state,
-                    svc = PlaybackService.instance,
-                    listState = listState,
-                    onCopy = { copySubtitles() },
-                )
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    SubtitleList(
+                        state = state,
+                        svc = PlaybackService.instance,
+                        listState = listState,
+                        onCopy = { copySubtitles() },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             } else {
                 Surface(
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -1004,9 +1007,10 @@ private fun SubtitleList(
     svc: PlaybackService?,
     listState: androidx.compose.foundation.lazy.LazyListState,
     onCopy: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Column(
-        Modifier.fillMaxWidth().weight(1f)
+        modifier.fillMaxSize()
             .clip(RoundedCornerShape(24.dp))
             .background(Color.White)
             .padding(horizontal = 16.dp, vertical = 12.dp),
