@@ -8,6 +8,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -269,12 +275,12 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
         else -> "版本信息"
     }
     val glyph = when (title) {
-        "翻译引擎", "翻译设置" -> "文A"
-        "配音设置" -> "≋"
-        "模型管理" -> "↓"
-        "播放体验" -> "▣"
-        "存储管理" -> "▤"
-        else -> "ⓘ"
+        "翻译引擎", "翻译设置" -> Icons.Filled.Translate
+        "配音设置" -> Icons.Filled.VolumeUp
+        "模型管理" -> Icons.Filled.Download
+        "播放体验" -> Icons.Filled.FolderOpen
+        "存储管理" -> Icons.Filled.FolderOpen
+        else -> Icons.Filled.Info
     }
     Surface(
         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -293,7 +299,12 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
                     Modifier.size(52.dp).clip(RoundedCornerShape(15.dp)).background(SurfaceHigh),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(glyph, color = BrandBright, style = MaterialTheme.typography.titleLarge)
+                    Icon(
+                        imageVector = glyph,
+                        contentDescription = null,
+                        tint = BrandBright,
+                        modifier = Modifier.size(25.dp),
+                    )
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
