@@ -215,7 +215,7 @@ fun PlayerScreen(
             .background(BgDark)
             .systemBarsPadding()
     ) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
             // ===== 顶部栏 =====
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text("←", color = OnBg, style = MaterialTheme.typography.titleLarge, modifier = Modifier
@@ -562,7 +562,7 @@ private fun ControlBar(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         color = SurfaceDark,
     ) {
         Column(
@@ -576,12 +576,7 @@ private fun ControlBar(
                 PlayerToolTile(
                     modifier = Modifier.weight(1f),
                     icon = if (state.dubbingOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                    label = when {
-                        state.lines.isEmpty() -> "等待字幕"
-                        state.noModelHint?.contains("配音模型") == true -> "配音模型未就绪"
-                        state.dubbingOn -> "配音开启"
-                        else -> "配音关闭"
-                    },
+                    label = "配音",
                     selected = state.dubbingOn && state.lines.isNotEmpty() &&
                         state.noModelHint?.contains("配音模型") != true,
                     enabled = state.lines.isNotEmpty() &&
@@ -591,7 +586,7 @@ private fun ControlBar(
                 PlayerToolTile(
                     modifier = Modifier.weight(1f),
                     icon = if (state.muteOriginal) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
-                    label = if (state.muteOriginal) "原声静音" else if (state.dubbingOn) "原声压低" else "原声开启",
+                    label = "原声",
                     selected = state.muteOriginal,
                     onClick = { svc?.toggleMute() },
                 )
@@ -610,7 +605,7 @@ private fun ControlBar(
                 PlayerToolTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Face,
-                    label = if (isSpeakerBusy) "识别中" else "区分人物",
+                    label = if (isSpeakerBusy) "识别中" else "人物",
                     selected = false,
                     enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
                     onClick = { svc?.autoAssignSpeakers() },
@@ -714,7 +709,7 @@ private fun SubtitleList(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     // 配音行采用浅色底，中文使用黑色粗体，保证对比度和可读性。
                     .background(
                         when {
@@ -854,10 +849,10 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .clip(RoundedCornerShape(20.dp))
+            .padding(horizontal = 12.dp)
+            .clip(RoundedCornerShape(16.dp))
             .background(Color(0xF7FFFFFF))
-            .padding(horizontal = 18.dp, vertical = 20.dp),
+            .padding(horizontal = 16.dp, vertical = 16.dp),
         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
     ) {
         Row(
