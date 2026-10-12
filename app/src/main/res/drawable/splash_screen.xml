@@ -4,17 +4,15 @@
          a separate, smaller launcher icon first. -->
     <item android:drawable="@android:color/white" />
     <item
-        android:width="176dp"
-        android:height="176dp"
+        android:width="196dp"
+        android:height="196dp"
         android:gravity="center">
-        <bitmap
-            android:gravity="fill"
-            android:src="@mipmap/ic_launcher_fg" />
+        <item android:drawable="@drawable/elephant_logo" />
     </item>
     <item
         android:drawable="@drawable/splash_branding"
-        android:width="100dp"
-        android:height="40dp"
+        android:width="136dp"
+        android:height="54dp"
         android:gravity="bottom|center_horizontal"
-        android:bottom="52dp" />
+        android:bottom="42dp" />
 </layer-list>
