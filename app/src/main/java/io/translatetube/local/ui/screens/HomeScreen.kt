@@ -293,7 +293,7 @@ private fun VideoRow(
                 (video.channel.ifEmpty {
                     if (video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE) "YouTube" else "本地视频"
                 }) + " · 中文配音" +
-                    if (video.durationSec > 0) " · \${SubtitleParsers.fmtTime(video.durationSec * 1000)}" else "",
+                    if (video.durationSec > 0) " · " + SubtitleParsers.fmtTime(video.durationSec * 1000) else "",
                 color = SubText,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
