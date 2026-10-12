@@ -82,7 +82,7 @@ fun HomeScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(id = io.translatetube.local.R.drawable.splash_logo),
+                    painter = painterResource(id = io.translatetube.local.R.drawable.elephant_logo),
                     contentDescription = "大象翻译图标",
                     modifier = Modifier.fillMaxSize().padding(3.dp),
                     contentScale = ContentScale.Fit,
@@ -185,7 +185,7 @@ fun HomeScreen(
             Text("观看记录", color = OnBg, style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.weight(1f))
             Text(
-                if (favoritesOnly) "全部" else "收藏",
+                if (favoritesOnly) "返回全部" else "全部",
                 color = BrandBright,
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
