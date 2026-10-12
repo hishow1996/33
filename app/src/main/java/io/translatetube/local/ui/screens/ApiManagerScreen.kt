@@ -67,16 +67,30 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(BgDark).systemBarsPadding().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("← 返回", color = OnBg) }
-            Text("翻译引擎", style = MaterialTheme.typography.titleLarge, color = OnBg, modifier = Modifier.weight(1f))
+    Column(Modifier.fillMaxSize().background(BgDark).systemBarsPadding().padding(horizontal = 18.dp, vertical = 14.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "‹",
+                color = OnBg,
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onBack).wrapContentSize(Alignment.Center),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text("翻译引擎", style = MaterialTheme.typography.titleLarge, color = OnBg)
+                Text("管理在线翻译服务", style = MaterialTheme.typography.bodySmall, color = SubText)
+            }
             Button(
                 onClick = { adding = true },
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
-            ) { Text("+ 添加") }
+            ) { Text("添加") }
         }
-        Spacer(Modifier.height(8.dp))
 
         loadError?.let {
             Text(it, color = WarnYellow, style = MaterialTheme.typography.bodySmall)
@@ -86,7 +100,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         var googleExpanded by remember { mutableStateOf(false) }
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                .background(if (activeId == -1L || activeId == -2L) SurfaceHigh else SurfaceDark)
+                .background(if (activeId == -1L || activeId == -2L) SelectedBlue else SurfaceDark)
                 .clickable { googleExpanded = !googleExpanded }
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -117,9 +131,9 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Column(
                     Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
-                        .background(if (activeId == p.id && p.enabled) SurfaceHigh else SurfaceDark)
+                        .background(if (activeId == p.id && p.enabled) SelectedBlue else SurfaceDark)
                         .clickable(enabled = p.enabled) { setActive(p.id) }
-                        .padding(12.dp),
+                        .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
