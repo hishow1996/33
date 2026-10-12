@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
@@ -224,11 +225,20 @@ fun PlayerScreen(
                     .padding(horizontal = 8.dp, vertical = 2.dp))
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(state.title.ifEmpty { if (state.phase == Phase.ERROR) "加载失败" else "载入中…" }, color = OnBg, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                    Text(
+                        state.title.ifEmpty { if (state.phase == Phase.ERROR) "加载失败" else "载入中…" },
+                        color = OnBg,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Text(
                         "${if (state.sourceLang.isNotEmpty()) LangLabel(state.sourceLang) + " → " else ""}中文 · ${state.engineName}" +
                             if (state.ttsEngineName.isNotBlank()) " · 配音：${state.ttsEngineName}" else "",
-                        color = SubText, style = MaterialTheme.typography.bodySmall,
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING) {
@@ -345,16 +355,16 @@ fun PlayerScreen(
 
                 val info = listState.layoutInfo
                 val viewportHeight = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
-                val topGuard = info.viewportStartOffset + (viewportHeight * 0.20f).toInt()
-                val bottomGuard = info.viewportStartOffset + (viewportHeight * 0.76f).toInt()
+                val topGuard = info.viewportStartOffset + (viewportHeight * 0.35f).toInt()
+                val bottomGuard = info.viewportStartOffset + (viewportHeight * 0.65f).toInt()
                 val item = info.visibleItemsInfo.firstOrNull { it.index == target }
                 val itemBottom = item?.let { it.offset + it.size } ?: Int.MIN_VALUE
 
-                // 行仍处于舒适阅读区时不滚动；需要滚动时把当前行放在屏幕上方约 1/3。
+                // 让正在配音的字幕稳定停留在视口中央附近，避免观众反复追着字幕找。
                 if (item == null || item.offset < topGuard || itemBottom > bottomGuard) {
                     listState.animateScrollToItem(
                         target,
-                        scrollOffset = -(viewportHeight * 0.30f).toInt(),
+                        scrollOffset = -(viewportHeight * 0.43f).toInt(),
                     )
                 }
             }
@@ -562,70 +572,62 @@ private fun ControlBar(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         color = SurfaceDark,
+        border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                PlayerToolTile(
-                    modifier = Modifier.weight(1f),
-                    icon = if (state.dubbingOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                    label = "配音",
-                    selected = state.dubbingOn && state.lines.isNotEmpty() &&
-                        state.noModelHint?.contains("配音模型") != true,
-                    enabled = state.lines.isNotEmpty() &&
-                        state.noModelHint?.contains("配音模型") != true,
-                    onClick = { svc?.toggleDub() },
-                )
-                PlayerToolTile(
-                    modifier = Modifier.weight(1f),
-                    icon = if (state.muteOriginal) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
-                    label = "原声",
-                    selected = state.muteOriginal,
-                    onClick = { svc?.toggleMute() },
-                )
-                PlayerToolTile(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Headphones,
-                    label = "仅听",
-                    selected = state.audioOnly,
-                    onClick = { svc?.toggleAudioOnly() },
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                PlayerToolTile(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Face,
-                    label = if (isSpeakerBusy) "识别中" else "人物",
-                    selected = false,
-                    enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
-                    onClick = { svc?.autoAssignSpeakers() },
-                )
-                PlayerToolTile(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Subtitles,
-                    label = "导入字幕",
-                    selected = false,
-                    onClick = onImportSub,
-                )
-                PlayerToolTile(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.ContentCopy,
-                    label = "复制字幕",
-                    selected = false,
-                    enabled = state.lines.isNotEmpty(),
-                    onClick = onCopySub,
-                )
-            }
+            PlayerToolTile(
+                modifier = Modifier.weight(1f),
+                icon = if (state.dubbingOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                label = "配音",
+                selected = state.dubbingOn && state.lines.isNotEmpty() &&
+                    state.noModelHint?.contains("配音模型") != true,
+                enabled = state.lines.isNotEmpty() &&
+                    state.noModelHint?.contains("配音模型") != true,
+                onClick = { svc?.toggleDub() },
+            )
+            PlayerToolTile(
+                modifier = Modifier.weight(1f),
+                icon = if (state.muteOriginal) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                label = "原声",
+                selected = state.muteOriginal,
+                onClick = { svc?.toggleMute() },
+            )
+            PlayerToolTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Headphones,
+                label = "仅听",
+                selected = state.audioOnly,
+                onClick = { svc?.toggleAudioOnly() },
+            )
+            PlayerToolTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Face,
+                label = if (isSpeakerBusy) "识别中" else "人物",
+                selected = false,
+                enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
+                onClick = { svc?.autoAssignSpeakers() },
+            )
+            PlayerToolTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Subtitles,
+                label = "导入字幕",
+                selected = false,
+                onClick = onImportSub,
+            )
+            PlayerToolTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.ContentCopy,
+                label = "复制",
+                selected = false,
+                enabled = state.lines.isNotEmpty(),
+                onClick = onCopySub,
+            )
         }
     }
 }
@@ -650,7 +652,7 @@ private fun PlayerToolTile(
                 }
             )
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 3.dp, vertical = 7.dp),
+            .padding(horizontal = 1.dp, vertical = 5.dp),
         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
@@ -662,7 +664,7 @@ private fun PlayerToolTile(
                 selected -> BrandBright
                 else -> SubText
             },
-            modifier = Modifier.size(19.dp),
+            modifier = Modifier.size(18.dp),
         )
         Text(
             text = label,
@@ -671,7 +673,7 @@ private fun PlayerToolTile(
                 selected -> BrandBright
                 else -> SubText
             },
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
             maxLines = 1,
         )
     }
@@ -699,6 +701,12 @@ private fun SubtitleList(
         itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
             val active = i == state.currentLine
             val activeDub = active && state.dubbingOn
+            val dubbingScale by rememberInfiniteTransition(label = "dubbingLinePulse").animateFloat(
+                initialValue = 1f,
+                targetValue = if (activeDub) 1.025f else 1f,
+                animationSpec = infiniteRepeatable(animation = tween(850), repeatMode = RepeatMode.Reverse),
+                label = "dubbingLineScale",
+            )
             val translatedText = line.zh
                 ?.let { SubtitleParsers.cleanTranslatedText(it) }
                 ?.takeIf { it.isNotBlank() }
@@ -751,7 +759,10 @@ private fun SubtitleList(
                         },
                     ),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().graphicsLayer {
+                        scaleX = dubbingScale
+                        scaleY = dubbingScale
+                    },
                 )
                 if (active) {
                     Spacer(Modifier.height(7.dp))

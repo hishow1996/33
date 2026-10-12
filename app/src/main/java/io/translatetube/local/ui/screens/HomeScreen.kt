@@ -3,6 +3,7 @@ package io.translatetube.local.ui.screens
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -23,7 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -64,10 +65,15 @@ fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
-                Modifier.size(46.dp).clip(RoundedCornerShape(15.dp)).background(Brand),
-                contentAlignment = Alignment.Center
+                Modifier.size(46.dp).clip(RoundedCornerShape(15.dp)).background(Color.White),
+                contentAlignment = Alignment.Center,
             ) {
-                Text("象", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Image(
+                    painter = painterResource(id = io.translatetube.local.R.drawable.splash_logo),
+                    contentDescription = "大象翻译图标",
+                    modifier = Modifier.fillMaxSize().padding(3.dp),
+                    contentScale = ContentScale.Fit,
+                )
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -87,7 +93,8 @@ fun HomeScreen(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = SurfaceDark,
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(20.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
             tonalElevation = 0.dp,
         ) {
             Column(Modifier.padding(16.dp)) {
@@ -253,7 +260,7 @@ private fun VideoRow(
         AsyncImage(
             model = video.thumbUrl?.takeIf { it.isNotBlank() } ?: video.localUri,
             contentDescription = null,
-            modifier = Modifier.width(112.dp).height(66.dp)
+            modifier = Modifier.width(104.dp).height(62.dp)
                 .clip(RoundedCornerShape(10.dp)).background(SurfaceHigh),
             contentScale = ContentScale.Crop,
         )

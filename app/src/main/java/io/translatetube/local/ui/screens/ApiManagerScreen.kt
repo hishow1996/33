@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import io.translatetube.local.data.ApiProfile
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.translate.Crypto
@@ -112,7 +114,10 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 onClick = { setActive(-2L) },
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
-            Text("Google 翻译", color = OnBg, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Google 翻译", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                Text("内置翻译 · 离线语言包可选", color = SubText, style = MaterialTheme.typography.bodySmall)
+            }
             if (activeId == -1L || activeId == -2L) {
                 Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
             }
@@ -127,6 +132,29 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (googleExpanded) item { GoogleTranslateSection() }
+            if (profiles.isEmpty()) {
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(SurfaceDark)
+                            .padding(horizontal = 20.dp, vertical = 22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("还没有 API 配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "也可以直接使用上方的 Google 翻译。",
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinedButton(
+                            onClick = { adding = true },
+                            shape = RoundedCornerShape(11.dp),
+                        ) { Text("添加 API") }
+                    }
+                }
+            }
             items(profiles, key = { it.id }) { p ->
                 Column(
                     Modifier.fillMaxWidth()
@@ -142,8 +170,12 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                             onClick = { if (p.enabled) setActive(p.id) },
                             colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
                         )
-                        Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                        Column(
+                            Modifier.weight(1f).padding(start = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Text(p.name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                            Text(typeLabel(p.type), color = SubText, style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(
                             checked = p.enabled,
@@ -201,6 +233,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     var apiKey by remember {
         mutableStateOf(initial?.let { Crypto.decrypt(it.apiKey) } ?: "")
     }
+    var showApiKey by remember { mutableStateOf(false) }
     var model by remember { mutableStateOf(initial?.model ?: "") }
     var region by remember { mutableStateOf(initial?.region ?: "") }
     var models by remember { mutableStateOf<List<String>?>(null) }
@@ -325,7 +358,11 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             }
             if (needsKey) Labeled("API Key") {
                 OutlinedTextField(
-                    apiKey, { apiKey = it }, Modifier.fillMaxWidth(), singleLine = true,
+                    apiKey,
+                    { apiKey = it },
+                    Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
                     placeholder = {
                         Text(
                             when (type) {
@@ -333,6 +370,12 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                 else -> "API Key（本地加密存储）"
                             }
                         )
+                    },
+                    trailingIcon = {
+                        TextButton(
+                            onClick = { showApiKey = !showApiKey },
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                        ) { Text(if (showApiKey) "隐藏" else "显示") }
                     },
                 )
             }

@@ -79,15 +79,24 @@ fun GoogleTranslateSection() {
         }
     }
 
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceDark).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(7.dp)) {
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(SurfaceDark)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("离线语言包", color = OnBg, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
             val readyCount = states.values.count { it == "ready" }
             Text("${readyCount}/7", color = BrandBright, style = MaterialTheme.typography.labelLarge)
         }
-        Text("下载一次，断网也能翻译。", color = SubText, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "语言包需手动下载；已下载的语言可在无网络时使用。",
+            color = SubText,
+            style = MaterialTheme.typography.bodySmall,
+        )
 
         packs.forEachIndexed { index, pack ->
             val state = states[pack.source] ?: "checking"

@@ -72,15 +72,30 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
 
         Section("模型管理") {
-
-            // —— 配音模型 ——
-            ModelRow(title = "配音模型",
-                state = ttsState, ready = ttsReady, pkgMB = 140,
-                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS })
-            HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
-            ModelRow(title = "语音转写模型",
-                state = asrState, ready = asrReady, pkgMB = 198,
-                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR })
+            Text(
+                if (ttsEngine == "system") "系统 TTS 不需要配音模型；语音转写模型可单独下载。"
+                else "配音模型用于离线合成语音，语音转写模型用于生成字幕。",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            if (ttsEngine == "kokoro") {
+                ModelRow(
+                    title = "配音模型",
+                    state = ttsState,
+                    ready = ttsReady,
+                    pkgMB = 140,
+                    onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS },
+                )
+                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+            }
+            ModelRow(
+                title = "语音转写模型",
+                state = asrState,
+                ready = asrReady,
+                pkgMB = 198,
+                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR },
+            )
         }
 
         // 下载确认弹窗（规格：右侧确定 / 左侧取消，显示包大小）
@@ -120,10 +135,17 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                 prefs.edit().putString("tts_engine", e).apply()
             }
             HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
-            EngineOption("system", "系统 TTS", ttsEngine) { e ->
+            EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
+            Text(
+                if (ttsEngine == "system") "直接使用手机已安装的语音；不会要求下载 Kokoro 配音模型。"
+                else "使用本地 Kokoro 模型生成配音；首次使用前需下载模型。",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+            )
             if (ttsEngine == "kokoro") {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
