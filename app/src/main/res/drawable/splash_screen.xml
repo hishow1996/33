@@ -1,14 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Match the Compose brand splash so the pre-Compose starting window does not flash
-         a separate, smaller launcher icon first. -->
     <item android:drawable="@android:color/white" />
     <item
+        android:drawable="@drawable/elephant_logo"
         android:width="196dp"
         android:height="196dp"
-        android:gravity="center">
-        <item android:drawable="@drawable/elephant_logo" />
-    </item>
+        android:gravity="center" />
     <item
         android:drawable="@drawable/splash_branding"
         android:width="136dp"
