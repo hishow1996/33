@@ -2450,7 +2450,8 @@ class PlaybackService : MediaSessionService() {
                         totalLines = oldLines.size,
                         phase = Phase.ERROR,
                         progress = "",
-                        muteOriginal = false,
+                        // If preflight failed before retiring the old engine, preserve its audio mode.
+                        muteOriginal = if (oldEngineRetired) false else sessionState.muteOriginal,
                         error = "切换人物音色失败：${e.message}",
                     )
                 }
