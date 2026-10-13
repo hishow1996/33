@@ -783,6 +783,9 @@ class DubbingEngine(
     /** Release immediately, then await TTS and AudioTrack disposal before replacing this engine. */
     suspend fun releaseAndJoin() {
         release()
+        // Cache validation runs on IO and may still be finishing a bounded file read after cancel.
+        // Wait for it to exit before a replacement engine uses this video's cache directory.
+        cacheInitJob?.join()
         ttsCloseSignal.await()
         audioCloseSignal.await()
     }
