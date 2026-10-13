@@ -198,9 +198,9 @@ class DubbingEngine(
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
-                            if (generated.sampleRate !in 8_000..192_000 || generated.samples.isEmpty()) {
+                            if (!DubbingPcmValidation.isValidAudio(generated.sampleRate, generated.samples)) {
                                 throw IllegalStateException(
-                                    "所选引擎返回空音频或无效采样率（${generated.sampleRate} Hz）"
+                                    "所选引擎返回静音、无效采样或不支持的采样率（${generated.sampleRate} Hz）"
                                 )
                             }
                             audio = generated
@@ -336,7 +336,17 @@ class DubbingEngine(
                 ) {
                     throw java.io.IOException("PCM 缓存头或长度无效")
                 }
-                sampleCount > 0
+
+                // A non-empty file can still contain only zeroes (or invalid floats). Do not
+                // promote it to "ready" on attach; a translated cue with such a cache must
+                // be queued for synthesis again instead of silently falling back during playback.
+                var hasAudibleSample = false
+                repeat(sampleCount) {
+                    val sample = input.readFloat()
+                    if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
+                    if (DubbingPcmValidation.isAudibleSample(sample)) hasAudibleSample = true
+                }
+                sampleCount > 0 && hasAudibleSample
             }
         } catch (e: Exception) {
             file.delete()
@@ -398,8 +408,8 @@ class DubbingEngine(
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
                 val samples = FloatArray(n) { d.readFloat() }
-                if (samples.any { !it.isFinite() }) {
-                    throw java.io.IOException("PCM 缓存包含无效采样值")
+                if (n > 0 && !DubbingPcmValidation.isValidAudio(sr, samples)) {
+                    throw java.io.IOException("PCM 缓存包含静音或无效音频")
                 }
                 if (n == 0) {
                     readiness.markPrepared(idx, hasAudio = false)
