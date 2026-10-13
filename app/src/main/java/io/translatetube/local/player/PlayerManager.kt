@@ -70,7 +70,18 @@ class PlayerManager(private val ctx: Context) {
                 if (state == Player.STATE_ENDED) onEnded?.invoke()
             }
             override fun onPlayerError(error: PlaybackException) {
-                errorSink.value = error.message ?: "播放错误"
+                var cause: Throwable? = error
+                var detail: String? = null
+                while (cause != null) {
+                    val message = cause.message?.trim().orEmpty()
+                    if (message.isNotEmpty() && !message.equals("Source error", ignoreCase = true)) {
+                        detail = message
+                        break
+                    }
+                    cause = cause.cause
+                }
+                val code = error.errorCodeName
+                errorSink.value = "播放失败（$code）：${detail ?: error.message ?: "播放器无法读取该视频流"}"
             }
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                 // 竖屏/方形视频自适应宽高比，避免黑边或裁切
@@ -155,12 +166,20 @@ class PlayerManager(private val ctx: Context) {
         artworkUrl: String? = null,
     ) {
         errorSink.value = null
-        if (muxed) {
-            setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
+        if (!isValidHttpMediaUrl(videoUrl)) {
+            errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
             return
         }
-        if (videoUrl.isBlank() || audioUrl.isBlank()) {
-            errorSink.value = "该清晰度缺少视频或音频流"
+        if (muxed) {
+            try {
+                setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
+            } catch (e: Exception) {
+                errorSink.value = "无法初始化 YouTube 合并视频流：${e.message ?: e.javaClass.simpleName}"
+            }
+            return
+        }
+        if (!isValidHttpMediaUrl(audioUrl)) {
+            errorSink.value = "该清晰度缺少有效的视频或音频流地址"
             return
         }
         try {
@@ -180,6 +199,12 @@ class PlayerManager(private val ctx: Context) {
             errorSink.value = "无法初始化 ${title.ifEmpty { "YouTube" }} 视频流：${e.message ?: e.javaClass.simpleName}"
         }
     }
+
+    private fun isValidHttpMediaUrl(value: String): Boolean = runCatching {
+        val uri = Uri.parse(value)
+        (uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true)) &&
+            !uri.host.isNullOrBlank()
+    }.getOrDefault(false)
 
     /** 本地文件 / 直链 */
     fun setUriSource(uri: Uri, title: String = "", artist: String = "", artworkUrl: String? = null) {
