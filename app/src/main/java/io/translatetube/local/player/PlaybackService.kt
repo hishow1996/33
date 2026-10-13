@@ -2085,17 +2085,14 @@ class PlaybackService : MediaSessionService() {
      */
     fun autoAssignSpeakers() {
         if (speakerJob?.isActive == true) return
-        if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
-            // Do not initiate local-model work while the user has explicitly selected system TTS.
-            ui.update { it.copy(error = "系统 TTS 使用手机当前音色，不支持逐人物切换音色；普通系统配音不受影响。需要多人物音色时，请手动切换到 Kokoro。") }
-            return
-        }
+        val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("tts_engine", "kokoro") ?: "kokoro"
         val originalLines = ui.value.lines
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
             return
         }
-        if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+        if (selectedTts == "kokoro" && !io.translatetube.local.data.ModelFiles.ttsReady(this)) {
             ui.update { it.copy(error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。") }
             return
         }
@@ -2109,9 +2106,31 @@ class PlaybackService : MediaSessionService() {
         val sessionSourceLang = sessionState.sourceLang
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
+            var pendingTts: TtsEngine? = null
             try {
                 ensureCurrentSession(sessionKey)
-                updateUiForSession(sessionKey) { it.copy(error = null, progress = "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…", phase = Phase.TRANSCRIBING) }
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        error = null,
+                        progress = if (selectedTts == "system") "检查手机可用的中文音色…" else "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…",
+                        phase = Phase.TRANSCRIBING,
+                    )
+                }
+                if (selectedTts == "system") {
+                    val systemTts = makeTts("system") as? io.translatetube.local.tts.SystemTts
+                        ?: throw IllegalStateException("系统 TTS 引擎不可用")
+                    pendingTts = systemTts
+                    if (!systemTts.supportsMultipleChineseVoices) {
+                        updateUiForSession(sessionKey) {
+                            it.copy(
+                                phase = Phase.READY,
+                                progress = "",
+                                error = "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
+                            )
+                        }
+                        return@launch
+                    }
+                }
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
@@ -2212,7 +2231,8 @@ class PlaybackService : MediaSessionService() {
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
-                val tts = makeTts("kokoro")
+                val tts = pendingTts ?: makeTts(selectedTts)
+                pendingTts = null
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2271,6 +2291,8 @@ class PlaybackService : MediaSessionService() {
                         state.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}")
                     } else state
                 }
+            } finally {
+                pendingTts?.close()
             }
         }
     }
