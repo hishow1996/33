@@ -44,7 +44,8 @@ class PlayerManager(private val ctx: Context) {
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
-            if (onTick != null && player.isPlaying) onTick?.invoke(player.currentPosition)
+            // Tick while paused too: keep subtitle highlighting and audio-track state aligned.
+            onTick?.invoke(player.currentPosition)
             mainHandler.postDelayed(this, 100)
         }
     }
@@ -64,6 +65,18 @@ class PlayerManager(private val ctx: Context) {
             override fun onIsPlayingChanged(isPlaying: Boolean) { _isPlaying.value = isPlaying }
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) onEnded?.invoke()
+                onTick?.invoke(player.currentPosition)
+            }
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                // Also handle media-session or controller seeks that bypass PlaybackService.seek().
+                onTick?.invoke(newPosition.positionMs)
+            }
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                onTick?.invoke(player.currentPosition)
             }
             override fun onPlayerError(error: PlaybackException) {
                 errorSink.value = error.message ?: "播放错误"
