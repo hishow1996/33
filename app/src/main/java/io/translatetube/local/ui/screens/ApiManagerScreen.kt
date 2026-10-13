@@ -291,10 +291,19 @@ private fun apiConnectionFailureMessage(profile: ApiProfile, error: Exception): 
     val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
         detail.contains("Function", ignoreCase = true) &&
         detail.contains("Not found for account", ignoreCase = true)
-    return if (functionMissing) {
-        "服务端返回 404：模型列表可访问，但当前模型的推理函数/部署未找到。请改选该服务商中可调用的模型，或请服务商检查后端部署。详情：" + detail
-    } else {
-        "请求当前模型失败：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+    val authModeMismatch = detail.contains("API keys are not supported by this API", ignoreCase = true) ||
+        detail.contains("Expected OAuth2 access token", ignoreCase = true)
+    return when {
+        functionMissing ->
+            "服务端返回 404：模型列表可访问，但当前模型的推理函数/部署未找到。请改选该服务商中可调用的模型，或请服务商检查后端部署。详情：" + detail
+        authModeMismatch && profile.type == "GEMINI" ->
+            "Google 返回 OAuth2 认证错误：请求地址不接受 API Key。已修正 Gemini 的官方地址与认证头；请更新此版本，并确认密钥来自 Google AI Studio、模型 ID 可用。原始响应：" + detail
+        authModeMismatch && profile.type == "GCLOUD" ->
+            "当前 Google 服务接口要求 OAuth2，不能使用 API Key。此应用的 Google 翻译 API 配置走支持 API Key 的 Cloud Translation Basic v2；不要将它配置为 Translation v3 或 Vertex AI 等 OAuth-only 接口。原始响应：" + detail
+        authModeMismatch ->
+            "Google 服务端拒绝了 API Key，当前请求地址很可能要求 OAuth2。请核对服务类型和请求地址，不要把 Vertex AI/Cloud Translation v3 地址当作 Gemini Developer API。原始响应：" + detail
+        else ->
+            "请求当前模型失败：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
     }
 }
 

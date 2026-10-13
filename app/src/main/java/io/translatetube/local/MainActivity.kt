@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             TranslateTubeTheme {
                 var screen by remember { mutableStateOf(Screen.HOME) }
+                var previousScreen by remember { mutableStateOf(Screen.HOME) }
                 val req by playReq
 
                 // 立即展示主界面；启动品牌画面由 Android windowBackground / 系统启动页负责。
@@ -68,16 +69,27 @@ class MainActivity : ComponentActivity() {
                         when (screen) {
                             Screen.HOME -> HomeScreen(
                                 onPlay = { r -> playReq.value = r },
-                                onSettings = { screen = Screen.SETTINGS },
+                                onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
+                                onResumeTask = { taskKey ->
+                                    val request = when {
+                                        taskKey.startsWith("youtube:") -> PlayRequest(videoId = taskKey.removePrefix("youtube:"))
+                                        taskKey.startsWith("local:") -> PlayRequest(localUri = taskKey.removePrefix("local:"))
+                                        else -> null
+                                    }
+                                    if (request != null) {
+                                        playReq.value = request
+                                        screen = Screen.PLAYER
+                                    }
+                                },
                             )
                             Screen.PLAYER -> PlayerScreen(
                                 videoId = req?.videoId,
                                 localUri = req?.localUri?.let(Uri::parse),
                                 onBack = { screen = Screen.HOME },
-                                onGoSettings = { screen = Screen.SETTINGS },
+                                onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
                             )
                             Screen.SETTINGS -> SettingsScreen(
-                                onBack = { screen = Screen.HOME },
+                                onBack = { screen = previousScreen },
                                 onApiManager = { screen = Screen.API },
                             )
                             Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })

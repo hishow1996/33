@@ -244,11 +244,12 @@ class GeminiEngine(
     private val model: String,
     private val baseUrl: String = "https://generativelanguage.googleapis.com",
 ) : TranslationEngine {
+    private val endpointBase = baseUrl.trimEnd('/')
     override val id = "gemini"
     override val displayName = model.ifEmpty { "Gemini" }
 
     override suspend fun listModels(): List<String> {
-        val body = get("$baseUrl/v1beta/models?key=$apiKey", emptyMap())
+        val body = get("$endpointBase/v1beta/models", mapOf("x-goog-api-key" to apiKey))
         val arr = JSONObject(body).optJSONArray("models") ?: return emptyList()
         val out = mutableListOf<String>()
         for (i in 0 until arr.length()) {
@@ -284,8 +285,8 @@ class GeminiEngine(
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$numbered"))))
         )
         val body = post(
-            "$baseUrl/v1beta/models/$model:generateContent?key=$apiKey",
-            emptyMap(),
+            "$endpointBase/v1beta/models/$model:generateContent",
+            mapOf("x-goog-api-key" to apiKey),
             payload.toString(),
         )
         val text = JSONObject(body).getJSONArray("candidates").getJSONObject(0)
@@ -408,7 +409,9 @@ object EngineFactory {
         val key = Crypto.decrypt(p.apiKey)
         return when (p.type) {
             "OPENAI" -> OpenAiCompatEngine(p.baseUrl, key, p.model)
-            "GEMINI" -> GeminiEngine(key, p.model, p.baseUrl.ifEmpty { "https://generativelanguage.googleapis.com" })
+            // Gemini does not expose a Base URL field in the UI. Ignore stale values from older
+            // profiles so a Gemini API key is never sent to an OAuth-only Vertex/custom endpoint.
+            "GEMINI" -> GeminiEngine(key, p.model, "https://generativelanguage.googleapis.com")
             "GCLOUD" -> GoogleCloudEngine(key)
             else -> throw IllegalStateException("未知类型 ${p.type}")
         }

@@ -32,6 +32,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.translatetube.local.PlayRequest
+import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.Phase
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.subs.SubtitleParsers
@@ -43,7 +45,9 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     onPlay: (PlayRequest) -> Unit,
     onSettings: () -> Unit,
+    onResumeTask: (String) -> Unit = {},
 ) {
+    val playback by PlaybackService.ui.collectAsState()
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val db = remember { AppDatabase.get(ctx) }
     val videos by db.videoDao().all().collectAsState(initial = emptyList())
@@ -100,6 +104,57 @@ fun HomeScreen(
             ) {
                 Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.Settings, contentDescription = "设置", tint = SubText)
+                }
+            }
+        }
+
+        // 当前任务由播放服务持有。离开解析页后，主页仍提供一个明确入口返回该任务。
+        if (playback.key.isNotBlank() && playback.phase != Phase.IDLE) {
+            val taskTitle = when (playback.phase) {
+                Phase.ERROR -> "查看处理失败的任务"
+                Phase.READY -> "继续观看这个视频"
+                Phase.TRANSLATING -> "继续视频翻译"
+                Phase.SYNTHESIZING -> "继续生成中文配音"
+                Phase.TRANSCRIBING -> "继续识别视频语音"
+                Phase.DOWNLOADING_AUDIO -> "继续准备视频音轨"
+                else -> "继续解析视频"
+            }
+            val taskDetail = when (playback.phase) {
+                Phase.ERROR -> playback.error?.takeIf { it.isNotBlank() } ?: "上次处理未完成，点击查看详情"
+                else -> playback.progress.takeIf { it.isNotBlank() } ?: when (playback.phase) {
+                    Phase.READY -> "视频与字幕已准备好"
+                    else -> "处理任务仍保存在播放服务中"
+                }
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
+                onClick = { onResumeTask(playback.key) },
+                color = Color(0xFFE6EFFF),
+                shape = RoundedCornerShape(18.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD4E2FA)),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)).background(Color.White),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = BrandBright)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(taskTitle, color = OnBg, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            taskDetail,
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Icon(Icons.Filled.ArrowForwardIos, contentDescription = "返回当前任务", tint = BrandBright, modifier = Modifier.size(16.dp))
                 }
             }
         }

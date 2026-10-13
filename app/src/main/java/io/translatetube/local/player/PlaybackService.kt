@@ -301,7 +301,13 @@ class PlaybackService : MediaSessionService() {
     }
 
     // ============ 管线入口 ============
-    fun open(key: String, videoId: String?, localUri: Uri?, importedLines: List<SubLine>? = null) {
+    fun open(
+        key: String,
+        videoId: String?,
+        localUri: Uri?,
+        importedLines: List<SubLine>? = null,
+        resumeState: PlayerUiState? = null,
+    ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
                 it.copy(phase = Phase.ERROR, progress = "", error = it.error ?: "播放器服务未初始化成功，请返回主页后重试")
@@ -314,8 +320,8 @@ class PlaybackService : MediaSessionService() {
         dubbing?.release(); dubbing = null
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.importedLines = importedLines
-        // A manual retry starts with a fresh extractor result instead of reusing stale stream metadata.
-        if (videoId != null) NewPipeRepo.invalidate(videoId)
+        // Preserve parsed metadata/subtitles when resuming a translation failure.
+        if (videoId != null && resumeState == null) NewPipeRepo.invalidate(videoId)
         qualityJob?.cancel()
         qualitySources = emptyList()
         qualityAudioUrl = ""
@@ -327,11 +333,21 @@ class PlaybackService : MediaSessionService() {
             else -> "未知配音引擎"
         }
         ui.value = PlayerUiState(
-            phase = Phase.PARSING, key = key, progress = "解析中…",
-            ttsEngineName = configuredTtsName
+            phase = if (resumeState != null) Phase.TRANSLATING else Phase.PARSING,
+            key = key,
+            progress = if (resumeState != null) "恢复已获取的字幕，继续未完成的翻译…" else "解析中…",
+            title = resumeState?.title.orEmpty(),
+            channel = resumeState?.channel.orEmpty(),
+            thumbUrl = resumeState?.thumbUrl,
+            durationMs = resumeState?.durationMs ?: 0L,
+            lines = resumeState?.lines ?: emptyList(),
+            totalLines = resumeState?.totalLines ?: 0,
+            sourceLang = resumeState?.sourceLang.orEmpty(),
+            engineName = resumeState?.engineName.orEmpty(),
+            ttsEngineName = configuredTtsName,
         )
         pm.pause()
-        prepJob = scope.launch { runPipeline(key, videoId, localUri) }
+        prepJob = scope.launch { runPipeline(key, videoId, localUri, resumeState) }
     }
 
     /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
@@ -457,30 +473,50 @@ class PlaybackService : MediaSessionService() {
                     validTranslations++
                 }
             }
-            !hasProgressPlaceholder && validTranslations > rows.length() / 2
+            // Partial caches are intentional checkpoints. Retry should only translate missing rows.
+            !hasProgressPlaceholder && validTranslations > 0
         }
     } catch (e: Exception) {
         android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON", e)
         false
     }
 
-    private suspend fun runPipeline(key: String, videoId: String?, localUri: Uri?) {
+    private suspend fun runPipeline(
+        key: String,
+        videoId: String?,
+        localUri: Uri?,
+        resumeState: PlayerUiState? = null,
+    ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         try {
             var meta = VideoEntity(
-                key = key, videoId = videoId, localUri = localUri?.toString(), title = "", channel = "",
-                durationSec = 0, thumbUrl = null, sourceType = if (videoId != null) SourceType.YOUTUBE else SourceType.LOCAL,
+                key = key, videoId = videoId, localUri = localUri?.toString(),
+                title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
+                durationSec = (resumeState?.durationMs ?: 0L) / 1000,
+                thumbUrl = resumeState?.thumbUrl,
+                sourceType = if (videoId != null) SourceType.YOUTUBE else SourceType.LOCAL,
                 addedAt = System.currentTimeMillis(), lastPlayedAt = System.currentTimeMillis(),
             )
 
             // ---- 1. 元信息 ----
-            var srcLang = ""
-            if (videoId != null) {
+            var srcLang = resumeState?.sourceLang.orEmpty()
+            if (resumeState != null) {
+                // Video metadata and original subtitle rows already exist in memory; do not resolve
+                // the YouTube page or fetch subtitles again for a translation-only retry.
+                ui.update {
+                    it.copy(
+                        phase = Phase.TRANSLATING,
+                        progress = "继续翻译尚未完成的字幕…",
+                        sourceLang = srcLang,
+                        error = null,
+                    )
+                }
+            } else if (videoId != null) {
                 val m = NewPipeRepo.resolve(videoId)
                 meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
                 ui.update { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
-            } else {
+            } else if (resumeState == null) {
                 localUri?.let { u ->
                     // 本地视频：取真实标题/时长
                     var title = u.lastPathSegment ?: "本地视频"
@@ -507,7 +543,7 @@ class PlaybackService : MediaSessionService() {
             // 明确显示字幕获取/读取阶段，不能让流程从分析视频直接跳到翻译。
             ui.update { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
             // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
-            val storedTranslationCache = db.subtitleCacheDao().get(translationCacheKey)
+            val storedTranslationCache = if (resumeState == null) db.subtitleCacheDao().get(translationCacheKey) else null
             // Older builds may have persisted a progress placeholder (for example, "正在翻译")
             // as every row's Chinese text. Never trust such cache entries: retranslate from the
             // cached original subtitles instead of displaying the placeholder as completed output.
@@ -518,11 +554,11 @@ class PlaybackService : MediaSessionService() {
                     "Ignoring invalid/stale translation cache for $key; will translate the source subtitles again"
                 )
             }
-            val sourceCached = if (cached == null && videoId != null && importedLines.isNullOrEmpty()) {
+            val sourceCached = if (resumeState == null && cached == null && videoId != null && importedLines.isNullOrEmpty()) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
-            var lines: List<SubLine>? = null
-            if (cached == null && importedLines.isNullOrEmpty() && videoId != null) {
+            var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
+            if (resumeState == null && cached == null && importedLines.isNullOrEmpty() && videoId != null) {
                 if (sourceCached != null) {
                     val sourceArr = org.json.JSONArray(sourceCached.linesJson)
                     lines = (0 until sourceArr.length()).map { i ->
@@ -615,6 +651,18 @@ class PlaybackService : MediaSessionService() {
                 }
                 lines = restored
                 srcLang = cached.srcLang
+                if (!isChineseLanguage(srcLang) && restored.any { line ->
+                    line.text.isNotBlank() && SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
+                }) {
+                    ui.update {
+                        it.copy(
+                            phase = Phase.TRANSLATING,
+                            sourceLang = srcLang,
+                            progress = "继续翻译缓存中尚未完成的字幕…",
+                        )
+                    }
+                    lines = translateLines(key, restored, srcLang)
+                }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
@@ -915,28 +963,34 @@ class PlaybackService : MediaSessionService() {
             engine = MlKitEngine()
             engineName = "本地引擎（离线）"
         }
+        val pendingIndices = lines.indices.filter { index ->
+            lines[index].text.isNotBlank() && SubtitleParsers.cleanTranslatedText(lines[index].zh).isNullOrBlank()
+        }
+        var completed = lines.indices.count { index ->
+            lines[index].text.isBlank() || !SubtitleParsers.cleanTranslatedText(lines[index].zh).isNullOrBlank()
+        }
         ui.update {
             it.copy(
                 engineName = engineName,
+                sourceLang = srcLang,
                 lines = updatedLines,
                 totalLines = updatedLines.size,
-                progress = "翻译中 0/${updatedLines.size} 行",
+                progress = "翻译中 ${completed}/${updatedLines.size} 行",
             )
         }
 
         val src = if (srcLang == "auto") "" else srcLang
         val batchSize = 10
-        var completed = 0
-        for (start in lines.indices step batchSize) {
+        val translationCacheKey = "${key}|zh|${activeId}"
+        for (batchIndices in pendingIndices.chunked(batchSize)) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            val end = minOf(start + batchSize, lines.size)
-            val batch = plain.subList(start, end)
+            val batch = batchIndices.map { plain[it] }
             var translated: List<String>? = null
             try {
                 translated = engine!!.translate(batch, src, tgt)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", e)
+                android.util.Log.w("PlaybackService", "Translation batch failed for rows ${batchIndices.firstOrNull()}..${batchIndices.lastOrNull()}", e)
                 // Distinguish API provider failures from Google offline language-pack errors.
                 val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                 val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
@@ -966,19 +1020,34 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 updatedLines = updatedLines.mapIndexed { index, line ->
-                    if (index in start until end) {
-                        line.copy(zh = cleanedBatch.getOrNull(index - start))
-                    } else line
+                    val batchPosition = batchIndices.indexOf(index)
+                    if (batchPosition >= 0) line.copy(zh = cleanedBatch.getOrNull(batchPosition)) else line
                 }
             }
-            completed = end
+            completed += batchIndices.size
             ui.update {
                 it.copy(
                     lines = updatedLines,
                     totalLines = updatedLines.size,
-                    progress = "翻译中 $completed/${updatedLines.size} 行",
+                    sourceLang = srcLang,
+                    progress = "翻译中 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )
             }
+            // Persist a checkpoint after each batch; retry keeps successful translations and fills only gaps.
+            val cacheRows = org.json.JSONArray()
+            for (line in updatedLines) cacheRows.put(
+                org.json.JSONObject()
+                    .put("s", line.startMs)
+                    .put("e", line.endMs)
+                    .put("t", line.text)
+                    .put("zh", line.zh ?: "")
+                    .put("sp", line.speakerId)
+            )
+            db.subtitleCacheDao().put(
+                io.translatetube.local.data.SubtitleCacheEntity(
+                    translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis()
+                )
+            )
         }
         return updatedLines
     }

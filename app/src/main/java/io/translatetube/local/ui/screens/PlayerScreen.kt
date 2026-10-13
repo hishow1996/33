@@ -89,11 +89,26 @@ fun PlayerScreen(
     var retryNonce by remember { mutableStateOf(0) }
     var handledRetryNonce by remember { mutableStateOf(0) }
 
+    fun retryCurrentTask() {
+        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+        val current = PlaybackService.ui.value
+        val service = PlaybackService.instance
+        val canResumeTranslation = current.key == key &&
+            current.phase == Phase.ERROR &&
+            current.error?.contains("翻译失败", ignoreCase = true) == true &&
+            current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
+        if (canResumeTranslation && service?.isReady == true) {
+            service.open(key, videoId, localUri, resumeState = current)
+        } else {
+            retryNonce++
+        }
+    }
+
     // 打开视频：先确保服务在跑，再下发任务
     LaunchedEffect(videoId, localUri, retryNonce) {
         val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
         val retryRequested = retryNonce != handledRetryNonce
-        if (state.key != key || retryRequested) {
+        if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
             if (retryRequested) handledRetryNonce = retryNonce
             try {
                 var s = PlaybackService.instance
@@ -128,7 +143,14 @@ fun PlayerScreen(
                         )
                     }
                 } else {
-                    s.open(key, videoId, localUri)
+                    val failedState = PlaybackService.ui.value
+                    val resumeTranslation = if (
+                        retryRequested && failedState.key == key &&
+                        failedState.phase == Phase.ERROR &&
+                        failedState.error?.contains("翻译失败", ignoreCase = true) == true &&
+                        failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
+                    ) failedState else null
+                    s.open(key, videoId, localUri, resumeState = resumeTranslation)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
@@ -241,7 +263,7 @@ fun PlayerScreen(
             VideoParsingPage(
                 state = state,
                 onBack = { exitFloating(); PlaybackService.instance?.saveProgress(); onBack() },
-                onRetry = { retryNonce++ },
+                onRetry = { retryCurrentTask() },
                 onImportSubtitles = { subPicker.launch(arrayOf("*/*")) },
             )
         } else {
@@ -404,7 +426,7 @@ fun PlayerScreen(
                                 Spacer(Modifier.height(6.dp))
                                 Text(state.error ?: "", color = SubText, style = MaterialTheme.typography.bodySmall)
                                 Spacer(Modifier.height(8.dp))
-                                TextButton(onClick = { retryNonce++ }) {
+                                TextButton(onClick = { retryCurrentTask() }) {
                                     Text("重试", color = BrandBright)
                                 }
                             } else {
