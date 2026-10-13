@@ -197,7 +197,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
-                        .background(Color.White)
+                        .background(if (isGoogleActive) Color(0xFFF3F7FF) else Color.White)
                         .clickable { setActive(-1L) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -255,7 +255,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
-                        .background(Color.White)
+                        .background(if (isGeminiActive) Color(0xFFF3F7FF) else Color.White)
                         .clickable { setActive(EngineFactory.ID_FREE_GEMINI) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -329,7 +329,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
-                        .background(Color.White)
+                        .background(if (isDeepSeekActive) Color(0xFFF3F7FF) else Color.White)
                         .clickable { setActive(EngineFactory.ID_FREE_DEEPSEEK) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -403,7 +403,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
-                        .background(Color.White)
+                        .background(if (selectedProfile) Color(0xFFF3F7FF) else Color.White)
                         .clickable(enabled = p.enabled) { setActive(p.id) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
