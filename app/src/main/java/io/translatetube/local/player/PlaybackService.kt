@@ -1693,13 +1693,23 @@ class PlaybackService : MediaSessionService() {
     }
 
     fun toggleDub() {
-        val nowOn = !ui.value.dubbingOn
-        ui.update { it.copy(dubbingOn = nowOn) }
-        if (!nowOn) {
+        val current = ui.value
+        val next = DubbingPlaybackPolicy.toggle(current.dubbingOn, current.muteOriginal)
+        ui.update {
+            it.copy(
+                dubbingOn = next.dubbingOn,
+                // “关闭配音”意味着回到正常原声播放，不能继续沿用“配音时静音原声”。
+                muteOriginal = next.muteOriginal,
+            )
+        }
+        if (!next.dubbingOn) {
+            // 先使配音轨失效，再恢复原声；避免留下 AudioTrack 继续播或视频无声。
             dubbing?.stop()
-            pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+            pm.originalVolume = 1f
         } else {
             lastLineIdx = Int.MIN_VALUE
+            // 切回配音时立刻同步当前时间轴，tick 会在下一次轮询中恢复对应字幕行。
+            dubbing?.stop()
         }
     }
     fun toggleMute() {
@@ -1717,7 +1727,12 @@ class PlaybackService : MediaSessionService() {
             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, nowOnly)
             .build()
     }
-    fun seek(ms: Long) { pm.seekTo(ms); lastLineIdx = Int.MIN_VALUE; dubbing?.stop() }
+    fun seek(ms: Long) {
+        // 先停止旧时间点的配音，再 seek；seekTo 的即时 tick 可以直接启动新时间点的正确字幕行。
+        dubbing?.stop()
+        lastLineIdx = Int.MIN_VALUE
+        pm.seekTo(ms)
+    }
     fun playPause() { if (pm.isPlaying.value) pm.pause() else pm.play() }
 
     /** 记录观看进度（退出播放页时调用，历史列表续看用） */
