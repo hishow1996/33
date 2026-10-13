@@ -127,6 +127,8 @@ class DubbingEngine(
                     for (attempt in 0..1) {
                         try {
                             val generated = tts!!.synth(text, speed, line.speakerId)
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
                             if (generated.sampleRate !in 8_000..192_000 || generated.samples.isEmpty()) {
                                 throw IllegalStateException(
                                     "所选引擎返回空音频或无效采样率（${generated.sampleRate} Hz）"
@@ -150,6 +152,8 @@ class DubbingEngine(
                     }
                     val readyAudio = audio ?: throw (lastFailure
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
                     writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
                     noAudio.remove(idx)
                     synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
@@ -157,6 +161,8 @@ class DubbingEngine(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
                     // After one retry, publish the failure and allow video playback to continue.
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
@@ -217,8 +223,11 @@ class DubbingEngine(
     /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
     private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
         val target = cacheFile(idx)
-        val temp = File(cacheDir, target.name + ".tmp")
-        temp.delete()
+        // Separate temp files keep overlapping sessions from sharing one partial-write file.
+        val temp = File(
+            cacheDir,
+            target.name.removeSuffix(".pcm") + ".${Thread.currentThread().id}.${System.nanoTime()}.pcm.tmp",
+        )
         java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
             out.writeInt(sampleRate)
             out.writeInt(samples.size)
@@ -229,11 +238,13 @@ class DubbingEngine(
             temp.delete()
             throw java.io.IOException("PCM 缓存写入不完整")
         }
-        if (target.exists() && !target.delete()) {
-            temp.delete()
-            throw java.io.IOException("无法替换 PCM 缓存")
-        }
         if (!temp.renameTo(target)) {
+            // A concurrent session may have installed the exact same cache identity first.
+            // Reuse that fully validated result instead of reporting an avoidable TTS failure.
+            if (validCache(target)) {
+                temp.delete()
+                return
+            }
             temp.delete()
             throw java.io.IOException("无法安装 PCM 缓存")
         }

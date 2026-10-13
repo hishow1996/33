@@ -2049,11 +2049,21 @@ class PlaybackService : MediaSessionService() {
     /** 记录观看进度（退出播放页时调用，历史列表续看用） */
     fun saveProgress() {
         val key = videoKey
-        if (key.isEmpty()) return
+        if (key.isEmpty() || !::pm.isInitialized) return
         scope.launch {
             try {
-                AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, pm.position() / 1000)
-            } catch (_: Exception) {}
+                // ExoPlayer belongs to the main application looper; capture its position there,
+                // then persist history without touching the player from this background coroutine.
+                val watchedSec = withContext(Dispatchers.Main) {
+                    if (::pm.isInitialized) pm.position() / 1000L else null
+                } ?: return@launch
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, watchedSec)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("PlaybackService", "Unable to persist watch progress for $key", e)
+            }
         }
     }
     fun setSpeed(s: Float) { pm.speed(s) }
