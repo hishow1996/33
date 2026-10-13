@@ -438,6 +438,7 @@ class PlaybackService : MediaSessionService() {
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision++
         speakerRebuildJob?.cancel(); speakerRebuildJob = null
+        ui.update { it.copy(speakerRebuildInProgress = false) }
         dubCollectJob?.cancel()
         dubCollectJob = null
         dubbing?.release()
@@ -520,6 +521,7 @@ class PlaybackService : MediaSessionService() {
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision++
         speakerRebuildJob?.cancel(); speakerRebuildJob = null
+        ui.update { it.copy(speakerRebuildInProgress = false) }
         dubCollectJob?.cancel(); dubCollectJob = null
         // 导入新字幕前先停止并释放旧配音引擎，避免旧任务与新字幕共用同一缓存目录。
         dubbing?.release()
@@ -1572,16 +1574,16 @@ class PlaybackService : MediaSessionService() {
             )
         }
 
-        val job = scope.launch {
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var candidate: DubbingEngine? = null
             try {
                 if (expectedVideoKey != videoKey) return@launch
                 if (!io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
                     throw IllegalStateException("Kokoro 配音模型尚未就绪")
                 }
-                val tts = makeTts("kokoro")
                 val created = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
                 candidate = created
+                val tts = makeTts("kokoro")
                 created.onSynthesisError = { detail ->
                     ui.update { state ->
                         if (state.key == expectedVideoKey && speakerRebuildRevision == revision) {
@@ -1653,6 +1655,7 @@ class PlaybackService : MediaSessionService() {
             }
         }
         speakerRebuildJob = job
+        job.start()
         return job
     }
 
