@@ -459,17 +459,24 @@ class PlaybackService : MediaSessionService() {
 
     /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
     fun selectQuality(label: String) {
+        val sessionKey = ui.value.key
+        val sessionVideoId = videoId ?: return
         val source = qualitySources.firstOrNull { it.label == label } ?: return
-        if (!::pm.isInitialized || source.label == ui.value.selectedQuality) return
+        if (!::pm.isInitialized || sessionKey.isBlank() || source.label == ui.value.selectedQuality) return
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
         qualityJob?.cancel()
         qualityJob = scope.launch {
+            ensureCurrentSession(sessionKey)
+            if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
             val positionMs = withContext(Dispatchers.Main) { pm.position() }
             val wasPlaying = withContext(Dispatchers.Main) { pm.player.isPlaying }
-            ui.update { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
+            updateUiForSession(sessionKey) { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
             try {
+                ensureCurrentSession(sessionKey)
                 withContext(Dispatchers.Main) {
+                    ensureCurrentSession(sessionKey)
+                    if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
                     pm.setYouTubeQuality(
                         videoUrl = source.url,
                         audioUrl = qualityAudioUrl,
@@ -480,13 +487,13 @@ class PlaybackService : MediaSessionService() {
                     )
                     pm.seekTo(positionMs)
                     if (wasPlaying) pm.play() else pm.pause()
-                    ui.update { it.copy(selectedQuality = source.label, progress = "") }
+                    updateUiForSession(sessionKey) { it.copy(selectedQuality = source.label, progress = "") }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         progress = "",
                         error = "切换清晰度失败：${e.message ?: e.javaClass.simpleName}",
@@ -498,9 +505,13 @@ class PlaybackService : MediaSessionService() {
 
     /** 将选中的 YouTube 字幕轨保存到用户指定位置；下载失败只更新提示，不打断播放任务。 */
     fun downloadSubtitle(track: SubtitleTrackOption, outputUri: Uri) {
+        val sessionKey = ui.value.key
+        val sessionVideoId = videoId
         scope.launch {
-            ui.update { it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…") }
+            ensureCurrentSession(sessionKey)
+            updateUiForSession(sessionKey) { it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…") }
             try {
+                if (sessionVideoId != videoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
                 val content = NewPipeRepo.downloadSubtitleContent(track)
                 val cueCount = SubtitleParsers.parseAuto(content).size
                 if (cueCount == 0) throw IllegalStateException("字幕文件没有可用的时间轴")
@@ -509,7 +520,7 @@ class PlaybackService : MediaSessionService() {
                         ?: throw IllegalStateException("无法写入所选文件")
                     output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
                 }
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         subtitleTrackStatus = "已保存 " + track.languageTag + " 字幕（" + cueCount +
                             " 条）。翻译时请保留时间戳，完成后可上传并直接配音。",
@@ -519,7 +530,7 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.w("PlaybackService", "Subtitle download failed", e)
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
                 }
             }
