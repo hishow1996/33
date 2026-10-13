@@ -119,11 +119,10 @@ class PlaybackService : MediaSessionService() {
     private suspend fun awaitRetiredDubbingEngines() {
         while (true) {
             val previous = retiringDubbingEngines.firstOrNull() ?: return
-            try {
-                previous.releaseAndJoin()
-            } finally {
-                retiringDubbingEngines.remove(previous)
-            }
+            // If this pipeline is canceled while waiting, keep the retired engine registered so
+            // the next pipeline cannot initialize another TTS beside an active native call.
+            previous.releaseAndJoin()
+            retiringDubbingEngines.remove(previous)
         }
     }
     private var prepJob: Job? = null
@@ -1274,6 +1273,8 @@ class PlaybackService : MediaSessionService() {
                         dubCollectJob = scope.launch {
                             d.preparedUntil.collect { n -> updateUiForSession(key) { it.copy(preparedUntil = n) } }
                         }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
                         val reason = e.message ?: e.javaClass.simpleName
@@ -1289,7 +1290,9 @@ class PlaybackService : MediaSessionService() {
                                 error = null
                             )
                         }
-                        withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                        withContext(Dispatchers.Main) {
+                            if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                        }
                     }
                 } else {
                     val message = when (selectedTts) {
@@ -1304,7 +1307,9 @@ class PlaybackService : MediaSessionService() {
                             noModelHint = message,
                         )
                     }
-                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                    withContext(Dispatchers.Main) {
+                            if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                        }
                 }
             }
             // TTS 在后台按字幕顺序预合成。预热最前面的可朗读行后再启动视频，
