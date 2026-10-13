@@ -1444,7 +1444,7 @@ class PlaybackService : MediaSessionService() {
                 }
                 if (!qualityInstalled) return
                 // Prefer 360p, but verify it reaches STATE_READY before continuing. If that
-                // stream is unavailable, try up to two nearby resolutions before failing the video.
+                // stream is unavailable, try up to four nearby resolutions before failing the video.
                 val defaultQuality = candidates.firstOrNull { it.height == 360 }
                     ?: candidates.minByOrNull { kotlin.math.abs(it.height - 360) }
                     ?: candidates.first()
