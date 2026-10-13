@@ -1087,7 +1087,11 @@ class PlaybackService : MediaSessionService() {
                 val audioFile = if (videoId != null) {
                     val audioStream = NewPipeRepo.audioForAsr(videoId)
                     if (!isCurrentPlaybackSession(key, sessionRevision)) return
-                    downloadAudio(audioStream?.content ?: throw IllegalStateException("无法获取音频流")).also { transientAudio = it }
+                    downloadAudio(
+                        audioStream?.content ?: throw IllegalStateException("无法获取音频流"),
+                        key,
+                        sessionRevision,
+                    ).also { transientAudio = it }
                 } else {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -1520,10 +1524,10 @@ class PlaybackService : MediaSessionService() {
         key: String,
         lines: List<SubLine>,
         srcLang: String,
-        sessionRevision: Long? = null,
+        sessionRevision: Long,
     ): List<SubLine> {
         fun requireCurrentSession() {
-            if (sessionRevision != null && !isCurrentPlaybackSession(key, sessionRevision)) {
+            if (!isCurrentPlaybackSession(key, sessionRevision)) {
                 throw kotlinx.coroutines.CancellationException("Playback session changed during translation")
             }
         }
@@ -1565,7 +1569,7 @@ class PlaybackService : MediaSessionService() {
         var completed = lines.indices.count { index ->
             lines[index].text.isBlank() || !SubtitleParsers.cleanTranslatedText(lines[index].zh).isNullOrBlank()
         }
-        ui.update {
+        updateUiForSession(key, sessionRevision) {
             it.copy(
                 engineName = engineName,
                 sourceLang = srcLang,
@@ -1636,8 +1640,11 @@ class PlaybackService : MediaSessionService() {
                     if (batchPosition >= 0) line.copy(zh = cleanedBatch.getOrNull(batchPosition)) else line
                 }
             }
-            completed += batchIndices.size
-            ui.update {
+            completed = updatedLines.indices.count { index ->
+                updatedLines[index].text.isBlank() ||
+                    !SubtitleParsers.cleanTranslatedText(updatedLines[index].zh).isNullOrBlank()
+            }
+            updateUiForSession(key, sessionRevision) {
                 it.copy(
                     lines = updatedLines,
                     totalLines = updatedLines.size,
@@ -1665,7 +1672,11 @@ class PlaybackService : MediaSessionService() {
         return updatedLines
     }
 
-        private suspend fun downloadAudio(url: String): File {
+        private suspend fun downloadAudio(
+        url: String,
+        sessionKey: String,
+        sessionRevision: Long,
+    ): File {
         val f = File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         val maxBytes = 512L * 1024 * 1024
         val client = OkHttpClient.Builder()
@@ -1692,7 +1703,9 @@ class PlaybackService : MediaSessionService() {
                                 if (got > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
                                 out.write(buf, 0, n)
                                 if (total > 0) {
-                                    ui.update { it.copy(progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))) }
+                                    updateUiForSession(sessionKey, sessionRevision) {
+                                        it.copy(progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f)))
+                                    }
                                 }
                             }
                             out.flush()
@@ -1875,6 +1888,7 @@ class PlaybackService : MediaSessionService() {
         }
         val originalLines = ui.value.lines
         val expectedVideoKey = videoKey
+        val expectedSessionRevision = playbackSessionRevision
         val expectedVideoId = videoId
         val expectedLocalUri = localUri
         val recognitionRevision = speakerRebuildRevision.get()
@@ -1904,7 +1918,8 @@ class PlaybackService : MediaSessionService() {
                     if (expectedVideoId != null) {
                         val stream = NewPipeRepo.audioForAsr(expectedVideoId)
                             ?: throw IllegalStateException("无法获取当前视频的音频流")
-                        tempAudio = downloadAudio(stream.content)
+                        if (!isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision)) return@launch
+                        tempAudio = downloadAudio(stream.content, expectedVideoKey, expectedSessionRevision)
                         sourceFile = tempAudio
                         sourceUri = null
                     } else {
