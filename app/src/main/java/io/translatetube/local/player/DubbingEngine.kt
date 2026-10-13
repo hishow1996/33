@@ -74,11 +74,16 @@ class DubbingEngine(
         pending.clear()
         // 清内存缓存：防止旧会话同 idx 行的音频串台。
         synchronized(mem) { mem.clear() }
-        // 译文或音色变化会生成新的缓存名，并清除本视频已失效的旧 PCM，避免旧配音串台及缓存无限累积。
+        // 译文或音色变化会生成新的缓存名。删除已失效的成品缓存，但保留活跃会话
+        // 正在写入的临时文件；只清理超过一小时的残留临时文件，避免切换时互相误删。
         val expectedCacheNames = lines.indices.map { cacheFile(it).name }.toSet()
-        cacheDir.listFiles()?.filter {
-            (it.name.endsWith(".pcm") || it.name.endsWith(".pcm.tmp")) &&
-                it.name !in expectedCacheNames
+        val staleTempBefore = System.currentTimeMillis() - 60L * 60L * 1000L
+        cacheDir.listFiles()?.filter { file ->
+            when {
+                file.name.endsWith(".pcm") -> file.name !in expectedCacheNames
+                file.name.endsWith(".pcm.tmp") -> file.lastModified() <= staleTempBefore
+                else -> false
+            }
         }?.forEach { it.delete() }
         // 从未缓存的最早行开始排
         for (i in lines.indices) {
