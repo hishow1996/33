@@ -88,6 +88,72 @@ private data class YouTubeQualitySource(
     val muxed: Boolean,
 )
 
+private data class YouTubeQualityInventory(
+    val candidates: List<YouTubeQualitySource>,
+    val audioUrl: String,
+)
+
+/** Build only playable choices; adaptive video-only tracks require a separate audio URL. */
+private fun buildYouTubeQualityInventory(
+    info: org.schabi.newpipe.extractor.stream.StreamInfo,
+): YouTubeQualityInventory {
+    val audioStreams: List<org.schabi.newpipe.extractor.stream.AudioStream> = info.audioStreams
+    val rawCandidates = (info.videoStreams + info.videoOnlyStreams)
+        .filter { v -> v.height in 1..2160 && v.content.isNotBlank() }
+        .distinctBy { v -> "${v.height}|${v.content}|${v.isVideoOnly}" }
+        .groupBy { it.height }
+        .mapNotNull { (height, streams) ->
+            val chosen = streams.sortedWith(
+                compareBy<org.schabi.newpipe.extractor.stream.VideoStream> { v ->
+                    val mp4 = v.format?.suffix?.equals("mp4", ignoreCase = true) == true
+                    when {
+                        !v.isVideoOnly && mp4 -> 0
+                        !v.isVideoOnly -> 1
+                        mp4 -> 2
+                        else -> 3
+                    }
+                }.thenByDescending { v -> v.bitrate }
+            ).firstOrNull()
+            chosen?.let {
+                YouTubeQualitySource(
+                    label = "${height}p",
+                    height = height,
+                    url = it.content,
+                    muxed = !it.isVideoOnly,
+                )
+            }
+        }
+        .sortedByDescending { it.height }
+
+    val audioUrl = audioStreams
+        .sortedByDescending { it.averageBitrate }
+        .firstOrNull { it.content.isNotBlank() }?.content
+        ?: audioStreams.firstOrNull { it.content.isNotBlank() }?.content
+        ?: ""
+
+    // Never advertise a video-only resolution when the extractor did not supply an audio track.
+    val playableCandidates = if (audioUrl.isBlank()) rawCandidates.filter { it.muxed } else rawCandidates
+    if (playableCandidates.isEmpty()) {
+        throw IllegalStateException(
+            if (rawCandidates.isEmpty()) {
+                "YouTube 未提供可播放的视频流。请检查网络/VPN 后重试"
+            } else {
+                "YouTube 未返回独立音频流或带声音的视频流，请稍后重试"
+            }
+        )
+    }
+
+    android.util.Log.i(
+        "PlaybackService",
+        "YouTube stream inventory: muxed=${info.videoStreams.size}" +
+            ", videoOnly=${info.videoOnlyStreams.size}" +
+            ", audio=${audioStreams.size}" +
+            ", playableQualities=${playableCandidates.map { it.label }}",
+    )
+    return YouTubeQualityInventory(playableCandidates, audioUrl)
+}
+
+
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var pm: PlayerManager
@@ -1203,59 +1269,9 @@ class PlaybackService : MediaSessionService() {
             if (videoId != null) {
                 val info = NewPipeRepo.streams(videoId)
                 if (!isCurrentPlaybackSession(key, sessionRevision)) return
-                val audioStreams: List<org.schabi.newpipe.extractor.stream.AudioStream> = info.audioStreams
-
-                // NewPipe can occasionally expose muxed streams but omit the separate audio list.
-                // Build video candidates first; a muxed stream already contains audio and must remain
-                // playable even when audioStreams is empty.
-                // NewPipe keeps muxed streams and adaptive video-only tracks in separate lists.
-                // Include both; allow higher resolutions while preferring a compatible default for older phones.
-                val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
-                    .filter { v -> v.height in 1..2160 }
-                    .distinctBy { v -> "${v.height}|${v.content}|${v.isVideoOnly}" }
-
-                android.util.Log.i(
-                    "PlaybackService",
-                    "YouTube stream inventory: muxed=" + info.videoStreams.size +
-                        ", videoOnly=" + info.videoOnlyStreams.size +
-                        ", muxedRes=" + info.videoStreams.map { it.height }.distinct().sorted() +
-                        ", videoOnlyRes=" + info.videoOnlyStreams.map { it.height }.distinct().sorted()
-                )
-
-                val candidates = allVideoStreams
-                    .groupBy { it.height }
-                    .mapNotNull { (height, streams) ->
-                        val chosen = streams.sortedWith(
-                            compareBy<org.schabi.newpipe.extractor.stream.VideoStream> { v ->
-                                val mp4 = v.format?.suffix?.equals("mp4", ignoreCase = true) == true
-                                when {
-                                    !v.isVideoOnly && mp4 -> 0 // Most compatible: one-file MP4
-                                    !v.isVideoOnly -> 1      // Other muxed stream
-                                    mp4 -> 2                 // Adaptive MP4 video
-                                    else -> 3                 // Adaptive WebM/other formats
-                                }
-                            }.thenByDescending { v -> v.bitrate }
-                        ).firstOrNull()
-
-                        chosen?.let {
-                            YouTubeQualitySource(
-                                label = "${height}p",
-                                height = height,
-                                url = it.content,
-                                muxed = !it.isVideoOnly,
-                            )
-                        }
-                    }
-                    .sortedByDescending { it.height }
-
-                if (candidates.isEmpty()) {
-                    throw IllegalStateException("YouTube 未提供可播放的视频流。请检查网络/VPN 后重试")
-                }
-                val audioUrl = audioStreams.maxByOrNull { a -> a.averageBitrate }?.content
-                    ?: audioStreams.firstOrNull()?.content
-                    ?: if (candidates.any { it.muxed }) "" else {
-                        throw IllegalStateException("YouTube 未返回独立音频流或带声音的视频流，请稍后重试")
-                    }
+                val inventory = buildYouTubeQualityInventory(info)
+                val candidates = inventory.candidates
+                val audioUrl = inventory.audioUrl
                 android.util.Log.i(
                     "PlaybackService",
                     "YouTube audio tracks=" + audioStreams.size +
