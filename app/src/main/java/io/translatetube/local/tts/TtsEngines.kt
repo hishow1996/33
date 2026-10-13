@@ -76,6 +76,19 @@ class SystemTts(context: Context) : TtsEngine {
     private val appCtx = context.applicationContext
     override val name = "系统TTS"
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
+    // System voices can change in Android settings. Include the active engine and Chinese
+    // voice identity so cached PCM from a previous system voice is not reused incorrectly.
+    override val cacheKey: String
+        get() {
+            val engine = ttsRef.get()
+            val voice = engine?.voice
+            return listOf(
+                name,
+                engine?.defaultEngine.orEmpty(),
+                voice?.name.orEmpty(),
+                voice?.locale?.toString().orEmpty(),
+            ).joinToString("|")
+        }
     private val ready = java.util.concurrent.CountDownLatch(1)
     @Volatile private var ok = false
     @Volatile private var activeUtteranceId: String? = null
