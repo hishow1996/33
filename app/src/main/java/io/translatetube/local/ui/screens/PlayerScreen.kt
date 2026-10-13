@@ -29,9 +29,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
@@ -78,6 +81,9 @@ fun PlayerScreen(
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
     var advancedMenuExpanded by remember { mutableStateOf(false) }
+    val isSpeakerBusy = state.progress.contains("人物识别") ||
+        state.progress.contains("人物说话") ||
+        state.progress.contains("分离")
 
     // 错误时允许用户显式重试同一个视频；不监听 phase，避免失败后自动重试循环。
     var retryNonce by remember { mutableStateOf(0) }
@@ -259,48 +265,102 @@ fun PlayerScreen(
                     Text("外文原声 · 中文配音", color = SubText, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
                 }
                 Box {
-                    Text(
-                        "•••",
-                        color = SubText,
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.clip(CircleShape)
-                            .clickable { advancedMenuExpanded = true }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
+                    IconButton(
+                        onClick = { advancedMenuExpanded = true },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(SurfaceDark)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "播放设置",
+                            tint = OnBg,
+                            modifier = Modifier.size(21.dp),
+                        )
+                    }
                     DropdownMenu(
                         expanded = advancedMenuExpanded,
                         onDismissRequest = { advancedMenuExpanded = false },
+                        modifier = Modifier.width(272.dp),
                     ) {
-                        DropdownMenuItem(
-                            text = { Text(if (state.audioOnly) "恢复视频画面" else "仅听模式") },
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                "播放工具",
+                                color = OnBg,
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                "字幕、人物与音频",
+                                color = SubText,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Divider(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            color = OutlineSoft,
+                            thickness = 1.dp,
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Headphones,
+                            title = if (state.audioOnly) "恢复视频画面" else "仅听模式",
+                            description = if (state.audioOnly) "仅播放音频，点按恢复画面" else "隐藏画面，继续播放声音",
+                            selected = state.audioOnly,
                             onClick = {
                                 advancedMenuExpanded = false
                                 PlaybackService.instance?.toggleAudioOnly()
                             },
                         )
-                        DropdownMenuItem(
-                            text = { Text("识别并区分人物") },
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Face,
+                            title = if (isSpeakerBusy) "正在识别人物…" else "识别并区分人物",
+                            description = when {
+                                isSpeakerBusy -> "正在分析字幕中的说话人"
+                                state.lines.isEmpty() -> "生成或导入字幕后可使用"
+                                else -> "自动区分说话人，便于对照和配音"
+                            },
+                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
                             onClick = {
                                 advancedMenuExpanded = false
                                 PlaybackService.instance?.autoAssignSpeakers()
                             },
                         )
-                        DropdownMenuItem(
-                            text = { Text("导入字幕文件") },
+                        Divider(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            color = OutlineSoft,
+                            thickness = 1.dp,
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Subtitles,
+                            title = "导入字幕文件",
+                            description = "载入本地字幕",
                             onClick = {
                                 advancedMenuExpanded = false
                                 subPicker.launch(arrayOf("*/*"))
                             },
                         )
-                        DropdownMenuItem(
-                            text = { Text("复制双语字幕") },
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.ContentCopy,
+                            title = "复制双语字幕",
+                            description = if (state.lines.isEmpty()) "生成或导入字幕后可复制" else "复制原文与中文译文",
+                            enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
                                 copySubtitles()
                             },
                         )
-                        DropdownMenuItem(
-                            text = { Text("翻译与配音设置") },
+                        Divider(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            color = OutlineSoft,
+                            thickness = 1.dp,
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Settings,
+                            title = "翻译与配音设置",
+                            description = "配置翻译引擎、声音和配音",
                             onClick = {
                                 advancedMenuExpanded = false
                                 onGoSettings()
@@ -911,6 +971,73 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 }
 
 @Composable
+@Composable
+private fun PlaybackMenuItem(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
+    DropdownMenuItem(
+        modifier = Modifier.fillMaxWidth(),
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = title,
+                    color = if (enabled) OnBg else SubText,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = description,
+                    color = if (enabled) SubText else SubText.copy(alpha = 0.65f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        },
+        leadingIcon = {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(if (selected) SurfaceHigh else BgDark),
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (enabled) {
+                        if (selected) BrandBright else SubText
+                    } else {
+                        MutedGreen
+                    },
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        },
+        trailingIcon = {
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = "已启用",
+                    tint = BrandBright,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        },
+        enabled = enabled,
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+    )
+}
+
 private fun ControlBar(
     state: PlayerUiState,
     onImportSub: () -> Unit,

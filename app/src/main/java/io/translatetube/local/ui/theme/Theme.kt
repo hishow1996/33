@@ -24,18 +24,18 @@ private fun os(weight: FontWeight, size: Int): TextStyle =
 
 // 全局明确每一级文字的字号与字重，避免页面各自使用不同的默认样式。
 val AppTypography = Typography(
-    displaySmall = os(FontWeight.ExtraBold, 32),
-    headlineMedium = os(FontWeight.Bold, 25),
-    headlineSmall = os(FontWeight.Bold, 22),
-    titleLarge = os(FontWeight.Bold, 20),
-    titleMedium = os(FontWeight.SemiBold, 16),
+    displaySmall = os(FontWeight.Bold, 28),
+    headlineMedium = os(FontWeight.SemiBold, 22),
+    headlineSmall = os(FontWeight.SemiBold, 20),
+    titleLarge = os(FontWeight.SemiBold, 18),
+    titleMedium = os(FontWeight.SemiBold, 15),
     titleSmall = os(FontWeight.SemiBold, 14),
     bodyLarge = os(FontWeight.Normal, 15),
     bodyMedium = os(FontWeight.Normal, 14),
     bodySmall = os(FontWeight.Normal, 12),
-    labelLarge = os(FontWeight.SemiBold, 13),
-    labelMedium = os(FontWeight.SemiBold, 12),
-    labelSmall = os(FontWeight.SemiBold, 11),
+    labelLarge = os(FontWeight.Normal, 12),
+    labelMedium = os(FontWeight.Normal, 11),
+    labelSmall = os(FontWeight.Normal, 10),
 )
 
 private val ColorScheme = lightColorScheme(
