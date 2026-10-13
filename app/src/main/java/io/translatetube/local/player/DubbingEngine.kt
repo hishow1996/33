@@ -348,7 +348,11 @@ class DubbingEngine(
                     if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
                     if (DubbingPcmValidation.isAudibleSample(sample)) hasAudibleSample = true
                 }
-                sampleCount > 0 && hasAudibleSample
+                when {
+                    sampleCount == 0 -> false // Valid explicit empty marker.
+                    hasAudibleSample -> true
+                    else -> throw java.io.IOException("PCM 缓存只有静音采样")
+                }
             }
         } catch (e: Exception) {
             file.delete()
