@@ -384,14 +384,36 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        // Cancel work before releasing services it may still be using. In particular, the
+        // Whisper JNI recognizer must not be released while a synchronous decode call is active.
+        val activePipeline = prepJob
+        prepJob?.cancel()
+        speakerJob?.cancel()
+        qualityJob?.cancel()
+        qualityRecoveryJob?.cancel()
+        dubCollectJob?.cancel()
+        scope.cancel()
+
         runCatching { dubbing?.release() }
-        runCatching { whisper?.close() }
+        if (activePipeline != null && !activePipeline.isCompleted) {
+            // Cancellation is cooperative around blocking JNI calls. Close the recognizer only
+            // after the owning pipeline has actually completed, not merely when isActive turns false.
+            activePipeline.invokeOnCompletion { releaseWhisper() }
+        } else {
+            releaseWhisper()
+        }
         runCatching { session?.release() }
         if (::pm.isInitialized) runCatching { pm.release() }
         playerReady = false
         if (instance === this) instance = null
-        scope.cancel()
         super.onDestroy()
+    }
+
+    private fun releaseWhisper() {
+        val engine = whisper
+        whisper = null
+        runCatching { engine?.close() }
+            .onFailure { android.util.Log.w("PlaybackService", "Whisper recognizer cleanup failed", it) }
     }
 
     // ============ 管线入口 ============
