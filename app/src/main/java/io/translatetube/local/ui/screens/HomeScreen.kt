@@ -94,17 +94,12 @@ fun HomeScreen(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("大象翻译", color = OnBg, style = MaterialTheme.typography.headlineSmall)
-                Text("让外文视频听得懂", color = SubText, style = MaterialTheme.typography.bodyMedium)
             }
-            Surface(
+            IconButton(
                 onClick = onSettings,
-                color = Color.White,
-                shape = CircleShape,
-                border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
+                modifier = Modifier.size(44.dp),
             ) {
-                Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Settings, contentDescription = "设置", tint = SubText)
-                }
+                Icon(Icons.Filled.Settings, contentDescription = "设置", tint = SubText)
             }
         }
 
@@ -167,10 +162,6 @@ fun HomeScreen(
             tonalElevation = 0.dp,
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-                Text("翻译一个视频", color = OnBg, style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(6.dp))
-                Text("粘贴 YouTube 视频链接", color = SubText, style = MaterialTheme.typography.bodyLarge)
-                Spacer(Modifier.height(13.dp))
                 OutlinedTextField(
                     value = link,
                     onValueChange = { link = it; linkError = false },
