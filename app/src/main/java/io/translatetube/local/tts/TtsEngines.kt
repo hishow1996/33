@@ -53,7 +53,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
-        val safeSpeed = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
@@ -198,7 +198,10 @@ class SystemTts(context: Context) : TtsEngine {
                     throw IllegalStateException("系统 TTS 无法切换到人物音色：${targetVoice.name}")
                 }
             }
-            tts.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
+            val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
+            if (tts.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
+                throw IllegalStateException("系统 TTS 无法设置配音语速（" + safeSpeed + "×）")
+            }
             val result = tts.synthesizeToFile(text, android.os.Bundle(), tmp, utteranceId)
             if (result != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
