@@ -28,6 +28,68 @@ private val http: OkHttpClient = OkHttpClient.Builder()
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
 
+/**
+ * Be tolerant of common model formatting variations while preserving subtitle row alignment.
+ * Providers sometimes ignore the requested index|text format and return numbered Markdown or
+ * plain one-translation-per-line output; treating that as an all-empty batch caused a false
+ * "status placeholder" error even though the model returned translations.
+ */
+private fun parseModelTranslations(content: String, size: Int): List<String> {
+    if (size <= 0) return emptyList()
+
+    val normalized = content
+        .replace(Regex("(?s)<think>.*?</think>"), "")
+        .replace(Regex("(?m)^\\s*\`\`\`[\\w-]*\\s*$"), "")
+        .trim()
+    if (normalized.isEmpty()) return List(size) { "" }
+
+    // Accept JSON arrays when a model disregards the requested text format.
+    val jsonArray = runCatching { JSONArray(normalized) }.getOrNull()
+    if (jsonArray != null && jsonArray.length() == size) {
+        return List(size) { i -> jsonArray.optString(i).trim() }
+    }
+
+    // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
+    val indexedLine = Regex("""^\\s*(?:[-*•]\\s*)?(?:\\*\\*)?(\\d{1,4})(?:\\*\\*)?\\s*(?:[|｜:：.、)]\\s*|-\\s+)(.*?)\\s*$""")
+    val indexed = linkedMapOf<Int, String>()
+    normalized.lines().forEach { raw ->
+        val line = raw.trim().trim('\`').trim()
+        val match = indexedLine.matchEntire(line) ?: return@forEach
+        val index = match.groupValues[1].toIntOrNull() ?: return@forEach
+        if (index in 0..size) {
+            val value = match.groupValues[2].trim().removePrefix("**").removeSuffix("**").trim()
+            if (value.isNotBlank()) indexed[index] = value
+        }
+    }
+    if (indexed.isNotEmpty()) {
+        // If numbering begins at 1 and no zero row exists, accept the common one-based format.
+        val base = if (0 !in indexed.keys && indexed.keys.minOrNull() == 1) 1 else 0
+        return List(size) { i -> indexed[i + base].orEmpty() }
+    }
+
+    // Fall back to positional output only when each input row has exactly one output row.
+    val plainLines = normalized.lines()
+        .map { it.trim().removePrefix("- ").removePrefix("* ").trim().removeSurrounding("**").trim() }
+        .filter { it.isNotBlank() }
+        .filterNot {
+            Regex("(?i)^(here are (the )?translations?:?|translations?:?|translation results?:?|译文如下[:：]?)$")
+                .matches(it)
+        }
+    if (plainLines.size == size) return plainLines
+
+    // Single-row probes occasionally return a sentence without any index or wrapper.
+    if (size == 1) {
+        val single = normalized
+            .replace(Regex("(?i)^(here is (the )?translation:?|translation:?|译文[:：]?)\\s*"), "")
+            .trim()
+        if (single.isNotBlank()) return listOf(single)
+    }
+
+    // Keep alignment deterministic; the caller turns an entirely unparseable batch into an error.
+    return List(size) { "" }
+}
+
+
 private fun post(url: String, headers: Map<String, String>, body: String): String {
     val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
     headers.forEach { (k, v) -> b.header(k, v) }
@@ -151,6 +213,7 @@ class OpenAiCompatEngine(
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
         val sys = "You are a professional subtitle translator. Translate each numbered line from $src to $tgt. " +
             "Reply with the exact same `index|translation` format, one per line, nothing else. " +
+            "Include every input index exactly once; never return progress/status text. If unsure, keep the original line after the separator. " +
             "Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged."
         val payload = JSONObject()
             .put("model", model)
@@ -171,14 +234,8 @@ class OpenAiCompatEngine(
         return parseNumbered(content, lines.size)
     }
 
-    private fun parseNumbered(content: String, size: Int): List<String> {
-        val out = Array(size) { "" }
-        Regex("(?m)^\\s*(\\d+)\\s*\\|(.*)$").findAll(content).forEach { m ->
-            val i = m.groupValues[1].toIntOrNull()
-            if (i != null && i in 0 until size) out[i] = m.groupValues[2].trim()
-        }
-        return out.toList()
-    }
+    private fun parseNumbered(content: String, size: Int): List<String> =
+        parseModelTranslations(content, size)
 }
 
 /** Google Gemini */
@@ -221,7 +278,7 @@ class GeminiEngine(
         val tgt = LangMap.display(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
         val sys = "Translate each numbered subtitle line from $src to $tgt. " +
-            "Reply with exactly `index|translation` per line, nothing else. Preserve tone."
+            "Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. Preserve tone."
         val payload = JSONObject().put(
             "contents",
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$numbered"))))
@@ -236,14 +293,8 @@ class GeminiEngine(
         return parseNumbered(text, lines.size)
     }
 
-    private fun parseNumbered(content: String, size: Int): List<String> {
-        val out = Array(size) { "" }
-        Regex("(?m)^\\s*(\\d+)\\s*\\|(.*)$").findAll(content).forEach { m ->
-            val i = m.groupValues[1].toIntOrNull()
-            if (i != null && i in 0 until size) out[i] = m.groupValues[2].trim()
-        }
-        return out.toList()
-    }
+    private fun parseNumbered(content: String, size: Int): List<String> =
+        parseModelTranslations(content, size)
 }
 
 /** Google Translate 网页端免密钥接口。需要联网；属于非正式接口，可能受服务方限流或调整。 */

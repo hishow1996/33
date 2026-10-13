@@ -961,7 +961,7 @@ class PlaybackService : MediaSessionService() {
                 // not produce a READY player with every subtitle saying "正在翻译".
                 if (batchTranslations.isNotEmpty() && cleanedBatch.none { !it.isNullOrBlank() }) {
                     throw TranslationFailureException(
-                        "翻译服务返回了状态占位文本而不是译文，请检查当前翻译服务/模型配置后重试。",
+                        "翻译模型响应中没有可识别的逐行译文。请在 API 配置中点击“测试连接”，确认当前模型支持文本生成；也可以尝试重新拉取模型或更换模型。",
                         IllegalStateException("translation response contained no usable subtitle text"),
                     )
                 }
