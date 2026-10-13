@@ -961,7 +961,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
-            if (lines == null && cached == null) {
+            if (lines == null && cached == null && importedLines.isNullOrEmpty()) {
                 if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
                     // 方案 B：转写模型未下载——优雅降级（原声播放 + 引导提示），不崩
                     ui.update { it.copy(noModelHint = "该视频无字幕。下载「转写模型」后即可生成中文字幕与配音（设置 → 语音模型）") }
