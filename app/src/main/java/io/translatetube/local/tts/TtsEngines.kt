@@ -120,14 +120,19 @@ class SystemTts(context: Context) : TtsEngine {
             throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据")
         }
 
-        val availableChineseVoices = tts.voices.orEmpty()
+        val allChineseVoices = tts.voices.orEmpty()
             .filter { it.locale.language.equals("zh", ignoreCase = true) }
             .distinctBy { it.name }
-            .sortedWith(compareBy<android.speech.tts.Voice> { it.isNetworkConnectionRequired }.thenBy { it.name })
+            .sortedBy { it.name }
+        val availableChineseVoices = SystemTtsSpeakerVoicePolicy
+            .preferOfflineVoices(allChineseVoices) { it.isNetworkConnectionRequired }
         val currentChineseVoice = tts.voice?.takeIf {
             it.locale.language.equals("zh", ignoreCase = true)
         }
-        val defaultVoice = currentChineseVoice ?: availableChineseVoices.firstOrNull()
+        // Don't pin the session to an online voice when an installed local Chinese voice exists.
+        val defaultVoice = currentChineseVoice?.takeIf { current ->
+            availableChineseVoices.any { it.name == current.name }
+        } ?: availableChineseVoices.firstOrNull()
         if (defaultVoice == null) {
             runCatching { tts.shutdown() }
             throw IllegalStateException("系统 TTS 没有可用的中文音色")

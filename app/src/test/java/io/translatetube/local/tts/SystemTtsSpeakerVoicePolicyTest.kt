@@ -12,6 +12,24 @@ class SystemTtsSpeakerVoicePolicyTest {
     }
 
     @Test
+    fun prefersLocalVoicesButKeepsNetworkVoicesAsLastResort() {
+        data class Candidate(val name: String, val network: Boolean)
+        val candidates = listOf(
+            Candidate("cloud-a", true),
+            Candidate("local-a", false),
+            Candidate("cloud-b", true),
+        )
+        assertEquals(
+            listOf(Candidate("local-a", false)),
+            SystemTtsSpeakerVoicePolicy.preferOfflineVoices(candidates) { it.network },
+        )
+        assertEquals(
+            listOf(Candidate("cloud-a", true), Candidate("cloud-b", true)),
+            SystemTtsSpeakerVoicePolicy.preferOfflineVoices(candidates.filter { it.network }) { it.network },
+        )
+    }
+
+    @Test
     fun knownSpeakersUseAlternativeVoiceCatalogEntries() {
         assertEquals(1, SystemTtsSpeakerVoicePolicy.indexForSpeaker(0, 3))
         assertEquals(2, SystemTtsSpeakerVoicePolicy.indexForSpeaker(1, 3))
