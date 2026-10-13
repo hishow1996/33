@@ -597,7 +597,12 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                } catch (e: Exception) {
+                    runCatching { tts.close() }
+                    throw e
+                }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, translatedLines)
                 try {
@@ -726,7 +731,12 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                } catch (e: Exception) {
+                    runCatching { tts.close() }
+                    throw e
+                }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, translatedLines)
                 try {
@@ -1308,7 +1318,12 @@ class PlaybackService : MediaSessionService() {
                             runCatching { tts.close() }
                             throw e
                         }
-                        val d = DubbingEngine(this, key, scope)
+                        val d = try {
+                            DubbingEngine(this, key, scope)
+                        } catch (e: Exception) {
+                            runCatching { tts.close() }
+                            throw e
+                        }
                         registerDubbingFailureHandler(d, tts, key)
                         updateUiForSession(key) {
                             it.copy(
@@ -2232,6 +2247,12 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val tts = pendingTts ?: makeTts(selectedTts)
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                } catch (e: Exception) {
+                    if (pendingTts == null) runCatching { tts.close() }
+                    throw e
+                }
                 pendingTts = null
                 try {
                     ensureCurrentSession(sessionKey)
@@ -2239,7 +2260,6 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated)
                 try {
