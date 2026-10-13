@@ -1324,6 +1324,11 @@ class PlaybackService : MediaSessionService() {
                             throw e
                         }
                         dubbing = d
+                        if (videoKey != key || ui.value.key != key) {
+                            if (dubbing === d) dubbing = null
+                            d.releaseAndJoin()
+                            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频配音引擎")
+                        }
                         dubCollectJob = scope.launch {
                             d.preparedUntil.collect { n -> updateUiForSession(key) { it.copy(preparedUntil = n) } }
                         }
@@ -2223,6 +2228,11 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 dubbing = d
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    if (dubbing === d) dubbing = null
+                    d.releaseAndJoin()
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
+                }
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->
@@ -2325,6 +2335,11 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 dubbing = d
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    if (dubbing === d) dubbing = null
+                    d.releaseAndJoin()
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
+                }
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->
                         updateUiForSession(sessionKey) { state -> state.copy(preparedUntil = n,
