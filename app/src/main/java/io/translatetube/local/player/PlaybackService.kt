@@ -1420,16 +1420,28 @@ class PlaybackService : MediaSessionService() {
             // 避免原声已被静音、系统 TTS 却还没合成出第一句时出现长时间无声。
             val startupDubbing = dubbing
             if (startupDubbing != null) {
-                val firstSpeech = finalLines.indexOfFirst { !it.zh.isNullOrBlank() }
-                if (firstSpeech >= 0) {
-                    val targetPrepared = minOf(finalLines.size, firstSpeech + 2)
+                // Wait for actual speech cues, not the contiguous prepared-row counter. Empty or
+                // failed rows before the first spoken cue must not block a ready first sentence.
+                val startupSpeechIndices = finalLines.indices
+                    .filter { !finalLines[it].zh.isNullOrBlank() }
+                    .take(2)
+                if (startupSpeechIndices.isNotEmpty()) {
+                    startupDubbing.prioritizeAround(startupSpeechIndices.first())
                     val deadlineNs = System.nanoTime() + 12_000_000_000L
-                    while (startupDubbing.preparedUntil.value < targetPrepared && System.nanoTime() < deadlineNs) {
+                    fun cueFinished(index: Int): Boolean =
+                        startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
+                    while (
+                        startupSpeechIndices.any { !cueFinished(it) } &&
+                        System.nanoTime() < deadlineNs
+                    ) {
                         kotlinx.coroutines.delay(100)
                     }
-                    if (startupDubbing.preparedUntil.value <= firstSpeech) {
+                    val firstSpeech = startupSpeechIndices.first()
+                    if (!cueFinished(firstSpeech)) {
                         android.util.Log.w("PlaybackService", "TTS startup buffer timed out before first spoken line")
-                        updateUiForSession(key) { it.copy(progress = "配音仍在准备，已先开始视频播放") }
+                        updateUiForSession(key) { it.copy(progress = "首句配音仍在准备，已先开始视频播放") }
+                    } else if (startupSpeechIndices.drop(1).any { !cueFinished(it) }) {
+                        updateUiForSession(key) { it.copy(progress = "首句配音已就绪，其余配音继续准备…") }
                     }
                 }
             }
