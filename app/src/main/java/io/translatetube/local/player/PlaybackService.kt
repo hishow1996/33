@@ -1303,7 +1303,8 @@ class PlaybackService : MediaSessionService() {
                             if (isCurrentPlaybackSession(key, sessionRevision)) pm.originalVolume = 1f
                         }
                     }
-                }                } else {
+                }
+                } else {
                     if (!isCurrentPlaybackSession(key, sessionRevision)) return
                     val message = when (selectedTts) {
                         "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
