@@ -19,6 +19,7 @@ object SimpleDownloader : Downloader() {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .build()
 
     override fun execute(r: Request): Response {
@@ -54,6 +55,7 @@ object NewPipeRepo {
     private val subtitleDownloadClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .build()
     private data class StreamInfoCache(
         val videoId: String,
