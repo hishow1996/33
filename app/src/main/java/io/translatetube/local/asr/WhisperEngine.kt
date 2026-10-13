@@ -36,14 +36,18 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
 
     /** 一次转写整段 PCM（16k mono float），自动检测语言 */
     fun transcribe(pcm: FloatArray): String {
+        require(pcm.isNotEmpty()) { "没有可供 Whisper 转写的音频样本" }
         val stream = recognizer.createStream()
-        stream.acceptWaveform(pcm, sampleRate = 16000)
-        recognizer.decode(stream)
-        val result = recognizer.getResult(stream)
-        val text = result.text
-        result.lang?.takeIf { it.isNotBlank() }?.let { lastLang = it }
-        stream.release()
-        return text
+        try {
+            stream.acceptWaveform(pcm, sampleRate = 16000)
+            recognizer.decode(stream)
+            val result = recognizer.getResult(stream)
+            result.lang?.takeIf { it.isNotBlank() }?.let { lastLang = it }
+            return result.text
+        } finally {
+            // sherpa streams own native memory; always release even when decode/result throws.
+            runCatching { stream.release() }
+        }
     }
 
     /** 长音频分段转写：30s 窗口 + 1s 重叠，返回带时间轴文本 */
@@ -78,11 +82,13 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         val sr = 16000
         val out = mutableListOf<Triple<Long, Long, String>>()
         segs.forEachIndexed { i, (a, b) ->
-            val s0 = (a * sr / 1000).toInt()
-            val s1 = (b * sr / 1000).toInt().coerceAtMost(pcm.size)
+            val s0 = (a.coerceAtLeast(0L) * sr / 1000L)
+                .coerceIn(0L, pcm.size.toLong()).toInt()
+            val s1 = (b.coerceAtLeast(0L) * sr / 1000L)
+                .coerceIn(s0.toLong(), pcm.size.toLong()).toInt()
             if (s1 > s0) {
                 val text = transcribe(pcm.copyOfRange(s0, s1)).trim()
-                if (text.isNotEmpty()) out += Triple(a, b, text)
+                if (text.isNotEmpty()) out += Triple(a.coerceAtLeast(0L), b.coerceAtLeast(a), text)
             }
             onProgress(i + 1, segs.size)
         }
