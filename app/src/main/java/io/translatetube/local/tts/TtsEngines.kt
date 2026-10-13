@@ -76,17 +76,22 @@ class SystemTts(context: Context) : TtsEngine {
     private val appCtx = context.applicationContext
     override val name = "系统TTS"
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
-    // System voices can change in Android settings. Include the active engine and Chinese
-    // voice identity so cached PCM from a previous system voice is not reused incorrectly.
+    @Volatile private var defaultChineseVoice: android.speech.tts.Voice? = null
+    @Volatile private var chineseVoiceCatalog: List<android.speech.tts.Voice> = emptyList()
+
+    val chineseVoiceCount: Int get() = chineseVoiceCatalog.size
+    val supportsMultipleChineseVoices: Boolean get() = chineseVoiceCount > 1
+
+    // Keep this identity stable while synth() switches per-speaker voices. The selected default
+    // voice and complete Chinese voice catalogue make PCM cache entries invalid when capabilities change.
     override val cacheKey: String
         get() {
             val engine = ttsRef.get()
-            val voice = engine?.voice
             return listOf(
                 name,
                 engine?.defaultEngine.orEmpty(),
-                voice?.name.orEmpty(),
-                voice?.locale?.toString().orEmpty(),
+                defaultChineseVoice?.name.orEmpty(),
+                chineseVoiceCatalog.joinToString(",") { "${it.name}@${it.locale}" },
             ).joinToString("|")
         }
     private val ready = java.util.concurrent.CountDownLatch(1)
@@ -114,6 +119,30 @@ class SystemTts(context: Context) : TtsEngine {
             runCatching { tts.shutdown() }
             throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据")
         }
+
+        val availableChineseVoices = tts.voices.orEmpty()
+            .filter { it.locale.language.equals("zh", ignoreCase = true) }
+            .distinctBy { it.name }
+            .sortedWith(compareBy<android.speech.tts.Voice> { it.isNetworkConnectionRequired }.thenBy { it.name })
+        val currentChineseVoice = tts.voice?.takeIf {
+            it.locale.language.equals("zh", ignoreCase = true)
+        }
+        val defaultVoice = currentChineseVoice ?: availableChineseVoices.firstOrNull()
+        if (defaultVoice == null) {
+            runCatching { tts.shutdown() }
+            throw IllegalStateException("系统 TTS 没有可用的中文音色")
+        }
+        val catalogue = (listOf(defaultVoice) + availableChineseVoices)
+            .distinctBy { it.name }
+        if (tts.voice?.name != defaultVoice.name) {
+            val voiceResult = tts.setVoice(defaultVoice)
+            if (voiceResult != TextToSpeech.SUCCESS) {
+                runCatching { tts.shutdown() }
+                throw IllegalStateException("系统 TTS 无法切换到可用中文音色：${defaultVoice.name}")
+            }
+        }
+        defaultChineseVoice = defaultVoice
+        chineseVoiceCatalog = catalogue
 
         tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
@@ -153,6 +182,17 @@ class SystemTts(context: Context) : TtsEngine {
         activeLatch = completed
         activeError = false
         try {
+            val defaultVoice = defaultChineseVoice
+                ?: throw IllegalStateException("系统 TTS 没有可用的中文音色")
+            val voices = chineseVoiceCatalog
+            val voiceIndex = SystemTtsSpeakerVoicePolicy.indexForSpeaker(speakerId, voices.size)
+            val targetVoice = voices.getOrNull(voiceIndex) ?: defaultVoice
+            if (tts.voice?.name != targetVoice.name) {
+                val voiceResult = tts.setVoice(targetVoice)
+                if (voiceResult != TextToSpeech.SUCCESS) {
+                    throw IllegalStateException("系统 TTS 无法切换到人物音色：${targetVoice.name}")
+                }
+            }
             tts.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
             val result = tts.synthesizeToFile(text, android.os.Bundle(), tmp, utteranceId)
             if (result != TextToSpeech.SUCCESS) {
