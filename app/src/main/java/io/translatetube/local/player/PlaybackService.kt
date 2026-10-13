@@ -90,6 +90,12 @@ private data class YouTubeQualitySource(
     val muxed: Boolean,
 )
 
+private data class YouTubeStreamChoices(
+    val sources: List<YouTubeQualitySource>,
+    val audioUrl: String,
+    val defaultQuality: YouTubeQualitySource,
+)
+
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var pm: PlayerManager
@@ -103,6 +109,8 @@ class PlaybackService : MediaSessionService() {
     private var localUri: Uri? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
+    @Volatile private var qualityRecoveryAttempted = false
+    private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
     private var importedLines: List<SubLine>? = null
     private var lastLineIdx = Int.MIN_VALUE
@@ -196,7 +204,32 @@ class PlaybackService : MediaSessionService() {
             }
             scope.launch {
                 pm.errorSink.collect { err ->
-                    if (err != null) ui.update { it.copy(error = err, phase = Phase.ERROR) }
+                    if (err == null) return@collect
+                    val activeRecovery = qualityRecoveryJob?.takeIf { it.isActive }
+                    if (activeRecovery != null) {
+                        // An error after the one recovery attempt is a real failure; stop retrying.
+                        activeRecovery.cancel()
+                        ui.update { state ->
+                            if (videoId != null && state.key == ui.value.key) {
+                                state.copy(
+                                    phase = Phase.ERROR,
+                                    progress = "",
+                                    error = "重新获取 YouTube 视频流后仍无法播放：$err",
+                                )
+                            } else state
+                        }
+                    } else {
+                        val id = videoId
+                        val sessionKey = ui.value.key
+                        if (id != null && qualitySources.isNotEmpty() && !qualityRecoveryAttempted) {
+                            qualityRecoveryAttempted = true
+                            qualityRecoveryJob = scope.launch {
+                                recoverYouTubePlayback(id, sessionKey, err)
+                            }
+                        } else {
+                            ui.update { it.copy(error = err, phase = Phase.ERROR, progress = "") }
+                        }
+                    }
                 }
             }
             playerReady = true
@@ -331,6 +364,8 @@ class PlaybackService : MediaSessionService() {
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
+        qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
         dubbing?.release(); dubbing = null
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.importedLines = importedLines
@@ -368,6 +403,8 @@ class PlaybackService : MediaSessionService() {
     fun selectQuality(label: String) {
         val source = qualitySources.firstOrNull { it.label == label } ?: return
         if (!::pm.isInitialized || source.label == ui.value.selectedQuality) return
+        qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
         qualityJob?.cancel()
         qualityJob = scope.launch {
             val positionMs = withContext(Dispatchers.Main) { pm.position() }
@@ -859,72 +896,18 @@ class PlaybackService : MediaSessionService() {
 
             // ---- 4. 流装配 ----
             if (videoId != null) {
-                val info = NewPipeRepo.streams(videoId)
-                val audioStreams: List<org.schabi.newpipe.extractor.stream.AudioStream> = info.audioStreams
-
-                // NewPipe can occasionally expose muxed streams but omit the separate audio list.
-                // Build video candidates first; a muxed stream already contains audio and must remain
-                // playable even when audioStreams is empty.
-                // NewPipe keeps muxed streams and adaptive video-only tracks in separate lists.
-                // Include both; allow higher resolutions while preferring a compatible default for older phones.
-                val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
-                    .distinctBy { v -> "${v.height}|${v.content}|${v.isVideoOnly}" }
-
-                android.util.Log.i(
-                    "PlaybackService",
-                    "YouTube stream inventory: muxed=" + info.videoStreams.size +
-                        ", videoOnly=" + info.videoOnlyStreams.size +
-                        ", muxedRes=" + info.videoStreams.map { it.height }.distinct().sorted() +
-                        ", videoOnlyRes=" + info.videoOnlyStreams.map { it.height }.distinct().sorted()
-                )
-
-                val normalizedVideoStreams = allVideoStreams.map { stream ->
-                    YouTubeVideoCandidate(
-                        height = stream.height,
-                        url = stream.content,
-                        videoOnly = stream.isVideoOnly,
-                        formatSuffix = stream.format?.suffix,
-                        bitrate = stream.bitrate,
-                    )
-                }
-                val selectedVideoStreams = YouTubeStreamSelector.chooseVideoStreams(normalizedVideoStreams)
-                val candidates = selectedVideoStreams.map { stream ->
-                    YouTubeQualitySource(
-                        label = "${stream.height}p",
-                        height = stream.height,
-                        url = stream.url,
-                        muxed = !stream.videoOnly,
-                    )
-                }
-
-                if (candidates.isEmpty()) {
-                    throw IllegalStateException("YouTube 未提供可播放的视频流。请检查网络/VPN 后重试")
-                }
-                val audioUrl = YouTubeStreamSelector.chooseAudioStream(
-                    audioStreams.map { stream ->
-                        YouTubeAudioCandidate(
-                            url = stream.content,
-                            formatSuffix = stream.format?.suffix,
-                            bitrate = stream.averageBitrate,
-                        )
-                    }
-                )?.url
-                    ?: if (candidates.any { it.muxed }) "" else {
-                        throw IllegalStateException("YouTube 未返回独立音频流或带声音的视频流，请稍后重试")
-                    }
-                android.util.Log.i(
-                    "PlaybackService",
-                    "YouTube audio tracks=" + audioStreams.size +
-                        ", usingMuxedFallback=" + (audioUrl.isBlank() && candidates.any { it.muxed })
-                )
-                android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
+                val choices = buildYouTubeStreamChoices(NewPipeRepo.streams(videoId))
+                val candidates = choices.sources
+                val audioUrl = choices.audioUrl
+                val defaultQuality = choices.defaultQuality
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
-                // Prefer 360p when present, otherwise select the closest available quality.
-                val defaultIndex = YouTubeStreamSelector.defaultQualityIndex(selectedVideoStreams)
-                val defaultQuality = candidates.getOrNull(defaultIndex)
-                    ?: throw IllegalStateException("没有可用的 YouTube 视频清晰度")
                 ui.update {
+                    it.copy(
+                        qualityOptions = candidates.map { q -> q.label },
+                        selectedQuality = defaultQuality.label,
+                    )
+                }                ui.update {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },
                         selectedQuality = defaultQuality.label,
@@ -1214,6 +1197,139 @@ class PlaybackService : MediaSessionService() {
             )
         }
         return updatedLines
+    }
+
+    private fun buildYouTubeStreamChoices(
+        info: org.schabi.newpipe.extractor.stream.StreamInfo,
+    ): YouTubeStreamChoices {
+        val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
+            .distinctBy { stream -> "${stream.height}|${stream.content}|${stream.isVideoOnly}" }
+
+        android.util.Log.i(
+            "PlaybackService",
+            "YouTube stream inventory: muxed=" + info.videoStreams.size +
+                ", videoOnly=" + info.videoOnlyStreams.size +
+                ", muxedRes=" + info.videoStreams.map { it.height }.distinct().sorted() +
+                ", videoOnlyRes=" + info.videoOnlyStreams.map { it.height }.distinct().sorted()
+        )
+
+        val normalized = allVideoStreams.map { stream ->
+            YouTubeVideoCandidate(
+                height = stream.height,
+                url = stream.content,
+                videoOnly = stream.isVideoOnly,
+                formatSuffix = stream.format?.suffix,
+                bitrate = stream.bitrate,
+            )
+        }
+        val selected = YouTubeStreamSelector.chooseVideoStreams(normalized)
+        val candidates = selected.map { stream ->
+            YouTubeQualitySource(
+                label = "${stream.height}p",
+                height = stream.height,
+                url = stream.url,
+                muxed = !stream.videoOnly,
+            )
+        }
+        if (candidates.isEmpty()) {
+            throw IllegalStateException("YouTube 未提供可播放的视频流。请检查网络/VPN 后重试")
+        }
+
+        val audioUrl = YouTubeStreamSelector.chooseAudioStream(
+            info.audioStreams.map { stream ->
+                YouTubeAudioCandidate(
+                    url = stream.content,
+                    formatSuffix = stream.format?.suffix,
+                    bitrate = stream.averageBitrate,
+                )
+            }
+        )?.url ?: if (candidates.any { it.muxed }) "" else {
+            throw IllegalStateException("YouTube 未返回独立音频流或带声音的视频流，请稍后重试")
+        }
+
+        android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
+        val defaultIndex = YouTubeStreamSelector.defaultQualityIndex(selected)
+        val default = candidates.getOrNull(defaultIndex)
+            ?: throw IllegalStateException("没有可用的 YouTube 视频清晰度")
+        return YouTubeStreamChoices(candidates, audioUrl, default)
+    }
+
+    /**
+     * If an extracted YouTube URL has expired or cannot be decoded, refresh the extraction once,
+     * then try a compatible lower-resolution stream. The attempt is bounded to prevent retry loops.
+     */
+    private suspend fun recoverYouTubePlayback(
+        sessionKey: String,
+        failedVideoId: String,
+        originalError: String,
+    ) {
+        val thisJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        try {
+            val oldHeight = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }?.height
+            ui.update { state ->
+                if (state.key == sessionKey) state.copy(
+                    phase = Phase.PARSING,
+                    progress = "YouTube 视频流加载失败，正在刷新播放地址…",
+                    error = null,
+                ) else state
+            }
+            val position = withContext(Dispatchers.Main) { pm.position() }
+            val shouldResume = withContext(Dispatchers.Main) { pm.player.playWhenReady }
+            NewPipeRepo.invalidate(failedVideoId)
+            val refreshedInfo = NewPipeRepo.streams(failedVideoId)
+            val choices = buildYouTubeStreamChoices(refreshedInfo)
+            val lowerCandidates = if (oldHeight != null) choices.sources.filter { it.height < oldHeight } else emptyList()
+            val fallback = lowerCandidates.firstOrNull { it.muxed }
+                ?: lowerCandidates.firstOrNull()
+                ?: choices.sources.firstOrNull { it.muxed }
+                ?: choices.defaultQuality
+
+            withContext(Dispatchers.Main) {
+                if (ui.value.key != sessionKey || videoId != failedVideoId) return@withContext
+                qualitySources = choices.sources
+                qualityAudioUrl = choices.audioUrl
+                pm.errorSink.value = null
+                ui.update { state ->
+                    state.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在尝试兼容清晰度 ${fallback.label}…",
+                        error = null,
+                        qualityOptions = choices.sources.map { it.label },
+                        selectedQuality = fallback.label,
+                    )
+                }
+                pm.setYouTubeQuality(
+                    videoUrl = fallback.url,
+                    audioUrl = choices.audioUrl,
+                    muxed = fallback.muxed,
+                    title = ui.value.title,
+                    artist = ui.value.channel,
+                    artworkUrl = ui.value.thumbUrl,
+                )
+                pm.seekTo(position)
+                if (shouldResume) pm.play() else pm.pause()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
+            withContext(Dispatchers.Main) {
+                if (ui.value.key == sessionKey && videoId == failedVideoId) {
+                    pm.errorSink.value = null
+                    runCatching { pm.originalVolume = 1f }
+                    ui.update {
+                        it.copy(
+                            phase = Phase.ERROR,
+                            progress = "",
+                            error = "YouTube 播放失败，刷新视频流后仍无法播放：${e.message ?: originalError}",
+                            muteOriginal = false,
+                        )
+                    }
+                }
+            }
+        } finally {
+            if (qualityRecoveryJob === thisJob) qualityRecoveryJob = null
+        }
     }
 
         private suspend fun downloadAudio(url: String): File {
