@@ -46,6 +46,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     var profiles by remember { mutableStateOf<List<ApiProfile>>(emptyList()) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ApiProfile?>(null) }
+    var inlineEditingId by remember { mutableStateOf<Long?>(null) }
     var adding by remember { mutableStateOf(false) }
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
@@ -225,6 +226,13 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                                     onDismissRequest = { profileMenuExpanded = false },
                                 ) {
                                     DropdownMenuItem(
+                                        text = { Text("编辑信息面板") },
+                                        onClick = {
+                                            profileMenuExpanded = false
+                                            inlineEditingId = if (inlineEditingId == p.id) null else p.id
+                                        },
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("编辑配置") },
                                         onClick = { profileMenuExpanded = false; editing = p },
                                     )
@@ -261,7 +269,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                             )
                         }
                     }
-                    if (activeId == p.id && p.enabled) {
+                    if (activeId == p.id && p.enabled && inlineEditingId == p.id) {
                         var inlineUrl by remember(p.id, p.baseUrl) { mutableStateOf(p.baseUrl) }
                         var inlineKey by remember(p.id, p.apiKey) { mutableStateOf(Crypto.decrypt(p.apiKey)) }
                         var inlineModel by remember(p.id, p.model) { mutableStateOf(p.model) }
