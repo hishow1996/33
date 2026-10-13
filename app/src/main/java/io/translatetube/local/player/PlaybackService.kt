@@ -1384,7 +1384,6 @@ class PlaybackService : MediaSessionService() {
                             if (isCurrentPlaybackSession(key, sessionRevision)) pm.originalVolume = 1f
                         }
                     }
-                }
                 } else {
                     if (!isCurrentPlaybackSession(key, sessionRevision)) return
                     val message = when (selectedTts) {
