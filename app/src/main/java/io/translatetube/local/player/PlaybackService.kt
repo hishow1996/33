@@ -566,60 +566,107 @@ class PlaybackService : MediaSessionService() {
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
         prepJob?.cancel()
-        dubCollectJob?.cancel(); dubCollectJob = null
-        // 导入新字幕前先停止并释放旧配音引擎，避免旧任务与新字幕共用同一缓存目录。
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        // Stop the previous voice immediately, but wait for its engine to close before replacement.
         val previousDubbing = dubbing
         previousDubbing?.release()
         dubbing = null
         pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
         lastLineIdx = Int.MIN_VALUE
-        try {
-            val text = contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
-                ?: throw IllegalStateException("无法读取字幕文件")
-            val parsedLines = SubtitleParsers.parseAuto(text)
-            if (parsedLines.isEmpty()) throw IllegalStateException("字幕文件为空或格式不支持")
-            // 清旧配音缓存：防止导入新字幕的同 idx 行播出旧音频
-            // 走翻译管线但跳过重新解析视频流（保持当前播放）
-            prepJob = scope.launch {
-                try {
-                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${parsedLines.size} 行）…") }
-                    val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
-                    // Use immutable copies so StateFlow/Compose sees translated subtitle text.
-                    val translatedLines = applySavedLineOverrides(
-                        if (isChineseLanguage(srcLang)) {
-                            parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
-                        } else {
-                            translateLines(videoKey, parsedLines, srcLang)
-                        }
-                    )
-                    previousDubbing?.releaseAndJoin()
-                    val tts = makeTts()
-                    val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                    registerDubbingFailureHandler(d, tts)
-                    d.attach(tts, translatedLines)
-                    dubbing = d
-                    dubCollectJob = scope.launch { d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } } }
-                    // 入库缓存
-                    val arr = org.json.JSONArray()
-                    for (l in translatedLines) arr.put(
-                        org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "").put("sp", l.speakerId)
-                    )
-                    if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
-                        AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
-                            io.translatetube.local.data.SubtitleCacheEntity("$videoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}", srcLang, arr.toString(), System.currentTimeMillis())
-                        )
-                    }
-                    ui.update { it.copy(lines = translatedLines, totalLines = translatedLines.size, phase = Phase.READY, progress = "") }
-                    lastLineIdx = Int.MIN_VALUE
 
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    ui.update { it.copy(phase = Phase.ERROR, error = "字幕导入失败: ${e.message}") }
+        prepJob = scope.launch {
+            try {
+                ui.update {
+                    it.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在读取字幕文件…",
+                        error = null,
+                        noModelHint = null,
+                    )
+                }
+                // Subtitle files can be large. Keep file I/O and parsing off the main thread so
+                // importing a long SRT/VTT/ASS file cannot freeze player controls.
+                val parsedLines = withContext(Dispatchers.IO) {
+                    val text = contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)
+                        ?.use { it.readText() }
+                        ?: throw IllegalStateException("无法读取字幕文件")
+                    SubtitleParsers.parseAuto(text)
+                }
+                if (parsedLines.isEmpty()) {
+                    throw IllegalStateException("字幕文件为空或格式不支持")
+                }
+
+                ui.update {
+                    it.copy(
+                        phase = Phase.TRANSLATING,
+                        progress = "翻译导入的字幕（${parsedLines.size} 行）…",
+                    )
+                }
+                val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
+                // Use immutable copies so StateFlow/Compose sees translated subtitle text.
+                val translatedLines = applySavedLineOverrides(
+                    if (isChineseLanguage(srcLang)) {
+                        parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
+                    } else {
+                        translateLines(videoKey, parsedLines, srcLang)
+                    }
+                )
+                previousDubbing?.releaseAndJoin()
+                val tts = makeTts()
+                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                registerDubbingFailureHandler(d, tts)
+                d.attach(tts, translatedLines)
+                dubbing = d
+                dubCollectJob = scope.launch {
+                    d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                }
+
+                // Store a cache only after import + translation produced useful subtitle rows.
+                val arr = org.json.JSONArray()
+                for (line in translatedLines) arr.put(
+                    org.json.JSONObject()
+                        .put("s", line.startMs)
+                        .put("e", line.endMs)
+                        .put("t", line.text)
+                        .put("zh", line.zh ?: "")
+                        .put("sp", line.speakerId)
+                )
+                if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
+                    translatedLines.size / 2
+                ) {
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            "$videoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}",
+                            srcLang,
+                            arr.toString(),
+                            System.currentTimeMillis(),
+                        )
+                    )
+                }
+                ui.update {
+                    it.copy(
+                        lines = translatedLines,
+                        totalLines = translatedLines.size,
+                        phase = Phase.READY,
+                        progress = "",
+                        error = null,
+                    )
+                }
+                lastLineIdx = Int.MIN_VALUE
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("PlaybackService", "Subtitle import failed", e)
+                ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "字幕导入失败: ${e.message ?: e.javaClass.simpleName}",
+                    )
                 }
             }
-        } catch (e: Exception) {
-            ui.update { it.copy(phase = Phase.ERROR, error = "字幕导入失败: ${e.message}") }
         }
     }
 
