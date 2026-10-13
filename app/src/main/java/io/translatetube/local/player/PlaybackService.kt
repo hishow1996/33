@@ -74,6 +74,8 @@ data class PlayerUiState(
     val error: String? = null,
     val sourceLang: String = "",
     val engineName: String = "",
+    /** Translation cache identity is carried through retries so imported sources keep their fingerprint. */
+    val translationCacheKey: String = "",
     val ttsEngineName: String = "",
     val dubbingStatus: String = "",
     val isPlaying: Boolean = false,
@@ -408,6 +410,13 @@ class PlaybackService : MediaSessionService() {
         qualityAudioUrl = ""
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
+        val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+        val effectiveTranslationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
+            ?: if (!importedLines.isNullOrEmpty()) {
+                importedTranslationCacheKey(key, activeTranslationId, importedLines)
+            } else {
+                "$key|zh|$activeTranslationId"
+            }
         val configuredTtsName = when (configuredTts) {
             "system" -> "系统 TTS"
             "kokoro" -> "Kokoro"
@@ -425,6 +434,7 @@ class PlaybackService : MediaSessionService() {
             totalLines = resumeState?.totalLines ?: 0,
             sourceLang = resumeState?.sourceLang.orEmpty(),
             engineName = resumeState?.engineName.orEmpty(),
+            translationCacheKey = effectiveTranslationCacheKey,
             ttsEngineName = configuredTtsName,
         )
         pm.pause()
@@ -631,6 +641,15 @@ class PlaybackService : MediaSessionService() {
                 val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
                     .getLong("active_api_id", -1L)
                 val importedCacheKey = importedTranslationCacheKey(videoKey, activeTranslationId, parsedLines)
+                // Preserve the imported source identity if this translation is later retried.
+                ui.update { state ->
+                    state.copy(
+                        translationCacheKey = importedCacheKey,
+                        lines = parsedLines,
+                        totalLines = parsedLines.size,
+                        sourceLang = srcLang,
+                    )
+                }
                 // Use immutable copies so StateFlow/Compose sees translated subtitle text.
                 val translatedLines = applySavedLineOverrides(
                     if (isChineseLanguage(srcLang)) {
@@ -852,11 +871,12 @@ class PlaybackService : MediaSessionService() {
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
-            val translationCacheKey = if (!importedLines.isNullOrEmpty()) {
-                importedTranslationCacheKey(key, selectedTranslationId, importedLines)
-            } else {
-                "$key|zh|$selectedTranslationId"
-            }
+            val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
+                ?: if (!importedLines.isNullOrEmpty()) {
+                    importedTranslationCacheKey(key, selectedTranslationId, importedLines)
+                } else {
+                    "$key|zh|$selectedTranslationId"
+                }
             val sourceSubtitleCacheKey = "$key|source|youtube"
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
