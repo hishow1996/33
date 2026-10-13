@@ -143,6 +143,41 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
+    /**
+     * Share the same recovery policy across subtitle sources: preserve the selected engine,
+     * restore source audio on failure, and ignore stale session/rebuild callbacks.
+     */
+    private fun registerDubbingFailureHandler(
+        engine: DubbingEngine,
+        tts: TtsEngine,
+        key: String,
+        sessionRevision: Long,
+    ) {
+        val expectedSpeakerRevision = speakerRebuildRevision
+        engine.onSynthesisError = { detail ->
+            ui.update { state ->
+                if (state.key == key &&
+                    isCurrentPlaybackSession(key, sessionRevision) &&
+                    speakerRebuildRevision == expectedSpeakerRevision
+                ) {
+                    state.copy(
+                        ttsEngineName = tts.name,
+                        muteOriginal = false,
+                        noModelHint = "当前选择的「${tts.name}」配音失败；应用没有自动切换到其他配音引擎，已恢复原声。$detail",
+                    )
+                } else state
+            }
+            scope.launch(Dispatchers.Main) {
+                if (isCurrentPlaybackSession(key, sessionRevision) &&
+                    speakerRebuildRevision == expectedSpeakerRevision &&
+                    ::pm.isInitialized
+                ) {
+                    runCatching { pm.originalVolume = 1f }
+                }
+            }
+        }
+    }
+
     /** 主线程把画面 TextureView 交给播放器 */
     fun attachSurface(tv: android.view.TextureView) {
         // Service 初始化失败时，PlayerScreen 仍可能尝试挂载 TextureView。
@@ -515,8 +550,10 @@ class PlaybackService : MediaSessionService() {
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
+                val tts = makeTts()
                 val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
-                d.attach(makeTts(), translatedLines)
+                registerDubbingFailureHandler(d, tts, expectedVideoKey, sessionRevision)
+                d.attach(tts, translatedLines)
                 if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
                     d.release()
                     return@launch
@@ -595,7 +632,7 @@ class PlaybackService : MediaSessionService() {
                     val rawTranslatedLines = if (isChineseLanguage(srcLang)) {
                         parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
-                        translateLines(expectedVideoKey, parsedLines, srcLang)
+                        translateLines(expectedVideoKey, parsedLines, srcLang, sessionRevision)
                     }
                     if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                     val translatedLines = applySavedSpeakerAssignments(expectedVideoKey, rawTranslatedLines)
@@ -603,8 +640,10 @@ class PlaybackService : MediaSessionService() {
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
+                    val tts = makeTts()
                     val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
-                    d.attach(makeTts(), translatedLines)
+                    registerDubbingFailureHandler(d, tts, expectedVideoKey, sessionRevision)
+                    d.attach(tts, translatedLines)
                     if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
                         d.release()
                         return@launch
@@ -898,14 +937,14 @@ class PlaybackService : MediaSessionService() {
                             progress = "继续翻译缓存中尚未完成的字幕…",
                         )
                     }
-                    lines = translateLines(key, restored, srcLang)
+                    lines = translateLines(key, restored, srcLang, sessionRevision)
                 }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
-                    translatedLines = translateLines(key, translatedLines, srcLang)
+                    translatedLines = translateLines(key, translatedLines, srcLang, sessionRevision)
                 } else if (translatedLines.isNotEmpty()) {
                     // Already-Chinese source subtitles are the Chinese display track; publish immutable copies.
                     translatedLines = translatedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
@@ -1042,22 +1081,7 @@ class PlaybackService : MediaSessionService() {
                         // cannot cause the readiness check and actual engine to disagree.
                         val tts: TtsEngine = makeTts(selectedTts)
                         val d = DubbingEngine(this, key, scope)
-                        d.onSynthesisError = { detail ->
-                            ui.update { state ->
-                                if (state.key == key && isCurrentPlaybackSession(key, sessionRevision)) {
-                                    state.copy(
-                                        ttsEngineName = tts.name,
-                                        muteOriginal = false,
-                                        noModelHint = "当前选择的「${tts.name}」配音失败；应用没有切换到其他配音引擎。$detail"
-                                    )
-                                } else state
-                            }
-                            // Preserve audible source playback on failure, but never substitute
-                            // another TTS engine behind the user's back.
-                            scope.launch(Dispatchers.Main) {
-                                if (isCurrentPlaybackSession(key, sessionRevision) && ::pm.isInitialized) runCatching { pm.originalVolume = 1f }
-                            }
-                        }
+                        registerDubbingFailureHandler(d, tts, key, sessionRevision)
                         if (!isCurrentPlaybackSession(key, sessionRevision)) {
                             d.release()
                             return
@@ -1192,7 +1216,18 @@ class PlaybackService : MediaSessionService() {
 
     /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
     /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
-    private suspend fun translateLines(key: String, lines: List<SubLine>, srcLang: String): List<SubLine> {
+    private suspend fun translateLines(
+        key: String,
+        lines: List<SubLine>,
+        srcLang: String,
+        sessionRevision: Long? = null,
+    ): List<SubLine> {
+        fun requireCurrentSession() {
+            if (sessionRevision != null && !isCurrentPlaybackSession(key, sessionRevision)) {
+                throw kotlinx.coroutines.CancellationException("Playback session changed during translation")
+            }
+        }
+        requireCurrentSession()
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         var updatedLines: List<SubLine> = lines.toList()
         val db = AppDatabase.get(this)
@@ -1223,6 +1258,7 @@ class PlaybackService : MediaSessionService() {
             engine = MlKitEngine()
             engineName = "本地引擎（离线）"
         }
+        requireCurrentSession()
         val pendingIndices = lines.indices.filter { index ->
             lines[index].text.isNotBlank() && SubtitleParsers.cleanTranslatedText(lines[index].zh).isNullOrBlank()
         }
@@ -1243,6 +1279,8 @@ class PlaybackService : MediaSessionService() {
         val batchSize = 10
         val translationCacheKey = "${key}|zh|${activeId}"
         for (batchIndices in pendingIndices.chunked(batchSize)) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            requireCurrentSession()
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             val batch = batchIndices.map { plain[it] }
             var translated: List<String>? = null
@@ -1280,6 +1318,8 @@ class PlaybackService : MediaSessionService() {
                 throw TranslationFailureException(message, e)
             }
 
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            requireCurrentSession()
             val batchTranslations = translated
             if (batchTranslations != null) {
                 val cleanedBatch = batchTranslations.map { SubtitleParsers.cleanTranslatedText(it) }
@@ -1306,6 +1346,7 @@ class PlaybackService : MediaSessionService() {
                 )
             }
             // Persist a checkpoint after each batch; retry keeps successful translations and fills only gaps.
+            requireCurrentSession()
             val cacheRows = org.json.JSONArray()
             for (line in updatedLines) cacheRows.put(
                 org.json.JSONObject()
