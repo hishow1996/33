@@ -43,7 +43,7 @@ android {
         versionCode = 8
         versionName = "1.0.6"
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += "arm64-v8a"
         }
     }
 
