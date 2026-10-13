@@ -381,25 +381,66 @@ class GoogleHybridEngine(private val context: Context) : TranslationEngine {
     }
 }
 
-/** Google Cloud Translation API v2（key 即用，固定引擎） */
+/** Google Cloud Translation Basic v2：固定官方端点，使用 API Key 请求头认证。 */
 class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
     override val id = "gcloud"
     override val displayName = "Google 翻译 API"
 
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        // v2 支持多 q 参数一次 128 段
-        val out = mutableListOf<String>()
-        val chunks = lines.chunked(64)
-        for (chunk in chunks) {
-            val sb = StringBuilder("https://translation.googleapis.com/language/translate/v2?key=$apiKey")
-                .append("&target=zh-CN")
-            if (!srcLang.startsWith("zh")) sb.append("&source=").append(srcLang.substringBefore('-'))
-            for (l in chunk) sb.append("&q=").append(java.net.URLEncoder.encode(l, "UTF-8"))
-            val body = get(sb.toString(), emptyMap())
-            val arr = JSONObject(body).getJSONObject("data").getJSONArray("translations")
-            for (i in 0 until arr.length()) out += arr.getJSONObject(i).optString("translatedText")
+    private val endpoint = "https://translation.googleapis.com/language/translate/v2"
+
+    private fun targetCode(code: String): String = when (code) {
+        "zh", "zh-CN", "zh-Hans" -> "zh-CN"
+        "zh-TW", "zh-Hant" -> "zh-TW"
+        else -> code.substringBefore('-')
+    }
+
+    private fun requestPayload(texts: List<String>, srcLang: String, tgtLang: String): String {
+        val payload = JSONObject()
+            .put("q", JSONArray().apply { texts.forEach { put(it) } })
+            .put("target", targetCode(tgtLang))
+            .put("format", "text")
+        val source = srcLang.trim()
+        if (source.isNotBlank() && !source.equals("auto", ignoreCase = true)) {
+            payload.put("source", source.substringBefore('-'))
         }
-        return out
+        return payload.toString()
+    }
+
+    private suspend fun translateChunk(texts: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (apiKey.isBlank()) throw IllegalStateException("Google Cloud Translation API Key 为空")
+        val body = post(
+            endpoint,
+            mapOf("x-goog-api-key" to apiKey.trim()),
+            requestPayload(texts, srcLang, tgtLang),
+        )
+        val arr = JSONObject(body).getJSONObject("data").getJSONArray("translations")
+        if (arr.length() != texts.size) {
+            throw IllegalStateException("Google 翻译返回数量不匹配：请求 ${texts.size} 条，返回 ${arr.length()} 条")
+        }
+        return List(arr.length()) { index ->
+            arr.getJSONObject(index).optString("translatedText").trim()
+        }
+    }
+
+    override suspend fun testConnection() {
+        val result = translateChunk(listOf("Hello"), "en", "zh-CN")
+        if (result.size != 1 || result.first().isBlank()) {
+            throw IllegalStateException("Cloud Translation Basic v2 已响应，但没有返回有效译文")
+        }
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (lines.isEmpty()) return emptyList()
+        if (apiKey.isBlank()) throw IllegalStateException("Google Cloud Translation API Key 为空")
+
+        // 空字幕原样保留，只把有内容的行发送到 API，避免空 q 项影响整批请求。
+        val output = MutableList(lines.size) { "" }
+        val nonBlank = lines.withIndex().filter { it.value.isNotBlank() }
+        for (chunk in nonBlank.chunked(64)) {
+            val translated = translateChunk(chunk.map { it.value }, srcLang, tgtLang)
+            chunk.forEachIndexed { index, item -> output[item.index] = translated[index] }
+        }
+        return output
     }
 }
 
