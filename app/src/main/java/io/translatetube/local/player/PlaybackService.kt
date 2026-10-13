@@ -1749,6 +1749,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 } else {
                     d.updatePlayerSpeed(pm.playbackSpeed())
+                    d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
                 }
                 pm.originalVolume = if (st.muteOriginal) 0f else 0.15f
             } else if (dubLine >= 0) {
@@ -2033,11 +2034,14 @@ class PlaybackService : MediaSessionService() {
 
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn
-        ui.update { it.copy(dubbingOn = nowOn) }
         if (!nowOn) {
             dubbing?.stop()
-            pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+            // Turning dubbing off must leave a usable audio path. Otherwise a remembered
+            // "mute original" setting can silence both the source video and the stopped dub.
+            ui.update { it.copy(dubbingOn = false, muteOriginal = false) }
+            pm.originalVolume = 1f
         } else {
+            ui.update { it.copy(dubbingOn = true) }
             lastLineIdx = Int.MIN_VALUE
         }
     }
@@ -2046,6 +2050,9 @@ class PlaybackService : MediaSessionService() {
         ui.update { it.copy(muteOriginal = nowMuted) }
         // Apply this immediately; tick() will refine it to the ducked mix volume when dubbing is active.
         pm.originalVolume = if (nowMuted) 0f else 1f
+        if (ui.value.dubbingOn) {
+            dubbing?.updateVolume(if (nowMuted) 1.0f else 0.35f)
+        }
         lastLineIdx = Int.MIN_VALUE
     }
     fun toggleAudioOnly() {

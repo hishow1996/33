@@ -48,6 +48,7 @@ class DubbingEngine(
     @Volatile private var activeSyncRate = 1.0f
     @Volatile private var activePlayerSpeed = 1.0f
     @Volatile private var activePlaybackRate = 1.0f
+    @Volatile private var activeVolume = 1.0f
     private val playbackGeneration = AtomicInteger(0)
     @Volatile private var released = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
@@ -376,6 +377,7 @@ class DubbingEngine(
         if (released) return
         val line = lines.getOrNull(idx) ?: return
         stop()
+        activeVolume = volume.coerceIn(0.0f, 1.0f)
         _currentLine.value = idx
         val generation = playbackGeneration.incrementAndGet()
         try {
@@ -448,7 +450,7 @@ class DubbingEngine(
                         created = null
                         return@execute
                     }
-                    newTrack.setVolume(volume.coerceIn(0.0f, 1.0f))
+                    newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
                     newTrack.play()
                     created = null
                 } catch (e: Exception) {
@@ -530,6 +532,26 @@ class DubbingEngine(
     fun line(idx: Int): SubLine? = lines.getOrNull(idx)
     fun allLines(): List<SubLine> = lines
     fun setSpeed(s: Float) { speed = s.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f }
+
+    /** Update the active voice volume immediately when the user toggles original audio. */
+    fun updateVolume(volume: Float) {
+        val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
+        if (kotlin.math.abs(normalized - activeVolume) < 0.01f) return
+        activeVolume = normalized
+        val active = track ?: return
+        try {
+            audioExec.execute {
+                if (!released && track === active) {
+                    runCatching { active.setVolume(normalized) }
+                        .onFailure {
+                            android.util.Log.w("DubbingEngine", "Could not update active voice volume", it)
+                        }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Service is shutting down.
+        }
+    }
 
     /** Update the active voice without changing the selected TTS engine or its cached PCM. */
     fun updatePlayerSpeed(speed: Float) {
