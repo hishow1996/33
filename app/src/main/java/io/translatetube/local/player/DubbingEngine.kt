@@ -83,6 +83,11 @@ class DubbingEngine(
         // 从未缓存的最早行开始排
         for (i in lines.indices) {
             val file = cacheFile(i)
+            if (file.exists() && !validCache(file)) {
+                // A previous interrupted write or an old incompatible cache must never be treated
+                // as a prepared line. Remove it and synthesize it again with the selected engine.
+                file.delete()
+            }
             if (validCache(file) && file.length() == 8L) {
                 if (lines[i].zh.isNullOrBlank()) {
                     // Empty output is expected for a subtitle line with no translated text.
@@ -95,6 +100,9 @@ class DubbingEngine(
             }
             if (!cached(i)) pending.offer(i)
         }
+        // If every line is already cached (or every subtitle is intentionally blank), publish
+        // progress immediately instead of making startup wait for a worker that has no work.
+        bumpPrepared(0)
         startSynthLoop()
     }
 
@@ -179,19 +187,29 @@ class DubbingEngine(
 
     private fun cacheFile(idx: Int): File {
         val line = lines.getOrNull(idx)
-        val voice = line?.speakerId ?: -1
-        fun fingerprint(value: String): String {
-            val bytes = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(value.toByteArray(Charsets.UTF_8))
-            return bytes.take(8).joinToString("") { "%02x".format(it) }
-        }
-        // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
-        val textHash = fingerprint(line?.zh ?: "")
-        // v4 forces a clean cache after fixing the old escaped interpolation bug.
-        val engineHash = fingerprint("${tts?.name ?: "unknown"}-v5-speed-${speed}")
-        return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
+        return File(
+            cacheDir,
+            DubbingCacheIdentity.fileName(
+                lineIndex = idx,
+                speakerId = line?.speakerId ?: -1,
+                engineSignature = tts?.cacheKey ?: "unknown",
+                speed = speed,
+                translatedText = line?.zh.orEmpty(),
+            ),
+        )
     }
-    private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
+
+    /** Validate both PCM header values and the exact payload length before allocating the buffer. */
+    private fun validCache(file: File): Boolean {
+        if (!file.isFile || file.length() < PcmCacheFormat.HEADER_BYTES) return false
+        return try {
+            java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
+                PcmCacheFormat.isValidHeader(input.readInt(), input.readInt(), file.length())
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     private fun cached(idx: Int): Boolean =
         synchronized(mem) { mem.containsKey(idx) } || validCache(cacheFile(idx))
@@ -230,8 +248,7 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
                 val sr = d.readInt()
                 val n = d.readInt()
-                if (sr <= 0 || n < 0 || n > 16_000_000 ||
-                    f.length() != 8L + n.toLong() * 4L) {
+                if (!PcmCacheFormat.isValidHeader(sr, n, f.length())) {
                     throw java.io.IOException("PCM 缓存格式无效")
                 }
                 val samples = FloatArray(n) { d.readFloat() }

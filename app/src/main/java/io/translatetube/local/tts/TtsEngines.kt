@@ -14,6 +14,8 @@ data class TtsAudio(val samples: FloatArray, val sampleRate: Int)
 
 interface TtsEngine {
     val name: String
+    /** Changes whenever the source voice/provider defaults that affect generated audio change. */
+    val cacheKey: String get() = name
     fun synth(text: String, speed: Float = 1.0f, speakerId: Int = -1): TtsAudio
     fun close()
 }
@@ -21,6 +23,7 @@ interface TtsEngine {
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
 class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
+    override val cacheKey: String = "kokoro-v1.1-int8-default-speaker-$speakerId-threads-$numThreads"
     private val tts: OfflineTts
 
     init {
@@ -72,6 +75,13 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
 class SystemTts(context: Context) : TtsEngine {
     private val appCtx = context.applicationContext
     override val name = "系统TTS"
+    override val cacheKey: String
+        get() {
+            val current = ttsRef.get()
+            val voice = current?.voice
+            return "system-tts-v1|engine=${current?.defaultEngine ?: "unknown"}|" +
+                "voice=${voice?.name ?: "unknown"}|locale=${voice?.locale?.toLanguageTag() ?: "unknown"}"
+        }
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
     private val ready = java.util.concurrent.CountDownLatch(1)
     @Volatile private var ok = false
