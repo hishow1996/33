@@ -341,7 +341,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         }
                         if (connectionMessage != null) {
                             Spacer(Modifier.height(6.dp))
-                            Text(connectionMessage!!, color = if (connectionMessage!!.startsWith("连接成功")) Color(0xFF21945A) else DangerRed, style = MaterialTheme.typography.bodySmall)
+                            Text(connectionMessage!!, color = if (connectionMessage!!.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed, style = MaterialTheme.typography.bodySmall)
                         }
                         Spacer(Modifier.height(11.dp))
                         Row(
@@ -351,7 +351,10 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         ) {
                             OutlinedButton(
                                 modifier = Modifier.weight(1f).height(48.dp),
-                                enabled = !checkingConnection && p.type != "GCLOUD",
+                                enabled = !checkingConnection &&
+                                    inlineKey.isNotBlank() &&
+                                    (p.type != "OPENAI" || inlineUrl.isNotBlank()) &&
+                                    (p.type == "GCLOUD" || inlineModel.isNotBlank()),
                                 onClick = {
                                     checkingConnection = true
                                     connectionMessage = null
@@ -361,19 +364,23 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                                         model = inlineModel.trim(),
                                     )
                                     scope.launch(Dispatchers.IO) {
+                                        val startedAt = System.nanoTime()
                                         try {
-                                            val available = EngineFactory.fromProfile(testProfile).listModels()
+                                            // Make a tiny real inference request with the selected model.
+                                            EngineFactory.fromProfile(testProfile).testConnection()
+                                            val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                                             withContext(Dispatchers.Main) {
-                                                connectionMessage = if (available != null) {
-                                                    "连接成功 · 返回 " + available.size + " 个模型"
-                                                } else {
-                                                    "接口未返回模型列表，请确认服务配置"
-                                                }
+                                                connectionMessage = "模型连接成功 · " + elapsedMs + " ms" +
+                                                    if (testProfile.model.isNotBlank()) " · " + testProfile.model else ""
                                                 checkingConnection = false
                                             }
+                                        } catch (e: CancellationException) {
+                                            throw e
                                         } catch (e: Exception) {
+                                            val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                                             withContext(Dispatchers.Main) {
-                                                connectionMessage = "连接失败 · " + (e.message ?: "请检查地址和 API Key")
+                                                connectionMessage = "模型连接失败 · " + elapsedMs + " ms · " +
+                                                    apiConnectionFailureMessage(testProfile, e)
                                                 checkingConnection = false
                                             }
                                         }
@@ -422,6 +429,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 }
             },
         )
+    }
+}
+
+private fun apiConnectionFailureMessage(profile: ApiProfile, error: Exception): String {
+    val detail = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+    val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
+        detail.contains("Function", ignoreCase = true) &&
+        detail.contains("Not found for account", ignoreCase = true)
+    return if (functionMissing) {
+        "服务端返回 404：模型列表可访问，但当前模型的推理函数/部署未找到。请改选该服务商中可调用的模型，或请服务商检查后端部署。详情：" + detail
+    } else {
+        "请求当前模型失败：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
     }
 }
 

@@ -155,6 +155,7 @@ class OpenAiCompatEngine(
         val payload = JSONObject()
             .put("model", model)
             .put("temperature", 0.2)
+            .put("max_tokens", 1024)
             .put(
                 "messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content", sys))

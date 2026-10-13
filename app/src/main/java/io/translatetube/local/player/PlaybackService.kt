@@ -47,6 +47,9 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
+private class TranslationFailureException(message: String, cause: Throwable) :
+    IllegalStateException(message, cause)
+
 
 data class PlayerUiState(
     val phase: Phase = Phase.IDLE,
@@ -790,6 +793,18 @@ class PlaybackService : MediaSessionService() {
             throw e
         } catch (e: Exception) {
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
+            if (e is TranslationFailureException) {
+                runCatching { pm.originalVolume = 1f }
+                ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = e.message ?: "API 翻译失败",
+                        muteOriginal = false,
+                        noModelHint = null,
+                    )
+                }
+            } else {
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.dubbingOn) {
@@ -805,6 +820,7 @@ class PlaybackService : MediaSessionService() {
                 }
             } else {
                 ui.update { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
+            }
             }
         } catch (e: Throwable) {
             // A non-fatal Error (for example, an extractor/library linkage error) must be shown
@@ -873,14 +889,21 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 android.util.Log.w("PlaybackService", "Translation batch failed ($start..$end)", e)
-                // 不自动切换 ML Kit，在线引擎失败时也不在后台下载离线模型。
-                ui.update {
-                    it.copy(
-                        phase = Phase.ERROR,
-                        error = "翻译失败：${e.message ?: "未知错误"}。请检查网络，或在 Google 翻译中下载对应离线语言包。"
-                    )
+                // Distinguish API provider failures from Google offline language-pack errors.
+                val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
+                    detail.contains("Function", ignoreCase = true) &&
+                    detail.contains("Not found for account", ignoreCase = true)
+                val message = if (active != null) {
+                    if (functionMissing) {
+                        "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
+                    } else {
+                        "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+                    }
+                } else {
+                    "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
                 }
-                translated = null
+                throw TranslationFailureException(message, e)
             }
 
             if (translated != null) {

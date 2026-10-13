@@ -6,6 +6,21 @@ interface TranslationEngine {
     val displayName: String
     /** 支持模型列表拉取的引擎返回列表；传统固定引擎返回 null */
     suspend fun listModels(): List<String>? = null
+    /**
+     * Test the configured inference endpoint with a single short request. This validates
+     * the selected model's generation route rather than merely checking the model catalog.
+     */
+    suspend fun testConnection() {
+        val result = translate(
+            listOf("Translate the word OK into Chinese. Reply with the translation only."),
+            "en",
+            "zh",
+        )
+        if (result.size != 1 || result.first().isBlank()) {
+            throw IllegalStateException("接口有响应，但模型没有返回可识别的译文格式")
+        }
+    }
+
     /** 批量翻译；失败抛异常（上层重试/降级） */
     suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String>
 }
