@@ -48,12 +48,6 @@ android {
     }
 
     signingConfigs {
-        create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
         if (releaseSigningReady) {
             create("release") {
                 storeFile = file(requireNotNull(releaseStorePath))
@@ -66,7 +60,8 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debugConfig")
+            // Use the Android Gradle Plugin's standard debug key; CI creates it automatically.
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             isMinifyEnabled = false
