@@ -63,6 +63,8 @@ class DubbingEngine(
     /** Serializes cache publication with release so a cancelled old run cannot install stale PCM. */
     private val cacheWriteLock = Any()
     private val ttsCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
+    // Completes only after every queued AudioTrack operation and the final track cleanup have drained.
+    private val audioCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val readiness = DubbingReadiness()
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
@@ -688,22 +690,32 @@ class DubbingEngine(
         _currentLine.value = -1
         val old = track
         track = null
-        if (old != null) {
-            try {
-                audioExec.execute {
-                    try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
+        // Queue a final barrier behind any in-flight track creation/write. Even when there is no
+        // currently published track, an earlier playAt() may still be finishing on audioExec.
+        try {
+            audioExec.execute {
+                try {
+                    old?.pause()
+                    old?.flush()
+                    old?.release()
+                } catch (e: Exception) {
+                    android.util.Log.w("DubbingEngine", "AudioTrack cleanup failed during release", e)
+                } finally {
+                    audioCloseSignal.complete(Unit)
                 }
-            } catch (_: java.util.concurrent.RejectedExecutionException) {
-                try { old.release() } catch (_: Exception) {}
             }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            try { old?.release() } catch (_: Exception) {}
+            audioCloseSignal.complete(Unit)
         }
-        // 正常关闭队列：已排队任务会看到 generation/released 状态并退出，清理任务仍能执行。
+        // Existing queued tasks see released/generation and abort; the cleanup barrier remains queued.
         audioExec.shutdown()
     }
 
-    /** Release immediately, then await TTS disposal before constructing a replacement engine. */
+    /** Release immediately, then await TTS and AudioTrack disposal before replacing this engine. */
     suspend fun releaseAndJoin() {
         release()
         ttsCloseSignal.await()
+        audioCloseSignal.await()
     }
 }
