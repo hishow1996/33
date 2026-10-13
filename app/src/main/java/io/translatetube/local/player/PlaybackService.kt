@@ -912,8 +912,22 @@ class PlaybackService : MediaSessionService() {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 ui.update { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
                 val audioFile = if (videoId != null) {
-                    val audioStream = NewPipeRepo.audioForAsr(videoId) ?: throw IllegalStateException("无法获取音频流")
-                    downloadAudio(audioStream.content).also { transientAudio = it }
+                    val cachedAudio = reusableAsrAudioFile(videoId)
+                    if (cachedAudio != null) {
+                        ui.update {
+                            it.copy(
+                                phase = Phase.DOWNLOADING_AUDIO,
+                                progress = "复用已下载音频，避免重复下载…",
+                            )
+                        }
+                        cachedAudio
+                    } else {
+                        val audioStream = NewPipeRepo.audioForAsr(videoId)
+                            ?: throw IllegalStateException("无法获取音频流")
+                        downloadAudio(audioStream.content, asrAudioCacheFile(videoId)).also {
+                            pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
+                        }
+                    }
                 } else {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -931,13 +945,29 @@ class PlaybackService : MediaSessionService() {
                         ui.update { it.copy(progress = "转写中 $done/$total 段") }
                     }
                 }
-                // 转写完成：释放临时音频文件
-                if (audioFile is File) {
+                // Only disposable local temporary files may be removed before the transcript checkpoint.
+                // YouTube audio remains cached until its ASR subtitles have been saved successfully.
+                if (audioFile is File && videoId == null) {
                     audioFile.delete()
                     if (transientAudio == audioFile) transientAudio = null
                 }
-                val transcribedLines = asrLines.mapIndexed { i, (a, b, text) ->
-                    SubLine(i, a, b, text)
+                val transcribedLines = asrLines
+                    .mapNotNull { (startMs, endMs, text) ->
+                        val normalized = text.trim()
+                        if (normalized.isBlank() || endMs <= startMs) null
+                        else Triple(startMs, endMs, normalized)
+                    }
+                    .mapIndexed { index, (startMs, endMs, text) ->
+                        SubLine(index, startMs, endMs, text)
+                    }
+                if (transcribedLines.isEmpty()) {
+                    throw IllegalStateException(
+                        if (videoId != null) {
+                            "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
+                        } else {
+                            "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
+                        }
+                    )
                 }
                 lines = transcribedLines
                 srcLang = whisper?.lastLang?.takeIf { it.isNotBlank() } ?: "en"
@@ -963,6 +993,11 @@ class PlaybackService : MediaSessionService() {
                             System.currentTimeMillis(),
                         )
                     )
+                    // The transcript is durably checkpointed; the large audio cache is no longer needed.
+                    if (videoId != null && audioFile is File) {
+                        audioFile.delete()
+                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = null)
+                    }
                     android.util.Log.i(
                         "PlaybackService",
                         "Cached ${transcribedLines.size} ASR source subtitle cues for retry reuse",
@@ -1495,9 +1530,57 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-        private suspend fun downloadAudio(url: String): File {
-        val f = File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
-        val maxBytes = 512L * 1024 * 1024
+    private fun asrAudioCacheDirectory(): File =
+        File(cacheDir, "asr_audio_retry").apply { mkdirs() }
+
+    private fun asrAudioCacheFile(videoId: String): File {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(videoId.toByteArray(Charsets.UTF_8))
+        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return File(asrAudioCacheDirectory(), "$safeId.bin")
+    }
+
+    /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
+    private fun reusableAsrAudioFile(videoId: String): File? {
+        val file = asrAudioCacheFile(videoId)
+        val now = System.currentTimeMillis()
+        if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
+            file.setLastModified(now)
+            file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
+            return file
+        }
+        file.delete()
+        File(file.parentFile, file.name + ".part").delete()
+        return null
+    }
+
+    /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
+    private fun pruneAsrAudioCache(directory: File, keep: File?) {
+        val files = directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".bin") }
+            ?: return
+        var totalBytes = 0L
+        files.forEach { totalBytes += it.length() }
+        val budget = AsrAudioCachePolicy.CACHE_BUDGET_BYTES
+        for (file in files.sortedBy { it.lastModified() }) {
+            if (totalBytes <= budget) break
+            if (keep != null && file.absolutePath == keep.absolutePath) continue
+            val size = file.length()
+            if (file.delete()) totalBytes -= size
+        }
+    }
+
+    private suspend fun downloadAudio(url: String, destination: File? = null): File {
+        val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
+        target.parentFile?.mkdirs()
+        val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
+        if (destination != null) {
+            writeTarget.delete()
+            if (target.exists() && !target.delete()) {
+                throw IllegalStateException("无法替换旧的音频缓存文件")
+            }
+        }
+        val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
         val req = Request.Builder().url(url)
@@ -1511,7 +1594,7 @@ class PlaybackService : MediaSessionService() {
                     val total = body.contentLength()
                     if (total > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
                     body.byteStream().use { ins ->
-                        f.outputStream().buffered().use { out ->
+                        writeTarget.outputStream().buffered().use { out ->
                             val buf = ByteArray(64 * 1024)
                             var got = 0L
                             while (true) {
@@ -1528,12 +1611,17 @@ class PlaybackService : MediaSessionService() {
                             out.flush()
                         }
                     }
-                    if (!f.isFile || f.length() == 0L) throw IllegalStateException("音频下载结果为空")
+                    if (!writeTarget.isFile || writeTarget.length() == 0L) {
+                        throw IllegalStateException("音频下载结果为空")
+                    }
                 }
             }
-            return f
+            if (destination == null) return writeTarget
+            if (!writeTarget.renameTo(target)) throw IllegalStateException("下载完成但无法保存音频缓存")
+            target.setLastModified(System.currentTimeMillis())
+            return target
         } catch (e: Exception) {
-            f.delete()
+            writeTarget.delete()
             throw e
         }
     }
