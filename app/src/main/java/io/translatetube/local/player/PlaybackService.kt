@@ -31,6 +31,9 @@ import io.translatetube.local.tts.KokoroTts
 import io.translatetube.local.tts.TtsEngine
 import io.translatetube.local.yt.NewPipeRepo
 import io.translatetube.local.yt.SubtitleTrackOption
+import io.translatetube.local.yt.YouTubeAudioCandidate
+import io.translatetube.local.yt.YouTubeStreamSelector
+import io.translatetube.local.yt.YouTubeVideoCandidate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
