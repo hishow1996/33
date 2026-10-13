@@ -58,122 +58,6 @@ import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.withContext
 
-private data class ApiProviderPreset(
-    val id: String,
-    val title: String,
-    val name: String,
-    val baseUrl: String,
-    val model: String,
-    val summary: String,
-    val note: String,
-)
-
-private val FREE_MODEL_PRESETS = listOf(
-    ApiProviderPreset(
-        id = "openrouter-free",
-        title = "OpenRouter · 免费模型自动选择",
-        name = "OpenRouter 免费模型",
-        baseUrl = "https://openrouter.ai/api/v1",
-        model = "openrouter/free",
-        summary = "自动选择当下可用的免费模型",
-        note = "需要 OpenRouter API Key；模型由平台动态选择，存在速率限制与可用性变化。",
-    ),
-    ApiProviderPreset(
-        id = "openrouter-deepseek-r1-free",
-        title = "DeepSeek R1 · OpenRouter 免费版",
-        name = "DeepSeek R1（免费版）",
-        baseUrl = "https://openrouter.ai/api/v1",
-        model = "deepseek/deepseek-r1:free",
-        summary = "尝试固定调用 DeepSeek R1 免费变体",
-        note = "需要 OpenRouter API Key；免费模型变体可能调整、限流或暂时不可用。",
-    ),
-    ApiProviderPreset(
-        id = "siliconflow-qwen",
-        title = "Qwen3.5-4B · 硅基流动",
-        name = "Qwen3.5-4B（硅基流动）",
-        baseUrl = "https://api.siliconflow.cn/v1",
-        model = "Qwen/Qwen3.5-4B",
-        summary = "轻量开源权重模型，适合普通文本任务",
-        note = "需要硅基流动 API Key；请以模型广场当前的免费标记、价格和账号权限为准。",
-    ),
-    ApiProviderPreset(
-        id = "siliconflow-glm",
-        title = "GLM-4-9B · 硅基流动",
-        name = "GLM-4-9B-0414（硅基流动）",
-        baseUrl = "https://api.siliconflow.cn/v1",
-        model = "THUDM/GLM-4-9B-0414",
-        summary = "开源权重通用模型",
-        note = "需要硅基流动 API Key；免费资格、调用限制和模型供应情况以平台当前信息为准。",
-    ),
-    ApiProviderPreset(
-        id = "siliconflow-hunyuan-mt",
-        title = "Hunyuan-MT-7B · 硅基流动",
-        name = "Hunyuan-MT-7B（硅基流动）",
-        baseUrl = "https://api.siliconflow.cn/v1",
-        model = "tencent/Hunyuan-MT-7B",
-        summary = "面向机器翻译的模型",
-        note = "需要硅基流动 API Key；该模型是否免费及当前可调用状态请以平台模型广场为准。",
-    ),
-)
-
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-@Composable
-private fun FreeModelQuickAddSection(
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    onChoose: (ApiProviderPreset) -> Unit,
-) {
-    Column(
-        Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color.White)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().clickable(onClick = onToggle),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("免费模型快速添加", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "自动预填服务地址和模型；仍需填写你自己的 API Key",
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Icon(
-                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                contentDescription = if (expanded) "收起免费模型预设" else "展开免费模型预设",
-                tint = SubText,
-            )
-        }
-        if (expanded) {
-            Text(
-                "在线免费额度并非永久保证，模型、限流和价格可能变化。保存前请核对服务商规则；添加预设不会自动创建账号或密钥。",
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FREE_MODEL_PRESETS.forEach { preset ->
-                    OutlinedButton(
-                        onClick = { onChoose(preset) },
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
-                    ) {
-                        Text(preset.title, style = MaterialTheme.typography.labelMedium, maxLines = 2)
-                    }
-                }
-            }
-        }
-    }
-}
-
 @Composable
 fun ApiManagerScreen(onBack: () -> Unit) {
     androidx.activity.compose.BackHandler { onBack() }
@@ -184,8 +68,6 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     var loadError by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ApiProfile?>(null) }
     var adding by remember { mutableStateOf(false) }
-    var selectedPreset by remember { mutableStateOf<ApiProviderPreset?>(null) }
-    var freeModelsExpanded by remember { mutableStateOf(false) }
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
 
@@ -237,7 +119,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Text("配置翻译服务与模型", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
             Surface(
-                onClick = { selectedPreset = null; adding = true },
+                onClick = { adding = true },
                 shape = CircleShape,
                 color = Color.White,
                 border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
@@ -287,17 +169,6 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (googleExpanded) item { GoogleTranslateSection() }
-            item {
-                FreeModelQuickAddSection(
-                    expanded = freeModelsExpanded,
-                    onToggle = { freeModelsExpanded = !freeModelsExpanded },
-                    onChoose = { preset ->
-                        selectedPreset = preset
-                        freeModelsExpanded = false
-                        adding = true
-                    },
-                )
-            }
             if (profiles.isEmpty()) {
                 item {
                     Column(
@@ -412,12 +283,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     if (adding || editing != null) {
         EditDialog(
             initial = editing,
-            preset = selectedPreset,
-            onDismiss = { adding = false; editing = null; selectedPreset = null },
+            onDismiss = { adding = false; editing = null },
             onSave = { p ->
                 scope.launch(Dispatchers.IO) {
                     db.apiProfileDao().upsert(p)
-                    withContext(Dispatchers.Main) { adding = false; editing = null; selectedPreset = null }
+                    withContext(Dispatchers.Main) { adding = false; editing = null }
                 }
             },
         )
@@ -885,15 +755,15 @@ private fun GenericApiLogo() {
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun EditDialog(initial: ApiProfile?, preset: ApiProviderPreset? = null, onDismiss: () -> Unit, onSave: (ApiProfile) -> Unit) {
-    var name by remember { mutableStateOf(initial?.name ?: preset?.name ?: "") }
+private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (ApiProfile) -> Unit) {
+    var name by remember { mutableStateOf(initial?.name ?: "") }
     var type by remember { mutableStateOf(initial?.type ?: "OPENAI") }
-    var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: preset?.baseUrl ?: "") }
+    var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: "") }
     var apiKey by remember {
         mutableStateOf(initial?.let { Crypto.decrypt(it.apiKey) } ?: "")
     }
     var showApiKey by remember { mutableStateOf(false) }
-    var model by remember { mutableStateOf(initial?.model ?: preset?.model ?: "") }
+    var model by remember { mutableStateOf(initial?.model ?: "") }
     var region by remember { mutableStateOf(initial?.region ?: "") }
     var models by remember { mutableStateOf<List<String>?>(null) }
     var pulling by remember { mutableStateOf(false) }
@@ -982,22 +852,8 @@ private fun EditDialog(initial: ApiProfile?, preset: ApiProviderPreset? = null, 
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 18.dp, vertical = 16.dp)
         ) {
-            Text(if (initial != null) "编辑 API" else if (preset != null) "配置 ${preset.name}" else "添加翻译 API", style = MaterialTheme.typography.titleLarge, color = OnBg)
+            Text(if (initial == null) "添加翻译 API" else "编辑 API", style = MaterialTheme.typography.titleLarge, color = OnBg)
             Spacer(Modifier.height(10.dp))
-            if (preset != null && initial == null) {
-                Text(
-                    preset.summary,
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    preset.note,
-                    color = WarnYellow,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(6.dp))
-            }
 
             Labeled("名称") { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 DeepSeek") }) }
 
