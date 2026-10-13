@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.TtsEngineMessages
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
 import io.translatetube.local.subs.SubLine
@@ -1516,7 +1517,8 @@ private fun SubtitleList(
                                 }
                             }
                         }
-                    }                }
+                    }
+                }
             }
         }
     }
