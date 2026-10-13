@@ -46,15 +46,12 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     var profiles by remember { mutableStateOf<List<ApiProfile>>(emptyList()) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ApiProfile?>(null) }
-    var inlineEditingId by remember { mutableStateOf<Long?>(null) }
     var adding by remember { mutableStateOf(false) }
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
 
     // 手动切换翻译引擎：写 prefs 即刻生效（下次翻译起用新源）
     fun setActive(id: Long) {
-        // Selecting a provider changes the active engine, not the inline editor visibility.
-        inlineEditingId = null
         activeId = id
         prefs.edit().putLong("active_api_id", id).apply()
     }
@@ -228,15 +225,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                                     onDismissRequest = { profileMenuExpanded = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("编辑信息面板") },
+                                        text = { Text("编辑配置") },
                                         onClick = {
                                             profileMenuExpanded = false
-                                            inlineEditingId = if (inlineEditingId == p.id) null else p.id
+                                            editing = p
                                         },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("编辑配置") },
-                                        onClick = { profileMenuExpanded = false; editing = p },
                                     )
                                     DropdownMenuItem(
                                         text = { Text("停用服务") },
@@ -271,148 +264,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                             )
                         }
                     }
-                    if (activeId == p.id && p.enabled && inlineEditingId == p.id) {
-                        var inlineUrl by remember(p.id, p.baseUrl) { mutableStateOf(p.baseUrl) }
-                        var inlineKey by remember(p.id, p.apiKey) { mutableStateOf(Crypto.decrypt(p.apiKey)) }
-                        var inlineModel by remember(p.id, p.model) { mutableStateOf(p.model) }
-                        var showInlineKey by remember(p.id) { mutableStateOf(false) }
-                        var checkingConnection by remember(p.id) { mutableStateOf(false) }
-                        var connectionMessage by remember(p.id) { mutableStateOf<String?>(null) }
 
-                        HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 5.dp))
-                        if (p.type == "OPENAI") {
-                            Text("服务地址", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                            Spacer(Modifier.height(5.dp))
-                            OutlinedTextField(
-                                value = inlineUrl,
-                                onValueChange = { inlineUrl = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(15.dp),
-                                placeholder = { Text("https://api.example.com/v1") },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = BrandBright,
-                                    unfocusedBorderColor = Color(0xFFF0F3F8),
-                                    focusedContainerColor = Color(0xFFF6F8FC),
-                                    unfocusedContainerColor = Color(0xFFF6F8FC),
-                                ),
-                            )
-                            Spacer(Modifier.height(9.dp))
-                        }
-                        Text("API Key", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(5.dp))
-                        OutlinedTextField(
-                            value = inlineKey,
-                            onValueChange = { inlineKey = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(15.dp),
-                            visualTransformation = if (showInlineKey) VisualTransformation.None else PasswordVisualTransformation(),
-                            placeholder = { Text("输入 API Key") },
-                            trailingIcon = {
-                                TextButton(
-                                    onClick = { showInlineKey = !showInlineKey },
-                                    contentPadding = PaddingValues(horizontal = 8.dp),
-                                ) { Text(if (showInlineKey) "隐藏" else "显示", color = BrandBright) }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = BrandBright,
-                                unfocusedBorderColor = Color(0xFFF0F3F8),
-                                focusedContainerColor = Color(0xFFF6F8FC),
-                                unfocusedContainerColor = Color(0xFFF6F8FC),
-                            ),
-                        )
-                        if (p.type != "GCLOUD") {
-                            Spacer(Modifier.height(9.dp))
-                            Text("模型名称", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                            Spacer(Modifier.height(5.dp))
-                            OutlinedTextField(
-                                value = inlineModel,
-                                onValueChange = { inlineModel = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                shape = RoundedCornerShape(15.dp),
-                                placeholder = { Text("选择或填写模型") },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = BrandBright,
-                                    unfocusedBorderColor = Color(0xFFF0F3F8),
-                                    focusedContainerColor = Color(0xFFF6F8FC),
-                                    unfocusedContainerColor = Color(0xFFF6F8FC),
-                                ),
-                            )
-                        }
-                        if (connectionMessage != null) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(connectionMessage!!, color = if (connectionMessage!!.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Spacer(Modifier.height(11.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            OutlinedButton(
-                                modifier = Modifier.weight(1f).height(48.dp),
-                                enabled = !checkingConnection &&
-                                    inlineKey.isNotBlank() &&
-                                    (p.type != "OPENAI" || inlineUrl.isNotBlank()) &&
-                                    (p.type == "GCLOUD" || inlineModel.isNotBlank()),
-                                onClick = {
-                                    checkingConnection = true
-                                    connectionMessage = null
-                                    val testProfile = p.copy(
-                                        baseUrl = inlineUrl.trim(),
-                                        apiKey = Crypto.encrypt(inlineKey.trim()),
-                                        model = inlineModel.trim(),
-                                    )
-                                    scope.launch(Dispatchers.IO) {
-                                        val startedAt = System.nanoTime()
-                                        try {
-                                            // Make a tiny real inference request with the selected model.
-                                            EngineFactory.fromProfile(testProfile).testConnection()
-                                            val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
-                                            withContext(Dispatchers.Main) {
-                                                connectionMessage = "模型连接成功 · " + elapsedMs + " ms" +
-                                                    if (testProfile.model.isNotBlank()) " · " + testProfile.model else ""
-                                                checkingConnection = false
-                                            }
-                                        } catch (e: CancellationException) {
-                                            throw e
-                                        } catch (e: Exception) {
-                                            val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
-                                            withContext(Dispatchers.Main) {
-                                                connectionMessage = "模型连接失败 · " + elapsedMs + " ms · " +
-                                                    apiConnectionFailureMessage(testProfile, e)
-                                                checkingConnection = false
-                                            }
-                                        }
-                                    }
-                                },
-                                shape = RoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
-                            ) { Text(if (checkingConnection) "测试中…" else "测试连接") }
-                            Button(
-                                modifier = Modifier.weight(1f).height(48.dp),
-                                enabled = (p.type != "OPENAI" || inlineUrl.isNotBlank()) &&
-                                    inlineKey.isNotBlank() && (p.type == "GCLOUD" || inlineModel.isNotBlank()),
-                                onClick = {
-                                    val saved = p.copy(
-                                        baseUrl = inlineUrl.trim(),
-                                        apiKey = Crypto.encrypt(inlineKey.trim()),
-                                        model = inlineModel.trim(),
-                                    )
-                                    scope.launch(Dispatchers.IO) {
-                                        db.apiProfileDao().upsert(saved)
-                                        withContext(Dispatchers.Main) {
-                                            connectionMessage = "配置已保存"
-                                        }
-                                    }
-                                },
-                                shape = RoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White),
-                            ) { Text("保存配置") }
-                        }
-                    }
 
 
                 }
@@ -467,6 +319,8 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     var models by remember { mutableStateOf<List<String>?>(null) }
     var pulling by remember { mutableStateOf(false) }
     var pullError by remember { mutableStateOf<String?>(null) }
+    var testingConnection by remember { mutableStateOf(false) }
+    var connectionMessage by remember { mutableStateOf<String?>(null) }
 
     val needsBaseUrl = type == "OPENAI"
     // Azure Translator 同样需要订阅密钥；区域不能替代 API Key。
@@ -479,6 +333,69 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         val scope = rememberCoroutineScope()
+
+        fun makeCurrentProfile(): ApiProfile = ApiProfile(
+            id = initial?.id ?: 0,
+            name = name.ifBlank { typeLabel(type) },
+            type = type,
+            baseUrl = baseUrl.trim(),
+            apiKey = Crypto.encrypt(apiKey.trim()),
+            model = model.trim(),
+            region = region.trim(),
+            enabled = true,
+        )
+
+        fun pullModelsNow() {
+            pulling = true
+            pullError = null
+            connectionMessage = null
+            val profile = makeCurrentProfile()
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val list = EngineFactory.fromProfile(profile).listModels()
+                        ?: throw IllegalStateException("该类型不支持拉取模型")
+                    withContext(Dispatchers.Main) {
+                        models = list
+                        pulling = false
+                        if (list.isEmpty()) pullError = "服务端没有返回可用模型，可手动填写模型名称。"
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        pullError = e.message ?: "拉取失败"
+                        pulling = false
+                    }
+                }
+            }
+        }
+
+        fun testConnectionNow() {
+            testingConnection = true
+            connectionMessage = null
+            val profile = makeCurrentProfile()
+            scope.launch(Dispatchers.IO) {
+                val startedAt = System.nanoTime()
+                try {
+                    EngineFactory.fromProfile(profile).testConnection()
+                    val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                    withContext(Dispatchers.Main) {
+                        connectionMessage = "模型连接成功 · ${elapsedMs} ms" +
+                            if (profile.model.isNotBlank()) " · ${profile.model}" else ""
+                        testingConnection = false
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                    withContext(Dispatchers.Main) {
+                        connectionMessage = "模型连接失败 · ${elapsedMs} ms · " +
+                            apiConnectionFailureMessage(profile, e)
+                        testingConnection = false
+                    }
+                }
+            }
+        }
         Column(
             Modifier.fillMaxWidth(0.94f)
                 .heightIn(max = (configuration.screenHeightDp * 0.84f).dp)
@@ -619,30 +536,41 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             singleLine = true,
                             placeholder = { Text("填写模型名称") },
                         )
-                        Button(
-                            onClick = {
-                                pulling = true; pullError = null
-                                scope.launch(Dispatchers.IO) {
-                                    try {
-                                        val prof = ApiProfile(
-                                            id = initial?.id ?: 0, name = name.ifEmpty { "tmp" }, type = type,
-                                            baseUrl = baseUrl, apiKey = Crypto.encrypt(apiKey), model = model,
-                                            region = region, enabled = true,
-                                        )
-                                        val list = EngineFactory.fromProfile(prof).listModels()
-                                            ?: throw IllegalStateException("该类型不支持拉取")
-                                        withContext(Dispatchers.Main) { models = list; pulling = false }
-                                    } catch (e: Exception) {
-                                        withContext(Dispatchers.Main) {
-                                            pullError = e.message ?: "拉取失败"; pulling = false
-                                        }
-                                    }
-                                }
-                            },
-                            enabled = !pulling && (apiKey.isNotBlank() || !needsKey),
-                            colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                        ) { Text(if (pulling) "拉取中…" else "↓ 拉取可用模型") }
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Button(
+                                onClick = { pullModelsNow() },
+                                enabled = !pulling && !testingConnection &&
+                                    apiKey.isNotBlank() &&
+                                    (!needsBaseUrl || baseUrl.isNotBlank()),
+                                modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Brand,
+                                    contentColor = androidx.compose.ui.graphics.Color.White,
+                                ),
+                            ) { Text(if (pulling) "拉取中…" else "↓ 拉取模型") }
+                            OutlinedButton(
+                                onClick = { testConnectionNow() },
+                                enabled = !pulling && !testingConnection &&
+                                    apiKey.isNotBlank() &&
+                                    (!needsBaseUrl || baseUrl.isNotBlank()) &&
+                                    (fixedEngine || model.isNotBlank()),
+                                modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
+                            ) { Text(if (testingConnection) "测试中…" else "测试连接") }
+                        }
+                        connectionMessage?.let { message ->
+                            Text(
+                                message,
+                                color = if (message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
                 pullError?.let {
@@ -665,6 +593,27 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                         .padding(horizontal = 10.dp, vertical = 8.dp),
                                 )
                             }
+                        }
+                    }
+                }
+            }
+
+            if (fixedEngine) {
+                Labeled("连接测试") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { testConnectionNow() },
+                            enabled = !testingConnection && apiKey.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
+                        ) { Text(if (testingConnection) "测试中…" else "测试连接") }
+                        connectionMessage?.let { message ->
+                            Text(
+                                message,
+                                color = if (message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     }
                 }

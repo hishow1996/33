@@ -136,7 +136,7 @@ class PlaybackService : MediaSessionService() {
         try {
             NotificationManagerCompat_c.create(this)
             val boot = NotificationCompat.Builder(this, CH_MAIN)
-                .setSmallIcon(io.translatetube.local.R.drawable.ic_stat_notify)
+                .setSmallIcon(io.translatetube.local.R.drawable.ic_stat_brand)
                 .setContentTitle("大象翻译")
                 .setContentText("正在准备…")
                 .setOngoing(true)
@@ -244,7 +244,7 @@ class PlaybackService : MediaSessionService() {
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val notification = NotificationCompat.Builder(this, CH_MAIN)
-            .setSmallIcon(R.drawable.ic_stat_notify)
+            .setSmallIcon(R.drawable.ic_stat_brand)
             .setContentTitle(title)
             .setContentText(displayDetail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
