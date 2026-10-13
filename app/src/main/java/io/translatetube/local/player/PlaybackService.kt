@@ -1066,6 +1066,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
+            if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
                 if (restoredSourceLines != null) {
