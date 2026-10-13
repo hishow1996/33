@@ -156,7 +156,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun ensureCurrentSession(sessionKey: String) {
         if (videoKey != sessionKey || ui.value.key != sessionKey) {
-            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
+            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频处理任务")
         }
     }
 
@@ -416,7 +416,8 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
-        this.importedLines = importedLines
+        val importedLinesSnapshot = importedLines?.toList()
+        this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
         if (videoId != null && resumeState == null) NewPipeRepo.invalidate(videoId)
         qualityJob?.cancel()
@@ -452,7 +453,9 @@ class PlaybackService : MediaSessionService() {
             ttsEngineName = configuredTtsName,
         )
         pm.pause()
-        prepJob = scope.launch { runPipeline(key, videoId, localUri, resumeState) }
+        prepJob = scope.launch {
+            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot)
+        }
     }
 
     /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
@@ -831,11 +834,14 @@ class PlaybackService : MediaSessionService() {
         videoId: String?,
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
+        sourceImportedLines: List<SubLine>? = null,
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         try {
+            ensureCurrentSession(key)
             awaitRetiredDubbingEngines()
+            ensureCurrentSession(key)
             var meta = VideoEntity(
                 key = key, videoId = videoId, localUri = localUri?.toString(),
                 title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
@@ -860,6 +866,7 @@ class PlaybackService : MediaSessionService() {
                 }
             } else if (videoId != null) {
                 val m = NewPipeRepo.resolve(videoId)
+                ensureCurrentSession(key)
                 meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
                 updateUiForSession(key) { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
             } else if (resumeState == null) {
@@ -886,6 +893,7 @@ class PlaybackService : MediaSessionService() {
                 try {
                     updateUiForSession(key) { it.copy(progress = "正在查找可用字幕轨…") }
                     val tracks = NewPipeRepo.subtitleTracks(videoId)
+                    ensureCurrentSession(key)
                     updateUiForSession(key) {
                         it.copy(
                             availableSubtitleTracks = tracks,
@@ -913,8 +921,8 @@ class PlaybackService : MediaSessionService() {
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
-                ?: if (!importedLines.isNullOrEmpty()) {
-                    importedTranslationCacheKey(key, selectedTranslationId, importedLines)
+                ?: if (!sourceImportedLines.isNullOrEmpty()) {
+                    importedTranslationCacheKey(key, selectedTranslationId, sourceImportedLines)
                 } else {
                     "$key|zh|$selectedTranslationId"
                 }
@@ -941,6 +949,7 @@ class PlaybackService : MediaSessionService() {
                 val id = videoId ?: return null
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
                 val fetched = NewPipeRepo.subtitles(id) ?: return null
+                ensureCurrentSession(key)
                 val lang = fetched.second.takeIf { it.isNotBlank() } ?: "auto"
                 val fetchedLines = fetched.first
                     .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
@@ -965,7 +974,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             val sourceCached = if (
-                resumeState == null && videoId != null && importedLines.isNullOrEmpty()
+                resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -990,10 +999,10 @@ class PlaybackService : MediaSessionService() {
                 )
                 db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
                 // A legacy video-level translation cache cannot be proven to belong to this source.
-                if (importedLines.isNullOrEmpty()) cached = null
+                if (sourceImportedLines.isNullOrEmpty()) cached = null
             } else if (
                 cached != null &&
-                importedLines.isNullOrEmpty() &&
+                sourceImportedLines.isNullOrEmpty() &&
                 restoredSourceLines != null &&
                 !translationCacheMatchesSource(cached.linesJson, restoredSourceLines)
             ) {
@@ -1005,7 +1014,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
-            if (resumeState == null && cached == null && importedLines.isNullOrEmpty() && videoId != null) {
+            if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
                 if (restoredSourceLines != null && sourceCached != null) {
                     lines = restoredSourceLines
                     srcLang = sourceCached.srcLang.takeIf { it.isNotBlank() }
@@ -1022,7 +1031,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
-            if (lines == null && cached == null && importedLines.isNullOrEmpty()) {
+            if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
                 if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
                     // 方案 B：转写模型未下载——优雅降级（原声播放 + 引导提示），不崩
                     updateUiForSession(key) { it.copy(noModelHint = "该视频无字幕。下载「转写模型」后即可生成中文字幕与配音（设置 → 语音模型）") }
@@ -1039,15 +1048,18 @@ class PlaybackService : MediaSessionService() {
                     if (audioFile is File) AudioExtract.decodeTo16kMono(this@PlaybackService, null, audioFile)
                     else AudioExtract.decodeTo16kMono(this@PlaybackService, audioFile as Uri, null)
                 }
+                ensureCurrentSession(key)
                 if (whisper == null) whisper = WhisperEngine(this)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) { vadSegments(this@PlaybackService, pcm.samples) }
+                ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
                 val asrLines = withContext(Dispatchers.IO) {
                     whisper!!.transcribeBySegments(pcm.samples, segs) { done, total ->
                         updateUiForSession(key) { it.copy(progress = "转写中 $done/$total 段") }
                     }
                 }
+                ensureCurrentSession(key)
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
                 // YouTube audio remains cached until its ASR subtitles have been saved successfully.
                 if (audioFile is File && videoId == null) {
@@ -1078,7 +1090,8 @@ class PlaybackService : MediaSessionService() {
                 // Keep the completed ASR transcript as an independent checkpoint. The bounded
                 // source-audio cache is retained for retries and later speaker diarization, while
                 // this subtitle cache lets translation retry without running ASR again.
-                if (videoId != null && importedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                ensureCurrentSession(key)
+                if (videoId != null && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for (line in transcribedLines) {
                         sourceArr.put(
@@ -1111,9 +1124,9 @@ class PlaybackService : MediaSessionService() {
             }
 
             // 用户导入的字幕优先（SRT/VTT 导入入口）
-            if (importedLines != null && importedLines!!.isNotEmpty()) {
-                lines = importedLines
-                srcLang = detectLangFromText(importedLines!!.take(12).joinToString(" ") { it.text })
+            if (sourceImportedLines != null && sourceImportedLines!!.isNotEmpty()) {
+                lines = sourceImportedLines
+                srcLang = detectLangFromText(sourceImportedLines!!.take(12).joinToString(" ") { it.text })
             }
 
             if (cached != null) {
@@ -1157,6 +1170,7 @@ class PlaybackService : MediaSessionService() {
                 }
                 lines = translatedLines
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
+                ensureCurrentSession(key)
                 if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
                     val arr = org.json.JSONArray()
                     for (l in translatedLines) arr.put(
@@ -1168,6 +1182,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
+            ensureCurrentSession(key)
             val finalLines = applySavedLineOverrides(lines ?: emptyList(), key)
             updateUiForSession(key) {
                 it.copy(
@@ -1178,7 +1193,9 @@ class PlaybackService : MediaSessionService() {
 
             // ---- 4. 流装配 ----
             if (videoId != null) {
-                val choices = buildYouTubeStreamChoices(NewPipeRepo.streams(videoId))
+                val streamInfo = NewPipeRepo.streams(videoId)
+                ensureCurrentSession(key)
+                val choices = buildYouTubeStreamChoices(streamInfo)
                 val candidates = choices.sources
                 val audioUrl = choices.audioUrl
                 val defaultQuality = choices.defaultQuality
@@ -1190,7 +1207,9 @@ class PlaybackService : MediaSessionService() {
                         selectedQuality = defaultQuality.label,
                     )
                 }
+                ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
+                    ensureCurrentSession(key)
                     pm.setYouTubeQuality(
                         videoUrl = defaultQuality.url,
                         audioUrl = audioUrl,
@@ -1201,7 +1220,9 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
             } else {
+                ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
+                    ensureCurrentSession(key)
                     pm.setUriSource(localUri!!, meta.title, "本地视频", null)
                 }
             }
@@ -1227,6 +1248,12 @@ class PlaybackService : MediaSessionService() {
                         // Pass the saved selection explicitly so a settings change during parsing
                         // cannot cause the readiness check and actual engine to disagree.
                         val tts: TtsEngine = makeTts(selectedTts)
+                        try {
+                            ensureCurrentSession(key)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            runCatching { tts.close() }
+                            throw e
+                        }
                         val d = DubbingEngine(this, key, scope)
                         registerDubbingFailureHandler(d, tts, key)
                         updateUiForSession(key) {
@@ -1237,6 +1264,12 @@ class PlaybackService : MediaSessionService() {
                             )
                         }
                         d.attach(tts, finalLines)
+                        try {
+                            ensureCurrentSession(key)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            d.releaseAndJoin()
+                            throw e
+                        }
                         dubbing = d
                         dubCollectJob = scope.launch {
                             d.preparedUntil.collect { n -> updateUiForSession(key) { it.copy(preparedUntil = n) } }
@@ -1291,7 +1324,9 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
             }
+            ensureCurrentSession(key)
             saveHistory(meta)
+            ensureCurrentSession(key)
             updateUiForSession(key) { it.copy(phase = Phase.READY, engineName = it.engineName.ifEmpty { "本地引擎" }) }
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
             val resumeSec = try {
@@ -1299,16 +1334,25 @@ class PlaybackService : MediaSessionService() {
             } catch (_: Exception) { 0L }
             val totalMs = meta.durationSec * 1000
             if (resumeSec > 10 && (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)) {
-                withContext(Dispatchers.Main) { pm.seekTo(resumeSec * 1000); pm.play() }
+                ensureCurrentSession(key)
+                withContext(Dispatchers.Main) {
+                    ensureCurrentSession(key)
+                    pm.seekTo(resumeSec * 1000)
+                    pm.play()
+                }
             } else {
-                withContext(Dispatchers.Main) { pm.play() }
+                ensureCurrentSession(key)
+                withContext(Dispatchers.Main) {
+                    ensureCurrentSession(key)
+                    pm.play()
+                }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
-                runCatching { pm.originalVolume = 1f }
+                if (ui.value.key == key && videoKey == key) runCatching { pm.originalVolume = 1f }
                 updateUiForSession(key) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -1321,7 +1365,7 @@ class PlaybackService : MediaSessionService() {
             } else {
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
-            if (ui.value.dubbingOn) {
+            if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
                 runCatching { pm.originalVolume = 1f }
                 updateUiForSession(key) {
                     it.copy(
