@@ -89,21 +89,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
 
 
-Section("翻译引擎") {
-            Row(
-                Modifier.fillMaxWidth().clickable(onClick = onApiManager)
-                    .padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "翻译引擎与 API",
-                    color = OnBg,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
-            }
-        }
+Section("翻译引擎", onHeaderClick = onApiManager) {}
 
 Section("配音设置") {
             EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
@@ -265,7 +251,11 @@ Section("模型管理") {
 }
 
 @Composable
-private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun Section(
+    title: String,
+    onHeaderClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     var expanded by remember { mutableStateOf(false) }
     val glyph = when (title) {
         "翻译引擎", "翻译设置" -> Icons.Filled.Translate
@@ -284,7 +274,10 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
     ) {
         Column {
             Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                Modifier.fillMaxWidth()
+                    .clickable {
+                        if (onHeaderClick != null) onHeaderClick() else expanded = !expanded
+                    }
                     .padding(horizontal = 14.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -303,14 +296,18 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(title, color = OnBg, style = MaterialTheme.typography.titleLarge)
                 }
-                Icon(
-                    imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = if (expanded) "收起设置项" else "展开设置项",
-                    tint = SubText,
-                    modifier = Modifier.size(24.dp),
-                )
+                if (onHeaderClick != null) {
+                    Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
+                } else {
+                    Icon(
+                        imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (expanded) "收起设置项" else "展开设置项",
+                        tint = SubText,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
             }
-            if (expanded) {
+            if (expanded && onHeaderClick == null) {
                 HorizontalDivider(color = OutlineSoft)
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp),
