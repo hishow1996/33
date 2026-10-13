@@ -158,6 +158,12 @@ class PlaybackService : MediaSessionService() {
 
             pm = PlayerManager(this)
             pm.onTick = { ms -> tick(ms) }
+            pm.onSeek = { ms ->
+                // A seek can remain inside the same subtitle cue; force a fresh slice at the new offset.
+                dubbing?.stop()
+                lastLineIdx = Int.MIN_VALUE
+                tick(ms)
+            }
             pm.onEnded = { ui.update { it.copy(isPlaying = false, currentLine = -1) } }
             pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
 

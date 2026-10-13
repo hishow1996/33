@@ -38,6 +38,7 @@ class PlayerManager(private val ctx: Context) {
     val errorSink = MutableStateFlow<String?>(null)
 
     var onTick: ((ms: Long) -> Unit)? = null
+    var onSeek: ((ms: Long) -> Unit)? = null
     var onEnded: (() -> Unit)? = null
     var onVideoAspect: ((ratio: Float) -> Unit)? = null
 
@@ -72,8 +73,12 @@ class PlayerManager(private val ctx: Context) {
                 newPosition: Player.PositionInfo,
                 reason: Int,
             ) {
-                // Also handle media-session or controller seeks that bypass PlaybackService.seek().
-                onTick?.invoke(newPosition.positionMs)
+                // A seek inside the same subtitle cue must restart from the new in-cue offset.
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    onSeek?.invoke(newPosition.positionMs)
+                } else {
+                    onTick?.invoke(newPosition.positionMs)
+                }
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 onTick?.invoke(player.currentPosition)
