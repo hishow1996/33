@@ -988,7 +988,7 @@ class PlaybackService : MediaSessionService() {
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
-            val restoredSourceLines = sourceCached?.let { source ->
+            var restoredSourceLines = sourceCached?.let { source ->
                 runCatching {
                     val sourceArr = org.json.JSONArray(source.linesJson)
                     val restored = (0 until sourceArr.length()).map { i ->
@@ -1001,6 +1001,10 @@ class PlaybackService : MediaSessionService() {
                         }
                     }
                 }.getOrNull()
+            }
+            var restoredSourceLang: String? = restoredSourceLines?.let {
+                sourceCached?.srcLang?.takeIf { lang -> lang.isNotBlank() }
+                    ?: detectLangFromText(it.take(12).joinToString(" ") { cue -> cue.text })
             }
             if (sourceCached != null && restoredSourceLines == null) {
                 android.util.Log.w(
@@ -1021,17 +1025,43 @@ class PlaybackService : MediaSessionService() {
                     "Ignoring translation cache for $videoId because it belongs to different source subtitle cues"
                 )
                 cached = null
+            } else if (
+                cached != null &&
+                sourceImportedLines.isNullOrEmpty() &&
+                videoId != null &&
+                sourceCached == null
+            ) {
+                // Old versions may have stored an imported subtitle translation under this generic
+                // video key. Fetch the source once to validate it before trusting that legacy cache.
+                val fetched = fetchAndCacheSourceLines()
+                if (fetched == null) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Cannot validate legacy translation cache for $videoId without source cues"
+                    )
+                    cached = null
+                } else {
+                    restoredSourceLines = fetched.first
+                    restoredSourceLang = fetched.second
+                    if (!translationCacheMatchesSource(cached.linesJson, fetched.first)) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Discarding legacy translation cache for $videoId; source subtitle cues do not match"
+                        )
+                        cached = null
+                    }
+                }
             }
 
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
-                if (restoredSourceLines != null && sourceCached != null) {
+                if (restoredSourceLines != null) {
                     lines = restoredSourceLines
-                    srcLang = sourceCached.srcLang.takeIf { it.isNotBlank() }
+                    srcLang = restoredSourceLang
                         ?: detectLangFromText(restoredSourceLines.take(12).joinToString(" ") { it.text })
                     android.util.Log.i(
                         "PlaybackService",
-                        "Using cached source subtitles for $videoId (${restoredSourceLines.size} cues)"
+                        "Using cached/validated source subtitles for $videoId (${restoredSourceLines.size} cues)"
                     )
                 } else {
                     fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
