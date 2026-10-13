@@ -30,17 +30,18 @@ object AudioExtract {
                     trackIdx = i; fmt = f; break
                 }
             }
-            if (trackIdx < 0 || fmt == null) throw IllegalStateException("未找到音频轨")
+            if (trackIdx < 0) throw IllegalStateException("未找到音频轨")
+            val format = fmt ?: throw IllegalStateException("未找到音频轨格式")
             ex.selectTrack(trackIdx)
-            val mime = fmt.getString(MediaFormat.KEY_MIME)!!
+            val mime = format.getString(MediaFormat.KEY_MIME)!!
             val codec = MediaCodec.createDecoderByType(mime)
             decoder = codec
-            codec.configure(fmt, null, null, 0)
+            codec.configure(format, null, null, 0)
             codec.start()
 
-            var srcRate = runCatching { fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) }
+            var srcRate = runCatching { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) }
                 .getOrElse { throw IllegalStateException("无法读取音频采样率", it) }
-            var srcChannels = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }
+            var srcChannels = runCatching { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }
                 .getOrElse { throw IllegalStateException("无法读取音频声道数", it) }
             fun validateOutputFormat(rate: Int, channels: Int) {
                 if (rate !in 1_000..384_000) {
@@ -91,6 +92,7 @@ object AudioExtract {
                     // MediaCodec output buffers may contain data outside BufferInfo's valid window.
                     // Read only [offset, offset + size), never stale bytes from the buffer capacity.
                     val pcmBytes = ob.duplicate()
+                    pcmBytes.clear()
                     pcmBytes.position(info.offset)
                     pcmBytes.limit(endOffset.toInt())
                     val shortBuffer = pcmBytes.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
