@@ -297,7 +297,7 @@ private fun Section(
                     Text(title, color = OnBg, style = MaterialTheme.typography.titleLarge)
                 }
                 if (onHeaderClick != null) {
-                    Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
+                    Text("＞", color = SubText, style = MaterialTheme.typography.titleLarge)
                 } else {
                     Icon(
                         imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
