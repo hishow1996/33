@@ -583,6 +583,45 @@ class PlaybackService : MediaSessionService() {
         throw IllegalStateException("播放器在 20 秒内未能开始读取该清晰度")
     }
 
+    /** Return null only after the selected YouTube stream reaches STATE_READY. */
+    private suspend fun tryPrepareYouTubeQuality(
+        key: String,
+        revision: Long,
+        source: YouTubeQualitySource,
+        audioUrl: String,
+        title: String,
+        artist: String,
+        artworkUrl: String?,
+        timeoutMs: Long,
+    ): String? {
+        if (!isCurrentPlaybackSession(key, revision)) {
+            throw kotlinx.coroutines.CancellationException("播放会话已切换")
+        }
+        val accepted = withContext(Dispatchers.Main) {
+            if (!isCurrentPlaybackSession(key, revision)) false
+            else pm.setYouTubeQuality(
+                videoUrl = source.url,
+                audioUrl = audioUrl,
+                muxed = source.muxed,
+                title = title,
+                artist = artist,
+                artworkUrl = artworkUrl,
+            )
+        }
+        if (!isCurrentPlaybackSession(key, revision)) {
+            throw kotlinx.coroutines.CancellationException("播放会话已切换")
+        }
+        if (!accepted) return pm.errorSink.value ?: "清晰度 ${source.label} 无法初始化"
+        return try {
+            awaitPlayerReadyForSession(key, revision, timeoutMs)
+            null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "清晰度 ${source.label} 加载失败"
+        }
+    }
+
     /** 切换清晰度时保留原播放位置；新流失败则尝试恢复之前正在播放的清晰度。 */
     fun selectQuality(label: String) {
         data class QualityRequest(
@@ -1360,28 +1399,70 @@ class PlaybackService : MediaSessionService() {
                     } else false
                 }
                 if (!qualityInstalled) return
-                // Prefer <=720p initially; user can choose 1080p or higher from the menu.
-                val defaultQuality = candidates.firstOrNull { it.height == 360 } ?: candidates.minByOrNull { kotlin.math.abs(it.height - 360) } ?: candidates.first()
+                // Prefer 360p, but verify it reaches STATE_READY before continuing. If that
+                // stream is unavailable, try up to two nearby resolutions before failing the video.
+                val defaultQuality = candidates.firstOrNull { it.height == 360 }
+                    ?: candidates.minByOrNull { kotlin.math.abs(it.height - 360) }
+                    ?: candidates.first()
                 updateUiForSession(key, sessionRevision) {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },
                         selectedQuality = defaultQuality.label,
+                        progress = "正在验证默认清晰度 ${defaultQuality.label}…",
+                        error = null,
                     )
                 }
-                val initialSourceAccepted = withContext(Dispatchers.Main) {
-                    if (!isCurrentPlaybackSession(key, sessionRevision)) false
-                    else pm.setYouTubeQuality(
-                        videoUrl = defaultQuality.url,
+                val fallbackCandidates = candidates
+                    .filter { it.label != defaultQuality.label }
+                    .sortedBy { kotlin.math.abs(it.height - defaultQuality.height) }
+                    .take(2)
+                val attemptCandidates = listOf(defaultQuality) + fallbackCandidates
+                var selectedQuality: YouTubeQualitySource? = null
+                var lastQualityError = ""
+                for ((attemptIndex, candidate) in attemptCandidates.withIndex()) {
+                    if (!isCurrentPlaybackSession(key, sessionRevision)) return
+                    if (attemptIndex > 0) {
+                        updateUiForSession(key, sessionRevision) {
+                            it.copy(
+                                phase = Phase.SYNTHESIZING,
+                                progress = "默认清晰度不可用，正在尝试备用 ${candidate.label}…",
+                                error = null,
+                            )
+                        }
+                    }
+                    val error = tryPrepareYouTubeQuality(
+                        key = key,
+                        revision = sessionRevision,
+                        source = candidate,
                         audioUrl = audioUrl,
-                        muxed = defaultQuality.muxed,
                         title = meta.title,
                         artist = meta.channel,
                         artworkUrl = meta.thumbUrl,
+                        timeoutMs = if (attemptIndex == 0) 12_000L else 7_000L,
+                    )
+                    if (error == null) {
+                        selectedQuality = candidate
+                        break
+                    }
+                    lastQualityError = error
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "YouTube quality ${candidate.label} failed; trying fallback if available: $error",
                     )
                 }
                 if (!isCurrentPlaybackSession(key, sessionRevision)) return
-                if (!initialSourceAccepted) {
-                    throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度无法初始化")
+                val readyQuality = selectedQuality ?: throw IllegalStateException(
+                    "YouTube 默认及备用清晰度均无法播放（尝试：${attemptCandidates.joinToString { it.label }}）。最后错误：$lastQualityError"
+                )
+                updateUiForSession(key, sessionRevision) {
+                    it.copy(
+                        phase = Phase.SYNTHESIZING,
+                        selectedQuality = readyQuality.label,
+                        progress = if (readyQuality.label == defaultQuality.label) "" else {
+                            "默认 ${defaultQuality.label} 不可用，已自动切换到 ${readyQuality.label}"
+                        },
+                        error = null,
+                    )
                 }
             } else {
                 withContext(Dispatchers.Main) {
