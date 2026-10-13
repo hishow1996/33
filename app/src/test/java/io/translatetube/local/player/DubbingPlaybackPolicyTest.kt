@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -7,17 +8,22 @@ import org.junit.Test
 class DubbingPlaybackPolicyTest {
     @Test
     fun turningDubbingOffRestoresOriginalAudio() {
-        val next = DubbingPlaybackPolicy.toggle(dubbingOn = true, muteOriginal = true)
-
-        assertFalse(next.dubbingOn)
-        assertFalse(next.muteOriginal)
+        val result = DubbingPlaybackPolicy.toggle(dubbingOn = true)
+        assertFalse(result.dubbingOn)
+        assertFalse(result.muteOriginal)
     }
 
     @Test
-    fun turningDubbingOnPreservesCurrentMixPreference() {
-        val next = DubbingPlaybackPolicy.toggle(dubbingOn = false, muteOriginal = false)
+    fun turningDubbingOnStartsInDubbingMode() {
+        val result = DubbingPlaybackPolicy.toggle(dubbingOn = false)
+        assertTrue(result.dubbingOn)
+        assertTrue(result.muteOriginal)
+    }
 
-        assertTrue(next.dubbingOn)
-        assertFalse(next.muteOriginal)
+    @Test
+    fun toggleAlternatesBetweenDubbingAndOriginalPlayback() {
+        val disabled = DubbingPlaybackPolicy.toggle(dubbingOn = true)
+        val enabled = DubbingPlaybackPolicy.toggle(dubbingOn = disabled.dubbingOn)
+        assertEquals(DubbingToggleState(true, true), enabled)
     }
 }

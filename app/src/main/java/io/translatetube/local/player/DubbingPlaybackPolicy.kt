@@ -1,21 +1,18 @@
 package io.translatetube.local.player
 
-/**
- * Pure state transition for the dubbing switch.
- *
- * Muting the source is a mixing option for dubbed playback, not a reason to keep
- * the original track silent after dubbing itself has been switched off.
- */
-internal object DubbingPlaybackPolicy {
-    data class ToggleState(
-        val dubbingOn: Boolean,
-        val muteOriginal: Boolean,
-    )
+/** Pure state transition for the playback-screen dubbing switch. */
+internal data class DubbingToggleState(
+    val dubbingOn: Boolean,
+    val muteOriginal: Boolean,
+)
 
-    fun toggle(dubbingOn: Boolean, muteOriginal: Boolean): ToggleState =
-        if (dubbingOn) {
-            ToggleState(dubbingOn = false, muteOriginal = false)
-        } else {
-            ToggleState(dubbingOn = true, muteOriginal = muteOriginal)
-        }
+internal object DubbingPlaybackPolicy {
+    /**
+     * Disabling dubbing always restores normal original audio. Re-enabling dubbing starts with
+     * the original track muted when a voice line is ready; the separate original-audio control
+     * can switch to a mixed soundtrack afterwards.
+     */
+    fun toggle(dubbingOn: Boolean): DubbingToggleState =
+        if (dubbingOn) DubbingToggleState(dubbingOn = false, muteOriginal = false)
+        else DubbingToggleState(dubbingOn = true, muteOriginal = true)
 }
