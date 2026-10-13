@@ -2298,10 +2298,6 @@ class PlaybackService : MediaSessionService() {
     }
 
     fun setLineSpeaker(index: Int, speakerId: Int) {
-        if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
-            ui.update { it.copy(error = "多人物音色切换需要 Kokoro 音色模型，请切换配音引擎后重试") }
-            return
-        }
         val sessionState = ui.value
         val sessionKey = sessionState.key
         if (sessionKey.isBlank() || videoKey != sessionKey) return
@@ -2309,78 +2305,128 @@ class PlaybackService : MediaSessionService() {
         if (index !in oldLines.indices) return
         val selectedVoice = speakerId.coerceIn(-1, 53)
         if (oldLines[index].speakerId == selectedVoice) return
+
+        val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("tts_engine", "kokoro") ?: "kokoro"
+        if (selectedTts == "kokoro" && !io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+            updateUiForSession(sessionKey) {
+                it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
+            }
+            return
+        }
+
         speakerJob?.cancel()
-        speakerJob = null
         val selectedLine = oldLines[index]
         val translationCacheKey = sessionState.translationCacheKey.ifBlank {
             "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
         }
         val sourceLang = sessionState.sourceLang
         val assignmentSnapshot = loadSpeakerAssignments(sessionKey)
-        saveSpeakerAssignments(
-            assignmentSnapshot.copy(
-                lineOverrides = assignmentSnapshot.lineOverrides +
-                    (SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs) to selectedVoice),
-            ),
-            sessionKey,
-        )
         val updated = oldLines.mapIndexed { i, line ->
             if (i == index) line.copy(speakerId = selectedVoice) else line
         }
-        dubCollectJob?.cancel()
-        val previousDubbing = dubbing
-        previousDubbing?.release()
-        dubbing = null
-        updateUiForSession(sessionKey) {
-            it.copy(lines = updated, preparedUntil = 0, totalLines = updated.size,
-                currentLine = -1, phase = Phase.SYNTHESIZING, progress = "更新人物音色…")
-        }
+        val updatedAssignments = assignmentSnapshot.copy(
+            lineOverrides = assignmentSnapshot.lineOverrides +
+                (SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs) to selectedVoice),
+        )
+
         speakerJob = scope.launch {
+            var pendingTts: TtsEngine? = null
+            var replacementDubbing: DubbingEngine? = null
+            var previousDubbing: DubbingEngine? = null
+            var oldEngineRetired = false
+            var assignmentsSaved = false
             try {
                 ensureCurrentSession(sessionKey)
-                previousDubbing?.releaseAndJoin()
+                updateUiForSession(sessionKey) {
+                    it.copy(error = null, progress = "检查可用音色…")
+                }
+
+                // Initialize the selected engine before touching the active voice. A phone that
+                // offers only one Chinese system voice cannot perform manual multi-speaker changes;
+                // in that case the existing dub keeps playing unchanged.
+                pendingTts = makeTts(selectedTts)
+                if (pendingTts is io.translatetube.local.tts.SystemTts &&
+                    !pendingTts.supportsMultipleChineseVoices
+                ) {
+                    updateUiForSession(sessionKey) {
+                        it.copy(
+                            progress = "",
+                            error = "手机系统 TTS 只提供一个可用中文音色，当前人物音色未更改；普通系统配音仍可使用。"
+                        )
+                    }
+                    return@launch
+                }
                 ensureCurrentSession(sessionKey)
-                // Manual per-cue voice selection is Kokoro-only; keep the selected engine stable.
-                val tts = makeTts("kokoro")
-                try {
-                    ensureCurrentSession(sessionKey)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    runCatching { tts.close() }
-                    throw e
+
+                previousDubbing = dubbing
+                previousDubbing?.release()
+                if (dubbing === previousDubbing) dubbing = null
+                previousDubbing?.releaseAndJoin()
+                oldEngineRetired = previousDubbing != null
+                ensureCurrentSession(sessionKey)
+
+                saveSpeakerAssignments(updatedAssignments, sessionKey)
+                assignmentsSaved = true
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        lines = updated,
+                        preparedUntil = 0,
+                        totalLines = updated.size,
+                        currentLine = -1,
+                        phase = Phase.SYNTHESIZING,
+                        progress = "更新人物音色…",
+                    )
                 }
-                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
-                registerDubbingFailureHandler(d, tts, sessionKey)
-                d.attach(tts, updated)
-                try {
-                    ensureCurrentSession(sessionKey)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    d.releaseAndJoin()
-                    throw e
-                }
-                dubbing = d
+
+                val tts = pendingTts ?: makeTts(selectedTts)
+                pendingTts = null
+                val engine = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                replacementDubbing = engine
+                registerDubbingFailureHandler(engine, tts, sessionKey)
+                engine.attach(tts, updated)
+                ensureCurrentSession(sessionKey)
+                dubbing = engine
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
-                    if (dubbing === d) dubbing = null
-                    d.releaseAndJoin()
+                    if (dubbing === engine) dubbing = null
+                    engine.releaseAndJoin()
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
                 }
+
+                dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n ->
-                        updateUiForSession(sessionKey) { state -> state.copy(preparedUntil = n,
-                            phase = if (n >= updated.size) Phase.READY else Phase.SYNTHESIZING,
-                            progress = if (n >= updated.size) "" else "正在准备多人物配音…") }
+                    engine.preparedUntil.collect { count ->
+                        updateUiForSession(sessionKey) { state ->
+                            state.copy(
+                                preparedUntil = count,
+                                phase = if (count >= updated.size) Phase.READY else Phase.SYNTHESIZING,
+                                progress = if (count >= updated.size) "" else "正在准备多人物配音…",
+                            )
+                        }
                     }
                 }
-                val arr = org.json.JSONArray()
-                for (line in updated) arr.put(
-                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
-                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
-                )
+
+                val cacheRows = org.json.JSONArray()
+                updated.forEach { line ->
+                    cacheRows.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                }
                 ensureCurrentSession(sessionKey)
-                if (updated.isNotEmpty() && updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
+                if (updated.isNotEmpty() &&
+                    updated.count { !it.zh.isNullOrBlank() } > updated.size / 2
+                ) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
-                            translationCacheKey, sourceLang,
-                            arr.toString(), System.currentTimeMillis()
+                            translationCacheKey,
+                            sourceLang,
+                            cacheRows.toString(),
+                            System.currentTimeMillis(),
                         )
                     )
                 }
@@ -2388,7 +2434,31 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                updateUiForSession(sessionKey) { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：${e.message}") }
+                // Restore the persisted assignment and translated captions if setup failed before
+                // a replacement engine became usable. If the old native engine was already retired,
+                // restore original audio rather than leaving the video silent.
+                if (replacementDubbing != null && dubbing === replacementDubbing) {
+                    dubbing = null
+                }
+                replacementDubbing?.releaseAndJoin()
+                if (assignmentsSaved && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    runCatching { saveSpeakerAssignments(assignmentSnapshot, sessionKey) }
+                }
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        lines = oldLines,
+                        totalLines = oldLines.size,
+                        phase = Phase.ERROR,
+                        progress = "",
+                        muteOriginal = false,
+                        error = "切换人物音色失败：${e.message}",
+                    )
+                }
+                if (oldEngineRetired && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                }
+            } finally {
+                pendingTts?.close()
             }
         }
     }
