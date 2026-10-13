@@ -2091,14 +2091,15 @@ class PlaybackService : MediaSessionService() {
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
             try {
-                ui.update { it.copy(error = null, progress = "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…", phase = Phase.TRANSCRIBING) }
+                ensureCurrentSession(sessionKey)
+                updateUiForSession(sessionKey) { it.copy(error = null, progress = "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…", phase = Phase.TRANSCRIBING) }
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
                         val audio = obtainAsrAudioFile(id, sessionKey, "复用已下载音频，正在分析人物声音…")
-                        ui.update { state ->
+                        updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
                             } else state
@@ -2112,7 +2113,7 @@ class PlaybackService : MediaSessionService() {
                     AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    ui.update { state ->
+                    updateUiForSession(sessionKey) { state ->
                         if (state.key == sessionKey) state.copy(progress = message) else state
                     }
                 }
@@ -2168,7 +2169,7 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val distinctVoices = updated.map { it.speakerId }.distinct().size
-                ui.update { state ->
+                updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) {
                         state.copy(
                             lines = updated,
@@ -2212,7 +2213,7 @@ class PlaybackService : MediaSessionService() {
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->
-                        ui.update { state -> if (state.key == sessionKey) state.copy(preparedUntil = n) else state }
+                        updateUiForSession(sessionKey) { state -> if (state.key == sessionKey) state.copy(preparedUntil = n) else state }
                     }
                 }
                 val arr = org.json.JSONArray()
@@ -2230,7 +2231,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 lastLineIdx = Int.MIN_VALUE
-                ui.update { state ->
+                updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) {
                         state.copy(
                             phase = Phase.READY,
@@ -2241,7 +2242,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                ui.update { state ->
+                updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey && videoKey == sessionKey) {
                         state.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}")
                     } else state
