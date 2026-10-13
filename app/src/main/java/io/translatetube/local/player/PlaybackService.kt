@@ -234,7 +234,7 @@ class PlaybackService : MediaSessionService() {
                         if (id != null && qualitySources.isNotEmpty() && !qualityRecoveryAttempted) {
                             qualityRecoveryAttempted = true
                             qualityRecoveryJob = scope.launch {
-                                recoverYouTubePlayback(id, sessionKey, err)
+                                recoverYouTubePlayback(sessionKey, id, err)
                             }
                         } else {
                             ui.update { it.copy(error = err, phase = Phase.ERROR, progress = "") }
