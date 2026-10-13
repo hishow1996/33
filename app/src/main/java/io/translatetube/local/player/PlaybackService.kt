@@ -496,32 +496,75 @@ class PlaybackService : MediaSessionService() {
 
     /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
     fun selectQuality(label: String) {
-        val source = qualitySources.firstOrNull { it.label == label } ?: return
-        if (!::pm.isInitialized || source.label == ui.value.selectedQuality) return
+        data class QualityRequest(
+            val key: String,
+            val revision: Long,
+            val source: YouTubeQualitySource,
+            val audioUrl: String,
+            val title: String,
+            val artist: String,
+            val artworkUrl: String?,
+        )
+        // Capture quality URL and audio URL from the same playback session; never pair a
+        // previous video's quality menu with the next video's audio stream or title.
+        val request = synchronized(sessionLock) {
+            val key = videoKey
+            val revision = playbackSessionRevision
+            val source = qualitySources.firstOrNull { it.label == label }
+            if (key.isBlank() || ui.value.key != key || source == null ||
+                source.label == ui.value.selectedQuality
+            ) {
+                null
+            } else {
+                QualityRequest(
+                    key = key,
+                    revision = revision,
+                    source = source,
+                    audioUrl = qualityAudioUrl,
+                    title = ui.value.title,
+                    artist = ui.value.channel,
+                    artworkUrl = ui.value.thumbUrl,
+                )
+            }
+        } ?: return
+        if (!::pm.isInitialized) return
+
         qualityJob?.cancel()
         qualityJob = scope.launch {
-            val positionMs = withContext(Dispatchers.Main) { pm.position() }
-            val wasPlaying = withContext(Dispatchers.Main) { pm.player.isPlaying }
-            ui.update { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
+            if (!isCurrentPlaybackSession(request.key, request.revision)) return@launch
             try {
+                val positionMs = withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(request.key, request.revision)) pm.position() else null
+                } ?: return@launch
+                val wasPlaying = withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(request.key, request.revision)) pm.player.isPlaying else null
+                } ?: return@launch
+                updateUiForSession(request.key, request.revision) {
+                    it.copy(progress = "正在切换清晰度至 ${request.source.label}…", error = null)
+                }
                 withContext(Dispatchers.Main) {
+                    if (!isCurrentPlaybackSession(request.key, request.revision)) return@withContext
                     pm.setYouTubeQuality(
-                        videoUrl = source.url,
-                        audioUrl = qualityAudioUrl,
-                        muxed = source.muxed,
-                        title = ui.value.title,
-                        artist = ui.value.channel,
-                        artworkUrl = ui.value.thumbUrl,
+                        videoUrl = request.source.url,
+                        audioUrl = request.audioUrl,
+                        muxed = request.source.muxed,
+                        title = request.title,
+                        artist = request.artist,
+                        artworkUrl = request.artworkUrl,
                     )
+                    if (!isCurrentPlaybackSession(request.key, request.revision)) return@withContext
                     pm.seekTo(positionMs)
                     if (wasPlaying) pm.play() else pm.pause()
-                    ui.update { it.copy(selectedQuality = source.label, progress = "") }
+                    updateUiForSession(request.key, request.revision) {
+                        it.copy(selectedQuality = request.source.label, progress = "")
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (!isCurrentPlaybackSession(request.key, request.revision)) return@launch
                 android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
-                ui.update {
+                updateUiForSession(request.key, request.revision) {
                     it.copy(
                         progress = "",
                         error = "切换清晰度失败：${e.message ?: e.javaClass.simpleName}",
