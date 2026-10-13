@@ -540,8 +540,12 @@ class PlaybackService : MediaSessionService() {
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationCacheKey = "$key|zh|$selectedTranslationId"
             val sourceSubtitleCacheKey = "$key|source|youtube"
-            // 明确显示字幕获取/读取阶段，不能让流程从分析视频直接跳到翻译。
-            ui.update { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
+            // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
+            if (resumeState == null) {
+                ui.update { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
+            } else {
+                ui.update { it.copy(phase = Phase.TRANSLATING, progress = "继续翻译尚未完成的字幕…") }
+            }
             // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
             val storedTranslationCache = if (resumeState == null) db.subtitleCacheDao().get(translationCacheKey) else null
             // Older builds may have persisted a progress placeholder (for example, "正在翻译")
