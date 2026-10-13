@@ -184,6 +184,16 @@ class PlaybackService : MediaSessionService() {
                         dubbing?.pausePlayback()
                     }
                 }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                        ui.update { state ->
+                            if (state.progress.startsWith("正在尝试兼容清晰度 ")) {
+                                state.copy(phase = Phase.READY, progress = "", error = null)
+                            } else state
+                        }
+                    }
+                }
             })
 
             val pi = PendingIntent.getActivity(
@@ -903,11 +913,6 @@ class PlaybackService : MediaSessionService() {
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
                 ui.update {
-                    it.copy(
-                        qualityOptions = candidates.map { q -> q.label },
-                        selectedQuality = defaultQuality.label,
-                    )
-                }                ui.update {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },
                         selectedQuality = defaultQuality.label,
