@@ -1443,6 +1443,10 @@ class PlaybackService : MediaSessionService() {
             return
         }
         val originalLines = ui.value.lines
+        val expectedVideoKey = videoKey
+        val expectedVideoId = videoId
+        val expectedLocalUri = localUri
+        val recognitionRevision = speakerRebuildRevision
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
@@ -1455,21 +1459,29 @@ class PlaybackService : MediaSessionService() {
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
-                    if (videoId != null) {
-                        val stream = NewPipeRepo.audioForAsr(videoId!!)
+                    if (expectedVideoId != null) {
+                        val stream = NewPipeRepo.audioForAsr(expectedVideoId)
                             ?: throw IllegalStateException("无法获取当前视频的音频流")
                         tempAudio = downloadAudio(stream.content)
                         sourceFile = tempAudio
                         sourceUri = null
                     } else {
                         sourceFile = null
-                        sourceUri = localUri ?: throw IllegalStateException("找不到当前视频文件")
+                        sourceUri = expectedLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
                     AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision) return@launch
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    ui.update { it.copy(progress = message) }
+                    if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision) {
+                        ui.update { state ->
+                            if (state.key == expectedVideoKey) state.copy(progress = message) else state
+                        }
+                    }
                 }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision) return@launch
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
                 val mappingSegments = segments.map {
                     SpeakerVoiceMapping.Segment(
@@ -1498,16 +1510,26 @@ class PlaybackService : MediaSessionService() {
                     "Speaker diarization mapped $recognizedCount diarized speakers to $distinctVoices Kokoro voices for $videoKey",
                 )
                 lastLineIdx = Int.MIN_VALUE
+                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision) return@launch
                 rebuildDubbingForSpeakerLines(
                     updated = updated,
-                    expectedVideoKey = videoKey,
+                    expectedVideoKey = expectedVideoKey,
                     progressLabel = "人物识别完成，正在准备配音",
                     completedMessage = "人物区分完成：已识别 $recognizedCount 位说话人，使用 $distinctVoices 种音色",
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                ui.update { it.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}") }
+                if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision) {
+                    ui.update { state ->
+                        if (state.key == expectedVideoKey) state.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            speakerRebuildInProgress = false,
+                            error = "自动区分人物失败：" + (e.message ?: e.javaClass.simpleName),
+                        ) else state
+                    }
+                }
             } finally {
                 tempAudio?.delete()
             }
@@ -1583,13 +1605,20 @@ class PlaybackService : MediaSessionService() {
                 error = null,
             )
         }
+        lastLineIdx = Int.MIN_VALUE
+        if (::pm.isInitialized) tick(pm.position())
 
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var candidate: DubbingEngine? = null
             try {
-                if (expectedVideoKey != videoKey) return@launch
+                if (expectedVideoKey != videoKey || speakerRebuildRevision != revision) return@launch
                 if (!io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
                     throw IllegalStateException("Kokoro 配音模型尚未就绪")
+                }
+                try {
+                    saveSpeakerAssignments(updated, expectedVideoKey)
+                } catch (e: Exception) {
+                    android.util.Log.w("PlaybackService", "Unable to persist speaker assignment", e)
                 }
                 val created = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
                 candidate = created
@@ -1638,11 +1667,6 @@ class PlaybackService : MediaSessionService() {
                         }
                     }
                 }
-                try {
-                    saveSpeakerAssignments(updated, expectedVideoKey)
-                } catch (e: Exception) {
-                    android.util.Log.w("PlaybackService", "Unable to persist speaker assignment", e)
-                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1669,10 +1693,46 @@ class PlaybackService : MediaSessionService() {
         return job
     }
 
+    private fun speakerAssignmentCacheKey(expectedVideoKey: String): String =
+        expectedVideoKey + "|speaker-map-v1"
+
+    private fun speakerCueIdentity(startMs: Long, endMs: Long, text: String): String =
+        startMs.toString() + "|" + endMs + "|" + text.trim().replace(Regex("\\s+"), " ")
+
+    /** Restore voice choices independently of the translation API/cache entry. */
+    private suspend fun applySavedSpeakerAssignments(
+        expectedVideoKey: String,
+        lines: List<SubLine>,
+    ): List<SubLine> {
+        if (lines.isEmpty()) return lines
+        return try {
+            val cached = AppDatabase.get(this).subtitleCacheDao()
+                .get(speakerAssignmentCacheKey(expectedVideoKey)) ?: return lines
+            val rows = org.json.JSONArray(cached.linesJson)
+            val assignments = HashMap<String, Int>(rows.length())
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val startMs = row.optLong("s", Long.MIN_VALUE)
+                val endMs = row.optLong("e", Long.MIN_VALUE)
+                val original = row.optString("t", "")
+                val voice = row.optInt("sp", -1)
+                if (startMs >= 0L && endMs > startMs && SpeakerVoiceMapping.isValidVoiceSelection(voice)) {
+                    assignments[speakerCueIdentity(startMs, endMs, original)] = voice
+                }
+            }
+            if (assignments.isEmpty()) lines else lines.map { line ->
+                assignments[speakerCueIdentity(line.startMs, line.endMs, line.text)]
+                    ?.let { voice -> line.copy(speakerId = voice) }
+                    ?: line
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("PlaybackService", "Unable to restore per-video speaker assignments", e)
+            lines
+        }
+    }
+
     private suspend fun saveSpeakerAssignments(lines: List<SubLine>, expectedVideoKey: String) {
-        if (expectedVideoKey != videoKey || lines.isEmpty() ||
-            lines.count { !it.zh.isNullOrBlank() } <= lines.size / 2
-        ) return
+        if (expectedVideoKey != videoKey || lines.isEmpty()) return
         val array = org.json.JSONArray()
         lines.forEach { line ->
             array.put(
@@ -1680,14 +1740,12 @@ class PlaybackService : MediaSessionService() {
                     .put("s", line.startMs)
                     .put("e", line.endMs)
                     .put("t", line.text)
-                    .put("zh", line.zh ?: "")
-                    .put("sp", line.speakerId)
+                    .put("sp", if (SpeakerVoiceMapping.isValidVoiceSelection(line.speakerId)) line.speakerId else -1)
             )
         }
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         AppDatabase.get(this).subtitleCacheDao().put(
             io.translatetube.local.data.SubtitleCacheEntity(
-                "$expectedVideoKey|zh|${prefs.getLong("active_api_id", -1L)}",
+                speakerAssignmentCacheKey(expectedVideoKey),
                 ui.value.sourceLang,
                 array.toString(),
                 System.currentTimeMillis(),
@@ -1697,7 +1755,7 @@ class PlaybackService : MediaSessionService() {
 
     fun toggleDub() {
         val current = ui.value
-        val next = DubbingPlaybackPolicy.toggle(current.dubbingOn, current.muteOriginal)
+        val next = DubbingPlaybackPolicy.toggle(current.dubbingOn)
         ui.update {
             it.copy(
                 dubbingOn = next.dubbingOn,
@@ -1705,22 +1763,18 @@ class PlaybackService : MediaSessionService() {
                 muteOriginal = next.muteOriginal,
             )
         }
-        if (!next.dubbingOn) {
-            // 先使配音轨失效，再恢复原声；避免留下 AudioTrack 继续播或视频无声。
-            dubbing?.stop()
-            pm.originalVolume = 1f
-        } else {
-            lastLineIdx = Int.MIN_VALUE
-            // 切回配音时立刻同步当前时间轴，tick 会在下一次轮询中恢复对应字幕行。
-            dubbing?.stop()
-        }
+        // Invalidate the previous voice slice, then recalculate using the current video timestamp.
+        dubbing?.stop()
+        lastLineIdx = Int.MIN_VALUE
+        if (!next.dubbingOn) pm.originalVolume = 1f
+        if (::pm.isInitialized) tick(pm.position())
     }
     fun toggleMute() {
         val nowMuted = !ui.value.muteOriginal
         ui.update { it.copy(muteOriginal = nowMuted) }
-        // Apply this immediately; tick() will refine it to the ducked mix volume when dubbing is active.
         pm.originalVolume = if (nowMuted) 0f else 1f
         lastLineIdx = Int.MIN_VALUE
+        if (::pm.isInitialized) tick(pm.position())
     }
     fun toggleAudioOnly() {
         val nowOnly = !ui.value.audioOnly
