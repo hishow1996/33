@@ -93,11 +93,10 @@ fun PlayerScreen(
         val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
         val current = PlaybackService.ui.value
         val service = PlaybackService.instance
-        val canResumeTranslation = current.key == key &&
+        val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
-            current.error?.contains("翻译失败", ignoreCase = true) == true &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
-        if (canResumeTranslation && service?.isReady == true) {
+        if (canResumeExistingWork && service?.isReady == true) {
             service.open(key, videoId, localUri, resumeState = current)
         } else {
             retryNonce++
@@ -144,13 +143,12 @@ fun PlayerScreen(
                     }
                 } else {
                     val failedState = PlaybackService.ui.value
-                    val resumeTranslation = if (
+                    val resumeExistingWork = if (
                         retryRequested && failedState.key == key &&
                         failedState.phase == Phase.ERROR &&
-                        failedState.error?.contains("翻译失败", ignoreCase = true) == true &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeTranslation)
+                    s.open(key, videoId, localUri, resumeState = resumeExistingWork)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
