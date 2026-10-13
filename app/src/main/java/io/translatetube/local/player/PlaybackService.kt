@@ -993,10 +993,11 @@ class PlaybackService : MediaSessionService() {
                             System.currentTimeMillis(),
                         )
                     )
-                    // The transcript is durably checkpointed; the large audio cache is no longer needed.
+                    // Keep the bounded source-audio cache after ASR as well: user-triggered
+                    // speaker diarization can reuse it without downloading the same media again.
                     if (videoId != null && audioFile is File) {
-                        audioFile.delete()
-                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = null)
+                        audioFile.setLastModified(System.currentTimeMillis())
+                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = audioFile)
                     }
                     android.util.Log.i(
                         "PlaybackService",
@@ -1559,8 +1560,21 @@ class PlaybackService : MediaSessionService() {
         val files = directory.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".bin") }
             ?: return
+        val now = System.currentTimeMillis()
         var totalBytes = 0L
-        files.forEach { totalBytes += it.length() }
+
+        // Enforce TTL even when the folder is below its size budget; otherwise old videos
+        // could leave stale cache files on disk indefinitely.
+        files.forEach { file ->
+            val isKept = keep != null && file.absolutePath == keep.absolutePath
+            val age = now - file.lastModified()
+            if (!isKept && (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)) {
+                file.delete()
+            } else {
+                totalBytes += file.length()
+            }
+        }
+
         val budget = AsrAudioCachePolicy.CACHE_BUDGET_BYTES
         for (file in files.sortedBy { it.lastModified() }) {
             if (totalBytes <= budget) break
@@ -1801,17 +1815,25 @@ class PlaybackService : MediaSessionService() {
         }
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
-            var tempAudio: File? = null
             try {
                 ui.update { it.copy(error = null, progress = "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…", phase = Phase.TRANSCRIBING) }
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
                     if (videoId != null) {
-                        val stream = NewPipeRepo.audioForAsr(videoId!!)
-                            ?: throw IllegalStateException("无法获取当前视频的音频流")
-                        tempAudio = downloadAudio(stream.content)
-                        sourceFile = tempAudio
+                        val id = videoId!!
+                        val cached = reusableAsrAudioFile(id)
+                        val audio = if (cached != null) {
+                            ui.update { it.copy(progress = "复用已下载音频，正在分析人物声音…") }
+                            cached
+                        } else {
+                            val stream = NewPipeRepo.audioForAsr(id)
+                                ?: throw IllegalStateException("无法获取当前视频的音频流")
+                            downloadAudio(stream.content, asrAudioCacheFile(id)).also {
+                                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
+                            }
+                        }
+                        sourceFile = audio
                         sourceUri = null
                     } else {
                         sourceFile = null
@@ -1904,8 +1926,6 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 ui.update { it.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}") }
-            } finally {
-                tempAudio?.delete()
             }
         }
     }
