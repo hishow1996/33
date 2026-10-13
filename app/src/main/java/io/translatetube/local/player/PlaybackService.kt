@@ -1274,7 +1274,7 @@ class PlaybackService : MediaSessionService() {
                 val audioUrl = inventory.audioUrl
                 android.util.Log.i(
                     "PlaybackService",
-                    "YouTube audio tracks=" + audioStreams.size +
+                    "YouTube audio tracks=" + info.audioStreams.size +
                         ", usingMuxedFallback=" + (audioUrl.isBlank() && candidates.any { it.muxed })
                 )
                 android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
