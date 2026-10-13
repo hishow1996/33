@@ -146,6 +146,7 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
 dependencies {
     // Backport newer Java library APIs used by NewPipeExtractor to Android 7–12.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    testImplementation("junit:junit:4.13.2")
 
     // 本地 aar：sherpa-onnx（TTS Kokoro + ASR Whisper 推理引擎）
     implementation(files("libs/sherpa-onnx.aar"))

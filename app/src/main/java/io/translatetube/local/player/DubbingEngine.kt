@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.PlaybackParams
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.tts.TtsEngine
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +44,9 @@ class DubbingEngine(
     private var lines: List<SubLine> = emptyList()
     private var speed = 1.0f
     @Volatile private var track: AudioTrack? = null
+    @Volatile private var activeSyncRate = 1.0f
+    @Volatile private var activePlayerSpeed = 1.0f
+    @Volatile private var activePlaybackRate = 1.0f
     private val playbackGeneration = AtomicInteger(0)
     @Volatile private var released = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
@@ -110,20 +114,42 @@ class DubbingEngine(
                     continue
                 }
                 try {
-                    val audio = tts!!.synth(text, speed, line.speakerId)
-                    if (audio.sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
-                        val reason = "所选引擎返回空音频或无效采样率（${audio.sampleRate} Hz）"
-                        reportSynthesisError("第 ${idx + 1} 句：$reason")
-                        writeCache(idx, audio.sampleRate.coerceIn(8_000, 192_000), FloatArray(0))
-                        noAudio.add(idx)
-                    } else {
-                        writeCache(idx, audio.sampleRate, audio.samples)
-                        noAudio.remove(idx)
-                        synchronized(mem) { mem[idx] = audio.samples to audio.sampleRate }
+                    var audio: io.translatetube.local.tts.TtsAudio? = null
+                    var lastFailure: Exception? = null
+                    for (attempt in 0..1) {
+                        try {
+                            val generated = tts!!.synth(text, speed, line.speakerId)
+                            if (generated.sampleRate !in 8_000..192_000 || generated.samples.isEmpty()) {
+                                throw IllegalStateException(
+                                    "所选引擎返回空音频或无效采样率（${generated.sampleRate} Hz）"
+                                )
+                            }
+                            audio = generated
+                            break
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            lastFailure = e
+                            if (attempt == 0 && !released) {
+                                android.util.Log.w(
+                                    "DubbingEngine",
+                                    "TTS line ${idx + 1} failed once; retrying with the same selected engine",
+                                    e
+                                )
+                                kotlinx.coroutines.delay(300L)
+                            }
+                        }
                     }
+                    val readyAudio = audio ?: throw (lastFailure
+                        ?: IllegalStateException("配音引擎没有返回有效音频"))
+                    writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
+                    noAudio.remove(idx)
+                    synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
                     bumpPrepared(idx)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
-                    // 合成失败时写入空标记，保证准备进度不会永久卡在这一行；该行回退原声。
+                    // After one retry, publish the failure and allow video playback to continue.
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
@@ -162,7 +188,7 @@ class DubbingEngine(
         // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
         val textHash = fingerprint(line?.zh ?: "")
         // v4 forces a clean cache after fixing the old escaped interpolation bug.
-        val engineHash = fingerprint("${tts?.name ?: "unknown"}-v4")
+        val engineHash = fingerprint("${tts?.name ?: "unknown"}-v5-speed-${speed}")
         return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
@@ -227,8 +253,14 @@ class DubbingEngine(
 
     /** 播放某一行（先停上一行）。
      *  AudioTrack 创建/写入/播放（含文件 load IO）全部在专用线程，不阻塞调用方（主线程 tick）。 */
-    fun playAt(idx: Int, volume: Float = 1.0f) {
+    fun playAt(
+        idx: Int,
+        volume: Float = 1.0f,
+        positionMs: Long? = null,
+        playerSpeed: Float = 1.0f,
+    ) {
         if (released) return
+        val line = lines.getOrNull(idx) ?: return
         stop()
         _currentLine.value = idx
         val generation = playbackGeneration.incrementAndGet()
@@ -237,8 +269,24 @@ class DubbingEngine(
                 var created: AudioTrack? = null
                 try {
                     val (samples, sr) = load(idx) ?: return@execute
-                    // 空标记表示此行没有可用配音，保留原声，不创建零长度 AudioTrack。
                     if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
+
+                    val position = positionMs ?: line.startMs
+                    val plan = DubbingTiming.createPlan(
+                        sampleCount = samples.size,
+                        sampleRate = sr,
+                        lineStartMs = line.startMs,
+                        lineEndMs = line.endMs,
+                        positionMs = position,
+                        playerSpeed = playerSpeed,
+                    )
+                    val playbackSamples = DubbingTiming.slice(samples, plan, sr)
+                    // Keep this line selected when its speech has naturally ended. Otherwise a
+                    // 100 ms player tick would repeatedly restart the same cue.
+                    if (playbackSamples.isEmpty() || released || playbackGeneration.get() != generation) {
+                        return@execute
+                    }
+
                     val newTrack = AudioTrack.Builder()
                         .setAudioAttributes(
                             AudioAttributes.Builder()
@@ -252,36 +300,48 @@ class DubbingEngine(
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build())
                         .setTransferMode(AudioTrack.MODE_STATIC)
-                        .setBufferSizeInBytes(samples.size * 4)
+                        .setBufferSizeInBytes(playbackSamples.size * 4)
                         .build()
                     created = newTrack
-                    val written = newTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                    if (written != samples.size || released || playbackGeneration.get() != generation) {
+                    val written = newTrack.write(
+                        playbackSamples, 0, playbackSamples.size, AudioTrack.WRITE_BLOCKING
+                    )
+                    if (written != playbackSamples.size || released || playbackGeneration.get() != generation) {
                         newTrack.release()
                         created = null
                         return@execute
                     }
-                    // 所有 AudioTrack 的创建、替换和播放都在同一线程，避免快速切行时旧音轨迟到启动。
+
+                    runCatching {
+                        newTrack.setPlaybackParams(
+                            PlaybackParams().setSpeed(plan.playbackRate).setPitch(1.0f)
+                        )
+                    }.onFailure {
+                        // If a provider rejects dynamic rates, keep the voice audible at native speed.
+                        android.util.Log.w("DubbingEngine", "Audio playback-rate adjustment unavailable", it)
+                    }
+
                     track?.let { old ->
                         try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
                     }
                     track = newTrack
+                    activeSyncRate = plan.syncRate
+                    activePlayerSpeed = playerSpeed.coerceIn(0.5f, 2.0f)
+                    activePlaybackRate = plan.playbackRate
                     if (released || playbackGeneration.get() != generation) {
                         if (track === newTrack) track = null
                         newTrack.release()
                         created = null
                         return@execute
                     }
-                    newTrack.setVolume(volume)
+                    newTrack.setVolume(volume.coerceIn(0.0f, 1.0f))
                     newTrack.play()
                     created = null
                 } catch (e: Exception) {
                     try { created?.release() } catch (_: Exception) {}
-                    // 音频设备/AudioTrack 初始化失败时回退原声，避免 UI 误以为配音仍在播放而静音原声。
-                    if (playbackGeneration.get() == generation) {
-                        noAudio.add(idx)
-                        if (_currentLine.value == idx) _currentLine.value = -1
-                    }
+                    // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
+                    // The service sees this marker and restores original video audio.
+                    if (playbackGeneration.get() == generation) noAudio.add(idx)
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句音频输出失败：${e.message ?: e.javaClass.simpleName}")
                 }
@@ -364,6 +424,30 @@ class DubbingEngine(
     fun line(idx: Int): SubLine? = lines.getOrNull(idx)
     fun allLines(): List<SubLine> = lines
     fun setSpeed(s: Float) { speed = s }
+
+    /** Update the active voice without changing the selected TTS engine or its cached PCM. */
+    fun updatePlayerSpeed(speed: Float) {
+        val normalized = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        if (kotlin.math.abs(normalized - activePlayerSpeed) < 0.01f) return
+        activePlayerSpeed = normalized
+        val rate = (activeSyncRate * normalized).coerceIn(0.5f, 4.0f)
+        if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
+        activePlaybackRate = rate
+        val active = track ?: return
+        try {
+            audioExec.execute {
+                if (!released && track === active) {
+                    runCatching {
+                        active.setPlaybackParams(PlaybackParams().setSpeed(rate).setPitch(1.0f))
+                    }.onFailure {
+                        android.util.Log.w("DubbingEngine", "Could not update active voice playback speed", it)
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Service is shutting down.
+        }
+    }
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
     fun isPrepared(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx !in noAudio
     fun isSilent(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx in noAudio

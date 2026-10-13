@@ -1326,8 +1326,18 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
             } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
-                if (d.currentLineIdx() != dubLine) {
-                    d.playAt(dubLine, if (st.muteOriginal) 1f else 0.35f)
+                if (!pm.player.isPlaying) {
+                    // seekTo() emits an immediate tick: don't start a detached AudioTrack while paused.
+                    if (d.currentLineIdx() >= 0) d.stop()
+                } else if (d.currentLineIdx() != dubLine) {
+                    d.playAt(
+                        dubLine,
+                        if (st.muteOriginal) 1f else 0.35f,
+                        positionMs = ms,
+                        playerSpeed = pm.playbackSpeed(),
+                    )
+                } else {
+                    d.updatePlayerSpeed(pm.playbackSpeed())
                 }
                 pm.originalVolume = if (st.muteOriginal) 0f else 0.15f
             } else if (dubLine >= 0) {

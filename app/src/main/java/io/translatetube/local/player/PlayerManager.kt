@@ -195,6 +195,7 @@ class PlayerManager(private val ctx: Context) {
         onTick?.invoke(ms)
     }
     fun speed(s: Float) { player.playbackParameters = PlaybackParameters(s) }
+    fun playbackSpeed(): Float = player.playbackParameters.speed
     var originalVolume: Float
         get() = player.volume
         set(v) { player.volume = v }
