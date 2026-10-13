@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -54,7 +54,8 @@ class DubbingEngine(
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
     }
     private val noAudio = ConcurrentHashMap.newKeySet<Int>()
-    private val pending = PriorityBlockingQueue<Int>()
+    private val pending = LinkedBlockingDeque<Int>()
+    @Volatile private var priorityTarget = -1
     private var synthJob: Job? = null
 
     private val _preparedUntil = MutableStateFlow(0)   // 已合成到第几行（0-based 含义：前 N 行就绪）
@@ -72,6 +73,7 @@ class DubbingEngine(
         _preparedUntil.value = 0
         noAudio.clear()
         pending.clear()
+        priorityTarget = -1
         // 清内存缓存：防止旧会话同 idx 行的音频串台。
         synchronized(mem) { mem.clear() }
         // 译文或音色变化会生成新的缓存名，并清除本视频已失效的旧 PCM，避免旧配音串台及缓存无限累积。
@@ -93,16 +95,33 @@ class DubbingEngine(
                     file.delete()
                 }
             }
-            if (!cached(i)) pending.offer(i)
+            if (!cached(i)) pending.offerLast(i)
         }
         startSynthLoop()
+    }
+
+
+    /**
+     * When playback reaches a line whose TTS is not ready, move that line and the next
+     * two queued lines to the front. A seek must not wait for every earlier line to synthesize.
+     */
+    fun prioritizeAround(index: Int) {
+        if (released || index !in lines.indices || index == priorityTarget) return
+        synchronized(pending) {
+            if (index == priorityTarget) return
+            val queued = mutableListOf<Int>()
+            pending.drainTo(queued)
+            val reordered = DubbingQueueOrder.prioritize(queued, index, lines.size)
+            reordered.forEach { pending.offerLast(it) }
+            priorityTarget = index
+        }
     }
 
     private fun startSynthLoop() {
         synthJob?.cancel()
         synthJob = scope.launch(Dispatchers.Default) {
             while (!pending.isEmpty()) {
-                val idx = pending.poll() ?: break
+                val idx = synchronized(pending) { pending.pollFirst() } ?: break
                 if (cached(idx)) { bumpPrepared(idx); continue }
                 val line = lines.getOrNull(idx) ?: continue
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）

@@ -1351,6 +1351,8 @@ class PlaybackService : MediaSessionService() {
                 }
                 pm.originalVolume = if (st.muteOriginal) 0f else 0.15f
             } else if (dubLine >= 0) {
+                // Prioritize the current cue after a seek or when synthesis is lagging.
+                d.prioritizeAround(dubLine)
                 // While TTS is preparing this line, preserve source audio; mute it only when dubbing is ready.
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
