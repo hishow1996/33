@@ -50,6 +50,11 @@ data class SubtitleTrackOption(
 
 object NewPipeRepo {
     @Volatile private var inited = false
+    // Shared timeout-configured client for subtitle bodies (separate from NewPipe's extractor client).
+    private val subtitleDownloadClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
     private data class StreamInfoCache(
         val videoId: String,
         val generation: Long,
@@ -262,13 +267,24 @@ object NewPipeRepo {
         } ?: streams.minByOrNull { it.averageBitrate }
     }
 
-    private fun downloadText(url: String): String {
-        val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
-        OkHttpClient().newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("字幕下载失败 ${resp.code}")
-            return resp.body?.string() ?: ""
+    private suspend fun downloadText(url: String): String =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
+            val call = subtitleDownloadClient.newCall(req)
+            // Cancel the underlying HTTP request when the user switches videos or cancels parsing.
+            val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+            val cancellationHandle = job?.invokeOnCompletion { cause ->
+                if (cause is kotlinx.coroutines.CancellationException) call.cancel()
+            }
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) throw IllegalStateException("字幕下载失败 ${resp.code}")
+                    resp.body?.string() ?: ""
+                }
+            } finally {
+                cancellationHandle?.dispose()
+            }
         }
-    }
 
     private fun initOnce() {
         if (!inited) {
