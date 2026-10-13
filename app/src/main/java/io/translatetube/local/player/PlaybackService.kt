@@ -1227,26 +1227,37 @@ class PlaybackService : MediaSessionService() {
                     "kokoro" -> io.translatetube.local.data.ModelFiles.ttsReady(this)
                     else -> false
                 }
+                var ttsCandidate: TtsEngine? = null
+                var dubbingCandidate: DubbingEngine? = null
+                var candidateOwnsTts = false
                 if (selectedEngineReady) {
                     try {
                         // Pass the saved selection explicitly so a settings change during parsing
                         // cannot cause the readiness check and actual engine to disagree.
                         val tts: TtsEngine = makeTts(selectedTts)
+                        ttsCandidate = tts
                         val d = DubbingEngine(this, key, scope)
+                        dubbingCandidate = d
                         registerDubbingFailureHandler(d, tts, key, sessionRevision)
                         if (!isCurrentPlaybackSession(key, sessionRevision)) {
                             runCatching { tts.close() }
-                            d.release()
+                            ttsCandidate = null
+                            runCatching { d.release() }
+                            dubbingCandidate = null
                             return
                         }
-                        updateUiForSession(key, sessionRevision) { state ->
-                            if (state.key == key && isCurrentPlaybackSession(key, sessionRevision)) {
-                                state.copy(ttsEngineName = tts.name, noModelHint = null)
-                            } else state
+                        updateUiForSession(key, sessionRevision) {
+                            it.copy(ttsEngineName = tts.name, noModelHint = null)
                         }
+                        // attach() assigns the TTS engine to DubbingEngine before starting work,
+                        // so from this point release() owns closing the TTS instance.
+                        candidateOwnsTts = true
                         d.attach(tts, finalLines)
                         if (!installDubbingForSession(key, sessionRevision, d)) {
-                            d.release()
+                            runCatching { d.release() }
+                            ttsCandidate = null
+                            dubbingCandidate = null
+                            candidateOwnsTts = false
                             return
                         }
                         dubCollectJob = scope.launch {
@@ -1258,7 +1269,22 @@ class PlaybackService : MediaSessionService() {
                                 }
                             }
                         }
+                        // The service now owns the installed engine; local cleanup must not release it.
+                        ttsCandidate = null
+                        dubbingCandidate = null
+                        candidateOwnsTts = false
                     } catch (e: Exception) {
+                        val failedCandidate = dubbingCandidate
+                        if (failedCandidate != null) {
+                            if (dubbing === failedCandidate) dubbing = null
+                            runCatching { failedCandidate.release() }
+                            if (!candidateOwnsTts) runCatching { ttsCandidate?.close() }
+                        } else {
+                            runCatching { ttsCandidate?.close() }
+                        }
+                        ttsCandidate = null
+                        dubbingCandidate = null
+                        candidateOwnsTts = false
                         if (!isCurrentPlaybackSession(key, sessionRevision)) return
                         android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
                         val reason = e.message ?: e.javaClass.simpleName
@@ -1277,7 +1303,7 @@ class PlaybackService : MediaSessionService() {
                             if (isCurrentPlaybackSession(key, sessionRevision)) pm.originalVolume = 1f
                         }
                     }
-                } else {
+                }                } else {
                     if (!isCurrentPlaybackSession(key, sessionRevision)) return
                     val message = when (selectedTts) {
                         "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
