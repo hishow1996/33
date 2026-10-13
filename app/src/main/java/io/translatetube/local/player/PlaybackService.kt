@@ -2122,6 +2122,7 @@ class PlaybackService : MediaSessionService() {
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
             var pendingTts: TtsEngine? = null
+            var oldEngineRetired = false
             try {
                 ensureCurrentSession(sessionKey)
                 updateUiForSession(sessionKey) {
@@ -2240,7 +2241,9 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val previousDubbing = dubbing
-                dubbing = null
+                previousDubbing?.release()
+                if (dubbing === previousDubbing) dubbing = null
+                oldEngineRetired = previousDubbing != null
                 previousDubbing?.releaseAndJoin()
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
@@ -2309,8 +2312,16 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey && videoKey == sessionKey) {
-                        state.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}")
+                        state.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            muteOriginal = if (oldEngineRetired) false else sessionState.muteOriginal,
+                            error = "自动区分人物失败：${e.message}",
+                        )
                     } else state
+                }
+                if (oldEngineRetired && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
                 }
             } finally {
                 pendingTts?.close()
@@ -2383,8 +2394,8 @@ class PlaybackService : MediaSessionService() {
                 previousDubbing = dubbing
                 previousDubbing?.release()
                 if (dubbing === previousDubbing) dubbing = null
-                previousDubbing?.releaseAndJoin()
                 oldEngineRetired = previousDubbing != null
+                previousDubbing?.releaseAndJoin()
                 ensureCurrentSession(sessionKey)
 
                 saveSpeakerAssignments(updatedAssignments, sessionKey)
