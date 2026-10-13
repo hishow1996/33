@@ -2073,7 +2073,8 @@ class PlaybackService : MediaSessionService() {
                 // ExoPlayer belongs to the main application looper; capture its position there,
                 // then persist history without touching the player from this background coroutine.
                 val watchedSec = withContext(Dispatchers.Main) {
-                    if (::pm.isInitialized) pm.position() / 1000L else null
+                    // Avoid saving the new video's position under the previous video's history key.
+                    if (::pm.isInitialized && videoKey == key) pm.position() / 1000L else null
                 } ?: return@launch
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, watchedSec)
