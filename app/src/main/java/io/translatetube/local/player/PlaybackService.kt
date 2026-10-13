@@ -1978,6 +1978,7 @@ class PlaybackService : MediaSessionService() {
                 rebuildDubbingForSpeakerLines(
                     updated = updated,
                     expectedVideoKey = expectedVideoKey,
+                    expectedPlaybackSessionRevision = expectedSessionRevision,
                     progressLabel = "人物识别完成，正在准备配音",
                     completedMessage = "人物区分完成：已识别 $recognizedCount 位说话人，使用 $distinctVoices 种音色",
                 )
@@ -2021,6 +2022,9 @@ class PlaybackService : MediaSessionService() {
             ui.update { it.copy(error = "无效的配音音色编号，请重新选择。") }
             return
         }
+        val expectedVideoKey = videoKey
+        val expectedPlaybackSessionRevision = playbackSessionRevision
+        if (!isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision)) return
         val oldLines = ui.value.lines
         if (index !in oldLines.indices) return
         if (oldLines[index].speakerId == speakerId) return
@@ -2033,7 +2037,8 @@ class PlaybackService : MediaSessionService() {
         }
         rebuildDubbingForSpeakerLines(
             updated = updated,
-            expectedVideoKey = videoKey,
+            expectedVideoKey = expectedVideoKey,
+            expectedPlaybackSessionRevision = expectedPlaybackSessionRevision,
             progressLabel = "正在更新人物音色",
             completedMessage = "人物音色已更新",
         )
@@ -2047,34 +2052,74 @@ class PlaybackService : MediaSessionService() {
     private fun rebuildDubbingForSpeakerLines(
         updated: List<SubLine>,
         expectedVideoKey: String,
+        expectedPlaybackSessionRevision: Long,
         progressLabel: String,
         completedMessage: String,
-    ): Job {
-        speakerRebuildJob?.cancel()
-        val revision = speakerRebuildRevision.incrementAndGet()
-        dubCollectJob?.cancel()
-        dubCollectJob = null
-        dubbing?.release()
-        dubbing = null
+    ): Job? {
+        data class RebuildSetup(
+            val revision: Int,
+            val previousJob: Job?,
+            val previousCollector: Job?,
+            val previousDubbing: DubbingEngine?,
+        )
+
+        // Reserve the rebuild only while this exact playback session is still current. Taking
+        // ownership of the previous engine under the session lock prevents a same-URL reopen from
+        // accidentally having its new engine released by this older rebuild.
+        val setup = synchronized(sessionLock) {
+            if (playbackSessionRevision != expectedPlaybackSessionRevision ||
+                videoKey != expectedVideoKey || ui.value.key != expectedVideoKey
+            ) {
+                null
+            } else {
+                val previousJob = speakerRebuildJob
+                val previousCollector = dubCollectJob
+                val previousDubbing = dubbing
+                val revision = speakerRebuildRevision.incrementAndGet()
+                speakerRebuildJob = null
+                dubCollectJob = null
+                dubbing = null
+                RebuildSetup(revision, previousJob, previousCollector, previousDubbing)
+            }
+        } ?: return null
+
+        val revision = setup.revision
+        setup.previousJob?.cancel()
+        setup.previousCollector?.cancel()
+        runCatching { setup.previousDubbing?.release() }
+
         scope.launch(Dispatchers.Main) {
-            if (::pm.isInitialized) runCatching { pm.originalVolume = 1f }
+            if (isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+                speakerRebuildRevision.get() == revision && ::pm.isInitialized
+            ) {
+                runCatching { pm.originalVolume = 1f }
+            }
         }
-        ui.update {
-            it.copy(
-                lines = updated,
-                totalLines = updated.size,
-                preparedUntil = 0,
-                currentLine = -1,
-                phase = Phase.READY,
-                progress = "$progressLabel 0/${updated.size} 行",
-                speakerRebuildInProgress = true,
-                noModelHint = null,
-                error = null,
-            )
+        updateUiForSession(expectedVideoKey, expectedPlaybackSessionRevision) { state ->
+            if (speakerRebuildRevision.get() == revision) {
+                state.copy(
+                    lines = updated,
+                    totalLines = updated.size,
+                    preparedUntil = 0,
+                    currentLine = -1,
+                    phase = Phase.READY,
+                    progress = "$progressLabel 0/${updated.size} 行",
+                    speakerRebuildInProgress = true,
+                    noModelHint = null,
+                    error = null,
+                )
+            } else state
         }
-        lastLineIdx = Int.MIN_VALUE
+        if (isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+            speakerRebuildRevision.get() == revision
+        ) {
+            lastLineIdx = Int.MIN_VALUE
+        }
         scope.launch(Dispatchers.Main) {
-            if (::pm.isInitialized && expectedVideoKey == videoKey && speakerRebuildRevision.get() == revision) {
+            if (::pm.isInitialized &&
+                isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+                speakerRebuildRevision.get() == revision
+            ) {
                 tick(pm.position())
             }
         }
@@ -2082,21 +2127,37 @@ class PlaybackService : MediaSessionService() {
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var candidate: DubbingEngine? = null
             try {
-                if (expectedVideoKey != videoKey || speakerRebuildRevision.get() != revision) return@launch
+                if (!isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) ||
+                    speakerRebuildRevision.get() != revision
+                ) return@launch
                 if (!io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
                     throw IllegalStateException("Kokoro 配音模型尚未就绪")
                 }
                 try {
-                    saveSpeakerAssignments(updated, expectedVideoKey)
+                    saveSpeakerAssignments(
+                        lines = updated,
+                        expectedVideoKey = expectedVideoKey,
+                        expectedPlaybackSessionRevision = expectedPlaybackSessionRevision,
+                        expectedSpeakerRevision = revision,
+                    )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     android.util.Log.w("PlaybackService", "Unable to persist speaker assignment", e)
                 }
+                if (!isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) ||
+                    speakerRebuildRevision.get() != revision
+                ) return@launch
+
                 val created = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
                 candidate = created
                 val tts = makeTts("kokoro")
                 created.onSynthesisError = { detail ->
                     ui.update { state ->
-                        if (state.key == expectedVideoKey && speakerRebuildRevision.get() == revision) {
+                        if (state.key == expectedVideoKey &&
+                            isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+                            speakerRebuildRevision.get() == revision
+                        ) {
                             state.copy(
                                 ttsEngineName = tts.name,
                                 muteOriginal = false,
@@ -2106,24 +2167,39 @@ class PlaybackService : MediaSessionService() {
                         } else state
                     }
                     scope.launch(Dispatchers.Main) {
-                        if (speakerRebuildRevision.get() == revision && ::pm.isInitialized) {
+                        if (isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+                            speakerRebuildRevision.get() == revision && ::pm.isInitialized
+                        ) {
                             runCatching { pm.originalVolume = 1f }
                         }
                     }
                 }
                 created.attach(tts, updated)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (expectedVideoKey != videoKey || speakerRebuildRevision.get() != revision) {
-                    created.release()
+
+                val installed = synchronized(sessionLock) {
+                    if (playbackSessionRevision == expectedPlaybackSessionRevision &&
+                        videoKey == expectedVideoKey && ui.value.key == expectedVideoKey &&
+                        speakerRebuildRevision.get() == revision
+                    ) {
+                        dubbing = created
+                        true
+                    } else false
+                }
+                if (!installed) {
+                    runCatching { created.release() }
                     candidate = null
                     return@launch
                 }
-                dubbing = created
                 candidate = null
-                dubCollectJob = scope.launch {
+
+                val collector = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
                     created.preparedUntil.collect { count ->
                         ui.update { state ->
-                            if (state.key != expectedVideoKey || speakerRebuildRevision.get() != revision) {
+                            if (state.key != expectedVideoKey ||
+                                !isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) ||
+                                speakerRebuildRevision.get() != revision || dubbing !== created
+                            ) {
                                 state
                             } else {
                                 val allPrepared = count >= updated.size
@@ -2138,28 +2214,61 @@ class PlaybackService : MediaSessionService() {
                         }
                     }
                 }
+                val keepCollector = synchronized(sessionLock) {
+                    if (playbackSessionRevision == expectedPlaybackSessionRevision &&
+                        videoKey == expectedVideoKey && ui.value.key == expectedVideoKey &&
+                        speakerRebuildRevision.get() == revision && dubbing === created
+                    ) {
+                        dubCollectJob = collector
+                        true
+                    } else false
+                }
+                if (keepCollector) collector.start() else collector.cancel()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Speaker voice rebuild failed", e)
-                if (expectedVideoKey == videoKey && speakerRebuildRevision.get() == revision) {
-                    withContext(Dispatchers.Main) { if (::pm.isInitialized) runCatching { pm.originalVolume = 1f } }
-                    ui.update {
-                        it.copy(
-                            phase = Phase.READY,
-                            progress = "",
-                            speakerRebuildInProgress = false,
-                            muteOriginal = false,
-                            noModelHint = TtsEngineMessages.engineUnavailable("Kokoro"),
-                            error = "重新生成配音失败：${e.message ?: e.javaClass.simpleName}",
-                        )
+                if (isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+                    speakerRebuildRevision.get() == revision
+                ) {
+                    withContext(Dispatchers.Main) {
+                        if (isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) &&
+                            speakerRebuildRevision.get() == revision && ::pm.isInitialized
+                        ) {
+                            runCatching { pm.originalVolume = 1f }
+                        }
+                    }
+                    updateUiForSession(expectedVideoKey, expectedPlaybackSessionRevision) { state ->
+                        if (speakerRebuildRevision.get() == revision) {
+                            state.copy(
+                                phase = Phase.READY,
+                                progress = "",
+                                speakerRebuildInProgress = false,
+                                muteOriginal = false,
+                                noModelHint = TtsEngineMessages.engineUnavailable("Kokoro"),
+                                error = "重新生成配音失败：${e.message ?: e.javaClass.simpleName}",
+                            )
+                        } else state
                     }
                 }
             } finally {
                 candidate?.release()
             }
         }
-        speakerRebuildJob = job
+
+        val registered = synchronized(sessionLock) {
+            if (playbackSessionRevision == expectedPlaybackSessionRevision &&
+                videoKey == expectedVideoKey && ui.value.key == expectedVideoKey &&
+                speakerRebuildRevision.get() == revision
+            ) {
+                speakerRebuildJob = job
+                true
+            } else false
+        }
+        if (!registered) {
+            job.cancel()
+            return null
+        }
         job.start()
         return job
     }
@@ -2202,8 +2311,17 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private suspend fun saveSpeakerAssignments(lines: List<SubLine>, expectedVideoKey: String) {
-        if (expectedVideoKey != videoKey || lines.isEmpty()) return
+    private suspend fun saveSpeakerAssignments(
+        lines: List<SubLine>,
+        expectedVideoKey: String,
+        expectedPlaybackSessionRevision: Long,
+        expectedSpeakerRevision: Int,
+    ) {
+        if (expectedVideoKey != videoKey || lines.isEmpty() ||
+            !isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) ||
+            speakerRebuildRevision.get() != expectedSpeakerRevision
+        ) return
+        val sourceLang = ui.value.sourceLang
         val array = org.json.JSONArray()
         lines.forEach { line ->
             array.put(
@@ -2214,10 +2332,13 @@ class PlaybackService : MediaSessionService() {
                     .put("sp", if (SpeakerVoiceMapping.isValidVoiceSelection(line.speakerId)) line.speakerId else -1)
             )
         }
+        if (!isCurrentPlaybackSession(expectedVideoKey, expectedPlaybackSessionRevision) ||
+            speakerRebuildRevision.get() != expectedSpeakerRevision
+        ) return
         AppDatabase.get(this).subtitleCacheDao().put(
             io.translatetube.local.data.SubtitleCacheEntity(
                 speakerAssignmentCacheKey(expectedVideoKey),
-                ui.value.sourceLang,
+                sourceLang,
                 array.toString(),
                 System.currentTimeMillis(),
             )
