@@ -167,7 +167,6 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text("API 管理", style = MaterialTheme.typography.titleLarge, color = OnBg)
-                Text("配置翻译服务与模型", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
             Surface(
                 onClick = { adding = true },
@@ -218,7 +217,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     )
                     if (isGoogleActive) {
-                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Surface(
+                            color = Color(0xFFEAF1FF),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(
+                                "当前",
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                color = Color(0xFF245BCC),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            )
+                        }
                         Spacer(Modifier.width(8.dp))
                     }
                     IconButton(
@@ -259,7 +269,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     )
                     if (isGeminiActive) {
-                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Surface(
+                            color = Color(0xFFEAF1FF),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(
+                                "当前",
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                color = Color(0xFF245BCC),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            )
+                        }
                         Spacer(Modifier.width(6.dp))
                     }
                     Box {
@@ -322,7 +343,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     )
                     if (isDeepSeekActive) {
-                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Surface(
+                            color = Color(0xFFEAF1FF),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(
+                                "当前",
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                color = Color(0xFF245BCC),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            )
+                        }
                         Spacer(Modifier.width(6.dp))
                     }
                     Box {
@@ -387,7 +419,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                     )
                     if (selectedProfile) {
-                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Surface(
+                            color = Color(0xFFEAF1FF),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(
+                                "当前",
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                color = Color(0xFF245BCC),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                            )
+                        }
                         Spacer(Modifier.width(6.dp))
                     }
                     Box {
@@ -1071,8 +1114,7 @@ private fun FreeModelConfigDialog(
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text(title, style = MaterialTheme.typography.titleLarge, color = OnBg, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                    Text("免费大模型 · 覆盖私有参数与密钥", style = MaterialTheme.typography.bodySmall, color = SubText)
-                }
+                    }
             }
 
             Box(Modifier.fillMaxWidth().height(1.dp).background(OutlineSoft))
