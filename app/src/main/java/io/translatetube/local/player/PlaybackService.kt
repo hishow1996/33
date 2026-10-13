@@ -999,6 +999,7 @@ class PlaybackService : MediaSessionService() {
                     "PlaybackService",
                     "Ignoring invalid/stale translation cache for $key; will translate the source subtitles again"
                 )
+                db.subtitleCacheDao().delete(translationCacheKey)
             }
             suspend fun fetchAndCacheSourceLines(): Pair<List<SubLine>, String>? {
                 val id = videoId ?: return null
@@ -1058,7 +1059,10 @@ class PlaybackService : MediaSessionService() {
                 )
                 db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
                 // A legacy video-level translation cache cannot be proven to belong to this source.
-                if (sourceImportedLines.isNullOrEmpty()) cached = null
+                if (sourceImportedLines.isNullOrEmpty()) {
+                    if (cached != null) db.subtitleCacheDao().delete(translationCacheKey)
+                    cached = null
+                }
             } else if (
                 cached != null &&
                 sourceImportedLines.isNullOrEmpty() &&
@@ -1069,6 +1073,7 @@ class PlaybackService : MediaSessionService() {
                     "PlaybackService",
                     "Ignoring translation cache for $videoId because it belongs to different source subtitle cues"
                 )
+                db.subtitleCacheDao().delete(translationCacheKey)
                 cached = null
             } else if (
                 cached != null &&
@@ -1084,6 +1089,7 @@ class PlaybackService : MediaSessionService() {
                         "PlaybackService",
                         "Cannot validate legacy translation cache for $videoId without source cues"
                     )
+                    db.subtitleCacheDao().delete(translationCacheKey)
                     cached = null
                 } else {
                     restoredSourceLines = fetched.first
@@ -1093,6 +1099,7 @@ class PlaybackService : MediaSessionService() {
                             "PlaybackService",
                             "Discarding legacy translation cache for $videoId; source subtitle cues do not match"
                         )
+                        db.subtitleCacheDao().delete(translationCacheKey)
                         cached = null
                     }
                 }
