@@ -1461,7 +1461,18 @@ class PlaybackService : MediaSessionService() {
         speakerJob = scope.launch {
             var tempAudio: File? = null
             try {
-                ui.update { it.copy(error = null, progress = "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…", phase = Phase.TRANSCRIBING) }
+                ui.update { state ->
+                    if (state.key == expectedVideoKey &&
+                        expectedVideoKey == videoKey &&
+                        recognitionRevision == speakerRebuildRevision
+                    ) {
+                        state.copy(
+                            error = null,
+                            progress = "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…",
+                            phase = Phase.TRANSCRIBING,
+                        )
+                    } else state
+                }
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
