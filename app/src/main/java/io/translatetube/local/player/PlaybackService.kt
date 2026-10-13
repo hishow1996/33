@@ -972,9 +972,9 @@ class PlaybackService : MediaSessionService() {
                 lines = transcribedLines
                 srcLang = whisper?.lastLang?.takeIf { it.isNotBlank() } ?: "en"
 
-                // Keep the completed ASR transcript as the source-subtitle cache. The downloaded
-                // audio is intentionally transient; without this checkpoint, a later translation
-                // retry would download the same 30–40 MB audio stream and run ASR again.
+                // Keep the completed ASR transcript as an independent checkpoint. The bounded
+                // source-audio cache is retained for retries and later speaker diarization, while
+                // this subtitle cache lets translation retry without running ASR again.
                 if (videoId != null && importedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for (line in transcribedLines) {

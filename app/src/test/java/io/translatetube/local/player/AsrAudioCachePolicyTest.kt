@@ -18,7 +18,7 @@ class AsrAudioCachePolicyTest {
 
     @Test
     fun rejectsMissingEmptyOversizedExpiredAndFutureDatedFiles() {
-        val now = 20_000_000L
+        val now = 10_000_000_000L
         assertFalse(AsrAudioCachePolicy.canReuse(false, 100L, now - 1, now))
         assertFalse(AsrAudioCachePolicy.canReuse(true, 0L, now - 1, now))
         assertFalse(AsrAudioCachePolicy.canReuse(true, AsrAudioCachePolicy.MAX_AUDIO_BYTES + 1, now - 1, now))
