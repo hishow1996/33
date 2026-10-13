@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
 import okhttp3.OkHttpClient
@@ -135,6 +136,7 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
+    private val asrAudioDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -912,22 +914,7 @@ class PlaybackService : MediaSessionService() {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 ui.update { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
                 val audioFile = if (videoId != null) {
-                    val cachedAudio = reusableAsrAudioFile(videoId)
-                    if (cachedAudio != null) {
-                        ui.update {
-                            it.copy(
-                                phase = Phase.DOWNLOADING_AUDIO,
-                                progress = "复用已下载音频，避免重复下载…",
-                            )
-                        }
-                        cachedAudio
-                    } else {
-                        val audioStream = NewPipeRepo.audioForAsr(videoId)
-                            ?: throw IllegalStateException("无法获取音频流")
-                        downloadAudio(audioStream.content, asrAudioCacheFile(videoId)).also {
-                            pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
-                        }
-                    }
+                    obtainAsrAudioFile(videoId, "复用已下载音频，避免重复下载…")
                 } else {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -1541,6 +1528,25 @@ class PlaybackService : MediaSessionService() {
         return File(asrAudioCacheDirectory(), "$safeId.bin")
     }
 
+    /**
+     * Serialize the lookup/download per video so ASR and speaker recognition can never download
+     * the same source audio concurrently. The second caller rechecks the cache after acquiring it.
+     */
+    private suspend fun obtainAsrAudioFile(videoId: String, cacheHitProgress: String): File {
+        val mutex = asrAudioDownloadLocks.computeIfAbsent(videoId) { kotlinx.coroutines.sync.Mutex() }
+        return mutex.withLock {
+            reusableAsrAudioFile(videoId)?.let { cached ->
+                ui.update { it.copy(progress = cacheHitProgress) }
+                return@withLock cached
+            }
+            val stream = NewPipeRepo.audioForAsr(videoId)
+                ?: throw IllegalStateException("无法获取视频音频流")
+            downloadAudio(stream.content, asrAudioCacheFile(videoId)).also {
+                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
+            }
+        }
+    }
+
     /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
     private fun reusableAsrAudioFile(videoId: String): File? {
         val file = asrAudioCacheFile(videoId)
@@ -1557,10 +1563,15 @@ class PlaybackService : MediaSessionService() {
 
     /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
     private fun pruneAsrAudioCache(directory: File, keep: File?) {
-        val files = directory.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".bin") }
-            ?: return
+        val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
+        // A process killed during download may leave a large .part file. Remove abandoned partials
+        // after six hours; active downloads update their modification time as bytes are written.
+        allFiles.filter { file ->
+            file.isFile && file.name.endsWith(".part") &&
+                (now - file.lastModified() > 6L * 60L * 60L * 1_000L)
+        }.forEach { it.delete() }
+        val files = allFiles.filter { it.isFile && it.name.endsWith(".bin") }
         var totalBytes = 0L
 
         // Enforce TTL even when the folder is below its size budget; otherwise old videos
@@ -1826,17 +1837,7 @@ class PlaybackService : MediaSessionService() {
                     val sourceUri: Uri?
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
-                        val cached = reusableAsrAudioFile(id)
-                        val audio = if (cached != null) {
-                            ui.update { it.copy(progress = "复用已下载音频，正在分析人物声音…") }
-                            cached
-                        } else {
-                            val stream = NewPipeRepo.audioForAsr(id)
-                                ?: throw IllegalStateException("无法获取当前视频的音频流")
-                            downloadAudio(stream.content, asrAudioCacheFile(id)).also {
-                                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
-                            }
-                        }
+                        val audio = obtainAsrAudioFile(id, "复用已下载音频，正在分析人物声音…")
                         sourceFile = audio
                         sourceUri = null
                     } else {
