@@ -68,7 +68,6 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             Spacer(Modifier.width(8.dp))
             Column {
                 Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
-                Text("管理翻译、语音和应用空间", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
         }
         Spacer(Modifier.height(2.dp))
@@ -268,14 +267,6 @@ Section("模型管理") {
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val subtitle = when (title) {
-        "翻译引擎", "翻译设置" -> "Google 翻译 · API 配置"
-        "配音设置" -> "Kokoro 模型 · 系统 TTS · 音色"
-        "模型管理" -> "下载状态 · 安装进度 · 重试"
-        "播放体验" -> "悬浮窗权限 · 播放相关选项"
-        "存储管理" -> "临时缓存 · 清理空间"
-        else -> "版本信息"
-    }
     val glyph = when (title) {
         "翻译引擎", "翻译设置" -> Icons.Filled.Translate
         "配音设置" -> Icons.Filled.VolumeUp
@@ -311,7 +302,6 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(title, color = OnBg, style = MaterialTheme.typography.titleLarge)
-                    Text(subtitle, color = SubText, style = MaterialTheme.typography.bodyMedium)
                 }
                 Icon(
                     imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
