@@ -187,8 +187,9 @@ class DubbingEngine(
         }
         // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
         val textHash = fingerprint(line?.zh ?: "")
-        // v4 forces a clean cache after fixing the old escaped interpolation bug.
-        val engineHash = fingerprint("${tts?.name ?: "unknown"}-v5-speed-${speed}")
+        // Include the configured default voice as well as engine/speed so changing the
+        // Kokoro default cannot reuse PCM synthesized with the previous voice.
+        val engineHash = fingerprint("${tts?.cacheKey ?: tts?.name ?: "unknown"}-v6-speed-${speed}")
         return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L

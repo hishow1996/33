@@ -163,7 +163,15 @@ class PlaybackService : MediaSessionService() {
             // resumes from the paused sample position instead of finishing the current line.
             pm.player.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (isPlaying) dubbing?.resumePlayback() else dubbing?.pausePlayback()
+                    if (isPlaying && ui.value.dubbingOn) {
+                        // Re-select the cue for the exact resumed video timestamp. Do not resume
+                        // a stale AudioTrack if a seek or a disabled dubbing state changed meanwhile.
+                        dubbing?.stop()
+                        lastLineIdx = Int.MIN_VALUE
+                        if (::pm.isInitialized) tick(pm.position())
+                    } else {
+                        dubbing?.pausePlayback()
+                    }
                 }
             })
 
@@ -440,7 +448,7 @@ class PlaybackService : MediaSessionService() {
                 val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
                 val chinesePattern = Regex("[\\u4e00-\\u9fff]")
-                val translatedLines = parsed.mapIndexed { index, line ->
+                val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
                     val parts = line.text.lines().map { it.trim() }.filter { it.isNotBlank() }
                     val translation = parts.lastOrNull { chinesePattern.containsMatchIn(it) }
                         ?: parts.lastOrNull()
@@ -451,7 +459,7 @@ class PlaybackService : MediaSessionService() {
                         text = original,
                         zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
                     )
-                }
+                })
                 java.io.File(cacheDir, "dub/" + videoKey).deleteRecursively()
                 pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
                 ui.update {
@@ -524,11 +532,13 @@ class PlaybackService : MediaSessionService() {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${parsedLines.size} 行）…") }
                     val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
                     // Use immutable copies so StateFlow/Compose sees translated subtitle text.
-                    val translatedLines = if (isChineseLanguage(srcLang)) {
-                        parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
-                    } else {
-                        translateLines(videoKey, parsedLines, srcLang)
-                    }
+                    val translatedLines = applySavedLineOverrides(
+                        if (isChineseLanguage(srcLang)) {
+                            parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
+                        } else {
+                            translateLines(videoKey, parsedLines, srcLang)
+                        }
+                    )
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
@@ -833,7 +843,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
-            val finalLines = lines ?: emptyList()
+            val finalLines = applySavedLineOverrides(lines ?: emptyList(), key)
             ui.update {
                 it.copy(
                     lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
@@ -1419,6 +1429,9 @@ class PlaybackService : MediaSessionService() {
                     ui.update { it.copy(progress = message) }
                 }
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
+                val assignmentSnapshot = loadSpeakerAssignments(videoKey)
+                val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
+                val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
                 val updated = originalLines.map { line ->
                     val start = line.startMs / 1000f
                     val end = line.endMs / 1000f
@@ -1432,8 +1445,9 @@ class PlaybackService : MediaSessionService() {
                         .mapValues { (_, overlaps) -> overlaps.sum() }
                     val best = overlapBySpeaker.maxByOrNull { it.value }
                     val speaker = if (best != null && best.value >= minOf(0.25f, duration * 0.2f)) best.key else -1
-                    // Kokoro 的默认音色用于第一位说话人，其余说话人映射到不同预设音色。
-                    val voice = when {
+                    // Assign each diarized person a stable voice for this video. Manual cue
+                    // choices take precedence over the automatic speaker mapping.
+                    val suggestedVoice = when {
                         speaker == 0 -> -1
                         speaker in 1..53 -> {
                             val candidate = speaker - 1
@@ -1441,8 +1455,22 @@ class PlaybackService : MediaSessionService() {
                         }
                         else -> -1
                     }
+                    val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+                    val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..53) {
+                        speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
+                    } else {
+                        suggestedVoice
+                    }
+                    lineVoiceAssignments[keyForLine] = voice
                     line.copy(speakerId = voice)
                 }
+                saveSpeakerAssignments(
+                    assignmentSnapshot.copy(
+                        speakerVoices = speakerVoiceAssignments,
+                        lineVoices = lineVoiceAssignments,
+                    ),
+                    videoKey,
+                )
                 val distinctVoices = updated.map { it.speakerId }.distinct().size
                 ui.update {
                     it.copy(lines = updated, progress = "已区分人物，使用 $distinctVoices 种音色", phase = Phase.SYNTHESIZING,
@@ -1492,9 +1520,21 @@ class PlaybackService : MediaSessionService() {
         }
         val oldLines = ui.value.lines
         if (index !in oldLines.indices) return
-        if (oldLines[index].speakerId == speakerId) return
+        val selectedVoice = speakerId.coerceIn(-1, 53)
+        if (oldLines[index].speakerId == selectedVoice) return
+        speakerJob?.cancel()
+        speakerJob = null
+        val selectedLine = oldLines[index]
+        val assignmentSnapshot = loadSpeakerAssignments(videoKey)
+        saveSpeakerAssignments(
+            assignmentSnapshot.copy(
+                lineOverrides = assignmentSnapshot.lineOverrides +
+                    (SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs) to selectedVoice),
+            ),
+            videoKey,
+        )
         val updated = oldLines.mapIndexed { i, line ->
-            if (i == index) line.copy(speakerId = speakerId) else line
+            if (i == index) line.copy(speakerId = selectedVoice) else line
         }
         dubCollectJob?.cancel()
         dubbing?.release()
@@ -1537,6 +1577,44 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun assignmentPrefsKey(key: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(key.toByteArray(Charsets.UTF_8))
+        return "video_" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private fun loadSpeakerAssignments(key: String = videoKey): SpeakerAssignmentSnapshot {
+        if (key.isBlank()) return SpeakerAssignmentSnapshot()
+        val raw = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
+            .getString(assignmentPrefsKey(key), null)
+        return SpeakerAssignmentCodec.decode(raw)
+    }
+
+    private fun saveSpeakerAssignments(
+        snapshot: SpeakerAssignmentSnapshot,
+        key: String = videoKey,
+    ) {
+        if (key.isBlank()) return
+        getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
+            .edit()
+            .putString(assignmentPrefsKey(key), SpeakerAssignmentCodec.encode(snapshot))
+            .apply()
+    }
+
+    private fun applySavedLineOverrides(
+        lines: List<SubLine>,
+        key: String = videoKey,
+    ): List<SubLine> {
+        if (lines.isEmpty()) return lines
+        val assignments = loadSpeakerAssignments(key)
+        if (assignments.lineVoices.isEmpty() && assignments.lineOverrides.isEmpty()) return lines
+        return lines.map { line ->
+            val lineKey = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+            val voice = assignments.lineOverrides[lineKey] ?: assignments.lineVoices[lineKey]
+            if (voice == null) line else line.copy(speakerId = voice)
+        }
+    }
+
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn
         ui.update { it.copy(dubbingOn = nowOn) }
@@ -1562,7 +1640,12 @@ class PlaybackService : MediaSessionService() {
             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, nowOnly)
             .build()
     }
-    fun seek(ms: Long) { pm.seekTo(ms); lastLineIdx = Int.MIN_VALUE; dubbing?.stop() }
+    fun seek(ms: Long) {
+        // Invalidate old speech before seekTo emits its immediate timeline tick.
+        dubbing?.stop()
+        lastLineIdx = Int.MIN_VALUE
+        pm.seekTo(ms)
+    }
     fun playPause() { if (pm.isPlaying.value) pm.pause() else pm.play() }
 
     /** 记录观看进度（退出播放页时调用，历史列表续看用） */

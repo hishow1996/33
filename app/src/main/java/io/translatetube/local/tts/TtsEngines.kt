@@ -14,6 +14,8 @@ data class TtsAudio(val samples: FloatArray, val sampleRate: Int)
 
 interface TtsEngine {
     val name: String
+    /** Stable synthesis configuration identity, used to avoid stale PCM cache hits. */
+    val cacheKey: String get() = name
     fun synth(text: String, speed: Float = 1.0f, speakerId: Int = -1): TtsAudio
     fun close()
 }
@@ -21,6 +23,7 @@ interface TtsEngine {
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
 class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
+    override val cacheKey: String get() = "$name-default-${speakerId.coerceIn(0, 53)}"
     private val tts: OfflineTts
 
     init {
