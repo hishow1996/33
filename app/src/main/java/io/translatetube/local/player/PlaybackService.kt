@@ -628,12 +628,15 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 val srcLang = detectLangFromText(parsedLines.take(12).joinToString(" ") { it.text })
+                val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
+                    .getLong("active_api_id", -1L)
+                val importedCacheKey = importedTranslationCacheKey(videoKey, activeTranslationId, parsedLines)
                 // Use immutable copies so StateFlow/Compose sees translated subtitle text.
                 val translatedLines = applySavedLineOverrides(
                     if (isChineseLanguage(srcLang)) {
                         parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
-                        translateLines(videoKey, parsedLines, srcLang)
+                        translateLines(videoKey, parsedLines, srcLang, importedCacheKey)
                     }
                 )
                 previousDubbing?.releaseAndJoin()
@@ -661,7 +664,7 @@ class PlaybackService : MediaSessionService() {
                 ) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
-                            "$videoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}",
+                            importedCacheKey,
                             srcLang,
                             arr.toString(),
                             System.currentTimeMillis(),
@@ -691,6 +694,40 @@ class PlaybackService : MediaSessionService() {
                 }
             }
         }
+    }
+
+    /** Imported subtitles get their own translation cache key so they cannot overwrite YouTube source captions. */
+    private fun importedTranslationCacheKey(key: String, activeId: Long, lines: List<SubLine>): String {
+        val canonical = buildString {
+            lines.forEach { line ->
+                append(line.startMs).append(':')
+                    .append(line.endMs).append(':')
+                    .append(line.text.length).append(':')
+                    .append(line.text).append('\n')
+            }
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+        val signature = digest.take(12).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "$key|zh|$activeId|imported-$signature"
+    }
+
+    /** Compare source text and timing before trusting a legacy video-level translation cache. */
+    private fun translationCacheMatchesSource(linesJson: String, sourceLines: List<SubLine>): Boolean = try {
+        val rows = org.json.JSONArray(linesJson)
+        if (rows.length() != sourceLines.size) {
+            false
+        } else {
+            sourceLines.indices.all { i ->
+                val row = rows.optJSONObject(i) ?: return@all false
+                row.optLong("s", Long.MIN_VALUE) == sourceLines[i].startMs &&
+                    row.optLong("e", Long.MIN_VALUE) == sourceLines[i].endMs &&
+                    row.optString("t") == sourceLines[i].text
+            }
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("PlaybackService", "Unable to compare source lines to translation cache", e)
+        false
     }
 
     /** 从首行文本猜语言（仅含 CJK 判 zh，否则 en） */
@@ -815,7 +852,11 @@ class PlaybackService : MediaSessionService() {
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
-            val translationCacheKey = "$key|zh|$selectedTranslationId"
+            val translationCacheKey = if (!importedLines.isNullOrEmpty()) {
+                importedTranslationCacheKey(key, selectedTranslationId, importedLines)
+            } else {
+                "$key|zh|$selectedTranslationId"
+            }
             val sourceSubtitleCacheKey = "$key|source|youtube"
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
@@ -828,7 +869,7 @@ class PlaybackService : MediaSessionService() {
             // Older builds may have persisted a progress placeholder (for example, "正在翻译")
             // as every row's Chinese text. Never trust such cache entries: retranslate from the
             // cached original subtitles instead of displaying the placeholder as completed output.
-            val cached = storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+            var cached = storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
             if (storedTranslationCache != null && cached == null) {
                 android.util.Log.w(
                     "PlaybackService",
@@ -863,7 +904,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             val sourceCached = if (
-                resumeState == null && cached == null && videoId != null && importedLines.isNullOrEmpty()
+                resumeState == null && videoId != null && importedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -887,6 +928,19 @@ class PlaybackService : MediaSessionService() {
                     "Ignoring malformed source subtitle cache for $videoId; fetching subtitles/ASR again"
                 )
                 db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
+                // A legacy video-level translation cache cannot be proven to belong to this source.
+                if (importedLines.isNullOrEmpty()) cached = null
+            } else if (
+                cached != null &&
+                importedLines.isNullOrEmpty() &&
+                restoredSourceLines != null &&
+                !translationCacheMatchesSource(cached.linesJson, restoredSourceLines)
+            ) {
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring translation cache for $videoId because it belongs to different source subtitle cues"
+                )
+                cached = null
             }
 
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
@@ -1028,14 +1082,14 @@ class PlaybackService : MediaSessionService() {
                             progress = "继续翻译缓存中尚未完成的字幕…",
                         )
                     }
-                    lines = translateLines(key, restored, srcLang)
+                    lines = translateLines(key, restored, srcLang, translationCacheKey)
                 }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
-                    translatedLines = translateLines(key, translatedLines, srcLang)
+                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey)
                 } else if (translatedLines.isNotEmpty()) {
                     // Already-Chinese source subtitles are the Chinese display track; publish immutable copies.
                     translatedLines = translatedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
@@ -1240,7 +1294,12 @@ class PlaybackService : MediaSessionService() {
 
     /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
     /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
-    private suspend fun translateLines(key: String, lines: List<SubLine>, srcLang: String): List<SubLine> {
+    private suspend fun translateLines(
+        key: String,
+        lines: List<SubLine>,
+        srcLang: String,
+        cacheKeyOverride: String? = null,
+    ): List<SubLine> {
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         var updatedLines: List<SubLine> = lines.toList()
         val db = AppDatabase.get(this)
@@ -1289,7 +1348,7 @@ class PlaybackService : MediaSessionService() {
 
         val src = if (srcLang == "auto") "" else srcLang
         val batchSize = 10
-        val translationCacheKey = "${key}|zh|${activeId}"
+        val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
         for (batchIndices in pendingIndices.chunked(batchSize)) {
             // A model may return fewer rows than requested, or put UI/status text in a translation
             // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
