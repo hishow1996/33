@@ -460,7 +460,6 @@ class PlaybackService : MediaSessionService() {
                         zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
                     )
                 })
-                java.io.File(cacheDir, "dub/" + videoKey).deleteRecursively()
                 pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
                 ui.update {
                     it.copy(
@@ -475,8 +474,10 @@ class PlaybackService : MediaSessionService() {
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
+                val tts = makeTts()
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                d.attach(makeTts(), translatedLines)
+                registerDubbingFailureHandler(d, tts)
+                d.attach(tts, translatedLines)
                 dubbing = d
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
@@ -525,7 +526,6 @@ class PlaybackService : MediaSessionService() {
             val parsedLines = SubtitleParsers.parseAuto(text)
             if (parsedLines.isEmpty()) throw IllegalStateException("字幕文件为空或格式不支持")
             // 清旧配音缓存：防止导入新字幕的同 idx 行播出旧音频
-            java.io.File(cacheDir, "dub/$videoKey").deleteRecursively()
             // 走翻译管线但跳过重新解析视频流（保持当前播放）
             prepJob = scope.launch {
                 try {
@@ -542,8 +542,10 @@ class PlaybackService : MediaSessionService() {
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
+                    val tts = makeTts()
                     val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                    d.attach(makeTts(), translatedLines)
+                    registerDubbingFailureHandler(d, tts)
+                    d.attach(tts, translatedLines)
                     dubbing = d
                     dubCollectJob = scope.launch { d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } } }
                     // 入库缓存
@@ -961,22 +963,7 @@ class PlaybackService : MediaSessionService() {
                         // cannot cause the readiness check and actual engine to disagree.
                         val tts: TtsEngine = makeTts(selectedTts)
                         val d = DubbingEngine(this, key, scope)
-                        d.onSynthesisError = { detail ->
-                            ui.update { state ->
-                                if (state.key == key) {
-                                    state.copy(
-                                        ttsEngineName = tts.name,
-                                        muteOriginal = false,
-                                        noModelHint = "当前选择的「${tts.name}」配音失败；应用没有切换到其他配音引擎。$detail"
-                                    )
-                                } else state
-                            }
-                            // Preserve audible source playback on failure, but never substitute
-                            // another TTS engine behind the user's back.
-                            scope.launch(Dispatchers.Main) {
-                                if (::pm.isInitialized) runCatching { pm.originalVolume = 1f }
-                            }
-                        }
+                        registerDubbingFailureHandler(d, tts, key)
                         ui.update { it.copy(ttsEngineName = tts.name, noModelHint = null) }
                         d.attach(tts, finalLines)
                         dubbing = d
@@ -1282,6 +1269,34 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * Centralize synthesis-failure reporting for normal playback and imported subtitles.
+     * The explicitly selected TTS engine is retained; the source audio is restored on failure.
+     */
+    private fun registerDubbingFailureHandler(
+        engine: DubbingEngine,
+        tts: TtsEngine,
+        sessionKey: String = ui.value.key,
+    ) {
+        engine.onSynthesisError = { detail ->
+            val message = "当前选择的「${tts.name}」配音失败，未自动切换到其他引擎。$detail"
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        ttsEngineName = tts.name,
+                        muteOriginal = false,
+                        noModelHint = message,
+                    )
+                } else state
+            }
+            scope.launch(Dispatchers.Main) {
+                if (::pm.isInitialized && ui.value.key == sessionKey) {
+                    runCatching { pm.originalVolume = 1f }
+                }
+            }
+        }
+    }
+
     private suspend fun saveHistory(meta: VideoEntity) {
         val db = AppDatabase.get(this)
         val old = db.videoDao().byKey(meta.key)
@@ -1481,8 +1496,10 @@ class PlaybackService : MediaSessionService() {
                 dubbing?.release()
                 dubbing = null
                 if (io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
+                    val tts = makeTts()
                     val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                    d.attach(makeTts(), updated)
+                    registerDubbingFailureHandler(d, tts)
+                    d.attach(tts, updated)
                     dubbing = d
                     dubCollectJob?.cancel()
                     dubCollectJob = scope.launch {
@@ -1547,8 +1564,10 @@ class PlaybackService : MediaSessionService() {
         }
         scope.launch {
             try {
+                val tts = makeTts()
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                d.attach(makeTts(), updated)
+                registerDubbingFailureHandler(d, tts)
+                d.attach(tts, updated)
                 dubbing = d
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->

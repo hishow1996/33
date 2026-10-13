@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.LinkedBlockingDeque
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -53,7 +52,7 @@ class DubbingEngine(
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
     }
-    private val noAudio = ConcurrentHashMap.newKeySet<Int>()
+    private val readiness = DubbingReadiness()
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
     private var synthJob: Job? = null
@@ -71,7 +70,7 @@ class DubbingEngine(
         synthesisErrorReported.set(false)
         _totalLines.value = lines.size
         _preparedUntil.value = 0
-        noAudio.clear()
+        readiness.clear()
         pending.clear()
         priorityTarget = -1
         // 清内存缓存：防止旧会话同 idx 行的音频串台。
@@ -85,18 +84,28 @@ class DubbingEngine(
         // 从未缓存的最早行开始排
         for (i in lines.indices) {
             val file = cacheFile(i)
-            if (validCache(file) && file.length() == 8L) {
-                if (lines[i].zh.isNullOrBlank()) {
-                    // Empty output is expected for a subtitle line with no translated text.
-                    noAudio.add(i)
-                } else {
-                    // An empty PCM created by a previous failed TTS run is not a successful
-                    // cache hit. Remove it and retry using the currently selected engine.
+            val cacheHasAudio = inspectCache(file)
+            val blankTranslation = lines[i].zh.isNullOrBlank()
+            when {
+                blankTranslation && cacheHasAudio == false ->
+                    readiness.markPrepared(i, hasAudio = false)
+                blankTranslation && cacheHasAudio == true -> {
+                    // A blank translation must never reuse a non-empty cache entry.
                     file.delete()
+                    pending.offerLast(i)
                 }
+                !blankTranslation && cacheHasAudio == true ->
+                    readiness.markPrepared(i, hasAudio = true)
+                !blankTranslation && cacheHasAudio == false -> {
+                    // Empty PCM from a failed old run isn't a successful cache hit.
+                    file.delete()
+                    pending.offerLast(i)
+                }
+                else -> pending.offerLast(i)
             }
-            if (!cached(i)) pending.offerLast(i)
         }
+        // Existing cached lines count toward progress even when no synthesis job is needed.
+        bumpPrepared()
         startSynthLoop()
     }
 
@@ -122,14 +131,14 @@ class DubbingEngine(
         synthJob = scope.launch(Dispatchers.Default) {
             while (!pending.isEmpty()) {
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
-                if (cached(idx)) { bumpPrepared(idx); continue }
+                if (cached(idx)) { bumpPrepared(); continue }
                 val line = lines.getOrNull(idx) ?: continue
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
                     writeCache(idx, 16000, FloatArray(0))
-                    noAudio.add(idx)
-                    bumpPrepared(idx)
+                    readiness.markPrepared(idx, hasAudio = false)
+                    bumpPrepared()
                     continue
                 }
                 try {
@@ -162,9 +171,9 @@ class DubbingEngine(
                     val readyAudio = audio ?: throw (lastFailure
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
                     writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
-                    noAudio.remove(idx)
+                    readiness.markPrepared(idx, hasAudio = true)
                     synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
-                    bumpPrepared(idx)
+                    bumpPrepared()
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -173,8 +182,8 @@ class DubbingEngine(
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
                         writeCache(idx, 16000, FloatArray(0))
-                        noAudio.add(idx)
-                        bumpPrepared(idx)
+                        readiness.markPrepared(idx, hasAudio = false)
+                        bumpPrepared()
                     } catch (writeError: Exception) {
                         android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
                     }
@@ -184,15 +193,15 @@ class DubbingEngine(
     }
 
     private fun reportSynthesisError(message: String) {
-        if (synthesisErrorReported.compareAndSet(false, true)) {
+        if (!released && synthesisErrorReported.compareAndSet(false, true)) {
             onSynthesisError?.invoke(message)
         }
     }
 
-    private fun bumpPrepared(idx: Int) {
-        // preparedUntil = 连续就绪的最大行数
+    private fun bumpPrepared() {
+        // The display remains a contiguous count, but playback readiness is tracked per line.
         var n = _preparedUntil.value
-        while (n < lines.size && cached(n)) n++
+        while (n < lines.size && readiness.isReady(n)) n++
         _preparedUntil.value = n
     }
 
@@ -212,6 +221,33 @@ class DubbingEngine(
         return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
+
+    /**
+     * Return true for a valid non-empty PCM cache, false for a valid empty marker,
+     * and null when the entry is missing/corrupt and should be synthesized again.
+     */
+    private fun inspectCache(file: File): Boolean? {
+        if (!file.isFile) return null
+        if (file.length() < 8L) {
+            file.delete()
+            return null
+        }
+        return try {
+            java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
+                val sampleRate = input.readInt()
+                val sampleCount = input.readInt()
+                if (sampleRate !in 8_000..192_000 || sampleCount < 0 || sampleCount > 16_000_000 ||
+                    file.length() != 8L + sampleCount.toLong() * 4L
+                ) {
+                    throw java.io.IOException("PCM 缓存头或长度无效")
+                }
+                sampleCount > 0
+            }
+        } catch (e: Exception) {
+            file.delete()
+            null
+        }
+    }
 
     private fun cached(idx: Int): Boolean =
         synchronized(mem) { mem.containsKey(idx) } || validCache(cacheFile(idx))
@@ -245,7 +281,10 @@ class DubbingEngine(
     private fun load(idx: Int): Pair<FloatArray, Int>? {
         synchronized(mem) { mem[idx]?.let { return it } }
         val f = cacheFile(idx)
-        if (!validCache(f)) return null
+        if (!validCache(f)) {
+            readiness.markPrepared(idx, hasAudio = false)
+            return null
+        }
         return try {
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
                 val sr = d.readInt()
@@ -256,17 +295,17 @@ class DubbingEngine(
                 }
                 val samples = FloatArray(n) { d.readFloat() }
                 if (n == 0) {
-                    noAudio.add(idx)
+                    readiness.markPrepared(idx, hasAudio = false)
                 } else {
                     synchronized(mem) { mem[idx] = samples to sr }
-                    noAudio.remove(idx)
+                    readiness.markPrepared(idx, hasAudio = true)
                 }
                 samples to sr
             }
         } catch (e: Exception) {
             // 损坏缓存不能反复触发加载；将本行标记为无可用配音并回退原声。
             f.delete()
-            noAudio.add(idx)
+            readiness.markPrepared(idx, hasAudio = false)
             null
         }
     }
@@ -361,7 +400,7 @@ class DubbingEngine(
                     try { created?.release() } catch (_: Exception) {}
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
                     // The service sees this marker and restores original video audio.
-                    if (playbackGeneration.get() == generation) noAudio.add(idx)
+                    if (playbackGeneration.get() == generation) readiness.markPrepared(idx, hasAudio = false)
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句音频输出失败：${e.message ?: e.javaClass.simpleName}")
                 }
@@ -469,8 +508,8 @@ class DubbingEngine(
         }
     }
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
-    fun isPrepared(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx !in noAudio
-    fun isSilent(idx: Int): Boolean = idx >= 0 && idx < _preparedUntil.value && idx in noAudio
+    fun isPrepared(idx: Int): Boolean = readiness.isPrepared(idx)
+    fun isSilent(idx: Int): Boolean = readiness.isSilent(idx)
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
     fun release() {
