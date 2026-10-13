@@ -56,32 +56,42 @@ object NewPipeRepo {
     @Volatile private var cachedInfo: StreamInfo? = null
     @Volatile private var cachedId: String? = null
     private val infoLock = Any()
+    /** Every invalidation prevents any older in-flight fetch from repopulating the cache. */
+    private var infoCacheGeneration = 0L
 
-    /** StreamInfo 复用：一次解析，字幕/流/元信息共享，避免对 YouTube 三连击。 */
+    /** StreamInfo 复用：缓存读写有锁；网络解析不占用锁，避免卡住主线程的 invalidation。 */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            // Requests may overlap across parsing, subtitle selection, and playback. Synchronize
-            // cache reads and network fetches so a video ID cannot pair with another video's info.
-            synchronized(infoLock) {
-                if (cachedId == videoId && cachedInfo != null) return@synchronized cachedInfo!!
-                initOnce()
-                val fetched = StreamInfo.getInfo(
-                    ServiceList.YouTube,
-                    "https://www.youtube.com/watch?v=$videoId",
-                )
-                cachedInfo = fetched
-                cachedId = videoId
-                fetched
+            val cached = synchronized(infoLock) {
+                if (cachedId == videoId) cachedInfo else null
             }
+            if (cached != null) return@withContext cached
+
+            val requestGeneration = synchronized(infoLock) { infoCacheGeneration }
+            initOnce()
+            // This fetch is intentionally outside infoLock. Each caller returns its own result,
+            // and a generation check prevents a stale fetch from being installed after invalidate().
+            val fetched = StreamInfo.getInfo(
+                ServiceList.YouTube,
+                "https://www.youtube.com/watch?v=$videoId",
+            )
+            synchronized(infoLock) {
+                if (infoCacheGeneration == requestGeneration) {
+                    cachedInfo = fetched
+                    cachedId = videoId
+                }
+            }
+            fetched
         }
 
     fun init(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) {
         initOnce()
     }
 
-    /** Explicit retry must discard stale/partial extraction results and fetch fresh YouTube metadata. */
+    /** Explicit retry invalidates cached data without blocking on an in-flight network request. */
     fun invalidate(videoId: String? = null) {
         synchronized(infoLock) {
+            infoCacheGeneration += 1
             if (videoId == null || cachedId == videoId) {
                 cachedInfo = null
                 cachedId = null
