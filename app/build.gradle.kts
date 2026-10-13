@@ -128,6 +128,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // Enables Coil to render SVG logos discovered from provider website metadata.
+    implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.core:core-ktx:1.13.1")
     // 模型包解压（.tar.bz2）
