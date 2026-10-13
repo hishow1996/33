@@ -278,8 +278,12 @@ class GeminiEngine(
     override val id = "gemini"
     override val displayName = model.ifEmpty { "Gemini" }
 
+    // AQ.-format Gemini authorization keys are still passed as API keys via x-goog-api-key.
+    // Trim pasted whitespace/newlines so a copied key is not accidentally sent with extra characters.
+    private val normalizedApiKey = apiKey.trim()
+
     override suspend fun listModels(): List<String> {
-        val body = get("$endpointBase/v1beta/models", mapOf("x-goog-api-key" to apiKey))
+        val body = get("$endpointBase/v1beta/models", mapOf("x-goog-api-key" to normalizedApiKey))
         val arr = JSONObject(body).optJSONArray("models") ?: return emptyList()
         val out = mutableListOf<String>()
         for (i in 0 until arr.length()) {
@@ -305,7 +309,7 @@ class GeminiEngine(
     }
 
     private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        if (apiKey.isBlank()) {
+        if (normalizedApiKey.isBlank()) {
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
         }
         val src = LangMap.display(srcLang)
@@ -319,7 +323,7 @@ class GeminiEngine(
         )
         val body = post(
             "$endpointBase/v1beta/models/$model:generateContent",
-            mapOf("x-goog-api-key" to apiKey),
+            mapOf("x-goog-api-key" to normalizedApiKey),
             payload.toString(),
         )
         val text = JSONObject(body).getJSONArray("candidates").getJSONObject(0)
