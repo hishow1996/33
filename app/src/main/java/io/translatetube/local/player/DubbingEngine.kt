@@ -29,7 +29,12 @@ class DubbingEngine(
     private val videoKey: String,
     private val scope: CoroutineScope,
 ) {
-    private val cacheDir = File(ctx.cacheDir, "dub/$videoKey").apply { mkdirs() }
+    // videoKey may contain a content:// URI with slashes. Hash it to keep all cache files
+    // inside one bounded, collision-resistant directory instead of creating nested path segments.
+    private val cacheDir = File(
+        File(ctx.cacheDir, "dub").apply { mkdirs() },
+        DubbingCachePath.directoryName(videoKey),
+    ).apply { mkdirs() }
     /** 内存缓存：行号 → (采样点, 采样率) */
     private val mem = object : LinkedHashMap<Int, Pair<FloatArray, Int>>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Pair<FloatArray, Int>>): Boolean {
