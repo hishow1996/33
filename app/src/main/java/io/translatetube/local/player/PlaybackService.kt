@@ -2246,20 +2246,21 @@ class PlaybackService : MediaSessionService() {
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
+                val ttsWasPreflighted = pendingTts != null
                 val tts = pendingTts ?: makeTts(selectedTts)
-                val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
-                } catch (e: Exception) {
-                    if (pendingTts == null) runCatching { tts.close() }
-                    throw e
-                }
-                pendingTts = null
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    runCatching { tts.close() }
+                    if (!ttsWasPreflighted) runCatching { tts.close() }
                     throw e
                 }
+                val d = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                } catch (e: Exception) {
+                    if (!ttsWasPreflighted) runCatching { tts.close() }
+                    throw e
+                }
+                pendingTts = null
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated)
                 try {
