@@ -786,6 +786,9 @@ class DubbingEngine(
         // Cache validation runs on IO and may still be finishing a bounded file read after cancel.
         // Wait for it to exit before a replacement engine uses this video's cache directory.
         cacheInitJob?.join()
+        // Closing SystemTts wakes its synthesis latch, but its coroutine still needs to unwind and
+        // delete the temporary WAV. Join that task before constructing another engine/session.
+        synthJob?.join()
         ttsCloseSignal.await()
         audioCloseSignal.await()
     }
