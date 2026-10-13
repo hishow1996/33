@@ -1814,6 +1814,9 @@ class PlaybackService : MediaSessionService() {
             ui.update { it.copy(error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。") }
             return
         }
+        val sessionKey = videoKey
+        val sessionVideoId = videoId
+        val sessionLocalUri = localUri
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
             try {
@@ -1821,8 +1824,8 @@ class PlaybackService : MediaSessionService() {
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
-                    if (videoId != null) {
-                        val id = videoId!!
+                    if (sessionVideoId != null) {
+                        val id = sessionVideoId
                         val cached = reusableAsrAudioFile(id)
                         val audio = if (cached != null) {
                             ui.update { it.copy(progress = "复用已下载音频，正在分析人物声音…") }
@@ -1838,15 +1841,21 @@ class PlaybackService : MediaSessionService() {
                         sourceUri = null
                     } else {
                         sourceFile = null
-                        sourceUri = localUri ?: throw IllegalStateException("找不到当前视频文件")
+                        sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
                     AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    ui.update { it.copy(progress = message) }
+                    ui.update { state ->
+                        if (state.key == sessionKey) state.copy(progress = message) else state
+                    }
+                }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
-                val assignmentSnapshot = loadSpeakerAssignments(videoKey)
+                val assignmentSnapshot = loadSpeakerAssignments(sessionKey)
                 val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
                 val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
                 val updated = originalLines.map { line ->
@@ -1886,26 +1895,47 @@ class PlaybackService : MediaSessionService() {
                         speakerVoices = speakerVoiceAssignments,
                         lineVoices = lineVoiceAssignments,
                     ),
-                    videoKey,
+                    sessionKey,
                 )
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
+                }
                 val distinctVoices = updated.map { it.speakerId }.distinct().size
-                ui.update {
-                    it.copy(lines = updated, progress = "已区分人物，使用 $distinctVoices 种音色", phase = Phase.SYNTHESIZING,
-                        totalLines = updated.size, preparedUntil = 0, currentLine = -1)
+                ui.update { state ->
+                    if (state.key == sessionKey) {
+                        state.copy(
+                            lines = updated,
+                            progress = "已区分人物，使用 ${distinctVoices} 种音色",
+                            phase = Phase.SYNTHESIZING,
+                            totalLines = updated.size,
+                            preparedUntil = 0,
+                            currentLine = -1,
+                        )
+                    } else state
                 }
                 // This operation is explicitly Kokoro-only; a settings change mid-task must not
                 // silently switch engines or leave a false-success state with no dubbing engine.
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
+                }
                 val previousDubbing = dubbing
                 dubbing = null
                 previousDubbing?.releaseAndJoin()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
+                }
                 val tts = makeTts("kokoro")
-                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                registerDubbingFailureHandler(d, tts)
+                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated)
                 dubbing = d
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> ui.update { state -> state.copy(preparedUntil = n) } }
+                    d.preparedUntil.collect { n ->
+                        ui.update { state -> if (state.key == sessionKey) state.copy(preparedUntil = n) else state }
+                    }
                 }
                 val arr = org.json.JSONArray()
                 for (line in updated) arr.put(
@@ -1916,17 +1946,28 @@ class PlaybackService : MediaSessionService() {
                     val prefs = getSharedPreferences("settings", MODE_PRIVATE)
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
-                            "$videoKey|zh|${prefs.getLong("active_api_id", -1L)}",
+                            "$sessionKey|zh|${prefs.getLong("active_api_id", -1L)}",
                             ui.value.sourceLang, arr.toString(), System.currentTimeMillis()
                         )
                     )
                 }
                 lastLineIdx = Int.MIN_VALUE
-                ui.update { it.copy(phase = Phase.READY, progress = "人物区分完成：已识别 ${segments.map { s -> s.speaker }.distinct().size} 位说话人") }
+                ui.update { state ->
+                    if (state.key == sessionKey) {
+                        state.copy(
+                            phase = Phase.READY,
+                            progress = "人物区分完成：已识别 ${segments.map { speaker -> speaker.speaker }.distinct().size} 位说话人",
+                        )
+                    } else state
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                ui.update { it.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}") }
+                ui.update { state ->
+                    if (state.key == sessionKey) {
+                        state.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}")
+                    } else state
+                }
             }
         }
     }
