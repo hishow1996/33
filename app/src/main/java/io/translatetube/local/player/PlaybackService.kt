@@ -96,7 +96,7 @@ class PlaybackService : MediaSessionService() {
     private var dubbing: DubbingEngine? = null
     private var whisper: WhisperEngine? = null
     private var prepJob: Job? = null
-    private var videoKey = ""
+    @Volatile private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
@@ -108,6 +108,8 @@ class PlaybackService : MediaSessionService() {
     private var speakerJob: Job? = null
     private var speakerRebuildJob: Job? = null
     private var speakerRebuildRevision: Int = 0
+    private val sessionLock = Any()
+    @Volatile private var playbackSessionRevision: Long = 0L
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -121,6 +123,25 @@ class PlaybackService : MediaSessionService() {
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
     val isReady: Boolean get() = playerReady && ::pm.isInitialized
+
+    private fun beginPlaybackSession(): Long = synchronized(sessionLock) {
+        playbackSessionRevision += 1L
+        playbackSessionRevision
+    }
+
+    private fun isCurrentPlaybackSession(key: String, revision: Long): Boolean = synchronized(sessionLock) {
+        playbackSessionRevision == revision && videoKey == key && ui.value.key == key
+    }
+
+    private fun installDubbingForSession(key: String, revision: Long, engine: DubbingEngine): Boolean =
+        synchronized(sessionLock) {
+            if (playbackSessionRevision != revision || videoKey != key || ui.value.key != key) {
+                false
+            } else {
+                dubbing = engine
+                true
+            }
+        }
 
     /** 主线程把画面 TextureView 交给播放器 */
     fun attachSurface(tv: android.view.TextureView) {
@@ -302,6 +323,7 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        synchronized(sessionLock) { playbackSessionRevision += 1L }
         speakerRebuildRevision++
         speakerJob?.cancel()
         speakerRebuildJob?.cancel()
@@ -329,6 +351,7 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
+        val sessionRevision = beginPlaybackSession()
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision++
@@ -365,7 +388,7 @@ class PlaybackService : MediaSessionService() {
             speakerRebuildInProgress = false,
         )
         pm.pause()
-        prepJob = scope.launch { runPipeline(key, videoId, localUri, resumeState) }
+        prepJob = scope.launch { runPipeline(key, videoId, localUri, resumeState, sessionRevision) }
     }
 
     /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
@@ -440,6 +463,8 @@ class PlaybackService : MediaSessionService() {
      * 支持 SRT/VTT/ASS；双语 cue 会优先取含中文的行作为译文。
      */
     fun importTranslatedSubtitles(uri: Uri) {
+        val sessionRevision = beginPlaybackSession()
+        val expectedVideoKey = videoKey
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision++
@@ -451,11 +476,13 @@ class PlaybackService : MediaSessionService() {
         dubbing = null
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
+            if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
             try {
                 val text = withContext(Dispatchers.IO) {
                     contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
                         ?: throw IllegalStateException("无法读取字幕文件")
                 }
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                 val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
                 val chinesePattern = Regex("[\\u4e00-\\u9fff]")
@@ -471,8 +498,9 @@ class PlaybackService : MediaSessionService() {
                         zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
                     )
                 }
-                val translatedLines = applySavedSpeakerAssignments(videoKey, parsedTranslatedLines)
-                java.io.File(cacheDir, "dub/" + videoKey).deleteRecursively()
+                val translatedLines = applySavedSpeakerAssignments(expectedVideoKey, parsedTranslatedLines)
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                java.io.File(cacheDir, "dub/" + expectedVideoKey).deleteRecursively()
                 pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
                 ui.update {
                     it.copy(
@@ -487,27 +515,40 @@ class PlaybackService : MediaSessionService() {
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
-                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
                 d.attach(makeTts(), translatedLines)
-                dubbing = d
+                if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
+                    d.release()
+                    return@launch
+                }
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                    d.preparedUntil.collect { n ->
+                        ui.update { state ->
+                            if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) &&
+                                state.key == expectedVideoKey && dubbing === d
+                            ) state.copy(preparedUntil = n) else state
+                        }
+                    }
                 }
                 lastLineIdx = Int.MIN_VALUE
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                 withContext(Dispatchers.Main) { pm.play() }
-                ui.update {
-                    it.copy(
+                ui.update { state ->
+                    if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) &&
+                        state.key == expectedVideoKey && dubbing === d
+                    ) state.copy(
                         phase = Phase.READY,
                         progress = "",
                         lines = translatedLines,
                         totalLines = translatedLines.size,
                         preparedUntil = d.preparedUntil.value,
                         sourceLang = "zh",
-                    )
+                    ) else state
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 runCatching { pm.originalVolume = 1f }
                 ui.update {
@@ -524,6 +565,8 @@ class PlaybackService : MediaSessionService() {
 
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
+        val sessionRevision = beginPlaybackSession()
+        val expectedVideoKey = videoKey
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision++
@@ -541,9 +584,10 @@ class PlaybackService : MediaSessionService() {
             val parsedLines = SubtitleParsers.parseAuto(text)
             if (parsedLines.isEmpty()) throw IllegalStateException("字幕文件为空或格式不支持")
             // 清旧配音缓存：防止导入新字幕的同 idx 行播出旧音频
-            java.io.File(cacheDir, "dub/$videoKey").deleteRecursively()
+            java.io.File(cacheDir, "dub/$expectedVideoKey").deleteRecursively()
             // 走翻译管线但跳过重新解析视频流（保持当前播放）
             prepJob = scope.launch {
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                 try {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${parsedLines.size} 行）…") }
                     val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
@@ -551,16 +595,29 @@ class PlaybackService : MediaSessionService() {
                     val rawTranslatedLines = if (isChineseLanguage(srcLang)) {
                         parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
-                        translateLines(videoKey, parsedLines, srcLang)
+                        translateLines(expectedVideoKey, parsedLines, srcLang)
                     }
-                    val translatedLines = applySavedSpeakerAssignments(videoKey, rawTranslatedLines)
+                    if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                    val translatedLines = applySavedSpeakerAssignments(expectedVideoKey, rawTranslatedLines)
+                    if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
-                    val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                    val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
                     d.attach(makeTts(), translatedLines)
-                    dubbing = d
-                    dubCollectJob = scope.launch { d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } } }
+                    if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
+                        d.release()
+                        return@launch
+                    }
+                    dubCollectJob = scope.launch {
+                        d.preparedUntil.collect { n ->
+                            ui.update { state ->
+                                if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) &&
+                                    state.key == expectedVideoKey && dubbing === d
+                                ) state.copy(preparedUntil = n) else state
+                            }
+                        }
+                    }
                     // 入库缓存
                     val arr = org.json.JSONArray()
                     for (l in translatedLines) arr.put(
@@ -568,15 +625,21 @@ class PlaybackService : MediaSessionService() {
                     )
                     if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
-                            io.translatetube.local.data.SubtitleCacheEntity("$videoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}", srcLang, arr.toString(), System.currentTimeMillis())
+                            io.translatetube.local.data.SubtitleCacheEntity("$expectedVideoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}", srcLang, arr.toString(), System.currentTimeMillis())
                         )
                     }
-                    ui.update { it.copy(lines = translatedLines, totalLines = translatedLines.size, phase = Phase.READY, progress = "") }
+                    ui.update { state ->
+                        if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) &&
+                            state.key == expectedVideoKey && dubbing === d
+                        ) state.copy(lines = translatedLines, totalLines = translatedLines.size, phase = Phase.READY, progress = "")
+                        else state
+                    }
                     lastLineIdx = Int.MIN_VALUE
 
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                     ui.update { it.copy(phase = Phase.ERROR, error = "字幕导入失败: ${e.message}") }
                 }
             }
@@ -626,8 +689,10 @@ class PlaybackService : MediaSessionService() {
         videoId: String?,
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
+        sessionRevision: Long,
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
+        if (!isCurrentPlaybackSession(key, sessionRevision)) return
         var transientAudio: File? = null
         try {
             var meta = VideoEntity(
@@ -979,7 +1044,7 @@ class PlaybackService : MediaSessionService() {
                         val d = DubbingEngine(this, key, scope)
                         d.onSynthesisError = { detail ->
                             ui.update { state ->
-                                if (state.key == key) {
+                                if (state.key == key && isCurrentPlaybackSession(key, sessionRevision)) {
                                     state.copy(
                                         ttsEngineName = tts.name,
                                         muteOriginal = false,
@@ -990,14 +1055,31 @@ class PlaybackService : MediaSessionService() {
                             // Preserve audible source playback on failure, but never substitute
                             // another TTS engine behind the user's back.
                             scope.launch(Dispatchers.Main) {
-                                if (::pm.isInitialized) runCatching { pm.originalVolume = 1f }
+                                if (isCurrentPlaybackSession(key, sessionRevision) && ::pm.isInitialized) runCatching { pm.originalVolume = 1f }
                             }
                         }
-                        ui.update { it.copy(ttsEngineName = tts.name, noModelHint = null) }
+                        if (!isCurrentPlaybackSession(key, sessionRevision)) {
+                            d.release()
+                            return
+                        }
+                        ui.update { state ->
+                            if (state.key == key && isCurrentPlaybackSession(key, sessionRevision)) {
+                                state.copy(ttsEngineName = tts.name, noModelHint = null)
+                            } else state
+                        }
                         d.attach(tts, finalLines)
-                        dubbing = d
+                        if (!installDubbingForSession(key, sessionRevision, d)) {
+                            d.release()
+                            return
+                        }
                         dubCollectJob = scope.launch {
-                            d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                            d.preparedUntil.collect { n ->
+                                ui.update { state ->
+                                    if (state.key == key && isCurrentPlaybackSession(key, sessionRevision) && dubbing === d) {
+                                        state.copy(preparedUntil = n)
+                                    } else state
+                                }
+                            }
                         }
                     } catch (e: Exception) {
                         android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
@@ -1059,6 +1141,7 @@ class PlaybackService : MediaSessionService() {
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (!isCurrentPlaybackSession(key, sessionRevision)) return
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
                 runCatching { pm.originalVolume = 1f }
@@ -1093,6 +1176,7 @@ class PlaybackService : MediaSessionService() {
             // A non-fatal Error (for example, an extractor/library linkage error) must be shown
             // as a playback failure rather than escaping a Dispatchers.Default coroutine.
             if (e is VirtualMachineError || e is ThreadDeath) throw e
+            if (!isCurrentPlaybackSession(key, sessionRevision)) return
             android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=$key", e)
             ui.update {
                 it.copy(
