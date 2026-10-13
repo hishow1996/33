@@ -393,11 +393,14 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
                 val sr = d.readInt()
                 val n = d.readInt()
-                if (sr <= 0 || n < 0 || n > 16_000_000 ||
+                if (sr !in 8_000..192_000 || n < 0 || n > 16_000_000 ||
                     f.length() != 8L + n.toLong() * 4L) {
-                    throw java.io.IOException("PCM 缓存格式无效")
+                    throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
                 val samples = FloatArray(n) { d.readFloat() }
+                if (samples.any { !it.isFinite() }) {
+                    throw java.io.IOException("PCM 缓存包含无效采样值")
+                }
                 if (n == 0) {
                     readiness.markPrepared(idx, hasAudio = false)
                 } else {
