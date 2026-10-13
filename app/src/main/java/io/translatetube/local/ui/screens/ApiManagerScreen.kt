@@ -525,10 +525,10 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                 )
             }
 
-            // —— 模型拉取（OpenAI兼容 / Gemini）——
-            if (!fixedEngine) {
-                Labeled("翻译模型") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 模型选择与连接检查共用同一块配置区域，避免编辑页出现分散入口。
+            Labeled(if (fixedEngine) "连接测试" else "翻译模型与连接") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!fixedEngine) {
                         OutlinedTextField(
                             value = model,
                             onValueChange = { model = it },
@@ -536,11 +536,13 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             singleLine = true,
                             placeholder = { Text("填写模型名称") },
                         )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (!fixedEngine) {
                             Button(
                                 onClick = { pullModelsNow() },
                                 enabled = !pulling && !testingConnection &&
@@ -553,67 +555,48 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                     contentColor = androidx.compose.ui.graphics.Color.White,
                                 ),
                             ) { Text(if (pulling) "拉取中…" else "↓ 拉取模型") }
-                            OutlinedButton(
-                                onClick = { testConnectionNow() },
-                                enabled = !pulling && !testingConnection &&
-                                    apiKey.isNotBlank() &&
-                                    (!needsBaseUrl || baseUrl.isNotBlank()) &&
-                                    (fixedEngine || model.isNotBlank()),
-                                modifier = Modifier.weight(1f).heightIn(min = 46.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
-                            ) { Text(if (testingConnection) "测试中…" else "测试连接") }
                         }
-                        connectionMessage?.let { message ->
-                            Text(
-                                message,
-                                color = if (message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
-                }
-                pullError?.let {
-                    Text("拉取失败：$it\n可手动填写模型名继续。", color = WarnYellow, style = MaterialTheme.typography.bodySmall)
-                }
-                models?.let { list ->
-                    Text("选择模型（共 ${list.size} 个）：", color = SubText, style = MaterialTheme.typography.bodySmall)
-                    Box(Modifier.height(220.dp).clip(RoundedCornerShape(10.dp)).background(SurfaceHigh)) {
-                        LazyColumn(Modifier.fillMaxSize().padding(6.dp)) {
-                            items(list) { m ->
-                                Text(
-                                    m,
-                                    color = if (m == model) BrandBright else OnBg,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (m == model) Brand else androidx.compose.ui.graphics.Color.Transparent)
-                                        .clickable { model = m }
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (fixedEngine) {
-                Labeled("连接测试") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = { testConnectionNow() },
-                            enabled = !testingConnection && apiKey.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                            enabled = !pulling && !testingConnection &&
+                                apiKey.isNotBlank() &&
+                                (!needsBaseUrl || baseUrl.isNotBlank()) &&
+                                (fixedEngine || model.isNotBlank()),
+                            modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
                         ) { Text(if (testingConnection) "测试中…" else "测试连接") }
-                        connectionMessage?.let { message ->
-                            Text(
-                                message,
-                                color = if (message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                    }
+                    connectionMessage?.let { message ->
+                        Text(
+                            message,
+                            color = if (message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (!fixedEngine) {
+                        pullError?.let {
+                            Text("拉取失败：$it\n可手动填写模型名继续。", color = WarnYellow, style = MaterialTheme.typography.bodySmall)
+                        }
+                        models?.let { list ->
+                            Text("选择模型（共 ${list.size} 个）：", color = SubText, style = MaterialTheme.typography.bodySmall)
+                            Box(Modifier.height(220.dp).clip(RoundedCornerShape(10.dp)).background(SurfaceHigh)) {
+                                LazyColumn(Modifier.fillMaxSize().padding(6.dp)) {
+                                    items(list) { m ->
+                                        Text(
+                                            m,
+                                            color = if (m == model) BrandBright else OnBg,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (m == model) Brand else androidx.compose.ui.graphics.Color.Transparent)
+                                                .clickable { model = m }
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

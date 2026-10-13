@@ -6,7 +6,7 @@ data class SubLine(
     val startMs: Long,
     val endMs: Long,
     val text: String,          // 原文
-    var zh: String? = null,    // 中文译文
+    val zh: String? = null,    // 中文译文
     val speakerId: Int = -1,   // -1=使用当前默认音色；非负数=Kokoro 音色 ID
 )
 

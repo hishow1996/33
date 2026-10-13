@@ -383,39 +383,41 @@ class PlaybackService : MediaSessionService() {
         try {
             val text = contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
                 ?: throw IllegalStateException("无法读取字幕文件")
-            val lines = SubtitleParsers.parseAuto(text)
-            if (lines.isEmpty()) throw IllegalStateException("字幕文件为空或格式不支持")
+            val parsedLines = SubtitleParsers.parseAuto(text)
+            if (parsedLines.isEmpty()) throw IllegalStateException("字幕文件为空或格式不支持")
             // 清旧配音缓存：防止导入新字幕的同 idx 行播出旧音频
             java.io.File(cacheDir, "dub/$videoKey").deleteRecursively()
             // 走翻译管线但跳过重新解析视频流（保持当前播放）
             prepJob = scope.launch {
                 try {
-                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${lines.size} 行）…") }
-                    val srcLang = detectLangFromText(lines.firstOrNull()?.text ?: "")
-                    if (isChineseLanguage(srcLang)) {
-                        lines.forEach { it.zh = SubtitleParsers.cleanTranslatedText(it.text) }
+                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${parsedLines.size} 行）…") }
+                    val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
+                    // Use immutable copies so StateFlow/Compose sees translated subtitle text.
+                    val translatedLines = if (isChineseLanguage(srcLang)) {
+                        parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
-                        translateLines(videoKey, lines, srcLang)
+                        translateLines(videoKey, parsedLines, srcLang)
                     }
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
                     val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                    d.attach(makeTts(), lines)
+                    d.attach(makeTts(), translatedLines)
                     dubbing = d
                     dubCollectJob = scope.launch { d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } } }
                     // 入库缓存
                     val arr = org.json.JSONArray()
-                    for (l in lines) arr.put(
+                    for (l in translatedLines) arr.put(
                         org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "").put("sp", l.speakerId)
                     )
-                    if (lines.count { !it.zh.isNullOrEmpty() } > lines.size / 2) {
+                    if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                             io.translatetube.local.data.SubtitleCacheEntity("$videoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}", srcLang, arr.toString(), System.currentTimeMillis())
                         )
                     }
-                    ui.update { it.copy(lines = lines, totalLines = lines.size, phase = Phase.READY, progress = "") }
+                    ui.update { it.copy(lines = translatedLines, totalLines = translatedLines.size, phase = Phase.READY, progress = "") }
                     lastLineIdx = Int.MIN_VALUE
+
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -580,19 +582,19 @@ class PlaybackService : MediaSessionService() {
                 srcLang = cached.srcLang
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
-                val orig = lines!!
-                if (orig.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${orig.size} 行）…") }
-                    translateLines(key, orig, srcLang)
-                } else if (orig.isNotEmpty()) {
-                    // Already-Chinese source subtitles are the Chinese display track; copying them
-                    // avoids both self-translation duplicates and a "正在翻译…" placeholder.
-                    orig.forEach { it.zh = SubtitleParsers.cleanTranslatedText(it.text) }
+                var translatedLines = lines!!
+                if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
+                    ui.update { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
+                    translatedLines = translateLines(key, translatedLines, srcLang)
+                } else if (translatedLines.isNotEmpty()) {
+                    // Already-Chinese source subtitles are the Chinese display track; publish immutable copies.
+                    translatedLines = translatedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                 }
+                lines = translatedLines
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
-                if (orig.count { !it.zh.isNullOrEmpty() } > orig.size / 2) {
+                if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
                     val arr = org.json.JSONArray()
-                    for (l in orig) arr.put(
+                    for (l in translatedLines) arr.put(
                         org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "")
                     )
                     db.subtitleCacheDao().put(
@@ -850,7 +852,9 @@ class PlaybackService : MediaSessionService() {
 
     /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
     /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
-    private suspend fun translateLines(key: String, lines: List<SubLine>, srcLang: String) {
+    private suspend fun translateLines(key: String, lines: List<SubLine>, srcLang: String): List<SubLine> {
+        // Keep previously published subtitle rows immutable so Compose observes every translated batch.
+        var updatedLines: List<SubLine> = lines.toList()
         val db = AppDatabase.get(this)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val activeId = prefs.getLong("active_api_id", -1L)
@@ -879,9 +883,9 @@ class PlaybackService : MediaSessionService() {
         ui.update {
             it.copy(
                 engineName = engineName,
-                lines = lines,
-                totalLines = lines.size,
-                progress = "翻译中 0/${lines.size} 行",
+                lines = updatedLines,
+                totalLines = updatedLines.size,
+                progress = "翻译中 0/${updatedLines.size} 行",
             )
         }
 
@@ -916,21 +920,26 @@ class PlaybackService : MediaSessionService() {
             }
 
             if (translated != null) {
-                for (index in start until end) {
-                    lines[index].zh = SubtitleParsers.cleanTranslatedText(
-                        translated.getOrNull(index - start)
-                    )
+                updatedLines = updatedLines.mapIndexed { index, line ->
+                    if (index in start until end) {
+                        line.copy(
+                            zh = SubtitleParsers.cleanTranslatedText(
+                                translated.getOrNull(index - start)
+                            )
+                        )
+                    } else line
                 }
             }
             completed = end
             ui.update {
                 it.copy(
-                    lines = lines.toList(),
-                    totalLines = lines.size,
-                    progress = "翻译中 $completed/${lines.size} 行",
+                    lines = updatedLines,
+                    totalLines = updatedLines.size,
+                    progress = "翻译中 $completed/${updatedLines.size} 行",
                 )
             }
         }
+        return updatedLines
     }
 
         private suspend fun downloadAudio(url: String): File {
