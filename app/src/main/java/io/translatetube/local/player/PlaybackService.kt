@@ -1070,11 +1070,20 @@ class PlaybackService : MediaSessionService() {
 
             var finalLines = lines ?: emptyList()
             finalLines = applySavedSpeakerAssignments(key, finalLines)
-            ui.update {
-                it.copy(
-                    lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
-                    progress = "", phase = Phase.SYNTHESIZING,
-                )
+            if (!isCurrentPlaybackSession(key, sessionRevision)) return
+            ui.update { state ->
+                if (isCurrentPlaybackSession(key, sessionRevision)) {
+                    state.copy(
+                        lines = finalLines,
+                        totalLines = finalLines.size,
+                        sourceLang = srcLang,
+                        progress = "",
+                        phase = Phase.SYNTHESIZING,
+                        // Without any usable subtitle cues there is no dubbing track to replace
+                        // the source audio, so start in normal-audio mode rather than silent mode.
+                        muteOriginal = if (finalLines.isEmpty()) false else state.muteOriginal,
+                    )
+                } else state
             }
 
             // ---- 4. 流装配 ----
