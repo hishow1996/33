@@ -630,7 +630,8 @@ class PlaybackService : MediaSessionService() {
                     if (isCurrentPlaybackSession(request.key, request.revision)) pm.position() else null
                 } ?: return@launch
                 wasPlaying = withContext(Dispatchers.Main) {
-                    if (isCurrentPlaybackSession(request.key, request.revision)) pm.player.isPlaying else null
+                    // playWhenReady preserves the user's intent even if the current stream is buffering.
+                    if (isCurrentPlaybackSession(request.key, request.revision)) pm.player.playWhenReady else null
                 } ?: return@launch
 
                 updateUiForSession(request.key, request.revision) {
