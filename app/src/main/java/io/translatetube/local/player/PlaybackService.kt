@@ -614,7 +614,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
-                runCatching { pm.originalVolume = 1f }
+                withContext(Dispatchers.Main) { if (::pm.isInitialized) runCatching { pm.originalVolume = 1f } }
                 ui.update {
                     it.copy(
                         phase = Phase.ERROR,
@@ -1239,16 +1239,29 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             saveHistory(meta)
-            ui.update { it.copy(phase = Phase.READY, engineName = it.engineName.ifEmpty { "本地引擎" }) }
+            if (!isCurrentPlaybackSession(key, sessionRevision)) return
+            ui.update { state ->
+                if (state.key == key && isCurrentPlaybackSession(key, sessionRevision)) {
+                    state.copy(phase = Phase.READY, engineName = state.engineName.ifEmpty { "本地引擎" })
+                } else state
+            }
+            if (!isCurrentPlaybackSession(key, sessionRevision)) return
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
             val resumeSec = try {
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
             } catch (_: Exception) { 0L }
             val totalMs = meta.durationSec * 1000
             if (resumeSec > 10 && (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)) {
-                withContext(Dispatchers.Main) { pm.seekTo(resumeSec * 1000); pm.play() }
+                withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(key, sessionRevision)) {
+                        pm.seekTo(resumeSec * 1000)
+                        pm.play()
+                    }
+                }
             } else {
-                withContext(Dispatchers.Main) { pm.play() }
+                withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(key, sessionRevision)) pm.play()
+                }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -1256,7 +1269,7 @@ class PlaybackService : MediaSessionService() {
             if (!isCurrentPlaybackSession(key, sessionRevision)) return
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
-                runCatching { pm.originalVolume = 1f }
+                withContext(Dispatchers.Main) { runCatching { pm.originalVolume = 1f } }
                 ui.update {
                     it.copy(
                         phase = Phase.ERROR,
@@ -1270,7 +1283,7 @@ class PlaybackService : MediaSessionService() {
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.dubbingOn) {
-                runCatching { pm.originalVolume = 1f }
+                withContext(Dispatchers.Main) { runCatching { pm.originalVolume = 1f } }
                 ui.update {
                     it.copy(
                         phase = Phase.ERROR,
@@ -1290,11 +1303,16 @@ class PlaybackService : MediaSessionService() {
             if (e is VirtualMachineError || e is ThreadDeath) throw e
             if (!isCurrentPlaybackSession(key, sessionRevision)) return
             android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=$key", e)
+            if (ui.value.dubbingOn) {
+                withContext(Dispatchers.Main) { runCatching { pm.originalVolume = 1f } }
+            }
             ui.update {
                 it.copy(
                     phase = Phase.ERROR,
                     progress = "",
-                    error = "视频解析/播放器异常（${e.javaClass.simpleName}）：${e.message ?: "请查看崩溃日志"}"
+                    error = "视频解析/播放器异常（${e.javaClass.simpleName}）：${e.message ?: "请查看崩溃日志"}",
+                    muteOriginal = if (it.dubbingOn) false else it.muteOriginal,
+                    noModelHint = if (it.dubbingOn) "处理过程中出现异常，已优先恢复视频原声；请根据上方错误检查当前视频或配音引擎。" else it.noModelHint,
                 )
             }
         } finally {
@@ -1821,7 +1839,9 @@ class PlaybackService : MediaSessionService() {
         dubCollectJob = null
         dubbing?.release()
         dubbing = null
-        runCatching { if (::pm.isInitialized) pm.originalVolume = 1f }
+        scope.launch(Dispatchers.Main) {
+            if (::pm.isInitialized) runCatching { pm.originalVolume = 1f }
+        }
         ui.update {
             it.copy(
                 lines = updated,
@@ -1836,7 +1856,11 @@ class PlaybackService : MediaSessionService() {
             )
         }
         lastLineIdx = Int.MIN_VALUE
-        if (::pm.isInitialized) tick(pm.position())
+        scope.launch(Dispatchers.Main) {
+            if (::pm.isInitialized && expectedVideoKey == videoKey && speakerRebuildRevision == revision) {
+                tick(pm.position())
+            }
+        }
 
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var candidate: DubbingEngine? = null
@@ -1902,7 +1926,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Speaker voice rebuild failed", e)
                 if (expectedVideoKey == videoKey && speakerRebuildRevision == revision) {
-                    runCatching { pm.originalVolume = 1f }
+                    withContext(Dispatchers.Main) { if (::pm.isInitialized) runCatching { pm.originalVolume = 1f } }
                     ui.update {
                         it.copy(
                             phase = Phase.READY,
