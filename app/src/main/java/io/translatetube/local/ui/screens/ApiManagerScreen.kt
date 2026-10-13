@@ -472,9 +472,9 @@ private fun apiConnectionFailureMessage(profile: ApiProfile, error: Exception): 
         functionMissing ->
             "服务端返回 404：模型列表可访问，但当前模型的推理函数/部署未找到。请改选该服务商中可调用的模型，或请服务商检查后端部署。详情：" + detail
         authModeMismatch && profile.type == "GEMINI" ->
-            "Google 返回 OAuth2 认证错误：请求地址不接受 API Key。已修正 Gemini 的官方地址与认证头；请更新此版本，并确认密钥来自 Google AI Studio、模型 ID 可用。原始响应：" + detail
+            "Gemini API 使用官方 generativelanguage.googleapis.com/v1beta 地址，并通过 x-goog-api-key 发送密钥；AQ. 开头的新密钥也应走此方式。该 401 不能靠切换到 Cloud Translation 修复。请确认服务类型是「Gemini 大模型」、密钥从 Google AI Studio 完整复制且没有引号/空格；若仍失败，请在 AI Studio 新建密钥后重试。原始响应：" + detail
         authModeMismatch && profile.type == "GCLOUD" ->
-            "Google 翻译配置已固定使用 Cloud Translation Basic v2，并通过 key 查询参数发送 API Key。返回 OAuth2-only 错误与该接口不符；请先安装包含本次修复的新版，再确认 Google Cloud 项目已启用 Cloud Translation API，且 API Key 的 API 限制允许该服务。原始响应：" + detail
+            "当前配置是「Google 翻译 API」（Cloud Translation），不是 Gemini。若你的密钥以 AQ. 开头，它是 Gemini API 密钥，不能用于 Cloud Translation；请编辑此配置，将服务类型改为「Gemini 大模型」，并选择可用的 Gemini 模型。若确实要使用 Google 翻译 API，则需使用该服务支持的凭据。原始响应：" + detail
         authModeMismatch ->
             "Google 服务端拒绝了 API Key，当前请求地址很可能要求 OAuth2。请核对服务类型和请求地址，不要把 Vertex AI/Cloud Translation v3 地址当作 Gemini Developer API。原始响应：" + detail
         else ->
