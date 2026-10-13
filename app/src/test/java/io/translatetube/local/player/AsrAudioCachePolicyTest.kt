@@ -7,11 +7,11 @@ import org.junit.Test
 class AsrAudioCachePolicyTest {
     @Test
     fun reusesValidAudioWithinSevenDayWindow() {
-        val now = 10_000_000L
+        val now = 10_000_000_000L
         assertTrue(
             AsrAudioCachePolicy.canReuse(
                 true, 40L * 1024 * 1024,
-                now - 24L * 60 * 60 * 1000, now,
+                now - 24L * 60 * 60 * 1000L, now,
             )
         )
     }
