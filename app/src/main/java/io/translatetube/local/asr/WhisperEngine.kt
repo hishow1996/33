@@ -80,15 +80,16 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): List<Triple<Long, Long, String>> {
         val sr = 16000
+        val durationMs = pcm.size.toLong() * 1000L / sr
         val out = mutableListOf<Triple<Long, Long, String>>()
         segs.forEachIndexed { i, (a, b) ->
-            val s0 = (a.coerceAtLeast(0L) * sr / 1000L)
-                .coerceIn(0L, pcm.size.toLong()).toInt()
-            val s1 = (b.coerceAtLeast(0L) * sr / 1000L)
-                .coerceIn(s0.toLong(), pcm.size.toLong()).toInt()
+            val startMs = a.coerceIn(0L, durationMs)
+            val endMs = b.coerceIn(startMs, durationMs)
+            val s0 = (startMs * sr / 1000L).toInt()
+            val s1 = (endMs * sr / 1000L).toInt()
             if (s1 > s0) {
                 val text = transcribe(pcm.copyOfRange(s0, s1)).trim()
-                if (text.isNotEmpty()) out += Triple(a.coerceAtLeast(0L), b.coerceAtLeast(a), text)
+                if (text.isNotEmpty()) out += Triple(startMs, endMs, text)
             }
             onProgress(i + 1, segs.size)
         }
