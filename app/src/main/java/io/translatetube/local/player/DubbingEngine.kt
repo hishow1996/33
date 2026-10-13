@@ -150,7 +150,7 @@ class DubbingEngine(
                     // A cache file is usable only after its header and exact payload length are
                     // validated. Preserve empty failure markers separately from corrupt entries.
                     readiness.markPrepared(idx, hasAudio = cachedAudioState)
-                    if (cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
+                    if (!released && cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
                             val audioFromMemory = synchronized(mem) { mem[idx] }
                             if (audioFromMemory != null) {
@@ -168,7 +168,7 @@ class DubbingEngine(
                                     if (sampleRate !in 8_000..192_000 || sampleCount <= 0) {
                                         throw java.io.IOException("缓存 PCM 头无效")
                                     }
-                                    onFirstSynthesisReady?.invoke(idx, sampleCount, sampleRate)
+                                    if (!released) onFirstSynthesisReady?.invoke(idx, sampleCount, sampleRate)
                                 }
                             }
                         }.onFailure {
