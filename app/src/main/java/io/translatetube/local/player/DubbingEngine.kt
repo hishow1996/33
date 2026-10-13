@@ -34,7 +34,11 @@ class DubbingEngine(
     /** 内存缓存：行号 → (采样点, 采样率) */
     private val mem = object : LinkedHashMap<Int, Pair<FloatArray, Int>>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Pair<FloatArray, Int>>): Boolean {
-            return size > 48 // 内存最多 48 行，其余走文件
+            val remove = size > 48 // 内存最多 48 行，其余走文件
+            // If the disk cache could not be written, don't let an evicted memory-only cue be
+            // reported as prepared; the playback tick will preserve original audio for that cue.
+            if (remove && !validCache(cacheFile(eldest.key))) noAudio.add(eldest.key)
+            return remove
         }
     }
 
@@ -116,14 +120,23 @@ class DubbingEngine(
         synthJob?.cancel()
         synthJob = scope.launch(Dispatchers.Default) {
             while (!pending.isEmpty()) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
                 val idx = pending.poll() ?: break
                 if (cached(idx)) { bumpPrepared(idx); continue }
                 val line = lines.getOrNull(idx) ?: continue
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
-                    writeCache(idx, 16000, FloatArray(0))
+                    try {
+                        writeCache(idx, 16000, FloatArray(0))
+                    } catch (e: Exception) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
+                        android.util.Log.w("DubbingEngine", "Unable to cache empty cue $idx; keeping an in-memory marker", e)
+                    }
                     noAudio.add(idx)
+                    synchronized(mem) { mem[idx] = FloatArray(0) to 16000 }
                     bumpPrepared(idx)
                     continue
                 }
@@ -160,7 +173,14 @@ class DubbingEngine(
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
-                    writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
+                    try {
+                        writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
+                    } catch (cacheError: Exception) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
+                        // Keep valid synthesized audio usable even when storage is full or read-only.
+                        android.util.Log.w("DubbingEngine", "Unable to cache line ${idx + 1}; keeping audio in memory", cacheError)
+                    }
                     noAudio.remove(idx)
                     synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
                     bumpPrepared(idx)
@@ -174,11 +194,14 @@ class DubbingEngine(
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
                         writeCache(idx, 16000, FloatArray(0))
-                        noAudio.add(idx)
-                        bumpPrepared(idx)
                     } catch (writeError: Exception) {
-                        android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (released) throw kotlinx.coroutines.CancellationException("Dubbing engine released")
+                        android.util.Log.w("DubbingEngine", "Unable to persist silent fallback for line $idx", writeError)
                     }
+                    noAudio.add(idx)
+                    synchronized(mem) { mem[idx] = FloatArray(0) to 16000 }
+                    bumpPrepared(idx)
                 }
             }
         }
@@ -234,25 +257,25 @@ class DubbingEngine(
             cacheDir,
             target.name.removeSuffix(".pcm") + ".${Thread.currentThread().id}.${System.nanoTime()}.pcm.tmp",
         )
-        java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
-            out.writeInt(sampleRate)
-            out.writeInt(samples.size)
-            samples.forEach { out.writeFloat(it) }
-            out.flush()
-        }
-        if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
-            temp.delete()
-            throw java.io.IOException("PCM 缓存写入不完整")
-        }
-        if (!temp.renameTo(target)) {
-            // A concurrent session may have installed the exact same cache identity first.
-            // Reuse that fully validated result instead of reporting an avoidable TTS failure.
-            if (validCache(target)) {
-                temp.delete()
-                return
+        try {
+            java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
+                out.writeInt(sampleRate)
+                out.writeInt(samples.size)
+                samples.forEach { out.writeFloat(it) }
+                out.flush()
             }
-            temp.delete()
-            throw java.io.IOException("无法安装 PCM 缓存")
+            if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
+                throw java.io.IOException("PCM 缓存写入不完整")
+            }
+            if (!temp.renameTo(target)) {
+                // A concurrent session may have installed the exact same cache identity first.
+                // Reuse that fully validated result instead of reporting an avoidable TTS failure.
+                if (validCache(target)) return
+                throw java.io.IOException("无法安装 PCM 缓存")
+            }
+        } finally {
+            // Clean partial files even when opening/writing the temp file itself fails.
+            if (temp.exists()) temp.delete()
         }
     }
 
