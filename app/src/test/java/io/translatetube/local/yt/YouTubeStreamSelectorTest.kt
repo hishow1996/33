@@ -1,0 +1,70 @@
+package io.translatetube.local.yt
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class YouTubeStreamSelectorTest {
+    @Test
+    fun prefersMuxedMp4ForEachResolution() {
+        val chosen = YouTubeStreamSelector.chooseVideoStreams(
+            listOf(
+                YouTubeVideoCandidate(360, "https://cdn.test/adaptive.webm", true, "webm", 3_000_000),
+                YouTubeVideoCandidate(360, "https://cdn.test/muxed.mp4", false, "mp4", 500_000),
+                YouTubeVideoCandidate(720, "https://cdn.test/720.mp4", true, "mp4", 4_000_000),
+            )
+        )
+
+        assertEquals(listOf(720, 360), chosen.map { it.height })
+        assertEquals("https://cdn.test/muxed.mp4", chosen[1].url)
+        assertTrue(!chosen[1].videoOnly)
+    }
+
+    @Test
+    fun discardsInvalidHeightsAndMalformedOrNonHttpUrls() {
+        val chosen = YouTubeStreamSelector.chooseVideoStreams(
+            listOf(
+                YouTubeVideoCandidate(0, "https://cdn.test/0.mp4", false, "mp4", 10),
+                YouTubeVideoCandidate(360, "file:///tmp/video.mp4", false, "mp4", 10),
+                YouTubeVideoCandidate(4320, "https://cdn.test/4320.mp4", false, "mp4", 10),
+                YouTubeVideoCandidate(240, "not-a-url", false, "mp4", 10),
+                YouTubeVideoCandidate(240, "https://cdn.test/240.mp4", false, "mp4", 100),
+            )
+        )
+
+        assertEquals(listOf(240), chosen.map { it.height })
+    }
+
+    @Test
+    fun defaultSelects360pOrNearestAndPrefersHigherOnTies() {
+        val streams = listOf(
+            YouTubeVideoCandidate(720, "https://cdn.test/720", false, "mp4", 1),
+            YouTubeVideoCandidate(480, "https://cdn.test/480", false, "mp4", 1),
+            YouTubeVideoCandidate(240, "https://cdn.test/240", false, "mp4", 1),
+        )
+        assertEquals(1, YouTubeStreamSelector.defaultQualityIndex(streams))
+        assertEquals(0, YouTubeStreamSelector.defaultQualityIndex(listOf(
+            YouTubeVideoCandidate(480, "https://cdn.test/480", false, "mp4", 1),
+            YouTubeVideoCandidate(240, "https://cdn.test/240", false, "mp4", 1),
+        )))
+        assertEquals(-1, YouTubeStreamSelector.defaultQualityIndex(emptyList()))
+        assertEquals(0, YouTubeStreamSelector.defaultQualityIndex(listOf(
+            YouTubeVideoCandidate(360, "https://cdn.test/360", false, "mp4", 1),
+        )))
+    }
+
+    @Test
+    fun choosesM4aBeforeHigherBitrateWebmWhenAvailable() {
+        val audio = YouTubeStreamSelector.chooseAudioStream(
+            listOf(
+                YouTubeAudioCandidate("https://cdn.test/opus", "webm", 256_000),
+                YouTubeAudioCandidate("https://cdn.test/aac", "m4a", 128_000),
+            )
+        )
+        assertEquals("https://cdn.test/aac", audio?.url)
+        assertNull(YouTubeStreamSelector.chooseAudioStream(listOf(
+            YouTubeAudioCandidate("file:///tmp/audio", "m4a", 256_000),
+        )))
+    }
+}
