@@ -23,6 +23,9 @@ internal object DubbingTiming {
     private const val MAX_OUTPUT_RATE = 4.0f
     private const val FADE_OUT_MS = 30
 
+    fun normalizePlayerSpeed(speed: Float): Float =
+        speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+
     fun createPlan(
         sampleCount: Int,
         sampleRate: Int,
@@ -32,7 +35,7 @@ internal object DubbingTiming {
         playerSpeed: Float,
         maxSyncRate: Float = MAX_SYNC_RATE,
     ): DubbingPlaybackPlan {
-        val safePlayerSpeed = playerSpeed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val safePlayerSpeed = normalizePlayerSpeed(playerSpeed)
         if (sampleCount <= 0 || sampleRate <= 0 || lineEndMs <= lineStartMs) {
             return DubbingPlaybackPlan(0, 0, 1.0f, safePlayerSpeed, false)
         }

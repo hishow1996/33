@@ -62,6 +62,10 @@ class PlayerManager(private val ctx: Context) {
         player.setWakeMode(androidx.media3.common.C.WAKE_MODE_LOCAL)
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { _isPlaying.value = isPlaying }
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                // Push seek/speed synchronization now rather than waiting for the 100 ms ticker.
+                onTick?.invoke(player.currentPosition)
+            }
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) onEnded?.invoke()
             }
@@ -194,7 +198,9 @@ class PlayerManager(private val ctx: Context) {
         player.seekTo(ms)
         onTick?.invoke(ms)
     }
-    fun speed(s: Float) { player.playbackParameters = PlaybackParameters(s) }
+    fun speed(s: Float) {
+        player.playbackParameters = PlaybackParameters(DubbingTiming.normalizePlayerSpeed(s))
+    }
     fun playbackSpeed(): Float = player.playbackParameters.speed
     var originalVolume: Float
         get() = player.volume

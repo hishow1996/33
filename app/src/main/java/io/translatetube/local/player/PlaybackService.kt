@@ -1414,15 +1414,20 @@ class PlaybackService : MediaSessionService() {
     fun autoAssignSpeakers() {
         if (speakerJob?.isActive == true) return
         if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
-            ui.update { it.copy(error = "多人物区分配音需要 Kokoro 音色模型，请切换配音引擎后重试") }
+            // Do not initiate local-model work while the user has explicitly selected system TTS.
+            ui.update { it.copy(error = "系统 TTS 使用手机当前音色，不支持逐人物切换音色；普通系统配音不受影响。需要多人物音色时，请手动切换到 Kokoro。") }
             return
         }
         val originalLines = ui.value.lines
-        val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
             return
         }
+        if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+            ui.update { it.copy(error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。") }
+            return
+        }
+        val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
             var tempAudio: File? = null
             try {
@@ -1493,18 +1498,18 @@ class PlaybackService : MediaSessionService() {
                     it.copy(lines = updated, progress = "已区分人物，使用 $distinctVoices 种音色", phase = Phase.SYNTHESIZING,
                         totalLines = updated.size, preparedUntil = 0, currentLine = -1)
                 }
+                // This operation is explicitly Kokoro-only; a settings change mid-task must not
+                // silently switch engines or leave a false-success state with no dubbing engine.
                 dubbing?.release()
                 dubbing = null
-                if (io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
-                    val tts = makeTts()
-                    val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                    registerDubbingFailureHandler(d, tts)
-                    d.attach(tts, updated)
-                    dubbing = d
-                    dubCollectJob?.cancel()
-                    dubCollectJob = scope.launch {
-                        d.preparedUntil.collect { n -> ui.update { state -> state.copy(preparedUntil = n) } }
-                    }
+                val tts = makeTts("kokoro")
+                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                registerDubbingFailureHandler(d, tts)
+                d.attach(tts, updated)
+                dubbing = d
+                dubCollectJob?.cancel()
+                dubCollectJob = scope.launch {
+                    d.preparedUntil.collect { n -> ui.update { state -> state.copy(preparedUntil = n) } }
                 }
                 val arr = org.json.JSONArray()
                 for (line in updated) arr.put(
@@ -1562,9 +1567,10 @@ class PlaybackService : MediaSessionService() {
             it.copy(lines = updated, preparedUntil = 0, totalLines = updated.size,
                 currentLine = -1, phase = Phase.SYNTHESIZING, progress = "更新人物音色…")
         }
-        scope.launch {
+        speakerJob = scope.launch {
             try {
-                val tts = makeTts()
+                // Manual per-cue voice selection is Kokoro-only; keep the selected engine stable.
+                val tts = makeTts("kokoro")
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
                 registerDubbingFailureHandler(d, tts)
                 d.attach(tts, updated)
@@ -1592,6 +1598,8 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 lastLineIdx = Int.MIN_VALUE
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 ui.update { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：${e.message}") }
             }
@@ -1625,16 +1633,8 @@ class PlaybackService : MediaSessionService() {
     private fun applySavedLineOverrides(
         lines: List<SubLine>,
         key: String = videoKey,
-    ): List<SubLine> {
-        if (lines.isEmpty()) return lines
-        val assignments = loadSpeakerAssignments(key)
-        if (assignments.lineVoices.isEmpty() && assignments.lineOverrides.isEmpty()) return lines
-        return lines.map { line ->
-            val lineKey = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
-            val voice = assignments.lineOverrides[lineKey] ?: assignments.lineVoices[lineKey]
-            if (voice == null) line else line.copy(speakerId = voice)
-        }
-    }
+    ): List<SubLine> =
+        SpeakerAssignmentResolver.apply(lines, loadSpeakerAssignments(key))
 
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn

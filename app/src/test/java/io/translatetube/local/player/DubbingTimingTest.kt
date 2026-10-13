@@ -7,6 +7,14 @@ import org.junit.Test
 
 class DubbingTimingTest {
     @Test
+    fun playerSpeedIsAlwaysFiniteAndBounded() {
+        assertEquals(1.0f, DubbingTiming.normalizePlayerSpeed(Float.NaN), 0.001f)
+        assertEquals(1.0f, DubbingTiming.normalizePlayerSpeed(Float.POSITIVE_INFINITY), 0.001f)
+        assertEquals(0.5f, DubbingTiming.normalizePlayerSpeed(0.1f), 0.001f)
+        assertEquals(2.0f, DubbingTiming.normalizePlayerSpeed(3.0f), 0.001f)
+    }
+
+    @Test
     fun lateStartSkipsAudioUsingSubtitleTimeline() {
         val plan = DubbingTiming.createPlan(
             sampleCount = 4_000, sampleRate = 1_000,

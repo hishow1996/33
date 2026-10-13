@@ -41,6 +41,7 @@ class DubbingEngine(
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
+    private var timeline = DubbingTimeline(emptyList())
     private var speed = 1.0f
     @Volatile private var track: AudioTrack? = null
     @Volatile private var activeSyncRate = 1.0f
@@ -67,6 +68,7 @@ class DubbingEngine(
     fun attach(tts: TtsEngine, lines: List<SubLine>) {
         this.tts = tts
         this.lines = lines
+        this.timeline = DubbingTimeline(lines)
         synthesisErrorReported.set(false)
         _totalLines.value = lines.size
         _preparedUntil.value = 0
@@ -469,16 +471,8 @@ class DubbingEngine(
         }
     }
 
-    /** 当前时间对应行下标（二分）；-1=间隙 */
-    fun lineAt(ms: Long): Int {
-        var lo = 0; var hi = lines.size - 1; var ans = -1
-        while (lo <= hi) {
-            val mid = (lo + hi) / 2
-            if (lines[mid].startMs <= ms) { ans = mid; lo = mid + 1 } else hi = mid - 1
-        }
-        if (ans >= 0 && ms < lines[ans].endMs) return ans
-        return -1
-    }
+    /** 当前时间对应行下标（二分索引支持重叠字幕）；-1=间隙 */
+    fun lineAt(ms: Long): Int = timeline.lineAt(ms)
 
     fun line(idx: Int): SubLine? = lines.getOrNull(idx)
     fun allLines(): List<SubLine> = lines
@@ -486,7 +480,7 @@ class DubbingEngine(
 
     /** Update the active voice without changing the selected TTS engine or its cached PCM. */
     fun updatePlayerSpeed(speed: Float) {
-        val normalized = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val normalized = DubbingTiming.normalizePlayerSpeed(speed)
         if (kotlin.math.abs(normalized - activePlayerSpeed) < 0.01f) return
         activePlayerSpeed = normalized
         val rate = (activeSyncRate * normalized).coerceIn(0.5f, 4.0f)
