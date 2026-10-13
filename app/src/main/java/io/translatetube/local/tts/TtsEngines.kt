@@ -57,7 +57,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
-            android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=\${audio.samples.size}")
+            android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=${audio.samples.size}")
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
         // Discard NaN/Infinity and prevent invalid floats from reaching AudioTrack.

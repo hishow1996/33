@@ -1862,7 +1862,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String? = null): File {
+    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
         val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
@@ -1898,8 +1898,8 @@ class PlaybackService : MediaSessionService() {
                                 out.write(buf, 0, n)
                                 if (total > 0) {
                                     val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))
-                                    updateUiForSession(sessionKey ?: ui.value.key) { state ->
-                                        if (sessionKey == null || state.key == sessionKey) {
+                                    updateUiForSession(sessionKey) { state ->
+                                        if (state.key == sessionKey) {
                                             state.copy(progress = progress)
                                         } else state
                                     }
