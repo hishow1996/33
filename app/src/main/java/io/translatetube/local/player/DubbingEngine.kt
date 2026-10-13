@@ -55,6 +55,7 @@ class DubbingEngine(
     }
     /** Serializes cache publication with release so a cancelled old run cannot install stale PCM. */
     private val cacheWriteLock = Any()
+    private val ttsCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val readiness = DubbingReadiness()
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
@@ -534,13 +535,21 @@ class DubbingEngine(
         tts = null
         val activeSynthesis = synthJob
         activeSynthesis?.cancel()
-        if (oldTts != null) {
-            if (activeSynthesis != null && !activeSynthesis.isCompleted) {
-                // Kokoro and platform TTS can be in blocking native/provider calls. Close only
-                // after the cancelled coroutine has unwound, avoiding concurrent release/synth.
-                activeSynthesis.invokeOnCompletion { runCatching { oldTts.close() } }
-            } else {
-                runCatching { oldTts.close() }
+        when {
+            oldTts == null -> ttsCloseSignal.complete(Unit)
+            oldTts is io.translatetube.local.tts.SystemTts -> {
+                // System TTS uses a latch-backed callback. close() marks it closed before waking
+                // synth(), so it can abort without decoding a partial WAV.
+                try { oldTts.close() } finally { ttsCloseSignal.complete(Unit) }
+            }
+            activeSynthesis != null && !activeSynthesis.isCompleted -> {
+                // Kokoro performs blocking native work. Defer native release until it unwinds.
+                activeSynthesis.invokeOnCompletion {
+                    try { oldTts.close() } finally { ttsCloseSignal.complete(Unit) }
+                }
+            }
+            else -> {
+                try { oldTts.close() } finally { ttsCloseSignal.complete(Unit) }
             }
         }
         _currentLine.value = -1
@@ -557,5 +566,11 @@ class DubbingEngine(
         }
         // 正常关闭队列：已排队任务会看到 generation/released 状态并退出，清理任务仍能执行。
         audioExec.shutdown()
+    }
+
+    /** Release immediately, then await TTS disposal before constructing a replacement engine. */
+    suspend fun releaseAndJoin() {
+        release()
+        ttsCloseSignal.await()
     }
 }

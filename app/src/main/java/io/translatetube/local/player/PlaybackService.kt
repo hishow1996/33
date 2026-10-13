@@ -436,7 +436,8 @@ class PlaybackService : MediaSessionService() {
         prepJob?.cancel()
         dubCollectJob?.cancel()
         dubCollectJob = null
-        dubbing?.release()
+        val previousDubbing = dubbing
+        previousDubbing?.release()
         dubbing = null
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
@@ -474,6 +475,7 @@ class PlaybackService : MediaSessionService() {
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
+                previousDubbing?.releaseAndJoin()
                 val tts = makeTts()
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
                 registerDubbingFailureHandler(d, tts)
@@ -516,7 +518,8 @@ class PlaybackService : MediaSessionService() {
         prepJob?.cancel()
         dubCollectJob?.cancel(); dubCollectJob = null
         // 导入新字幕前先停止并释放旧配音引擎，避免旧任务与新字幕共用同一缓存目录。
-        dubbing?.release()
+        val previousDubbing = dubbing
+        previousDubbing?.release()
         dubbing = null
         pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
         lastLineIdx = Int.MIN_VALUE
@@ -539,9 +542,7 @@ class PlaybackService : MediaSessionService() {
                             translateLines(videoKey, parsedLines, srcLang)
                         }
                     )
-                    if (dubbing != null) {
-                        dubbing?.release(); dubbing = null
-                    }
+                    previousDubbing?.releaseAndJoin()
                     val tts = makeTts()
                     val d = DubbingEngine(this@PlaybackService, videoKey, scope)
                     registerDubbingFailureHandler(d, tts)
@@ -1500,8 +1501,9 @@ class PlaybackService : MediaSessionService() {
                 }
                 // This operation is explicitly Kokoro-only; a settings change mid-task must not
                 // silently switch engines or leave a false-success state with no dubbing engine.
-                dubbing?.release()
+                val previousDubbing = dubbing
                 dubbing = null
+                previousDubbing?.releaseAndJoin()
                 val tts = makeTts("kokoro")
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
                 registerDubbingFailureHandler(d, tts)
@@ -1561,7 +1563,8 @@ class PlaybackService : MediaSessionService() {
             if (i == index) line.copy(speakerId = selectedVoice) else line
         }
         dubCollectJob?.cancel()
-        dubbing?.release()
+        val previousDubbing = dubbing
+        previousDubbing?.release()
         dubbing = null
         ui.update {
             it.copy(lines = updated, preparedUntil = 0, totalLines = updated.size,
@@ -1569,6 +1572,7 @@ class PlaybackService : MediaSessionService() {
         }
         speakerJob = scope.launch {
             try {
+                previousDubbing?.releaseAndJoin()
                 // Manual per-cue voice selection is Kokoro-only; keep the selected engine stable.
                 val tts = makeTts("kokoro")
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
