@@ -414,9 +414,14 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
 
     private suspend fun translateChunk(texts: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (apiKey.isBlank()) throw IllegalStateException("Google Cloud Translation API Key 为空")
+        // Cloud Translation Basic v2 documents API-key authentication through the
+        // "key" query parameter. Do not send this key to v3/Vertex AI endpoints or rely on
+        // an authentication header that may not be accepted by this REST method.
+        val endpointWithKey = endpoint + "?key=" +
+            java.net.URLEncoder.encode(apiKey.trim(), "UTF-8")
         val body = post(
-            endpoint,
-            mapOf("x-goog-api-key" to apiKey.trim()),
+            endpointWithKey,
+            emptyMap(),
             requestPayload(texts, srcLang, tgtLang),
         )
         val arr = JSONObject(body).getJSONObject("data").getJSONArray("translations")
