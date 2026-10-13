@@ -1,7 +1,6 @@
 package io.translatetube.local.player
 
 import java.security.MessageDigest
-import java.util.Locale
 
 /**
  * Stable identity for a persisted synthesized cue. Keep this pure so cache identity rules can
@@ -16,7 +15,7 @@ internal object DubbingCacheIdentity {
         translatedText: String,
     ): String {
         val normalizedSpeed = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
-        val engineHash = fingerprint("pcm-cache-v6|$engineSignature|speed=${String.format(Locale.US, "%.3f", normalizedSpeed)}")
+        val engineHash = fingerprint("pcm-cache-v6|$engineSignature|speedBits=${normalizedSpeed.toBits()}")
         val textHash = fingerprint(translatedText)
         return "$lineIndex-v$speakerId-e$engineHash-t$textHash.pcm"
     }

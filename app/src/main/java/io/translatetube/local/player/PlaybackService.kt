@@ -1318,10 +1318,19 @@ class PlaybackService : MediaSessionService() {
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
                 if (st.muteOriginal || st.noModelHint == null) {
-                    ui.update {
-                        it.copy(
+                    ui.update { current ->
+                        val configured = getSharedPreferences("settings", MODE_PRIVATE)
+                            .getString("tts_engine", "kokoro")
+                        val selectedName = current.ttsEngineName
+                            .takeIf { it.isNotBlank() }
+                            ?: st.ttsEngineName.takeIf { it.isNotBlank() }
+                            ?: TtsEngineMessages.displayName(configured)
+                        current.copy(
                             muteOriginal = false,
-                            noModelHint = "部分字幕未能合成配音，已自动恢复原声，避免出现无声片段。请检查系统文字转语音引擎/语音数据，或重新下载 Kokoro 配音模型。"
+                            // Keep a more specific engine-construction/synthesis error if a callback
+                            // published it after this tick captured its older PlayerUiState.
+                            noModelHint = current.noModelHint
+                                ?: TtsEngineMessages.partialFailure(selectedName),
                         )
                     }
                 }
@@ -1355,10 +1364,18 @@ class PlaybackService : MediaSessionService() {
             if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty()) {
                 pm.originalVolume = 1f
                 if (st.noModelHint == null) {
-                    ui.update {
-                        it.copy(
+                    ui.update { current ->
+                        val configured = getSharedPreferences("settings", MODE_PRIVATE)
+                            .getString("tts_engine", "kokoro")
+                        val selectedName = current.ttsEngineName
+                            .takeIf { it.isNotBlank() }
+                            ?: st.ttsEngineName.takeIf { it.isNotBlank() }
+                            ?: TtsEngineMessages.displayName(configured)
+                        current.copy(
                             muteOriginal = false,
-                            noModelHint = "配音引擎未能启动，已恢复视频原声。系统 TTS 请检查手机的文字转语音服务与中文语音数据；Kokoro 请检查配音模型是否完整。"
+                            // Do not overwrite an error already supplied by the selected engine.
+                            noModelHint = current.noModelHint
+                                ?: TtsEngineMessages.engineUnavailable(selectedName),
                         )
                     }
                 }
