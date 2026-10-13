@@ -2053,6 +2053,11 @@ class PlaybackService : MediaSessionService() {
         val sessionKey = videoKey
         val sessionVideoId = videoId
         val sessionLocalUri = localUri
+        val sessionState = ui.value
+        val translationCacheKey = sessionState.translationCacheKey.ifBlank {
+            "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
+        }
+        val sessionSourceLang = sessionState.sourceLang
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         speakerJob = scope.launch {
             try {
@@ -2158,9 +2163,21 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val tts = makeTts("kokoro")
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    runCatching { tts.close() }
+                    throw e
+                }
                 val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    d.releaseAndJoin()
+                    throw e
+                }
                 dubbing = d
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
@@ -2173,12 +2190,12 @@ class PlaybackService : MediaSessionService() {
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
                         .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
                 )
+                ensureCurrentSession(sessionKey)
                 if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
-                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
-                            "$sessionKey|zh|${prefs.getLong("active_api_id", -1L)}",
-                            ui.value.sourceLang, arr.toString(), System.currentTimeMillis()
+                            translationCacheKey,
+                            sessionSourceLang, arr.toString(), System.currentTimeMillis()
                         )
                     )
                 }
@@ -2195,7 +2212,7 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 ui.update { state ->
-                    if (state.key == sessionKey) {
+                    if (state.key == sessionKey && videoKey == sessionKey) {
                         state.copy(phase = Phase.READY, progress = "", error = "自动区分人物失败：${e.message}")
                     } else state
                 }
@@ -2208,20 +2225,27 @@ class PlaybackService : MediaSessionService() {
             ui.update { it.copy(error = "多人物音色切换需要 Kokoro 音色模型，请切换配音引擎后重试") }
             return
         }
-        val oldLines = ui.value.lines
+        val sessionState = ui.value
+        val sessionKey = sessionState.key
+        if (sessionKey.isBlank() || videoKey != sessionKey) return
+        val oldLines = sessionState.lines
         if (index !in oldLines.indices) return
         val selectedVoice = speakerId.coerceIn(-1, 53)
         if (oldLines[index].speakerId == selectedVoice) return
         speakerJob?.cancel()
         speakerJob = null
         val selectedLine = oldLines[index]
-        val assignmentSnapshot = loadSpeakerAssignments(videoKey)
+        val translationCacheKey = sessionState.translationCacheKey.ifBlank {
+            "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
+        }
+        val sourceLang = sessionState.sourceLang
+        val assignmentSnapshot = loadSpeakerAssignments(sessionKey)
         saveSpeakerAssignments(
             assignmentSnapshot.copy(
                 lineOverrides = assignmentSnapshot.lineOverrides +
                     (SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs) to selectedVoice),
             ),
-            videoKey,
+            sessionKey,
         )
         val updated = oldLines.mapIndexed { i, line ->
             if (i == index) line.copy(speakerId = selectedVoice) else line
@@ -2230,22 +2254,36 @@ class PlaybackService : MediaSessionService() {
         val previousDubbing = dubbing
         previousDubbing?.release()
         dubbing = null
-        ui.update {
+        updateUiForSession(sessionKey) {
             it.copy(lines = updated, preparedUntil = 0, totalLines = updated.size,
                 currentLine = -1, phase = Phase.SYNTHESIZING, progress = "更新人物音色…")
         }
         speakerJob = scope.launch {
             try {
+                ensureCurrentSession(sessionKey)
                 previousDubbing?.releaseAndJoin()
+                ensureCurrentSession(sessionKey)
                 // Manual per-cue voice selection is Kokoro-only; keep the selected engine stable.
                 val tts = makeTts("kokoro")
-                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                registerDubbingFailureHandler(d, tts)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    runCatching { tts.close() }
+                    throw e
+                }
+                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    d.releaseAndJoin()
+                    throw e
+                }
                 dubbing = d
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->
-                        ui.update { state -> state.copy(preparedUntil = n,
+                        updateUiForSession(sessionKey) { state -> state.copy(preparedUntil = n,
                             phase = if (n >= updated.size) Phase.READY else Phase.SYNTHESIZING,
                             progress = if (n >= updated.size) "" else "正在准备多人物配音…") }
                     }
@@ -2255,12 +2293,11 @@ class PlaybackService : MediaSessionService() {
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
                         .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
                 )
+                ensureCurrentSession(sessionKey)
                 if (updated.isNotEmpty() && updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
-                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-                    val src = ui.value.sourceLang
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
-                            "$videoKey|zh|${prefs.getLong("active_api_id", -1L)}", src,
+                            translationCacheKey, sourceLang,
                             arr.toString(), System.currentTimeMillis()
                         )
                     )
@@ -2269,7 +2306,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                ui.update { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：${e.message}") }
+                updateUiForSession(sessionKey) { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：${e.message}") }
             }
         }
     }
