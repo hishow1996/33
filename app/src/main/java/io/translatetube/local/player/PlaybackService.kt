@@ -1796,12 +1796,12 @@ class PlaybackService : MediaSessionService() {
         val mutex = asrAudioDownloadLocks.computeIfAbsent(videoId) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
             reusableAsrAudioFile(videoId)?.let { cached ->
-                updateUiForSession(key) { state ->
+                updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cached
             }
-            updateUiForSession(key) { state ->
+            updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")
                 } else state
