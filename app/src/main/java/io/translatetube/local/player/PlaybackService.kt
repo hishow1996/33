@@ -500,11 +500,26 @@ class PlaybackService : MediaSessionService() {
     fun importTranslatedSubtitles(uri: Uri) {
         val sessionRevision = beginPlaybackSession()
         val expectedVideoKey = videoKey
+        val requestedMuteOriginal = ui.value.muteOriginal
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision++
         speakerRebuildJob?.cancel(); speakerRebuildJob = null
-        ui.update { it.copy(speakerRebuildInProgress = false) }
+        if (::pm.isInitialized) pm.originalVolume = 1f
+        ui.update {
+            it.copy(
+                phase = Phase.SYNTHESIZING,
+                progress = "正在读取已翻译字幕…",
+                lines = emptyList(),
+                currentLine = -1,
+                preparedUntil = 0,
+                totalLines = 0,
+                muteOriginal = false,
+                speakerRebuildInProgress = false,
+                error = null,
+                noModelHint = null,
+            )
+        }
         dubCollectJob?.cancel()
         dubCollectJob = null
         dubbing?.release()
@@ -536,7 +551,6 @@ class PlaybackService : MediaSessionService() {
                 val translatedLines = applySavedSpeakerAssignments(expectedVideoKey, parsedTranslatedLines)
                 if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
                 java.io.File(cacheDir, "dub/" + expectedVideoKey).deleteRecursively()
-                pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
                 ui.update {
                     it.copy(
                         phase = Phase.SYNTHESIZING,
@@ -568,8 +582,20 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 lastLineIdx = Int.MIN_VALUE
+                val firstSpeech = translatedLines.indexOfFirst { !it.zh.isNullOrBlank() }
+                if (firstSpeech >= 0) {
+                    val targetPrepared = minOf(translatedLines.size, firstSpeech + 2)
+                    val deadlineNs = System.nanoTime() + 12_000_000_000L
+                    while (d.preparedUntil.value < targetPrepared && System.nanoTime() < deadlineNs) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                        kotlinx.coroutines.delay(100)
+                    }
+                }
                 if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
-                withContext(Dispatchers.Main) { pm.play() }
+                withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) pm.play()
+                }
                 ui.update { state ->
                     if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) &&
                         state.key == expectedVideoKey && dubbing === d
@@ -580,6 +606,7 @@ class PlaybackService : MediaSessionService() {
                         totalLines = translatedLines.size,
                         preparedUntil = d.preparedUntil.value,
                         sourceLang = "zh",
+                        muteOriginal = if (state.noModelHint == null) requestedMuteOriginal else false,
                     ) else state
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -707,7 +734,6 @@ class PlaybackService : MediaSessionService() {
                             progress = "字幕已就绪，正在准备配音…",
                             sourceLang = srcLang,
                             error = null,
-                            noModelHint = null,
                         )
                     } else state
                 }
