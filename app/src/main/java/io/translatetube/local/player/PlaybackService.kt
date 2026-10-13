@@ -439,6 +439,31 @@ class PlaybackService : MediaSessionService() {
         return normalized.startsWith("zh") || normalized == "cmn" || normalized.startsWith("yue")
     }
 
+    /** Reject corrupt translation caches containing progress/status text rather than translated rows. */
+    private fun isUsableTranslationCache(linesJson: String): Boolean = try {
+        val rows = org.json.JSONArray(linesJson)
+        if (rows.length() == 0) {
+            false
+        } else {
+            var validTranslations = 0
+            var hasProgressPlaceholder = false
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val translation = row.optString("zh")
+                if (SubtitleParsers.isPlaceholderTranslation(translation)) {
+                    hasProgressPlaceholder = true
+                }
+                if (!SubtitleParsers.cleanTranslatedText(translation).isNullOrBlank()) {
+                    validTranslations++
+                }
+            }
+            !hasProgressPlaceholder && validTranslations > rows.length() / 2
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON", e)
+        false
+    }
+
     private suspend fun runPipeline(key: String, videoId: String?, localUri: Uri?) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
@@ -482,7 +507,17 @@ class PlaybackService : MediaSessionService() {
             // 明确显示字幕获取/读取阶段，不能让流程从分析视频直接跳到翻译。
             ui.update { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
             // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
-            val cached = db.subtitleCacheDao().get(translationCacheKey)
+            val storedTranslationCache = db.subtitleCacheDao().get(translationCacheKey)
+            // Older builds may have persisted a progress placeholder (for example, "正在翻译")
+            // as every row's Chinese text. Never trust such cache entries: retranslate from the
+            // cached original subtitles instead of displaying the placeholder as completed output.
+            val cached = storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+            if (storedTranslationCache != null && cached == null) {
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring invalid/stale translation cache for $key; will translate the source subtitles again"
+                )
+            }
             val sourceCached = if (cached == null && videoId != null && importedLines.isNullOrEmpty()) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -921,13 +956,18 @@ class PlaybackService : MediaSessionService() {
 
             val batchTranslations = translated
             if (batchTranslations != null) {
+                val cleanedBatch = batchTranslations.map { SubtitleParsers.cleanTranslatedText(it) }
+                // A provider returning the UI status text instead of an actual translation must
+                // not produce a READY player with every subtitle saying "正在翻译".
+                if (batchTranslations.isNotEmpty() && cleanedBatch.none { !it.isNullOrBlank() }) {
+                    throw TranslationFailureException(
+                        "翻译服务返回了状态占位文本而不是译文，请检查当前翻译服务/模型配置后重试。",
+                        IllegalStateException("translation response contained no usable subtitle text"),
+                    )
+                }
                 updatedLines = updatedLines.mapIndexed { index, line ->
                     if (index in start until end) {
-                        line.copy(
-                            zh = SubtitleParsers.cleanTranslatedText(
-                                batchTranslations.getOrNull(index - start)
-                            )
-                        )
+                        line.copy(zh = cleanedBatch.getOrNull(index - start))
                     } else line
                 }
             }

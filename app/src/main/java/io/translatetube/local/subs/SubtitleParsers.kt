@@ -126,6 +126,23 @@ object SubtitleParsers {
     }
 
     /**
+     * Recognize UI/progress placeholders that older builds could accidentally persist as translations.
+     * Treat them as missing output, never as valid subtitle text.
+     */
+    fun isPlaceholderTranslation(translated: String?): Boolean {
+        val normalized = translated
+            ?.trim()
+            ?.lowercase()
+            ?.replace(Regex("[\\s…。.！!·:：]+"), "")
+            ?: return false
+        if (normalized in setOf(
+                "正在翻译", "正在翻译中", "翻译中", "译文暂不可用", "暂无译文",
+                "translating", "translationinprogress", "loadingtranslation",
+            )) return true
+        return Regex("^(正在)?翻译中\\d*/\\d*行?$").matches(normalized)
+    }
+
+    /**
      * Clean common duplicated translator output such as "你好，你好" or
      * "这是结果。这是结果。" without touching ordinary non-repeated clauses.
      * Also used when reading the existing translation cache so old bad results do not remain visible.
@@ -137,6 +154,7 @@ object SubtitleParsers {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: return null
+        if (isPlaceholderTranslation(value)) return null
 
         val chunks = Regex("(?<=[。！？!?；;，,])").split(value)
         val collapsed = ArrayList<String>(chunks.size)
