@@ -14,12 +14,15 @@ import java.util.concurrent.TimeUnit
 
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
+/** Shared extractor HTTP client: reuse connections and bound request duration. */
+private val newPipeHttpClient = OkHttpClient.Builder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
+    .callTimeout(45, TimeUnit.SECONDS)
+    .build()
+
 /** NewPipe Extractor 网络层（okhttp 封装） */
 object SimpleDownloader : Downloader() {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
 
     override fun execute(r: Request): Response {
         val b = okhttp3.Request.Builder().url(r.url())
@@ -32,7 +35,7 @@ object SimpleDownloader : Downloader() {
             "HEAD" -> b.head()
             else -> b.get()
         }
-        client.newCall(b.build()).execute().use { resp ->
+        newPipeHttpClient.newCall(b.build()).execute().use { resp ->
             return Response(
                 resp.code, resp.message, resp.headers.toMultimap(),
                 resp.body?.string() ?: "", resp.request.url.toString()
@@ -52,18 +55,24 @@ object NewPipeRepo {
     @Volatile private var inited = false
     @Volatile private var cachedInfo: StreamInfo? = null
     @Volatile private var cachedId: String? = null
+    private val infoLock = Any()
 
-    /** StreamInfo 复用：一次解析，字幕/流/元信息共享，避免对 YouTube 三连击 */
+    /** StreamInfo 复用：一次解析，字幕/流/元信息共享，避免对 YouTube 三连击。 */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            if (cachedId == videoId && cachedInfo != null) return@withContext cachedInfo!!
-            initOnce()
-            // Use the regular watch endpoint for all video IDs (including Shorts IDs). This exposes
-            // the normal adaptiveFormats/videoOnlyStreams data used by the quality selector.
-            val i = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
-            cachedInfo = i
-            cachedId = videoId
-            i
+            // Requests may overlap across parsing, subtitle selection, and playback. Synchronize
+            // cache reads and network fetches so a video ID cannot pair with another video's info.
+            synchronized(infoLock) {
+                if (cachedId == videoId && cachedInfo != null) return@synchronized cachedInfo!!
+                initOnce()
+                val fetched = StreamInfo.getInfo(
+                    ServiceList.YouTube,
+                    "https://www.youtube.com/watch?v=$videoId",
+                )
+                cachedInfo = fetched
+                cachedId = videoId
+                fetched
+            }
         }
 
     fun init(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) {
@@ -72,7 +81,7 @@ object NewPipeRepo {
 
     /** Explicit retry must discard stale/partial extraction results and fetch fresh YouTube metadata. */
     fun invalidate(videoId: String? = null) {
-        synchronized(this) {
+        synchronized(infoLock) {
             if (videoId == null || cachedId == videoId) {
                 cachedInfo = null
                 cachedId = null
@@ -248,7 +257,7 @@ object NewPipeRepo {
 
     private fun downloadText(url: String): String {
         val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
-        OkHttpClient().newCall(req).execute().use { resp ->
+        newPipeHttpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("字幕下载失败 ${resp.code}")
             return resp.body?.string() ?: ""
         }
