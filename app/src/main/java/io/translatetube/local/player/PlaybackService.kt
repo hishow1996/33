@@ -483,8 +483,18 @@ class PlaybackService : MediaSessionService() {
 
     /** 将选中的 YouTube 字幕轨保存到用户指定位置；下载失败只更新提示，不打断播放任务。 */
     fun downloadSubtitle(track: SubtitleTrackOption, outputUri: Uri) {
+        val expectedVideoKey = videoKey
+        val expectedSessionRevision = playbackSessionRevision
+        if (expectedVideoKey.isEmpty()) return
+        fun publishSubtitleStatus(message: String) {
+            ui.update { state ->
+                if (isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision)) {
+                    state.copy(subtitleTrackStatus = message)
+                } else state
+            }
+        }
         scope.launch {
-            ui.update { it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…") }
+            publishSubtitleStatus("正在下载 " + track.languageTag + " 字幕…")
             try {
                 val content = NewPipeRepo.downloadSubtitleContent(track)
                 val cueCount = SubtitleParsers.parseAuto(content).size
@@ -494,19 +504,15 @@ class PlaybackService : MediaSessionService() {
                         ?: throw IllegalStateException("无法写入所选文件")
                     output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
                 }
-                ui.update {
-                    it.copy(
-                        subtitleTrackStatus = "已保存 " + track.languageTag + " 字幕（" + cueCount +
-                            " 条）。翻译时请保留时间戳，完成后可上传并直接配音。",
-                    )
-                }
+                publishSubtitleStatus(
+                    "已保存 " + track.languageTag + " 字幕（" + cueCount +
+                        " 条）。翻译时请保留时间戳，完成后可上传并直接配音。"
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.w("PlaybackService", "Subtitle download failed", e)
-                ui.update {
-                    it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
-                }
+                publishSubtitleStatus("字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
             }
         }
     }
