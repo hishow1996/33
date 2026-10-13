@@ -106,7 +106,7 @@ object NewPipeRepo {
     /** 从任意文本提取 YouTube 视频 id */
     fun extractVideoId(text: String): String? {
         val u = text.trim()
-        Regex("(?:v=|/shorts/|youtu\\.be/|/embed/)([A-Za-z0-9_-]{11})")
+        Regex("(?:v=|/shorts/|/live/|/v/|youtu\\.be/|/embed/)([A-Za-z0-9_-]{11})")
             .find(u)?.let { return it.groupValues[1] }
         if (Regex("^[A-Za-z0-9_-]{11}$").matches(u)) return u
         return null
