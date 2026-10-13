@@ -578,16 +578,31 @@ class PlaybackService : MediaSessionService() {
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
                 val tts = makeTts()
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    runCatching { tts.close() }
+                    throw e
+                }
                 val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, translatedLines)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    d.releaseAndJoin()
+                    throw e
+                }
                 dubbing = d
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
                 }
                 lastLineIdx = Int.MIN_VALUE
                 ensureCurrentSession(sessionKey)
-                withContext(Dispatchers.Main) { pm.play() }
+                withContext(Dispatchers.Main) {
+                    ensureCurrentSession(sessionKey)
+                    pm.play()
+                }
                 updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.READY,
@@ -602,7 +617,9 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
-                runCatching { pm.originalVolume = 1f }
+                if (videoKey == sessionKey && ui.value.key == sessionKey) {
+                    runCatching { pm.originalVolume = 1f }
+                }
                 updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -646,8 +663,8 @@ class PlaybackService : MediaSessionService() {
                         ?.use { it.readText() }
                         ?: throw IllegalStateException("无法读取字幕文件")
                     SubtitleParsers.parseAuto(text)
-                ensureCurrentSession(sessionKey)
                 }
+                ensureCurrentSession(sessionKey)
                 if (parsedLines.isEmpty()) {
                     throw IllegalStateException("字幕文件为空或格式不支持")
                 }
@@ -683,9 +700,21 @@ class PlaybackService : MediaSessionService() {
                 previousDubbing?.releaseAndJoin()
                 ensureCurrentSession(sessionKey)
                 val tts = makeTts()
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    runCatching { tts.close() }
+                    throw e
+                }
                 val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, translatedLines)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    d.releaseAndJoin()
+                    throw e
+                }
                 dubbing = d
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
