@@ -1273,7 +1273,9 @@ class PlaybackService : MediaSessionService() {
                                 error = null
                             )
                         }
-                        withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                        withContext(Dispatchers.Main) {
+                            if (isCurrentPlaybackSession(key, sessionRevision)) pm.originalVolume = 1f
+                        }
                     }
                 } else {
                     if (!isCurrentPlaybackSession(key, sessionRevision)) return
@@ -1285,7 +1287,9 @@ class PlaybackService : MediaSessionService() {
                         it.copy(ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
                             muteOriginal = false, noModelHint = message)
                     }
-                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                    withContext(Dispatchers.Main) {
+                        if (isCurrentPlaybackSession(key, sessionRevision)) pm.originalVolume = 1f
+                    }
                 }
             }
             // TTS 在后台按字幕顺序预合成。预热最前面的可朗读行后再启动视频，
@@ -1340,7 +1344,9 @@ class PlaybackService : MediaSessionService() {
             if (!isCurrentPlaybackSession(key, sessionRevision)) return
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
-                withContext(Dispatchers.Main) { runCatching { pm.originalVolume = 1f } }
+                withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(key, sessionRevision)) runCatching { pm.originalVolume = 1f }
+                }
                 updateUiForSession(key, sessionRevision) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -1353,8 +1359,13 @@ class PlaybackService : MediaSessionService() {
             } else {
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
-            if (ui.value.dubbingOn) {
-                withContext(Dispatchers.Main) { runCatching { pm.originalVolume = 1f } }
+            val currentSessionDubbingOn = ui.value.let { state ->
+                state.key == key && isCurrentPlaybackSession(key, sessionRevision) && state.dubbingOn
+            }
+            if (currentSessionDubbingOn) {
+                withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(key, sessionRevision)) runCatching { pm.originalVolume = 1f }
+                }
                 updateUiForSession(key, sessionRevision) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -1374,8 +1385,13 @@ class PlaybackService : MediaSessionService() {
             if (e is VirtualMachineError || e is ThreadDeath) throw e
             if (!isCurrentPlaybackSession(key, sessionRevision)) return
             android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=$key", e)
-            if (ui.value.dubbingOn) {
-                withContext(Dispatchers.Main) { runCatching { pm.originalVolume = 1f } }
+            val currentSessionDubbingOn = ui.value.let { state ->
+                state.key == key && isCurrentPlaybackSession(key, sessionRevision) && state.dubbingOn
+            }
+            if (currentSessionDubbingOn) {
+                withContext(Dispatchers.Main) {
+                    if (isCurrentPlaybackSession(key, sessionRevision)) runCatching { pm.originalVolume = 1f }
+                }
             }
             updateUiForSession(key, sessionRevision) {
                 it.copy(
