@@ -470,10 +470,18 @@ class DubbingEngine(
                     val written = newTrack.write(
                         playbackSamples, 0, playbackSamples.size, AudioTrack.WRITE_BLOCKING
                     )
-                    if (written != playbackSamples.size || released || playbackGeneration.get() != generation) {
+                    // Cancellation/session replacement is expected; a partial/failed write is not.
+                    // The latter must enter the failure handler so original audio is restored instead
+                    // of leaving this cue marked ready while the dubbed AudioTrack remains silent.
+                    if (released || playbackGeneration.get() != generation) {
                         newTrack.release()
                         created = null
                         return@execute
+                    }
+                    if (written != playbackSamples.size) {
+                        throw IllegalStateException(
+                            "AudioTrack PCM 写入不完整：${written}/${playbackSamples.size} 个采样点"
+                        )
                     }
 
                     runCatching {
