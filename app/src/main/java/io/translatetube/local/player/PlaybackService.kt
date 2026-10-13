@@ -453,7 +453,7 @@ class PlaybackService : MediaSessionService() {
                 val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
                 val chinesePattern = Regex("[\\u4e00-\\u9fff]")
-                val translatedLines = parsed.mapIndexed { index, line ->
+                val parsedTranslatedLines = parsed.mapIndexed { index, line ->
                     val parts = line.text.lines().map { it.trim() }.filter { it.isNotBlank() }
                     val translation = parts.lastOrNull { chinesePattern.containsMatchIn(it) }
                         ?: parts.lastOrNull()
@@ -465,6 +465,7 @@ class PlaybackService : MediaSessionService() {
                         zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
                     )
                 }
+                val translatedLines = applySavedSpeakerAssignments(videoKey, parsedTranslatedLines)
                 java.io.File(cacheDir, "dub/" + videoKey).deleteRecursively()
                 pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
                 ui.update {
@@ -541,11 +542,12 @@ class PlaybackService : MediaSessionService() {
                     ui.update { it.copy(phase = Phase.TRANSLATING, progress = "翻译导入的字幕（${parsedLines.size} 行）…") }
                     val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
                     // Use immutable copies so StateFlow/Compose sees translated subtitle text.
-                    val translatedLines = if (isChineseLanguage(srcLang)) {
+                    val rawTranslatedLines = if (isChineseLanguage(srcLang)) {
                         parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
                         translateLines(videoKey, parsedLines, srcLang)
                     }
+                    val translatedLines = applySavedSpeakerAssignments(videoKey, rawTranslatedLines)
                     if (dubbing != null) {
                         dubbing?.release(); dubbing = null
                     }
@@ -842,7 +844,7 @@ class PlaybackService : MediaSessionService() {
                 if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
                     val arr = org.json.JSONArray()
                     for (l in translatedLines) arr.put(
-                        org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "")
+                        org.json.JSONObject().put("s", l.startMs).put("e", l.endMs).put("t", l.text).put("zh", l.zh ?: "").put("sp", l.speakerId)
                     )
                     db.subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(translationCacheKey, srcLang, arr.toString(), System.currentTimeMillis())
@@ -850,7 +852,8 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
-            val finalLines = lines ?: emptyList()
+            var finalLines = lines ?: emptyList()
+            finalLines = applySavedSpeakerAssignments(key, finalLines)
             ui.update {
                 it.copy(
                     lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
