@@ -247,7 +247,9 @@ class DubbingEngine(
     }
 
     private fun cached(idx: Int): Boolean =
-        synchronized(mem) { mem.containsKey(idx) } || validCache(cacheFile(idx))
+        // A known-silent cue is fully handled even when its disk write failed and its empty
+        // in-memory marker was later evicted; it must not block the contiguous prepared prefix.
+        idx in noAudio || synchronized(mem) { mem.containsKey(idx) } || validCache(cacheFile(idx))
 
     /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
     private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
