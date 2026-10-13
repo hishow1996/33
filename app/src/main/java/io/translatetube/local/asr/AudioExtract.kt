@@ -38,10 +38,26 @@ object AudioExtract {
             codec.configure(fmt, null, null, 0)
             codec.start()
 
-            var srcRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var srcChannels = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            var srcRate = runCatching { fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) }
+                .getOrElse { throw IllegalStateException("无法读取音频采样率", it) }
+            var srcChannels = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }
+                .getOrElse { throw IllegalStateException("无法读取音频声道数", it) }
+            fun validateOutputFormat(rate: Int, channels: Int) {
+                if (rate !in 1_000..384_000) {
+                    throw IllegalStateException("音频采样率不受支持：${rate} Hz")
+                }
+                if (channels !in 1..8) {
+                    throw IllegalStateException("音频声道数不受支持：$channels")
+                }
+            }
+            validateOutputFormat(srcRate, srcChannels)
             val collected = ArrayList<ShortArray>()
-            val maxSourceSamples = if (maxDurationMs == Long.MAX_VALUE) Int.MAX_VALUE.toLong() else (srcRate.toLong() * srcChannels * maxDurationMs / 1000L).coerceAtLeast(1L)
+            val rawMaxSourceSamples = if (maxDurationMs == Long.MAX_VALUE) {
+                Int.MAX_VALUE.toLong()
+            } else {
+                (srcRate.toLong() * srcChannels * maxDurationMs / 1000L).coerceAtLeast(srcChannels.toLong())
+            }
+            val maxSourceSamples = rawMaxSourceSamples - rawMaxSourceSamples % srcChannels
             var collectedSamples = 0L
             val info = MediaCodec.BufferInfo()
             var sawInputEOS = false
@@ -63,13 +79,30 @@ object AudioExtract {
                 }
                 val outIdx = codec.dequeueOutputBuffer(info, 10_000)
                 if (outIdx >= 0) {
-                    val ob = codec.getOutputBuffer(outIdx)!!
-                    val available = info.size / 2
-                    val remaining = (maxSourceSamples - collectedSamples).coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                    val take = minOf(available, remaining)
+                    val ob = codec.getOutputBuffer(outIdx)
+                        ?: throw IllegalStateException("音频解码器没有输出缓冲区")
+                    val endOffset = info.offset.toLong() + info.size.toLong()
+                    if (info.offset < 0 || info.size < 0 || info.size % 2 != 0 ||
+                        endOffset > ob.capacity().toLong()
+                    ) {
+                        codec.releaseOutputBuffer(outIdx, false)
+                        throw IllegalStateException("音频解码缓冲区偏移或长度无效")
+                    }
+                    // MediaCodec output buffers may contain data outside BufferInfo's valid window.
+                    // Read only [offset, offset + size), never stale bytes from the buffer capacity.
+                    val pcmBytes = ob.duplicate()
+                    pcmBytes.position(info.offset)
+                    pcmBytes.limit(endOffset.toInt())
+                    val shortBuffer = pcmBytes.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                    val available = shortBuffer.remaining()
+                    val remaining = (maxSourceSamples - collectedSamples)
+                        .coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val rawTake = minOf(available, remaining)
+                    // Preserve complete PCM frames when trimming a duration-limited decode.
+                    val take = rawTake - rawTake % srcChannels
                     if (take > 0) {
                         val shorts = ShortArray(take)
-                        ob.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts, 0, take)
+                        shortBuffer.get(shorts, 0, take)
                         collected += shorts
                         collectedSamples += take
                     }
@@ -78,8 +111,15 @@ object AudioExtract {
                 } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     // 解码器实际输出格式可能与容器声明不同（如 opus 48k）
                     val nf = codec.outputFormat
-                    srcRate = nf.getInteger(MediaFormat.KEY_SAMPLE_RATE, srcRate)
-                    srcChannels = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT, srcChannels)
+                    // Use API-16-compatible key checks rather than newer getInteger(key, default)
+                    // overloads, because the target devices include Android 9.
+                    if (nf.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        srcRate = nf.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    }
+                    if (nf.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        srcChannels = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    }
+                    validateOutputFormat(srcRate, srcChannels)
                 }
             }
             // 音频已解码，尽早释放 MediaCodec，避免后续重采样/分配大数组时占用硬件解码资源。
@@ -87,25 +127,9 @@ object AudioExtract {
             runCatching { decoder?.release() }
             decoder = null
 
-            val total = collected.sumOf { it.size }
-            // 立体声两帧合一路，mono 只需一半容量
-            val monoLen = if (srcChannels >= 2) total / 2 else total
-            var mono = ShortArray(monoLen)
-            var w = 0
-            for (chunk in collected) {
-                if (srcChannels >= 2) {
-                    var i = 0
-                    while (i + 1 < chunk.size && w < monoLen) {
-                        mono[w++] = ((chunk[i].toInt() + chunk[i + 1].toInt()) / 2).toShort()
-                        i += 2
-                    }
-                } else {
-                    val n = chunk.size.coerceAtMost(monoLen - w)
-                    System.arraycopy(chunk, 0, mono, w, n)
-                    w += n
-                }
-            }
-            // 不再保留原始解码块；减少长音频重采样阶段的瞬时内存峰值。
+            if (collected.isEmpty()) throw IllegalStateException("音频轨没有可解码的 PCM 数据")
+            val mono = PcmChannelMixer.downmixToMono(collected, srcChannels)
+            // Release decoded multichannel blocks before resampling/float conversion.
             collected.clear()
             var resampled = resample(mono, srcRate, 16000)
             mono = ShortArray(0)
@@ -121,7 +145,9 @@ object AudioExtract {
     }
 
     fun resample(input: ShortArray, fromRate: Int, toRate: Int): ShortArray {
-        if (fromRate == toRate) return input
+        require(fromRate in 1_000..384_000) { "不支持的输入采样率：$fromRate" }
+        require(toRate in 1_000..384_000) { "不支持的目标采样率：$toRate" }
+        if (input.isEmpty() || fromRate == toRate) return input
         val ratio = fromRate.toDouble() / toRate
         val outLen = (input.size / ratio).toInt()
         val out = ShortArray(outLen)
