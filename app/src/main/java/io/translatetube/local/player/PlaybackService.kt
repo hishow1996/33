@@ -716,20 +716,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     /** Imported subtitles get their own translation cache key so they cannot overwrite YouTube source captions. */
-    private fun importedTranslationCacheKey(key: String, activeId: Long, lines: List<SubLine>): String {
-        val canonical = buildString {
-            lines.forEach { line ->
-                append(line.startMs).append(':')
-                    .append(line.endMs).append(':')
-                    .append(line.text.length).append(':')
-                    .append(line.text).append('\n')
-            }
-        }
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(canonical.toByteArray(Charsets.UTF_8))
-        val signature = digest.take(12).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        return "$key|zh|$activeId|imported-$signature"
-    }
+    private fun importedTranslationCacheKey(key: String, activeId: Long, lines: List<SubLine>): String =
+        TranslationCacheIdentity.importedKey(key, activeId, lines)
 
     /** Compare source text and timing before trusting a legacy video-level translation cache. */
     private fun translationCacheMatchesSource(linesJson: String, sourceLines: List<SubLine>): Boolean = try {
