@@ -1399,6 +1399,14 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                 )
             }
 
+            if (type == "GCLOUD" && apiKey.trim().startsWith("AQ.")) {
+                Text(
+                    "检测到 AQ. 开头的密钥：这是 Gemini API 密钥，不能用于「Google 翻译 API」。请将服务类型改为「Gemini 大模型」，再测试连接。",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
             // 模型选择与连接检查共用同一块配置区域，避免编辑页出现分散入口。
             Labeled(if (fixedEngine) "连接测试" else "翻译模型与连接") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
