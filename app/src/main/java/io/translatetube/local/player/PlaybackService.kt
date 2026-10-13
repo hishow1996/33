@@ -600,8 +600,155 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
+    /** 导入外部字幕（SRT/VTT）：异步读取文件后翻译，避免大字幕文件阻塞播放页。 */
     fun importSubtitles(uri: Uri) {
+        val sessionRevision = beginPlaybackSession()
+        val expectedVideoKey = videoKey
+        val requestedMuteOriginal = ui.value.muteOriginal
+        prepJob?.cancel()
+        speakerJob?.cancel(); speakerJob = null
+        speakerRebuildRevision++
+        speakerRebuildJob?.cancel(); speakerRebuildJob = null
+        dubCollectJob?.cancel(); dubCollectJob = null
+        dubbing?.release()
+        dubbing = null
+        lastLineIdx = Int.MIN_VALUE
+        if (::pm.isInitialized) pm.originalVolume = 1f
+        ui.update {
+            it.copy(
+                phase = Phase.TRANSLATING,
+                progress = "正在读取导入字幕…",
+                lines = emptyList(),
+                currentLine = -1,
+                preparedUntil = 0,
+                totalLines = 0,
+                muteOriginal = false,
+                speakerRebuildInProgress = false,
+                error = null,
+                noModelHint = null,
+            )
+        }
+
+        prepJob = scope.launch {
+            if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                        ?: throw IllegalStateException("无法读取字幕文件")
+                }
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                val parsedLines = SubtitleParsers.parseAuto(text)
+                if (parsedLines.isEmpty()) throw IllegalStateException("字幕文件为空或格式不支持")
+
+                // Remove old cue audio before a different timeline is attached to the same video.
+                java.io.File(cacheDir, "dub/$expectedVideoKey").deleteRecursively()
+                ui.update { state ->
+                    if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) {
+                        state.copy(progress = "翻译导入的字幕（${parsedLines.size} 行）…")
+                    } else state
+                }
+                val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
+                val rawTranslatedLines = if (isChineseLanguage(srcLang)) {
+                    parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
+                } else {
+                    translateLines(expectedVideoKey, parsedLines, srcLang, sessionRevision)
+                }
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                val translatedLines = applySavedSpeakerAssignments(expectedVideoKey, rawTranslatedLines)
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+
+                val tts = makeTts()
+                val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
+                registerDubbingFailureHandler(d, tts, expectedVideoKey, sessionRevision)
+                d.attach(tts, translatedLines)
+                if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
+                    d.release()
+                    return@launch
+                }
+                dubCollectJob = scope.launch {
+                    d.preparedUntil.collect { count ->
+                        ui.update { state ->
+                            if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) &&
+                                state.key == expectedVideoKey && dubbing === d
+                            ) state.copy(preparedUntil = count) else state
+                        }
+                    }
+                }
+
+                val arr = org.json.JSONArray()
+                for (line in translatedLines) {
+                    arr.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                }
+                if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
+                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            "$expectedVideoKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}",
+                            srcLang,
+                            arr.toString(),
+                            System.currentTimeMillis(),
+                        )
+                    )
+                }
+
+                ui.update { state ->
+                    if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) && dubbing === d) {
+                        state.copy(
+                            lines = translatedLines,
+                            totalLines = translatedLines.size,
+                            preparedUntil = d.preparedUntil.value,
+                            phase = Phase.SYNTHESIZING,
+                            progress = "字幕已就绪，正在准备配音…",
+                            sourceLang = srcLang,
+                            error = null,
+                            noModelHint = null,
+                        )
+                    } else state
+                }
+                val firstSpeech = translatedLines.indexOfFirst { !it.zh.isNullOrBlank() }
+                if (firstSpeech >= 0) {
+                    val targetPrepared = minOf(translatedLines.size, firstSpeech + 2)
+                    val deadlineNs = System.nanoTime() + 12_000_000_000L
+                    while (d.preparedUntil.value < targetPrepared && System.nanoTime() < deadlineNs) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                        kotlinx.coroutines.delay(100)
+                    }
+                }
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                ui.update { state ->
+                    if (isCurrentPlaybackSession(expectedVideoKey, sessionRevision) && dubbing === d) {
+                        state.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            muteOriginal = if (state.noModelHint == null) requestedMuteOriginal else false,
+                        )
+                    } else state
+                }
+                lastLineIdx = Int.MIN_VALUE
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
+                android.util.Log.e("PlaybackService", "Subtitle import failed", e)
+                withContext(Dispatchers.Main) { if (::pm.isInitialized) pm.originalVolume = 1f }
+                ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "字幕导入失败：${e.message ?: e.javaClass.simpleName}",
+                        muteOriginal = false,
+                    )
+                }
+            }
+        }
+    }
         val sessionRevision = beginPlaybackSession()
         val expectedVideoKey = videoKey
         prepJob?.cancel()
