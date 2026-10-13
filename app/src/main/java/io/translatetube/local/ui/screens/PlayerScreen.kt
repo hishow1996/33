@@ -971,7 +971,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 }
 
 @Composable
-@Composable
 private fun PlaybackMenuItem(
     icon: ImageVector,
     title: String,
@@ -1038,6 +1037,7 @@ private fun PlaybackMenuItem(
     )
 }
 
+@Composable
 private fun ControlBar(
     state: PlayerUiState,
     onImportSub: () -> Unit,

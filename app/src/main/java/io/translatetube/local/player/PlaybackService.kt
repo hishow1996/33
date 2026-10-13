@@ -248,7 +248,11 @@ class PlaybackService : MediaSessionService() {
             .setContentTitle(title)
             .setContentText(displayDetail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
-            .setOngoing(state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE))
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setOngoing(
+                state.isPlaying ||
+                    state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
+            )
             .setOnlyAlertOnce(true)
             .setContentIntent(
                 PendingIntent.getActivity(
@@ -258,8 +262,13 @@ class PlaybackService : MediaSessionService() {
                 )
             )
             .apply {
-                // max=0 clears the old bar when this stage has no reliable percentage.
-                if (measuredPercent != null) setProgress(100, measuredPercent.coerceIn(0, 100), false)
+                // Always replace or clear the previous stage's progress state.
+                // Only measurable work receives a percentage; other phases show no stale bar.
+                if (measuredPercent != null) {
+                    setProgress(100, measuredPercent.coerceIn(0, 100), false)
+                } else {
+                    setProgress(0, 0, false)
+                }
             }
             .build()
         manager.notify(1001, notification)
