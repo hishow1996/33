@@ -160,6 +160,7 @@ class PlayerManager(private val ctx: Context) {
     }
 
     /** 为指定清晰度加载流；视频轨分离时与音频轨合并播放。 */
+    /** 为指定清晰度装配流；返回 false 表示 MediaSource 初始化阶段失败。 */
     fun setYouTubeQuality(
         videoUrl: String,
         audioUrl: String,
@@ -167,17 +168,27 @@ class PlayerManager(private val ctx: Context) {
         title: String = "",
         artist: String = "",
         artworkUrl: String? = null,
-    ) {
+    ): Boolean {
         errorSink.value = null
+        if (videoUrl.isBlank()) {
+            errorSink.value = "该清晰度没有可用的视频地址"
+            return false
+        }
         if (muxed) {
-            setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
-            return
+            return try {
+                setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("PlayerManager", "Muxed YouTube quality setup failed", e)
+                errorSink.value = "无法初始化 ${title.ifEmpty { "YouTube" }} 视频流：${e.message ?: e.javaClass.simpleName}"
+                false
+            }
         }
-        if (videoUrl.isBlank() || audioUrl.isBlank()) {
-            errorSink.value = "该清晰度缺少视频或音频流"
-            return
+        if (audioUrl.isBlank()) {
+            errorSink.value = "该清晰度缺少独立音频流"
+            return false
         }
-        try {
+        return try {
             val meta = buildMetadata(title, artist, artworkUrl)
             val videoSource = ProgressiveMediaSource.Factory(httpFactory)
                 .createMediaSource(
@@ -189,9 +200,11 @@ class PlayerManager(private val ctx: Context) {
                 )
             player.setMediaSource(MergingMediaSource(videoSource, audioSource))
             player.prepare()
+            true
         } catch (e: Exception) {
             android.util.Log.e("PlayerManager", "YouTube quality setup failed", e)
             errorSink.value = "无法初始化 ${title.ifEmpty { "YouTube" }} 视频流：${e.message ?: e.javaClass.simpleName}"
+            false
         }
     }
 
