@@ -39,7 +39,7 @@ private fun parseModelTranslations(content: String, size: Int): List<String> {
 
     val normalized = content
         .replace(Regex("(?s)<think>.*?</think>"), "")
-        .replace(Regex("(?m)^\\s*\`\`\`[\\w-]*\\s*$"), "")
+        .replace(Regex("(?m)^\\s*```[\\w-]*\\s*$"), "")
         .trim()
     if (normalized.isEmpty()) return List(size) { "" }
 
@@ -50,10 +50,10 @@ private fun parseModelTranslations(content: String, size: Int): List<String> {
     }
 
     // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
-    val indexedLine = Regex("""^\\s*(?:[-*•]\\s*)?(?:\\*\\*)?(\\d{1,4})(?:\\*\\*)?\\s*(?:[|｜:：.、)]\\s*|-\\s+)(.*?)\\s*$""")
+    val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d{1,4})(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
     val indexed = linkedMapOf<Int, String>()
     normalized.lines().forEach { raw ->
-        val line = raw.trim().trim('\`').trim()
+        val line = raw.trim().trim('`').trim()
         val match = indexedLine.matchEntire(line) ?: return@forEach
         val index = match.groupValues[1].toIntOrNull() ?: return@forEach
         if (index in 0..size) {
