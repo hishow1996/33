@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ false }} # Temporarily disabled until the full multi-stage upgrade is ready.
     name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
