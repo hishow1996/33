@@ -22,6 +22,7 @@ internal object DubbingTiming {
     const val MAX_SYNC_RATE = 2.0f
     private const val MAX_OUTPUT_RATE = 4.0f
     private const val FADE_OUT_MS = 30
+    private const val MIN_REMAINING_WINDOW_MS = 80L
 
     fun normalizePlayerSpeed(speed: Float): Float =
         speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
@@ -43,7 +44,9 @@ internal object DubbingTiming {
         val lineDurationMs = lineEndMs - lineStartMs
         val elapsedMs = (positionMs - lineStartMs).coerceIn(0L, lineDurationMs)
         val remainingMs = lineDurationMs - elapsedMs
-        if (remainingMs <= 0L) {
+        if (remainingMs < MIN_REMAINING_WINDOW_MS) {
+            // A tiny late fragment is usually unintelligible; skip it instead of playing a
+            // clipped syllable immediately before the next subtitle cue.
             return DubbingPlaybackPlan(sampleCount, 0, 1.0f, safePlayerSpeed, false)
         }
 

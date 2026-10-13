@@ -65,6 +65,17 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun skipsUnintelligibleFragmentWhenOnlyATinyWindowRemains() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 16_000, sampleRate = 16_000,
+            lineStartMs = 0, lineEndMs = 1_000,
+            positionMs = 950, playerSpeed = 1.0f,
+        )
+        assertEquals(16_000, plan.startSample)
+        assertEquals(0, plan.sampleCount)
+    }
+
+    @Test
     fun shortSpeechNaturallyFinishesBeforeCueEnd() {
         val plan = DubbingTiming.createPlan(
             sampleCount = 400, sampleRate = 1_000,

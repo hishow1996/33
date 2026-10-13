@@ -179,8 +179,40 @@ class DubbingEngine(
                             }
                         }
                     }
-                    val readyAudio = audio ?: throw (lastFailure
+                    val firstAudio = audio ?: throw (lastFailure
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
+                    val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
+                    val fasterSpeed = DubbingSynthesisPolicy.recommendedSpeed(
+                        baseSpeed = speed,
+                        sampleCount = firstAudio.samples.size,
+                        sampleRate = firstAudio.sampleRate,
+                        cueDurationMs = cueDurationMs,
+                    )
+                    // Prefer regenerating a long sentence with the same selected engine at a
+                    // higher but bounded speech rate before trimming it to the video time window.
+                    // If adaptive synthesis fails or the provider ignores speed, keep the first audio.
+                    val readyAudio = if (fasterSpeed > speed + 0.05f) {
+                        try {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            val faster = tts!!.synth(text, fasterSpeed, line.speakerId)
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            val fasterIsValid = faster.sampleRate in 8_000..192_000 &&
+                                faster.samples.isNotEmpty()
+                            val fasterIsShorter = fasterIsValid &&
+                                faster.samples.size.toDouble() / faster.sampleRate <
+                                firstAudio.samples.size.toDouble() / firstAudio.sampleRate * 0.98
+                            if (fasterIsShorter) faster else firstAudio
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            android.util.Log.w(
+                                "DubbingEngine",
+                                "Adaptive speech-rate retry failed for line ${idx + 1}; keeping first synthesis",
+                                e,
+                            )
+                            firstAudio
+                        }
+                    } else firstAudio
                     writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
                     readiness.markPrepared(idx, hasAudio = true)
                     synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
@@ -228,9 +260,12 @@ class DubbingEngine(
         }
         // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
         val textHash = fingerprint(line?.zh ?: "")
-        // Include the configured default voice as well as engine/speed so changing the
-        // Kokoro default cannot reuse PCM synthesized with the previous voice.
-        val engineHash = fingerprint("${tts?.cacheKey ?: tts?.name ?: "unknown"}-v6-speed-${speed}")
+        // Adaptive synthesis depends on this cue's available time window. Include its duration
+        // and bump the cache identity so pre-adaptation PCM is never mistaken for the new policy.
+        val cueDurationMs = ((line?.endMs ?: 0L) - (line?.startMs ?: 0L)).coerceAtLeast(0L)
+        val engineHash = fingerprint(
+            "${tts?.cacheKey ?: tts?.name ?: "unknown"}-v7-speed-${speed}-cue-ms-${cueDurationMs}-adaptive"
+        )
         return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
@@ -493,7 +528,7 @@ class DubbingEngine(
 
     fun line(idx: Int): SubLine? = lines.getOrNull(idx)
     fun allLines(): List<SubLine> = lines
-    fun setSpeed(s: Float) { speed = s }
+    fun setSpeed(s: Float) { speed = s.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f }
 
     /** Update the active voice without changing the selected TTS engine or its cached PCM. */
     fun updatePlayerSpeed(speed: Float) {

@@ -102,7 +102,26 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var playerReady = false
     private var session: MediaSession? = null
     private var dubbing: DubbingEngine? = null
+    private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
     private var whisper: WhisperEngine? = null
+
+    private fun retireCurrentDubbing() {
+        val previous = dubbing ?: return
+        dubbing = null
+        previous.release()
+        retiringDubbingEngines.add(previous)
+    }
+
+    private suspend fun awaitRetiredDubbingEngines() {
+        while (true) {
+            val previous = retiringDubbingEngines.firstOrNull() ?: return
+            try {
+                previous.releaseAndJoin()
+            } finally {
+                retiringDubbingEngines.remove(previous)
+            }
+        }
+    }
     private var prepJob: Job? = null
     private var videoKey = ""
     private var videoId: String? = null
@@ -376,7 +395,7 @@ class PlaybackService : MediaSessionService() {
         dubCollectJob?.cancel(); dubCollectJob = null
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
-        dubbing?.release(); dubbing = null
+        retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.importedLines = importedLines
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -526,6 +545,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 previousDubbing?.releaseAndJoin()
+                awaitRetiredDubbingEngines()
                 val tts = makeTts()
                 val d = DubbingEngine(this@PlaybackService, videoKey, scope)
                 registerDubbingFailureHandler(d, tts)
@@ -715,6 +735,7 @@ class PlaybackService : MediaSessionService() {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         try {
+            awaitRetiredDubbingEngines()
             var meta = VideoEntity(
                 key = key, videoId = videoId, localUri = localUri?.toString(),
                 title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
@@ -811,39 +832,74 @@ class PlaybackService : MediaSessionService() {
                     "Ignoring invalid/stale translation cache for $key; will translate the source subtitles again"
                 )
             }
-            val sourceCached = if (resumeState == null && cached == null && videoId != null && importedLines.isNullOrEmpty()) {
+            suspend fun fetchAndCacheSourceLines(): Pair<List<SubLine>, String>? {
+                val id = videoId ?: return null
+                ui.update { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
+                val fetched = NewPipeRepo.subtitles(id) ?: return null
+                val lang = fetched.second.takeIf { it.isNotBlank() } ?: "auto"
+                val fetchedLines = fetched.first
+                    .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+                    .mapIndexed { index, line -> line.copy(index = index) }
+                if (fetchedLines.isEmpty()) return null
+
+                val sourceArr = org.json.JSONArray()
+                fetchedLines.forEach { line ->
+                    sourceArr.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                    )
+                }
+                db.subtitleCacheDao().put(
+                    io.translatetube.local.data.SubtitleCacheEntity(
+                        sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
+                    )
+                )
+                return fetchedLines to lang
+            }
+
+            val sourceCached = if (
+                resumeState == null && cached == null && videoId != null && importedLines.isNullOrEmpty()
+            ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
-            var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
-            if (resumeState == null && cached == null && importedLines.isNullOrEmpty() && videoId != null) {
-                if (sourceCached != null) {
-                    val sourceArr = org.json.JSONArray(sourceCached.linesJson)
-                    lines = (0 until sourceArr.length()).map { i ->
+            val restoredSourceLines = sourceCached?.let { source ->
+                runCatching {
+                    val sourceArr = org.json.JSONArray(source.linesJson)
+                    val restored = (0 until sourceArr.length()).map { i ->
                         val o = sourceArr.getJSONObject(i)
                         SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"))
                     }
-                    srcLang = sourceCached.srcLang
-                    android.util.Log.i("PlaybackService", "Using cached source subtitles for $videoId (${lines!!.size} cues)")
+                    restored.takeIf { rows ->
+                        rows.isNotEmpty() && rows.all { row ->
+                            row.startMs >= 0L && row.endMs > row.startMs && row.text.isNotBlank()
+                        }
+                    }
+                }.getOrNull()
+            }
+            if (sourceCached != null && restoredSourceLines == null) {
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring malformed source subtitle cache for $videoId; fetching subtitles/ASR again"
+                )
+                db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
+            }
+
+            var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
+            if (resumeState == null && cached == null && importedLines.isNullOrEmpty() && videoId != null) {
+                if (restoredSourceLines != null && sourceCached != null) {
+                    lines = restoredSourceLines
+                    srcLang = sourceCached.srcLang.takeIf { it.isNotBlank() }
+                        ?: detectLangFromText(restoredSourceLines.take(12).joinToString(" ") { it.text })
+                    android.util.Log.i(
+                        "PlaybackService",
+                        "Using cached source subtitles for $videoId (${restoredSourceLines.size} cues)"
+                    )
                 } else {
-                    ui.update { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
-                    NewPipeRepo.subtitles(videoId)?.let { (fetchedLines, lang) ->
+                    fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
                         lines = fetchedLines
                         srcLang = lang
-                        // 缓存原始字幕独立于翻译服务，API 切换或翻译失败后也不必重新下载。
-                        val sourceArr = org.json.JSONArray()
-                        for (line in fetchedLines) {
-                            sourceArr.put(
-                                org.json.JSONObject()
-                                    .put("s", line.startMs)
-                                    .put("e", line.endMs)
-                                    .put("t", line.text)
-                            )
-                        }
-                        db.subtitleCacheDao().put(
-                            io.translatetube.local.data.SubtitleCacheEntity(
-                                sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
-                            )
-                        )
                     }
                 }
             }

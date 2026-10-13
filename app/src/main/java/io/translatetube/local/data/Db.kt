@@ -77,6 +77,9 @@ interface SubtitleCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun put(e: SubtitleCacheEntity)
 
+    @Query("DELETE FROM subtitle_cache WHERE cacheKey = :k")
+    suspend fun delete(k: String)
+
     @Query("DELETE FROM subtitle_cache")
     suspend fun clear()
 }
