@@ -17,6 +17,17 @@ class AsrAudioCachePolicyTest {
     }
 
     @Test
+    fun onlyAcceptsCompleteDownloadedAudio() {
+        assertTrue(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_024L))
+        assertTrue(AsrAudioCachePolicy.isCompleteDownload(-1L, 1_024L))
+        assertTrue(AsrAudioCachePolicy.isCompleteDownload(0L, 1_024L))
+        assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_023L))
+        assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_025L))
+        assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, 0L))
+        assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, AsrAudioCachePolicy.MAX_AUDIO_BYTES + 1))
+    }
+
+    @Test
     fun rejectsMissingEmptyOversizedExpiredAndFutureDatedFiles() {
         val now = 10_000_000_000L
         assertFalse(AsrAudioCachePolicy.canReuse(false, 100L, now - 1, now))

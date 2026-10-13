@@ -16,4 +16,9 @@ internal object AsrAudioCachePolicy {
         if (lastModifiedMs <= 0L || nowMs < lastModifiedMs) return false
         return nowMs - lastModifiedMs <= TTL_MS
     }
+
+    /** Unknown content length is allowed, but a known length must match the received bytes. */
+    fun isCompleteDownload(expectedBytes: Long, actualBytes: Long): Boolean =
+        actualBytes in 1L..MAX_AUDIO_BYTES &&
+            (expectedBytes <= 0L || expectedBytes == actualBytes)
 }

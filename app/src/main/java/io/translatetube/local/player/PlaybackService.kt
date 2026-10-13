@@ -1927,9 +1927,9 @@ class PlaybackService : MediaSessionService() {
                     val total = body.contentLength()
                     if (total > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
                     body.byteStream().use { ins ->
+                        var got = 0L
                         writeTarget.outputStream().buffered().use { out ->
                             val buf = ByteArray(64 * 1024)
-                            var got = 0L
                             while (true) {
                                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                                 val n = ins.read(buf)
@@ -1947,6 +1947,11 @@ class PlaybackService : MediaSessionService() {
                                 }
                             }
                             out.flush()
+                        }
+                        if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
+                            throw IllegalStateException(
+                                "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
+                            )
                         }
                     }
                     if (!writeTarget.isFile || writeTarget.length() == 0L) {
