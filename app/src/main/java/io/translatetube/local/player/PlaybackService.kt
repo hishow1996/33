@@ -250,7 +250,23 @@ class PlaybackService : MediaSessionService() {
             }
             scope.launch {
                 pm.errorSink.collect { err ->
-                    if (err != null) ui.update { it.copy(error = err, phase = Phase.ERROR) }
+                    if (err == null) return@collect
+                    // A StateFlow can briefly deliver a prior item's error while a new video is
+                    // opening. Confirm it still belongs to ExoPlayer on its application looper.
+                    withContext(Dispatchers.Main) {
+                        if (!::pm.isInitialized) return@withContext
+                        val playerError = pm.player.playerError
+                        val actualMessage = playerError?.message ?: if (playerError != null) "播放错误" else null
+                        if (playerError != null && actualMessage == err) {
+                            val currentKey = videoKey
+                            val currentRevision = playbackSessionRevision
+                            ui.update { state ->
+                                if (isCurrentPlaybackSession(currentKey, currentRevision)) {
+                                    state.copy(error = err, phase = Phase.ERROR)
+                                } else state
+                            }
+                        }
+                    }
                 }
             }
             playerReady = true
@@ -387,6 +403,8 @@ class PlaybackService : MediaSessionService() {
             return
         }
         val sessionRevision = beginPlaybackSession()
+        // Clear any error retained from the previous MediaItem before starting this session.
+        if (::pm.isInitialized) pm.errorSink.value = null
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         speakerRebuildRevision.incrementAndGet()
