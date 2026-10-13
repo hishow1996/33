@@ -178,6 +178,46 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * Create a per-video dubbing engine with explicit TTS ownership. If an import is cancelled
+     * or installation fails, release whichever object currently owns the TTS.
+     */
+    private fun createAndInstallDubbingForSession(
+        tts: TtsEngine,
+        lines: List<SubLine>,
+        key: String,
+        sessionRevision: Long,
+    ): DubbingEngine? {
+        val engine = try {
+            DubbingEngine(this, key, scope)
+        } catch (e: Exception) {
+            runCatching { tts.close() }
+            throw e
+        }
+        var ttsAttached = false
+        try {
+            registerDubbingFailureHandler(engine, tts, key, sessionRevision)
+            if (!isCurrentPlaybackSession(key, sessionRevision)) {
+                runCatching { tts.close() }
+                runCatching { engine.release() }
+                return null
+            }
+            // attach() transfers TTS ownership to the DubbingEngine.
+            ttsAttached = true
+            engine.attach(tts, lines)
+            if (!installDubbingForSession(key, sessionRevision, engine)) {
+                runCatching { engine.release() }
+                return null
+            }
+            return engine
+        } catch (e: Exception) {
+            if (dubbing === engine) dubbing = null
+            runCatching { engine.release() }
+            if (!ttsAttached) runCatching { tts.close() }
+            throw e
+        }
+    }
+
     private fun updateUiForSession(
         key: String,
         revision: Long,
@@ -599,13 +639,12 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 val tts = makeTts()
-                val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
-                registerDubbingFailureHandler(d, tts, expectedVideoKey, sessionRevision)
-                d.attach(tts, translatedLines)
-                if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
-                    d.release()
-                    return@launch
-                }
+                val d = createAndInstallDubbingForSession(
+                    tts = tts,
+                    lines = translatedLines,
+                    key = expectedVideoKey,
+                    sessionRevision = sessionRevision,
+                ) ?: return@launch
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->
                         ui.update { state ->
@@ -719,13 +758,12 @@ class PlaybackService : MediaSessionService() {
                 if (!isCurrentPlaybackSession(expectedVideoKey, sessionRevision)) return@launch
 
                 val tts = makeTts()
-                val d = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
-                registerDubbingFailureHandler(d, tts, expectedVideoKey, sessionRevision)
-                d.attach(tts, translatedLines)
-                if (!installDubbingForSession(expectedVideoKey, sessionRevision, d)) {
-                    d.release()
-                    return@launch
-                }
+                val d = createAndInstallDubbingForSession(
+                    tts = tts,
+                    lines = translatedLines,
+                    key = expectedVideoKey,
+                    sessionRevision = sessionRevision,
+                ) ?: return@launch
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { count ->
                         ui.update { state ->
