@@ -36,7 +36,7 @@ class DubbingEngine(
         }
     }
 
-    private var tts: TtsEngine? = null
+    @Volatile private var tts: TtsEngine? = null
     /** Called when the selected engine fails; the service reports this without switching engines. */
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
@@ -53,6 +53,8 @@ class DubbingEngine(
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
     }
+    /** Serializes cache publication with release so a cancelled old run cannot install stale PCM. */
+    private val cacheWriteLock = Any()
     private val readiness = DubbingReadiness()
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
@@ -131,13 +133,15 @@ class DubbingEngine(
     private fun startSynthLoop() {
         synthJob?.cancel()
         synthJob = scope.launch(Dispatchers.Default) {
-            while (!pending.isEmpty()) {
+            while (!released && !pending.isEmpty()) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
                 if (cached(idx)) { bumpPrepared(); continue }
                 val line = lines.getOrNull(idx) ?: continue
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     writeCache(idx, 16000, FloatArray(0))
                     readiness.markPrepared(idx, hasAudio = false)
                     bumpPrepared()
@@ -149,6 +153,10 @@ class DubbingEngine(
                     for (attempt in 0..1) {
                         try {
                             val generated = tts!!.synth(text, speed, line.speakerId)
+                            // TTS providers perform blocking work; observe cancellation as soon
+                            // as the provider returns, before installing audio into the cache.
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
                             if (generated.sampleRate !in 8_000..192_000 || generated.samples.isEmpty()) {
                                 throw IllegalStateException(
                                     "所选引擎返回空音频或无效采样率（${generated.sampleRate} Hz）"
@@ -179,6 +187,8 @@ class DubbingEngine(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // A released session must never write a failure marker into a newer session's cache.
+                    if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
                     // After one retry, publish the failure and allow video playback to continue.
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
@@ -269,13 +279,19 @@ class DubbingEngine(
             temp.delete()
             throw java.io.IOException("PCM 缓存写入不完整")
         }
-        if (target.exists() && !target.delete()) {
-            temp.delete()
-            throw java.io.IOException("无法替换 PCM 缓存")
-        }
-        if (!temp.renameTo(target)) {
-            temp.delete()
-            throw java.io.IOException("无法安装 PCM 缓存")
+        synchronized(cacheWriteLock) {
+            if (released) {
+                temp.delete()
+                throw kotlinx.coroutines.CancellationException("配音引擎已释放，取消缓存写入")
+            }
+            if (target.exists() && !target.delete()) {
+                temp.delete()
+                throw java.io.IOException("无法替换 PCM 缓存")
+            }
+            if (!temp.renameTo(target)) {
+                temp.delete()
+                throw java.io.IOException("无法安装 PCM 缓存")
+            }
         }
     }
 
@@ -507,12 +523,26 @@ class DubbingEngine(
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
     fun release() {
-        if (released) return
-        released = true
+        // Publish the released state under the same lock used to install cache files. Any write
+        // that commits first is complete; any later write sees released and aborts.
+        synchronized(cacheWriteLock) {
+            if (released) return
+            released = true
+        }
         playbackGeneration.incrementAndGet()
-        synthJob?.cancel()
-        tts?.close()
+        val oldTts = tts
         tts = null
+        val activeSynthesis = synthJob
+        activeSynthesis?.cancel()
+        if (oldTts != null) {
+            if (activeSynthesis != null && !activeSynthesis.isCompleted) {
+                // Kokoro and platform TTS can be in blocking native/provider calls. Close only
+                // after the cancelled coroutine has unwound, avoiding concurrent release/synth.
+                activeSynthesis.invokeOnCompletion { runCatching { oldTts.close() } }
+            } else {
+                runCatching { oldTts.close() }
+            }
+        }
         _currentLine.value = -1
         val old = track
         track = null
