@@ -1,6 +1,7 @@
 package io.translatetube.local.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -129,6 +130,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
+        if (activeId == EngineFactory.ID_FREE_GEMINI ||
+            activeId == EngineFactory.ID_FREE_DEEPSEEK
+        ) {
+            setActive(-1L)
+        }
         try {
             db.apiProfileDao().all().collect { list ->
                 val supportedProfiles = list.filterNot { it.type == "AZURE" || it.type == "BAIDU" }
@@ -168,15 +174,11 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("API 管理", style = MaterialTheme.typography.titleLarge, color = OnBg)
             }
-            Surface(
+            IconButton(
                 onClick = { adding = true },
-                shape = CircleShape,
-                color = Color.White,
-                border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
+                modifier = Modifier.size(44.dp),
             ) {
-                Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Add, contentDescription = "添加 API", tint = BrandBright)
-                }
+                Icon(Icons.Filled.Add, contentDescription = "添加 API", tint = BrandBright)
             }
         }
 
@@ -197,7 +199,12 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
-                        .background(if (isGoogleActive) Color(0xFFF3F7FF) else Color.White)
+                        .background(if (isGoogleActive) Color(0xFFEAF1FF) else Color.White)
+                        .border(
+                            width = if (isGoogleActive) 1.5.dp else 1.dp,
+                            color = if (isGoogleActive) Color(0xFF3569D4) else Color(0xFFE3E9F2),
+                            shape = RoundedCornerShape(18.dp),
+                        )
                         .clickable { setActive(-1L) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -218,13 +225,13 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                     )
                     if (isGoogleActive) {
                         Surface(
-                            color = Color(0xFFEAF1FF),
+                            color = Color(0xFF3569D4),
                             shape = RoundedCornerShape(8.dp),
                         ) {
                             Text(
-                                "当前",
+                                "正在使用",
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                color = Color(0xFF245BCC),
+                                color = Color.White,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                             )
@@ -248,162 +255,19 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 GoogleTranslateSection()
             }
 
-            // 2. Google Gemini (免费大模型)
-            item(key = "free_gemini") {
-                val isGeminiActive = activeId == EngineFactory.ID_FREE_GEMINI
-                var geminiMenuExpanded by remember { mutableStateOf(false) }
-                Row(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(if (isGeminiActive) Color(0xFFF3F7FF) else Color.White)
-                        .clickable { setActive(EngineFactory.ID_FREE_GEMINI) }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    GeminiLogo(selected = isGeminiActive)
-                    Text(
-                        "Google Gemini",
-                        color = OnBg,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                    )
-                    if (isGeminiActive) {
-                        Surface(
-                            color = Color(0xFFEAF1FF),
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Text(
-                                "当前",
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                color = Color(0xFF245BCC),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                            )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Box {
-                        IconButton(
-                            onClick = { geminiMenuExpanded = true },
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            Text("•••", color = SubText, style = MaterialTheme.typography.titleMedium)
-                        }
-                        DropdownMenu(
-                            expanded = geminiMenuExpanded,
-                            onDismissRequest = { geminiMenuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(if (testingFreeModel == "Google Gemini") "正在测试连接…" else "测试连接") },
-                                onClick = {
-                                    geminiMenuExpanded = false
-                                    testFreeModel(EngineFactory.ID_FREE_GEMINI, "Google Gemini")
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("配置参数 / 覆盖私有密钥") },
-                                onClick = {
-                                    geminiMenuExpanded = false
-                                    configuringFreeModel = "GEMINI"
-                                },
-                            )
-                            if (!isGeminiActive) {
-                                DropdownMenuItem(
-                                    text = { Text("设为当前服务") },
-                                    onClick = {
-                                        geminiMenuExpanded = false
-                                        setActive(EngineFactory.ID_FREE_GEMINI)
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. DeepSeek (免费大模型)
-            item(key = "free_deepseek") {
-                val isDeepSeekActive = activeId == EngineFactory.ID_FREE_DEEPSEEK
-                var deepSeekMenuExpanded by remember { mutableStateOf(false) }
-                Row(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(if (isDeepSeekActive) Color(0xFFF3F7FF) else Color.White)
-                        .clickable { setActive(EngineFactory.ID_FREE_DEEPSEEK) }
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    DeepSeekLogo(selected = isDeepSeekActive)
-                    Text(
-                        "DeepSeek",
-                        color = OnBg,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                    )
-                    if (isDeepSeekActive) {
-                        Surface(
-                            color = Color(0xFFEAF1FF),
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Text(
-                                "当前",
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                color = Color(0xFF245BCC),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                            )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Box {
-                        IconButton(
-                            onClick = { deepSeekMenuExpanded = true },
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            Text("•••", color = SubText, style = MaterialTheme.typography.titleMedium)
-                        }
-                        DropdownMenu(
-                            expanded = deepSeekMenuExpanded,
-                            onDismissRequest = { deepSeekMenuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(if (testingFreeModel == "DeepSeek") "正在测试连接…" else "测试连接") },
-                                onClick = {
-                                    deepSeekMenuExpanded = false
-                                    testFreeModel(EngineFactory.ID_FREE_DEEPSEEK, "DeepSeek")
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("配置参数 / 覆盖私有密钥") },
-                                onClick = {
-                                    deepSeekMenuExpanded = false
-                                    configuringFreeModel = "DEEPSEEK"
-                                },
-                            )
-                            if (!isDeepSeekActive) {
-                                DropdownMenuItem(
-                                    text = { Text("设为当前服务") },
-                                    onClick = {
-                                        deepSeekMenuExpanded = false
-                                        setActive(EngineFactory.ID_FREE_DEEPSEEK)
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 4. 用户自定义添加的 API 列表
+            // 2. 用户自定义添加的 API 列表
             items(profiles, key = { it.id }) { p ->
                 val selectedProfile = activeId == p.id && p.enabled
                 var profileMenuExpanded by remember(p.id) { mutableStateOf(false) }
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
-                        .background(if (selectedProfile) Color(0xFFF3F7FF) else Color.White)
+                        .background(if (selectedProfile) Color(0xFFEAF1FF) else Color.White)
+                        .border(
+                            width = if (selectedProfile) 1.5.dp else 1.dp,
+                            color = if (selectedProfile) Color(0xFF3569D4) else Color(0xFFE3E9F2),
+                            shape = RoundedCornerShape(18.dp),
+                        )
                         .clickable(enabled = p.enabled) { setActive(p.id) }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -420,13 +284,13 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                     )
                     if (selectedProfile) {
                         Surface(
-                            color = Color(0xFFEAF1FF),
+                            color = Color(0xFF3569D4),
                             shape = RoundedCornerShape(8.dp),
                         ) {
                             Text(
-                                "当前",
+                                "正在使用",
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                color = Color(0xFF245BCC),
+                                color = Color.White,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                             )
@@ -1415,43 +1279,6 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         ) {
             Text(if (initial == null) "添加翻译 API" else "编辑 API", style = MaterialTheme.typography.titleLarge, color = OnBg)
             Spacer(Modifier.height(10.dp))
-
-            if (initial == null) {
-                Text("快捷填入服务预设：", style = MaterialTheme.typography.labelSmall, color = SubText)
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    SuggestionChip(
-                        onClick = {
-                            name = "DeepSeek"
-                            type = "OPENAI"
-                            baseUrl = "https://api.deepseek.com"
-                            model = "deepseek-chat"
-                        },
-                        label = { Text("DeepSeek", style = MaterialTheme.typography.labelSmall) },
-                    )
-                    SuggestionChip(
-                        onClick = {
-                            name = "Google Gemini"
-                            type = "GEMINI"
-                            baseUrl = ""
-                            model = "gemini-2.5-flash"
-                        },
-                        label = { Text("Gemini", style = MaterialTheme.typography.labelSmall) },
-                    )
-                    SuggestionChip(
-                        onClick = {
-                            name = "NVIDIA"
-                            type = "OPENAI"
-                            baseUrl = "https://integrate.api.nvidia.com/v1"
-                            model = "meta/llama-3.3-70b-instruct"
-                        },
-                        label = { Text("NVIDIA", style = MaterialTheme.typography.labelSmall) },
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-            }
 
             Labeled("名称") { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 DeepSeek") }) }
 
