@@ -124,8 +124,8 @@ class PlayerManager(private val ctx: Context) {
     ) {
         errorSink.value = null
 
-        // 单文件流兼容性最好：只需一个 MediaSource，不需要 MergingMediaSource 对齐两条时间轴。
-        if (!muxedUrl.isNullOrBlank()) {
+        // Single-file streams are the most compatible path on older Android devices.
+        if (!muxedUrl.isNullOrBlank() && isValidHttpMediaUrl(muxedUrl)) {
             try {
                 setUriSource(Uri.parse(muxedUrl), title, artist, artworkUrl)
                 return
@@ -135,7 +135,7 @@ class PlayerManager(private val ctx: Context) {
         }
 
         val v = videoOnly.maxByOrNull { it.second }?.first
-        if (!v.isNullOrBlank() && audioUrl.isNotBlank()) {
+        if (v != null && isValidHttpMediaUrl(v) && isValidHttpMediaUrl(audioUrl)) {
             try {
                 val meta = buildMetadata(title, artist, artworkUrl)
                 val vs = ProgressiveMediaSource.Factory(httpFactory)
@@ -151,8 +151,8 @@ class PlayerManager(private val ctx: Context) {
             }
         }
 
-        if (muxedUrl.isNullOrBlank()) {
-            errorSink.value = "YouTube 没有提供可播放的合并音视频流，且分离音视频流不可用"
+        if (errorSink.value == null) {
+            errorSink.value = "YouTube 没有可用的合并音视频流或有效的分离音视频流地址"
         }
     }
 
@@ -202,7 +202,8 @@ class PlayerManager(private val ctx: Context) {
 
     private fun isValidHttpMediaUrl(value: String): Boolean = runCatching {
         val uri = Uri.parse(value)
-        (uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true)) &&
+        (uri.scheme?.equals("https", ignoreCase = true) == true ||
+            uri.scheme?.equals("http", ignoreCase = true) == true) &&
             !uri.host.isNullOrBlank()
     }.getOrDefault(false)
 
