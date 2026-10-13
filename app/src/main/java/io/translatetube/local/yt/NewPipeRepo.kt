@@ -50,20 +50,36 @@ data class SubtitleTrackOption(
 
 object NewPipeRepo {
     @Volatile private var inited = false
-    @Volatile private var cachedInfo: StreamInfo? = null
-    @Volatile private var cachedId: String? = null
+    private data class StreamInfoCache(
+        val videoId: String,
+        val generation: Long,
+        val info: StreamInfo,
+    )
+    @Volatile private var cachedEntry: StreamInfoCache? = null
+    // Incremented on explicit retry/invalidation so an older in-flight request cannot repopulate
+    // the cache with metadata fetched before the retry.
+    private var cacheGeneration: Long = 0L
 
-    /** StreamInfo 复用：一次解析，字幕/流/元信息共享，避免对 YouTube 三连击 */
+    /** StreamInfo 复用：一次解析，字幕/流/元信息共享，避免对 YouTube 三连击。 */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            if (cachedId == videoId && cachedInfo != null) return@withContext cachedInfo!!
+            val requestGeneration = synchronized(this@NewPipeRepo) { cacheGeneration }
+            val existing = cachedEntry
+            if (existing?.videoId == videoId && existing.generation == requestGeneration) {
+                return@withContext existing.info
+            }
             initOnce()
             // Use the regular watch endpoint for all video IDs (including Shorts IDs). This exposes
             // the normal adaptiveFormats/videoOnlyStreams data used by the quality selector.
-            val i = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
-            cachedInfo = i
-            cachedId = videoId
-            i
+            val fetched = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
+            synchronized(this@NewPipeRepo) {
+                if (cacheGeneration == requestGeneration) {
+                    // Keep the key, generation and payload in one immutable object. Separate
+                    // volatile id/info fields can interleave when two videos resolve concurrently.
+                    cachedEntry = StreamInfoCache(videoId, requestGeneration, fetched)
+                }
+            }
+            fetched
         }
 
     fun init(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) {
@@ -73,10 +89,10 @@ object NewPipeRepo {
     /** Explicit retry must discard stale/partial extraction results and fetch fresh YouTube metadata. */
     fun invalidate(videoId: String? = null) {
         synchronized(this) {
-            if (videoId == null || cachedId == videoId) {
-                cachedInfo = null
-                cachedId = null
-            }
+            // This is a single-entry cache; clear it atomically regardless of key. Bumping the
+            // generation also prevents an in-flight request for the same ID from writing stale data.
+            cacheGeneration += 1L
+            cachedEntry = null
         }
     }
 
