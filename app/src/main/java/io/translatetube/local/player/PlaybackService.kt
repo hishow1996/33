@@ -1898,7 +1898,7 @@ class PlaybackService : MediaSessionService() {
                                 out.write(buf, 0, n)
                                 if (total > 0) {
                                     val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))
-                                    updateUiForSession(key) { state ->
+                                    updateUiForSession(sessionKey ?: ui.value.key) { state ->
                                         if (sessionKey == null || state.key == sessionKey) {
                                             state.copy(progress = progress)
                                         } else state
