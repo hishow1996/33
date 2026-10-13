@@ -145,7 +145,39 @@ class DubbingEngine(
             while (!released && !pending.isEmpty()) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
-                if (cached(idx)) { bumpPrepared(); continue }
+                val cachedAudioState = cached(idx)
+                if (cachedAudioState != null) {
+                    // A cache file is usable only after its header and exact payload length are
+                    // validated. Preserve empty failure markers separately from corrupt entries.
+                    readiness.markPrepared(idx, hasAudio = cachedAudioState)
+                    if (cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
+                        runCatching {
+                            val audioFromMemory = synchronized(mem) { mem[idx] }
+                            if (audioFromMemory != null) {
+                                onFirstSynthesisReady?.invoke(
+                                    idx,
+                                    audioFromMemory.first.size,
+                                    audioFromMemory.second,
+                                )
+                            } else {
+                                java.io.DataInputStream(
+                                    java.io.BufferedInputStream(java.io.FileInputStream(cacheFile(idx)))
+                                ).use { input ->
+                                    val sampleRate = input.readInt()
+                                    val sampleCount = input.readInt()
+                                    if (sampleRate !in 8_000..192_000 || sampleCount <= 0) {
+                                        throw java.io.IOException("缓存 PCM 头无效")
+                                    }
+                                    onFirstSynthesisReady?.invoke(idx, sampleCount, sampleRate)
+                                }
+                            }
+                        }.onFailure {
+                            android.util.Log.w("DubbingEngine", "Could not publish cached-PCM diagnostic", it)
+                        }
+                    }
+                    bumpPrepared()
+                    continue
+                }
                 val line = lines.getOrNull(idx) ?: continue
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
@@ -312,8 +344,11 @@ class DubbingEngine(
         }
     }
 
-    private fun cached(idx: Int): Boolean =
-        synchronized(mem) { mem.containsKey(idx) } || validCache(cacheFile(idx))
+    /** true = valid audio, false = valid empty marker, null = missing or corrupt cache. */
+    private fun cached(idx: Int): Boolean? {
+        if (synchronized(mem) { mem.containsKey(idx) }) return true
+        return inspectCache(cacheFile(idx))
+    }
 
     /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
     private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
