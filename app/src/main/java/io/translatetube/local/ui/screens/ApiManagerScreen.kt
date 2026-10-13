@@ -407,7 +407,7 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
             ?.takeIf(::isPublicLogoLookupHost)
     }
     val needsOnlineLogo = spec.layers.isEmpty() && !spec.useGoogleTranslate
-    val downloadedLogo by produceState<File?>(initialValue = null, host, needsOnlineLogo) {
+    val downloadedLogo by produceState<File?>(null, host, needsOnlineLogo) {
         value = null
         if (!needsOnlineLogo || host == null) return@produceState
         val cached = findCachedProviderLogo(context, host)
