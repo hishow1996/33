@@ -607,6 +607,11 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 dubbing = d
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    if (dubbing === d) dubbing = null
+                    d.releaseAndJoin()
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
+                }
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
                 }
@@ -676,6 +681,8 @@ class PlaybackService : MediaSessionService() {
                         ?.use { it.readText() }
                         ?: throw IllegalStateException("无法读取字幕文件")
                     SubtitleParsers.parseAuto(text)
+                        .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+                        .mapIndexed { index, line -> line.copy(index = index) }
                 }
                 ensureCurrentSession(sessionKey)
                 if (parsedLines.isEmpty()) {
@@ -729,6 +736,11 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 dubbing = d
+                if (videoKey != sessionKey || ui.value.key != sessionKey) {
+                    if (dubbing === d) dubbing = null
+                    d.releaseAndJoin()
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
+                }
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
                 }
@@ -743,6 +755,7 @@ class PlaybackService : MediaSessionService() {
                         .put("zh", line.zh ?: "")
                         .put("sp", line.speakerId)
                 )
+                ensureCurrentSession(sessionKey)
                 if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
                     translatedLines.size / 2
                 ) {
