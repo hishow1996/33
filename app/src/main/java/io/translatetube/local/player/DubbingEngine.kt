@@ -238,8 +238,13 @@ class DubbingEngine(
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val faster = tts!!.synth(text, fasterSpeed, line.speakerId)
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            val fasterIsValid = faster.sampleRate in 8_000..192_000 &&
-                                faster.samples.isNotEmpty()
+                            // Apply the same finite, audible-PCM validation to the adaptive
+                            // retry as to the original synthesis. A non-empty array may still be
+                            // silent or contain NaN/Infinity, and must never replace good audio.
+                            val fasterIsValid = DubbingPcmValidation.isValidAudio(
+                                faster.sampleRate,
+                                faster.samples,
+                            )
                             val fasterIsShorter = fasterIsValid &&
                                 faster.samples.size.toDouble() / faster.sampleRate <
                                 firstAudio.samples.size.toDouble() / firstAudio.sampleRate * 0.98
