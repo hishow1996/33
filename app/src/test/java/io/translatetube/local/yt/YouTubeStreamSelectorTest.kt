@@ -22,6 +22,21 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun filtersVideoOnlyQualitiesWhenNoSeparateAudioExists() {
+        val chosen = YouTubeStreamSelector.chooseVideoStreams(
+            listOf(
+                YouTubeVideoCandidate(720, "https://cdn.test/720-only.mp4", true, "mp4", 3_000_000),
+                YouTubeVideoCandidate(480, "https://cdn.test/480-muxed.mp4", false, "mp4", 1_000_000),
+                YouTubeVideoCandidate(360, "https://cdn.test/360-only.mp4", true, "mp4", 500_000),
+            ),
+            separateAudioAvailable = false,
+        )
+
+        assertEquals(listOf(480), chosen.map { it.height })
+        assertTrue(chosen.single().videoOnly.not())
+    }
+
+    @Test
     fun discardsInvalidHeightsAndMalformedOrNonHttpUrls() {
         val chosen = YouTubeStreamSelector.chooseVideoStreams(
             listOf(

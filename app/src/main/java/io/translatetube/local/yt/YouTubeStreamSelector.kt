@@ -30,7 +30,10 @@ internal object YouTubeStreamSelector {
     }
 
     /** Prefer muxed MP4, other muxed formats, adaptive MP4, then other adaptive formats. */
-    fun chooseVideoStreams(input: List<YouTubeVideoCandidate>): List<YouTubeVideoCandidate> =
+    fun chooseVideoStreams(
+        input: List<YouTubeVideoCandidate>,
+        separateAudioAvailable: Boolean = true,
+    ): List<YouTubeVideoCandidate> =
         input.asSequence()
             .filter { it.height in 1..2160 && isHttpUrl(it.url) }
             .groupBy { it.height }
@@ -42,6 +45,8 @@ internal object YouTubeStreamSelector {
                 )
             }
             .sortedByDescending { it.height }
+            // Without a valid separate audio track, only muxed streams are playable with sound.
+            .filter { separateAudioAvailable || !it.videoOnly }
 
     fun defaultQualityIndex(candidates: List<YouTubeVideoCandidate>): Int {
         if (candidates.isEmpty()) return -1

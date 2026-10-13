@@ -1227,7 +1227,19 @@ class PlaybackService : MediaSessionService() {
                 bitrate = stream.bitrate,
             )
         }
-        val selected = YouTubeStreamSelector.chooseVideoStreams(normalized)
+        val selectedAudio = YouTubeStreamSelector.chooseAudioStream(
+            info.audioStreams.map { stream ->
+                YouTubeAudioCandidate(
+                    url = stream.content,
+                    formatSuffix = stream.format?.suffix,
+                    bitrate = stream.averageBitrate,
+                )
+            }
+        )
+        val selected = YouTubeStreamSelector.chooseVideoStreams(
+            normalized,
+            separateAudioAvailable = selectedAudio != null,
+        )
         val candidates = selected.map { stream ->
             YouTubeQualitySource(
                 label = "${stream.height}p",
@@ -1237,20 +1249,14 @@ class PlaybackService : MediaSessionService() {
             )
         }
         if (candidates.isEmpty()) {
-            throw IllegalStateException("YouTube 未提供可播放的视频流。请检查网络/VPN 后重试")
+            throw IllegalStateException(
+                if (selectedAudio == null)
+                    "YouTube 没有可用的合并音视频流，也没有独立音频轨"
+                else
+                    "YouTube 未提供可播放的视频流。请检查网络/VPN 后重试"
+            )
         }
-
-        val audioUrl = YouTubeStreamSelector.chooseAudioStream(
-            info.audioStreams.map { stream ->
-                YouTubeAudioCandidate(
-                    url = stream.content,
-                    formatSuffix = stream.format?.suffix,
-                    bitrate = stream.averageBitrate,
-                )
-            }
-        )?.url ?: if (candidates.any { it.muxed }) "" else {
-            throw IllegalStateException("YouTube 未返回独立音频流或带声音的视频流，请稍后重试")
-        }
+        val audioUrl = selectedAudio?.url.orEmpty()
 
         android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
         val defaultIndex = YouTubeStreamSelector.defaultQualityIndex(selected)
