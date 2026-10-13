@@ -40,7 +40,12 @@ class DubbingEngine(
     @Volatile private var tts: TtsEngine? = null
     /** Called when the selected engine fails; the service reports this without switching engines. */
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
+    /** Diagnostic callback: the first successful PCM result for this session. */
+    @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
+    /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
+    @Volatile var onPlaybackStarted: ((index: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
+    private val firstSynthesisReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
     private var speed = 1.0f
@@ -75,6 +80,7 @@ class DubbingEngine(
         this.lines = lines
         this.timeline = DubbingTimeline(lines)
         synthesisErrorReported.set(false)
+        firstSynthesisReported.set(false)
         _totalLines.value = lines.size
         _preparedUntil.value = 0
         readiness.clear()
@@ -218,6 +224,13 @@ class DubbingEngine(
                     writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
                     readiness.markPrepared(idx, hasAudio = true)
                     synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
+                    if (firstSynthesisReported.compareAndSet(false, true)) {
+                        runCatching {
+                            onFirstSynthesisReady?.invoke(idx, readyAudio.samples.size, readyAudio.sampleRate)
+                        }.onFailure {
+                            android.util.Log.w("DubbingEngine", "Could not publish first-PCM diagnostic", it)
+                        }
+                    }
                     bumpPrepared()
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -453,6 +466,10 @@ class DubbingEngine(
                     newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
                     newTrack.play()
                     created = null
+                    runCatching { onPlaybackStarted?.invoke(idx) }
+                        .onFailure {
+                            android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
+                        }
                 } catch (e: Exception) {
                     try { created?.release() } catch (_: Exception) {}
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.

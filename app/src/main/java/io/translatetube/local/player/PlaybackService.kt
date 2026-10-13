@@ -75,6 +75,7 @@ data class PlayerUiState(
     val sourceLang: String = "",
     val engineName: String = "",
     val ttsEngineName: String = "",
+    val dubbingStatus: String = "",
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
     val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
@@ -1113,7 +1114,13 @@ class PlaybackService : MediaSessionService() {
                         val tts: TtsEngine = makeTts(selectedTts)
                         val d = DubbingEngine(this, key, scope)
                         registerDubbingFailureHandler(d, tts, key)
-                        ui.update { it.copy(ttsEngineName = tts.name, noModelHint = null) }
+                        ui.update {
+                            it.copy(
+                                ttsEngineName = tts.name,
+                                dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
+                                noModelHint = null,
+                            )
+                        }
                         d.attach(tts, finalLines)
                         dubbing = d
                         dubCollectJob = scope.launch {
@@ -1125,6 +1132,7 @@ class PlaybackService : MediaSessionService() {
                         ui.update {
                             it.copy(
                                 ttsEngineName = selectedTtsName,
+                                dubbingStatus = "${selectedTtsName} 初始化失败",
                                 muteOriginal = false,
                                 noModelHint = if (selectedTts == "system")
                                     "已选择系统 TTS，但系统配音引擎初始化失败：$reason。不会自动切换到 Kokoro。请检查手机的文字转语音服务和中文语音数据。"
@@ -1141,8 +1149,12 @@ class PlaybackService : MediaSessionService() {
                         else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro 或系统 TTS。应用不会擅自切换引擎。"
                     }
                     ui.update {
-                        it.copy(ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
-                            muteOriginal = false, noModelHint = message)
+                        it.copy(
+                            ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
+                            dubbingStatus = "${selectedTtsName} 尚未就绪",
+                            muteOriginal = false,
+                            noModelHint = message,
+                        )
                     }
                     withContext(Dispatchers.Main) { pm.originalVolume = 1f }
                 }
@@ -1675,12 +1687,29 @@ class PlaybackService : MediaSessionService() {
         tts: TtsEngine,
         sessionKey: String = ui.value.key,
     ) {
+        engine.onFirstSynthesisReady = { index, sampleCount, sampleRate ->
+            val durationMs = sampleCount.toLong() * 1_000L / sampleRate.coerceAtLeast(1)
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        dubbingStatus = "${tts.name} 已生成第 ${index + 1} 句 PCM（约 ${durationMs} ms）"
+                    )
+                } else state
+            }
+        }
+        engine.onPlaybackStarted = {
+            ui.update { state ->
+                if (state.key == sessionKey) state.copy(dubbingStatus = "${tts.name} 正在播放中文配音")
+                else state
+            }
+        }
         engine.onSynthesisError = { detail ->
             val message = "当前选择的「${tts.name}」配音失败，未自动切换到其他引擎。$detail"
             ui.update { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         ttsEngineName = tts.name,
+                        dubbingStatus = "${tts.name} 合成或播放失败，已恢复原声",
                         muteOriginal = false,
                         noModelHint = message,
                     )

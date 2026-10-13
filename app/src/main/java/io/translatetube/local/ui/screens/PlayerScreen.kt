@@ -505,6 +505,16 @@ fun PlayerScreen(
                 onDub = { PlaybackService.instance?.toggleDub() },
                 onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
             )
+            if (state.dubbingOn && state.dubbingStatus.isNotBlank() && state.noModelHint == null) {
+                Text(
+                    state.dubbingStatus,
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
             if (state.subtitleTrackStatus.isNotBlank()) {
                 Text(
                     state.subtitleTrackStatus,
