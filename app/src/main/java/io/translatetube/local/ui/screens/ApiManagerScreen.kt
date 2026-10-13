@@ -32,6 +32,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import android.net.Uri
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -384,7 +390,32 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
 
 @Composable
 private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
-    val spec = remember(profile.type, profile.name, profile.baseUrl) { apiLogoSpec(profile) }
+    val context = LocalContext.current
+    val spec = remember(profile.type, profile.name, profile.baseUrl) {
+        apiLogoSpec(profile)
+    }
+    val host = remember(profile.baseUrl) {
+        runCatching { Uri.parse(profile.baseUrl.trim()).host?.lowercase()?.trimEnd('.') }
+            .getOrNull()
+            ?.takeIf(::isPublicLogoLookupHost)
+    }
+    val remoteLogoUrl = remember(host) {
+        host?.let { "https://www.google.com/s2/favicons?domain=$it&sz=128" }
+    }
+    val request = remember(remoteLogoUrl) {
+        remoteLogoUrl?.let { url ->
+            ImageRequest.Builder(context)
+                .data(url)
+                // Cache by provider host so later visits prefer the local disk/memory copy.
+                .diskCacheKey("api-provider-logo-${host}")
+                .memoryCacheKey("api-provider-logo-${host}")
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .crossfade(true)
+                .build()
+        }
+    }
+
     Box(
         Modifier.size(52.dp)
             .clip(RoundedCornerShape(15.dp))
@@ -393,23 +424,7 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
     ) {
         when {
             spec.useGoogleTranslate -> GoogleTranslateIcon()
-            spec.layers.isEmpty() -> Canvas(Modifier.size(32.dp)) {
-                val ink = Color(0xFF718096)
-                val stroke = size.minDimension * 0.055f
-                drawRoundRect(
-                    color = ink,
-                    topLeft = Offset(size.width * 0.18f, size.height * 0.2f),
-                    size = Size(size.width * 0.64f, size.height * 0.58f),
-                    cornerRadius = CornerRadius(size.minDimension * 0.08f),
-                    style = Stroke(width = stroke),
-                )
-                drawLine(ink, Offset(size.width * 0.25f, size.height * 0.4f), Offset(size.width * 0.75f, size.height * 0.4f), stroke)
-                drawLine(ink, Offset(size.width * 0.25f, size.height * 0.58f), Offset(size.width * 0.75f, size.height * 0.58f), stroke)
-                drawCircle(ink, stroke * 1.45f, Offset(size.width * 0.31f, size.height * 0.82f))
-                drawCircle(ink, stroke * 1.45f, Offset(size.width * 0.5f, size.height * 0.82f))
-                drawCircle(ink, stroke * 1.45f, Offset(size.width * 0.69f, size.height * 0.82f))
-            }
-            else -> {
+            spec.layers.isNotEmpty() -> {
                 val vectorPaths = remember(spec) {
                     spec.layers.map { layer ->
                         layer to PathParser().parsePathString(layer.path).toPath().apply {
@@ -425,7 +440,60 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
                     }
                 }
             }
+            request != null -> {
+                SubcomposeAsyncImage(
+                    model = request,
+                    contentDescription = "${profile.name} 服务商网站图标",
+                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(7.dp)),
+                    contentScale = ContentScale.Fit,
+                    loading = { GenericApiLogo() },
+                    error = { GenericApiLogo() },
+                    success = { SubcomposeAsyncImageContent() },
+                )
+            }
+            else -> GenericApiLogo()
         }
+    }
+}
+
+/**
+ * Best-effort online logo lookup is only attempted for public DNS hostnames.
+ * Private/local endpoints are not sent to a third-party favicon service.
+ */
+private fun isPublicLogoLookupHost(host: String): Boolean {
+    if (host.length !in 4..253 || !host.contains('.')) return false
+    if (host == "localhost" || host.endsWith(".localhost") ||
+        host.endsWith(".local") || host.endsWith(".internal") ||
+        host.endsWith(".test") || host.endsWith(".invalid") ||
+        host.endsWith(".example")
+    ) return false
+    if (host.matches(Regex("""\d{1,3}(\.\d{1,3}){3}"""))) return false
+    if (host.contains(':') || host.any { it.isWhitespace() }) return false
+    return host.split('.').all { label ->
+        label.isNotBlank() && label.length <= 63 &&
+            label.firstOrNull()?.let { it.isLetterOrDigit() } == true &&
+            label.lastOrNull()?.let { it.isLetterOrDigit() } == true &&
+            label.all { it.isLetterOrDigit() || it == '-' }
+    }
+}
+
+@Composable
+private fun GenericApiLogo() {
+    Canvas(Modifier.size(32.dp)) {
+        val ink = Color(0xFF718096)
+        val stroke = size.minDimension * 0.055f
+        drawRoundRect(
+            color = ink,
+            topLeft = Offset(size.width * 0.18f, size.height * 0.2f),
+            size = Size(size.width * 0.64f, size.height * 0.58f),
+            cornerRadius = CornerRadius(size.minDimension * 0.08f),
+            style = Stroke(width = stroke),
+        )
+        drawLine(ink, Offset(size.width * 0.25f, size.height * 0.4f), Offset(size.width * 0.75f, size.height * 0.4f), stroke)
+        drawLine(ink, Offset(size.width * 0.25f, size.height * 0.58f), Offset(size.width * 0.75f, size.height * 0.58f), stroke)
+        drawCircle(ink, stroke * 1.45f, Offset(size.width * 0.31f, size.height * 0.82f))
+        drawCircle(ink, stroke * 1.45f, Offset(size.width * 0.5f, size.height * 0.82f))
+        drawCircle(ink, stroke * 1.45f, Offset(size.width * 0.69f, size.height * 0.82f))
     }
 }
 
