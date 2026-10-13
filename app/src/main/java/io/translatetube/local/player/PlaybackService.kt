@@ -2380,8 +2380,13 @@ class PlaybackService : MediaSessionService() {
                 }
 
                 val tts = pendingTts ?: makeTts(selectedTts)
+                val engine = try {
+                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                } catch (e: Exception) {
+                    if (pendingTts == null) runCatching { tts.close() }
+                    throw e
+                }
                 pendingTts = null
-                val engine = DubbingEngine(this@PlaybackService, sessionKey, scope)
                 replacementDubbing = engine
                 registerDubbingFailureHandler(engine, tts, sessionKey)
                 engine.attach(tts, updated)
