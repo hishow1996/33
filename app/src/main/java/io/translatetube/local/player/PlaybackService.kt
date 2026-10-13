@@ -2112,7 +2112,12 @@ class PlaybackService : MediaSessionService() {
             ui.update { it.copy(dubbingOn = false, muteOriginal = false) }
             pm.originalVolume = 1f
         } else {
-            ui.update { it.copy(dubbingOn = true) }
+            ui.update {
+                it.copy(
+                    dubbingOn = true,
+                    dubbingStatus = "正在等待中文配音启动",
+                )
+            }
             lastLineIdx = Int.MIN_VALUE
         }
     }
