@@ -93,7 +93,7 @@ class PlaybackService : MediaSessionService() {
     private lateinit var pm: PlayerManager
     @Volatile private var playerReady = false
     private var session: MediaSession? = null
-    private var dubbing: DubbingEngine? = null
+    @Volatile private var dubbing: DubbingEngine? = null
     private var whisper: WhisperEngine? = null
     private var prepJob: Job? = null
     @Volatile private var videoKey = ""
@@ -103,11 +103,11 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var qualityAudioUrl: String = ""
     private var qualityJob: Job? = null
     private var importedLines: List<SubLine>? = null
-    private var lastLineIdx = Int.MIN_VALUE
+    @Volatile private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
     private var speakerRebuildJob: Job? = null
-    private var speakerRebuildRevision: Int = 0
+    private val speakerRebuildRevision = java.util.concurrent.atomic.AtomicInteger(0)
     private val sessionLock = Any()
     @Volatile private var playbackSessionRevision: Long = 0L
 
@@ -153,12 +153,12 @@ class PlaybackService : MediaSessionService() {
         key: String,
         sessionRevision: Long,
     ) {
-        val expectedSpeakerRevision = speakerRebuildRevision
+        val expectedSpeakerRevision = speakerRebuildRevision.get()
         engine.onSynthesisError = { detail ->
             ui.update { state ->
                 if (state.key == key &&
                     isCurrentPlaybackSession(key, sessionRevision) &&
-                    speakerRebuildRevision == expectedSpeakerRevision
+                    speakerRebuildRevision.get() == expectedSpeakerRevision
                 ) {
                     state.copy(
                         ttsEngineName = tts.name,
@@ -169,7 +169,7 @@ class PlaybackService : MediaSessionService() {
             }
             scope.launch(Dispatchers.Main) {
                 if (isCurrentPlaybackSession(key, sessionRevision) &&
-                    speakerRebuildRevision == expectedSpeakerRevision &&
+                    speakerRebuildRevision.get() == expectedSpeakerRevision &&
                     ::pm.isInitialized
                 ) {
                     runCatching { pm.originalVolume = 1f }
@@ -359,7 +359,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         synchronized(sessionLock) { playbackSessionRevision += 1L }
-        speakerRebuildRevision++
+        speakerRebuildRevision.incrementAndGet()
         speakerJob?.cancel()
         speakerRebuildJob?.cancel()
         runCatching { dubbing?.release() }
@@ -389,7 +389,7 @@ class PlaybackService : MediaSessionService() {
         val sessionRevision = beginPlaybackSession()
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
-        speakerRebuildRevision++
+        speakerRebuildRevision.incrementAndGet()
         speakerRebuildJob?.cancel(); speakerRebuildJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
         dubbing?.release(); dubbing = null
@@ -503,7 +503,7 @@ class PlaybackService : MediaSessionService() {
         val requestedMuteOriginal = ui.value.muteOriginal
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
-        speakerRebuildRevision++
+        speakerRebuildRevision.incrementAndGet()
         speakerRebuildJob?.cancel(); speakerRebuildJob = null
         if (::pm.isInitialized) pm.originalVolume = 1f
         ui.update {
@@ -634,7 +634,7 @@ class PlaybackService : MediaSessionService() {
         val requestedMuteOriginal = ui.value.muteOriginal
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
-        speakerRebuildRevision++
+        speakerRebuildRevision.incrementAndGet()
         speakerRebuildJob?.cancel(); speakerRebuildJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
         dubbing?.release()
@@ -1683,7 +1683,7 @@ class PlaybackService : MediaSessionService() {
         val expectedVideoKey = videoKey
         val expectedVideoId = videoId
         val expectedLocalUri = localUri
-        val recognitionRevision = speakerRebuildRevision
+        val recognitionRevision = speakerRebuildRevision.get()
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
@@ -1695,7 +1695,7 @@ class PlaybackService : MediaSessionService() {
                 ui.update { state ->
                     if (state.key == expectedVideoKey &&
                         expectedVideoKey == videoKey &&
-                        recognitionRevision == speakerRebuildRevision
+                        recognitionRevision == speakerRebuildRevision.get()
                     ) {
                         state.copy(
                             error = null,
@@ -1720,16 +1720,16 @@ class PlaybackService : MediaSessionService() {
                     AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision) return@launch
+                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision.get()) return@launch
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision) {
+                    if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision.get()) {
                         ui.update { state ->
                             if (state.key == expectedVideoKey) state.copy(progress = message) else state
                         }
                     }
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision) return@launch
+                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision.get()) return@launch
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
                 val mappingSegments = segments.map {
                     SpeakerVoiceMapping.Segment(
@@ -1758,7 +1758,7 @@ class PlaybackService : MediaSessionService() {
                     "Speaker diarization mapped $recognizedCount diarized speakers to $distinctVoices Kokoro voices for $videoKey",
                 )
                 lastLineIdx = Int.MIN_VALUE
-                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision) return@launch
+                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision.get()) return@launch
                 rebuildDubbingForSpeakerLines(
                     updated = updated,
                     expectedVideoKey = expectedVideoKey,
@@ -1768,7 +1768,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision) {
+                if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision.get()) {
                     ui.update { state ->
                         if (state.key == expectedVideoKey) state.copy(
                             phase = Phase.READY,
@@ -1834,7 +1834,7 @@ class PlaybackService : MediaSessionService() {
         completedMessage: String,
     ): Job {
         speakerRebuildJob?.cancel()
-        val revision = ++speakerRebuildRevision
+        val revision = speakerRebuildRevision.incrementAndGet()
         dubCollectJob?.cancel()
         dubCollectJob = null
         dubbing?.release()
@@ -1857,7 +1857,7 @@ class PlaybackService : MediaSessionService() {
         }
         lastLineIdx = Int.MIN_VALUE
         scope.launch(Dispatchers.Main) {
-            if (::pm.isInitialized && expectedVideoKey == videoKey && speakerRebuildRevision == revision) {
+            if (::pm.isInitialized && expectedVideoKey == videoKey && speakerRebuildRevision.get() == revision) {
                 tick(pm.position())
             }
         }
@@ -1865,7 +1865,7 @@ class PlaybackService : MediaSessionService() {
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var candidate: DubbingEngine? = null
             try {
-                if (expectedVideoKey != videoKey || speakerRebuildRevision != revision) return@launch
+                if (expectedVideoKey != videoKey || speakerRebuildRevision.get() != revision) return@launch
                 if (!io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
                     throw IllegalStateException("Kokoro 配音模型尚未就绪")
                 }
@@ -1879,7 +1879,7 @@ class PlaybackService : MediaSessionService() {
                 val tts = makeTts("kokoro")
                 created.onSynthesisError = { detail ->
                     ui.update { state ->
-                        if (state.key == expectedVideoKey && speakerRebuildRevision == revision) {
+                        if (state.key == expectedVideoKey && speakerRebuildRevision.get() == revision) {
                             state.copy(
                                 ttsEngineName = tts.name,
                                 muteOriginal = false,
@@ -1889,14 +1889,14 @@ class PlaybackService : MediaSessionService() {
                         } else state
                     }
                     scope.launch(Dispatchers.Main) {
-                        if (speakerRebuildRevision == revision && ::pm.isInitialized) {
+                        if (speakerRebuildRevision.get() == revision && ::pm.isInitialized) {
                             runCatching { pm.originalVolume = 1f }
                         }
                     }
                 }
                 created.attach(tts, updated)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (expectedVideoKey != videoKey || speakerRebuildRevision != revision) {
+                if (expectedVideoKey != videoKey || speakerRebuildRevision.get() != revision) {
                     created.release()
                     candidate = null
                     return@launch
@@ -1906,7 +1906,7 @@ class PlaybackService : MediaSessionService() {
                 dubCollectJob = scope.launch {
                     created.preparedUntil.collect { count ->
                         ui.update { state ->
-                            if (state.key != expectedVideoKey || speakerRebuildRevision != revision) {
+                            if (state.key != expectedVideoKey || speakerRebuildRevision.get() != revision) {
                                 state
                             } else {
                                 val allPrepared = count >= updated.size
@@ -1925,7 +1925,7 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Speaker voice rebuild failed", e)
-                if (expectedVideoKey == videoKey && speakerRebuildRevision == revision) {
+                if (expectedVideoKey == videoKey && speakerRebuildRevision.get() == revision) {
                     withContext(Dispatchers.Main) { if (::pm.isInitialized) runCatching { pm.originalVolume = 1f } }
                     ui.update {
                         it.copy(
