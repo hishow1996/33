@@ -62,6 +62,7 @@ import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.yt.SubtitleTrackOption
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
@@ -81,6 +82,8 @@ fun PlayerScreen(
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
     var advancedMenuExpanded by remember { mutableStateOf(false) }
+    var showSubtitleDownloadDialog by remember { mutableStateOf(false) }
+    var pendingSubtitleTrack by remember { mutableStateOf<SubtitleTrackOption?>(null) }
     val isSpeakerBusy = state.progress.contains("人物识别") ||
         state.progress.contains("人物说话") ||
         state.progress.contains("分离")
@@ -235,9 +238,26 @@ fun PlayerScreen(
         onBack()
     }
 
-    // 导入外部字幕（SRT/VTT）
+    // 导入原文字幕：沿用既有的自动翻译+配音流程。
     val subPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { PlaybackService.instance?.importSubtitles(it) }
+    }
+    // 导入已经翻译好的字幕：直接配音，不再调用翻译引擎。
+    val translatedSubPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { PlaybackService.instance?.importTranslatedSubtitles(it) }
+    }
+    val subtitleFileSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/vtt")) { uri ->
+        val track = pendingSubtitleTrack
+        pendingSubtitleTrack = null
+        if (uri != null && track != null) PlaybackService.instance?.downloadSubtitle(track, uri)
+    }
+    fun requestSubtitleDownload(track: SubtitleTrackOption) {
+        pendingSubtitleTrack = track
+        val base = state.title.ifBlank { "video" }
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .take(48)
+        val lang = track.languageTag.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        subtitleFileSaver.launch(base + "_" + lang + ".vtt")
     }
 
     fun copySubtitles() {
@@ -263,6 +283,8 @@ fun PlayerScreen(
                 onBack = { exitFloating(); PlaybackService.instance?.saveProgress(); onBack() },
                 onRetry = { retryCurrentTask() },
                 onImportSubtitles = { subPicker.launch(arrayOf("*/*")) },
+                onImportTranslatedSubtitles = { translatedSubPicker.launch(arrayOf("*/*")) },
+                onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
             )
         } else {
         Column(Modifier.fillMaxSize().padding(horizontal = 10.dp).clip(RoundedCornerShape(26.dp)).background(Color(0xFFF2F6FC)).padding(horizontal = 8.dp)) {
@@ -363,6 +385,29 @@ fun PlayerScreen(
                             },
                         )
                         PlaybackMenuItem(
+                            icon = Icons.Filled.Subtitles,
+                            title = "上传已翻译字幕并配音",
+                            description = "保留时间轴，跳过自动翻译",
+                            onClick = {
+                                advancedMenuExpanded = false
+                                translatedSubPicker.launch(arrayOf("*/*"))
+                            },
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Subtitles,
+                            title = "下载原字幕文件",
+                            description = if (state.availableSubtitleTracks.isEmpty()) {
+                                "当前没有可下载的字幕轨"
+                            } else {
+                                "从 " + state.availableSubtitleTracks.size + " 个字幕轨中选择并保存"
+                            },
+                            enabled = state.availableSubtitleTracks.isNotEmpty(),
+                            onClick = {
+                                advancedMenuExpanded = false
+                                showSubtitleDownloadDialog = true
+                            },
+                        )
+                        PlaybackMenuItem(
                             icon = Icons.Filled.ContentCopy,
                             title = "复制双语字幕",
                             description = if (state.lines.isEmpty()) "生成或导入字幕后可复制" else "复制原文与中文译文",
@@ -460,6 +505,16 @@ fun PlayerScreen(
                 onDub = { PlaybackService.instance?.toggleDub() },
                 onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
             )
+            if (state.subtitleTrackStatus.isNotBlank()) {
+                Text(
+                    state.subtitleTrackStatus,
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 3.dp),
+                )
+            }
 
             Spacer(Modifier.height(10.dp))
 
@@ -486,6 +541,48 @@ fun PlayerScreen(
             }
         }
         }
+    }
+
+    if (showSubtitleDownloadDialog) {
+        AlertDialog(
+            onDismissRequest = { showSubtitleDownloadDialog = false },
+            title = { Text("选择要下载的字幕") },
+            text = {
+                if (state.availableSubtitleTracks.isEmpty()) {
+                    Text("当前视频没有可用的字幕轨。")
+                } else {
+                    Column(
+                        Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        state.availableSubtitleTracks.forEach { track ->
+                            TextButton(
+                                onClick = {
+                                    showSubtitleDownloadDialog = false
+                                    requestSubtitleDownload(track)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Text(
+                                        track.languageTag + " · " + (if (track.isAutoGenerated) "自动生成" else "人工字幕"),
+                                        color = OnBg,
+                                    )
+                                    Text(
+                                        "下载为 VTT，可保留字幕时间轴后外部翻译",
+                                        color = SubText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSubtitleDownloadDialog = false }) { Text("关闭") }
+            },
+        )
     }
 
     // 字幕只在当前配音行接近可视区域边缘时滚动，避免每句都重新启动滚动动画。
@@ -533,6 +630,8 @@ private fun VideoParsingPage(
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onImportSubtitles: () -> Unit,
+    onImportTranslatedSubtitles: () -> Unit,
+    onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
 ) {
     val currentStage = when (state.phase) {
         Phase.IDLE, Phase.PARSING, Phase.ERROR -> 0
@@ -724,14 +823,91 @@ private fun VideoParsingPage(
                 Spacer(Modifier.height(12.dp))
                 OutlinedButton(
                     onClick = onImportSubtitles,
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(15.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCCD9EC)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
                 ) {
                     Icon(Icons.Filled.Subtitles, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("导入字幕文件", style = MaterialTheme.typography.titleMedium)
+                    Text("导入字幕并自动翻译", style = MaterialTheme.typography.titleMedium)
+                }
+                TextButton(
+                    onClick = onImportTranslatedSubtitles,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("已翻译好？上传字幕并直接配音", color = BrandBright)
+                }
+            }
+        }
+
+        if (state.availableSubtitleTracks.isNotEmpty() || state.subtitleTrackStatus.isNotBlank()) {
+            Spacer(Modifier.height(14.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.White,
+                shape = RoundedCornerShape(22.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F3F8)),
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("可用字幕文件", color = OnBg, style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                if (state.availableSubtitleTracks.isEmpty()) "未发现可下载字幕轨"
+                                else "发现 " + state.availableSubtitleTracks.size + " 个字幕轨",
+                                color = SubText,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Text("可选下载", color = BrandBright, style = MaterialTheme.typography.labelLarge)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "下载原字幕后可在外部翻译，再上传已翻译文件配音。不下载也不影响当前流程。",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (state.subtitleTrackStatus.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            state.subtitleTrackStatus,
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (state.availableSubtitleTracks.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        state.availableSubtitleTracks.forEachIndexed { index, track ->
+                            if (index > 0) HorizontalDivider(color = OutlineSoft)
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            ) {
+                                Column(
+                                    Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        track.languageTag + " · " + (if (track.isAutoGenerated) "自动生成" else "人工字幕"),
+                                        color = OnBg,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        "时间轴会保留为 VTT 格式",
+                                        color = SubText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                TextButton(onClick = { onDownloadSubtitle(track) }) {
+                                    Text("下载")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

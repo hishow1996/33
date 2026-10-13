@@ -54,6 +54,26 @@ object SubtitleParsers {
     /** SRT（1 行格式 00:00:01,000 --> 00:00:04,000） */
     fun parseSrt(src: String): List<SubLine> = parseVtt(src)
 
+    /** 将字幕行导出为标准 WebVTT，统一文件扩展名并保留时间轴。 */
+    fun toVtt(lines: List<SubLine>): String = buildString {
+        appendLine("WEBVTT")
+        appendLine()
+        lines.forEach { line ->
+            appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
+            line.text.lines().forEach { appendLine(it) }
+            appendLine()
+        }
+    }
+
+    private fun formatVttTime(ms: Long): String {
+        val safe = ms.coerceAtLeast(0L)
+        val hours = safe / 3_600_000L
+        val minutes = (safe % 3_600_000L) / 60_000L
+        val seconds = (safe % 60_000L) / 1_000L
+        val millis = safe % 1_000L
+        return "%02d:%02d:%02d.%03d".format(hours, minutes, seconds, millis)
+    }
+
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
     fun parseTimedTextXml(src: String): List<SubLine> {
         if (!src.contains("<transcript")) return emptyList()
@@ -117,6 +137,7 @@ object SubtitleParsers {
         val parsed = when {
             t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t)
             t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t)
+            t.contains("Dialogue:") -> parseAss(t)
             t.startsWith("<?xml") || t.startsWith("<tt", ignoreCase = true) ||
                 Regex("<tt[\\s>]", RegexOption.IGNORE_CASE).containsMatchIn(t) ->
                 parseTtml(t).ifEmpty { parseTimedTextXml(t) }

@@ -30,6 +30,7 @@ import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
 import io.translatetube.local.tts.TtsEngine
 import io.translatetube.local.yt.NewPipeRepo
+import io.translatetube.local.yt.SubtitleTrackOption
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -75,6 +76,8 @@ data class PlayerUiState(
     val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
     val qualityOptions: List<String> = emptyList(),
     val selectedQuality: String = "",
+    val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
+    val subtitleTrackStatus: String = "",
 )
 
 private data class YouTubeQualitySource(
@@ -387,6 +390,118 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /** 将选中的 YouTube 字幕轨保存到用户指定位置；下载失败只更新提示，不打断播放任务。 */
+    fun downloadSubtitle(track: SubtitleTrackOption, outputUri: Uri) {
+        scope.launch {
+            ui.update { it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…") }
+            try {
+                val content = NewPipeRepo.downloadSubtitleContent(track)
+                val cueCount = SubtitleParsers.parseAuto(content).size
+                if (cueCount == 0) throw IllegalStateException("字幕文件没有可用的时间轴")
+                withContext(Dispatchers.IO) {
+                    val output = contentResolver.openOutputStream(outputUri, "wt")
+                        ?: throw IllegalStateException("无法写入所选文件")
+                    output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+                }
+                ui.update {
+                    it.copy(
+                        subtitleTrackStatus = "已保存 " + track.languageTag + " 字幕（" + cueCount +
+                            " 条）。翻译时请保留时间戳，完成后可上传并直接配音。",
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("PlaybackService", "Subtitle download failed", e)
+                ui.update {
+                    it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
+                }
+            }
+        }
+    }
+
+    /**
+     * 导入已经翻译好的字幕：保留上传文件的时间轴，把译文作为配音文本，不再调用翻译引擎。
+     * 支持 SRT/VTT/ASS；双语 cue 会优先取含中文的行作为译文。
+     */
+    fun importTranslatedSubtitles(uri: Uri) {
+        prepJob?.cancel()
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        dubbing?.release()
+        dubbing = null
+        lastLineIdx = Int.MIN_VALUE
+        prepJob = scope.launch {
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                        ?: throw IllegalStateException("无法读取字幕文件")
+                }
+                val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
+                if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
+                val chinesePattern = Regex("[\\u4e00-\\u9fff]")
+                val translatedLines = parsed.mapIndexed { index, line ->
+                    val parts = line.text.lines().map { it.trim() }.filter { it.isNotBlank() }
+                    val translation = parts.lastOrNull { chinesePattern.containsMatchIn(it) }
+                        ?: parts.lastOrNull()
+                        ?: line.text.trim()
+                    val original = parts.filter { it != translation }.joinToString("\n").ifBlank { translation }
+                    line.copy(
+                        index = index,
+                        text = original,
+                        zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
+                    )
+                }
+                java.io.File(cacheDir, "dub/" + videoKey).deleteRecursively()
+                pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+                ui.update {
+                    it.copy(
+                        phase = Phase.SYNTHESIZING,
+                        progress = "已载入 " + translatedLines.size + " 条已翻译字幕，正在准备中文配音…",
+                        lines = translatedLines,
+                        totalLines = translatedLines.size,
+                        preparedUntil = 0,
+                        sourceLang = "zh",
+                        error = null,
+                        noModelHint = null,
+                        subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
+                    )
+                }
+                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
+                d.attach(makeTts(), translatedLines)
+                dubbing = d
+                dubCollectJob = scope.launch {
+                    d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                }
+                lastLineIdx = Int.MIN_VALUE
+                withContext(Dispatchers.Main) { pm.play() }
+                ui.update {
+                    it.copy(
+                        phase = Phase.READY,
+                        progress = "",
+                        lines = translatedLines,
+                        totalLines = translatedLines.size,
+                        preparedUntil = d.preparedUntil.value,
+                        sourceLang = "zh",
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
+                runCatching { pm.originalVolume = 1f }
+                ui.update {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "已翻译字幕导入失败：" + (e.message ?: e.javaClass.simpleName),
+                        muteOriginal = false,
+                    )
+                }
+            }
+        }
+    }
+
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
         prepJob?.cancel()
@@ -532,6 +647,34 @@ class PlaybackService : MediaSessionService() {
                     } catch (_: Exception) {}
                     meta = meta.copy(title = title, durationSec = dur / 1000)
                     ui.update { it.copy(title = title, durationMs = dur) }
+                }
+            }
+
+            // 解析视频时先列出所有字幕轨。下载是可选操作，不影响自动翻译/配音流程。
+            if (videoId != null && resumeState == null) {
+                try {
+                    ui.update { it.copy(progress = "正在查找可用字幕轨…") }
+                    val tracks = NewPipeRepo.subtitleTracks(videoId)
+                    ui.update {
+                        it.copy(
+                            availableSubtitleTracks = tracks,
+                            subtitleTrackStatus = if (tracks.isEmpty()) {
+                                "未找到可下载的字幕轨；仍可导入自己的字幕文件。"
+                            } else {
+                                "找到 " + tracks.size + " 个字幕轨。下载是可选的，不下载也会继续处理视频。"
+                            },
+                        )
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.w("PlaybackService", "Could not list subtitle tracks", e)
+                    ui.update {
+                        it.copy(
+                            availableSubtitleTracks = emptyList(),
+                            subtitleTrackStatus = "暂时无法读取字幕列表，可稍后重试或导入本地字幕。",
+                        )
+                    }
                 }
             }
 
