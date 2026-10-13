@@ -865,7 +865,6 @@ class PlaybackService : MediaSessionService() {
                 // NewPipe keeps muxed streams and adaptive video-only tracks in separate lists.
                 // Include both; allow higher resolutions while preferring a compatible default for older phones.
                 val allVideoStreams = (info.videoStreams + info.videoOnlyStreams)
-                    .filter { v -> v.height in 1..2160 }
                     .distinctBy { v -> "${v.height}|${v.content}|${v.isVideoOnly}" }
 
                 android.util.Log.i(
@@ -876,37 +875,37 @@ class PlaybackService : MediaSessionService() {
                         ", videoOnlyRes=" + info.videoOnlyStreams.map { it.height }.distinct().sorted()
                 )
 
-                val candidates = allVideoStreams
-                    .groupBy { it.height }
-                    .mapNotNull { (height, streams) ->
-                        val chosen = streams.sortedWith(
-                            compareBy<org.schabi.newpipe.extractor.stream.VideoStream> { v ->
-                                val mp4 = v.format?.suffix?.equals("mp4", ignoreCase = true) == true
-                                when {
-                                    !v.isVideoOnly && mp4 -> 0 // Most compatible: one-file MP4
-                                    !v.isVideoOnly -> 1      // Other muxed stream
-                                    mp4 -> 2                 // Adaptive MP4 video
-                                    else -> 3                 // Adaptive WebM/other formats
-                                }
-                            }.thenByDescending { v -> v.bitrate }
-                        ).firstOrNull()
-
-                        chosen?.let {
-                            YouTubeQualitySource(
-                                label = "${height}p",
-                                height = height,
-                                url = it.content,
-                                muxed = !it.isVideoOnly,
-                            )
-                        }
-                    }
-                    .sortedByDescending { it.height }
+                val normalizedVideoStreams = allVideoStreams.map { stream ->
+                    YouTubeVideoCandidate(
+                        height = stream.height,
+                        url = stream.content,
+                        videoOnly = stream.isVideoOnly,
+                        formatSuffix = stream.format?.suffix,
+                        bitrate = stream.bitrate,
+                    )
+                }
+                val selectedVideoStreams = YouTubeStreamSelector.chooseVideoStreams(normalizedVideoStreams)
+                val candidates = selectedVideoStreams.map { stream ->
+                    YouTubeQualitySource(
+                        label = "${stream.height}p",
+                        height = stream.height,
+                        url = stream.url,
+                        muxed = !stream.videoOnly,
+                    )
+                }
 
                 if (candidates.isEmpty()) {
                     throw IllegalStateException("YouTube 未提供可播放的视频流。请检查网络/VPN 后重试")
                 }
-                val audioUrl = audioStreams.maxByOrNull { a -> a.averageBitrate }?.content
-                    ?: audioStreams.firstOrNull()?.content
+                val audioUrl = YouTubeStreamSelector.chooseAudioStream(
+                    audioStreams.map { stream ->
+                        YouTubeAudioCandidate(
+                            url = stream.content,
+                            formatSuffix = stream.format?.suffix,
+                            bitrate = stream.averageBitrate,
+                        )
+                    }
+                )?.url
                     ?: if (candidates.any { it.muxed }) "" else {
                         throw IllegalStateException("YouTube 未返回独立音频流或带声音的视频流，请稍后重试")
                     }
@@ -918,8 +917,10 @@ class PlaybackService : MediaSessionService() {
                 android.util.Log.i("PlaybackService", "YouTube selectable qualities=" + candidates.map { it.label })
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
-                // Prefer <=720p initially; user can choose 1080p or higher from the menu.
-                val defaultQuality = candidates.firstOrNull { it.height == 360 } ?: candidates.minByOrNull { kotlin.math.abs(it.height - 360) } ?: candidates.first()
+                // Prefer 360p when present, otherwise select the closest available quality.
+                val defaultIndex = YouTubeStreamSelector.defaultQualityIndex(selectedVideoStreams)
+                val defaultQuality = candidates.getOrNull(defaultIndex)
+                    ?: throw IllegalStateException("没有可用的 YouTube 视频清晰度")
                 ui.update {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },
