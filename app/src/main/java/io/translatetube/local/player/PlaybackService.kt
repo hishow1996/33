@@ -672,7 +672,7 @@ class PlaybackService : MediaSessionService() {
 
     /** 从首行文本猜语言（仅含 CJK 判 zh，否则 en） */
     private fun detectLangFromText(t: String): String =
-        if (Regex("[\\u4e00-\\u9fff]").containsMatchIn(t)) "zh" else "en"
+        io.translatetube.local.subs.SubtitleLanguageDetector.detect(t)
 
     /** Chinese subtitle tracks must not be translated into Chinese again. */
     private fun isChineseLanguage(tag: String): Boolean {
