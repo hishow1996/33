@@ -224,7 +224,7 @@ class DubbingEngine(
                     writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
                     readiness.markPrepared(idx, hasAudio = true)
                     synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
-                    if (firstSynthesisReported.compareAndSet(false, true)) {
+                    if (!released && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
                             onFirstSynthesisReady?.invoke(idx, readyAudio.samples.size, readyAudio.sampleRate)
                         }.onFailure {
@@ -466,10 +466,12 @@ class DubbingEngine(
                     newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
                     newTrack.play()
                     created = null
-                    runCatching { onPlaybackStarted?.invoke(idx) }
-                        .onFailure {
-                            android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
-                        }
+                    if (!released && playbackGeneration.get() == generation) {
+                        runCatching { onPlaybackStarted?.invoke(idx) }
+                            .onFailure {
+                                android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
+                            }
+                    }
                 } catch (e: Exception) {
                     try { created?.release() } catch (_: Exception) {}
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
