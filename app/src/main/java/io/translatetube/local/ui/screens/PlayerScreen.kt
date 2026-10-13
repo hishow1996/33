@@ -1528,7 +1528,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             stageIndex = 3
             fraction = progressRatio(state.progress)
                 ?: if (state.totalLines > 0) {
-                    (state.lines.count { !it.zh.isNullOrBlank() }.toFloat() / state.totalLines).coerceIn(0f, 1f)
+                    (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
                 } else null
         }
         Phase.SYNTHESIZING -> {

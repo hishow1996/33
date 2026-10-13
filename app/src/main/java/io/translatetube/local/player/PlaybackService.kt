@@ -268,7 +268,7 @@ class PlaybackService : MediaSessionService() {
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
             Phase.TRANSCRIBING -> "正在识别语音" to state.progress.ifBlank { "正在生成字幕时间轴" }
             Phase.TRANSLATING -> "正在翻译字幕" to state.progress.ifBlank {
-                if (state.totalLines > 0) "已翻译 ${state.lines.count { !it.zh.isNullOrBlank() }}/${state.totalLines} 行" else "正在逐句翻译"
+                if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译"
             }
             Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
@@ -287,7 +287,7 @@ class PlaybackService : MediaSessionService() {
                 ?: percentFromProgress(state.progress)
             Phase.TRANSLATING -> ratioPercentFromProgress(state.progress)
                 ?: if (state.totalLines > 0) {
-                    (state.lines.count { !it.zh.isNullOrBlank() } * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                    (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } * 100f / state.totalLines).toInt().coerceIn(0, 100)
                 } else null
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
                 (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
@@ -1123,58 +1123,77 @@ class PlaybackService : MediaSessionService() {
         val batchSize = 10
         val translationCacheKey = "${key}|zh|${activeId}"
         for (batchIndices in pendingIndices.chunked(batchSize)) {
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            val batch = batchIndices.map { plain[it] }
-            var translated: List<String>? = null
-            try {
-                translated = engine!!.translate(batch, src, tgt)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                android.util.Log.w("PlaybackService", "Translation batch failed for rows ${batchIndices.firstOrNull()}..${batchIndices.lastOrNull()}", e)
-                // Distinguish API provider failures from Google offline language-pack errors.
-                val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
-                val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
-                    detail.contains("Function", ignoreCase = true) &&
-                    detail.contains("Not found for account", ignoreCase = true)
-                val message = if (active != null) {
-                    if (functionMissing) {
-                        "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
+            // A model may return fewer rows than requested, or put UI/status text in a translation
+            // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
+            var unresolvedIndices = batchIndices
+            val resolvedBatch = linkedMapOf<Int, String>()
+            var attempt = 0
+            while (unresolvedIndices.isNotEmpty() && attempt < 2) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val batch = unresolvedIndices.map { plain[it] }
+                val batchTranslations = try {
+                    engine!!.translate(batch, src, tgt)
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
+                        e,
+                    )
+                    // Distinguish API provider failures from Google offline language-pack errors.
+                    val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                    val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
+                        detail.contains("Function", ignoreCase = true) &&
+                        detail.contains("Not found for account", ignoreCase = true)
+                    val message = if (active != null) {
+                        if (functionMissing) {
+                            "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
+                        } else {
+                            "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+                        }
+                    } else if (activeId == EngineFactory.ID_FREE_GEMINI) {
+                        if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                            "Google Gemini 翻译失败：需要有效 API Key。请在 API 管理中点击 Google Gemini 卡片右侧「•••」填入您的 Gemini API Key（可前往 Google AI Studio 免费获取）。"
+                        } else {
+                            "Google Gemini 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 Gemini 配置。"
+                        }
+                    } else if (activeId == EngineFactory.ID_FREE_DEEPSEEK) {
+                        if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                            "DeepSeek 翻译失败：需要有效 API Key。请在 API 管理中点击 DeepSeek 卡片右侧「•••」填入您的 DeepSeek API Key。"
+                        } else {
+                            "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
+                        }
                     } else {
-                        "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+                        "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
                     }
-                } else if (activeId == EngineFactory.ID_FREE_GEMINI) {
-                    if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
-                        "Google Gemini 翻译失败：需要有效 API Key。请在 API 管理中点击 Google Gemini 卡片右侧「•••」填入您的 Gemini API Key（可前往 Google AI Studio 免费获取）。"
-                    } else {
-                        "Google Gemini 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 Gemini 配置。"
-                    }
-                } else if (activeId == EngineFactory.ID_FREE_DEEPSEEK) {
-                    if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
-                        "DeepSeek 翻译失败：需要有效 API Key。请在 API 管理中点击 DeepSeek 卡片右侧「•••」填入您的 DeepSeek API Key。"
-                    } else {
-                        "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
-                    }
-                } else {
-                    "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
+                    throw TranslationFailureException(message, e)
                 }
-                throw TranslationFailureException(message, e)
+
+                val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
+                    unresolvedIndices,
+                    batchTranslations,
+                )
+                resolvedBatch.putAll(parsedBatch.translations)
+                unresolvedIndices = parsedBatch.missingIndices
+                attempt += 1
+                if (unresolvedIndices.isNotEmpty() && attempt < 2) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Retrying incomplete translation response for ${unresolvedIndices.size} subtitle rows",
+                    )
+                    kotlinx.coroutines.delay(250L)
+                }
             }
 
-            val batchTranslations = translated
-            if (batchTranslations != null) {
-                val cleanedBatch = batchTranslations.map { SubtitleParsers.cleanTranslatedText(it) }
-                // A provider returning the UI status text instead of an actual translation must
-                // not produce a READY player with every subtitle saying "正在翻译".
-                if (batchTranslations.isNotEmpty() && cleanedBatch.none { !it.isNullOrBlank() }) {
-                    throw TranslationFailureException(
-                        "翻译模型响应中没有可识别的逐行译文。请在 API 配置中点击“测试连接”，确认当前模型支持文本生成；也可以尝试重新拉取模型或更换模型。",
-                        IllegalStateException("translation response contained no usable subtitle text"),
-                    )
-                }
-                updatedLines = updatedLines.mapIndexed { index, line ->
-                    val batchPosition = batchIndices.indexOf(index)
-                    if (batchPosition >= 0) line.copy(zh = cleanedBatch.getOrNull(batchPosition)) else line
-                }
+            if (unresolvedIndices.isNotEmpty()) {
+                throw TranslationFailureException(
+                    "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
+                    IllegalStateException("Missing subtitle translation rows: ${unresolvedIndices.joinToString()}"),
+                )
+            }
+
+            updatedLines = updatedLines.mapIndexed { index, line ->
+                resolvedBatch[index]?.let { translation -> line.copy(zh = translation) } ?: line
             }
             completed += batchIndices.size
             ui.update {
@@ -1185,7 +1204,7 @@ class PlaybackService : MediaSessionService() {
                     progress = "翻译中 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )
             }
-            // Persist a checkpoint after each batch; retry keeps successful translations and fills only gaps.
+            // Persist a checkpoint only after this batch is complete and every row has a valid translation.
             val cacheRows = org.json.JSONArray()
             for (line in updatedLines) cacheRows.put(
                 org.json.JSONObject()
