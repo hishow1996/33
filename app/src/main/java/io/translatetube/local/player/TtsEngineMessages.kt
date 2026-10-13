@@ -19,6 +19,8 @@ internal object TtsEngineMessages {
             "部分字幕未能合成配音，已自动恢复原声。请在设置中重新选择配音引擎，并检查对应的语音组件。"
     }
 
+    fun supportsKokoroSpeakers(engineName: String): Boolean = engineName.trim() == "Kokoro"
+
     fun engineUnavailable(engineName: String): String = when (displayName(engineName)) {
         "系统 TTS" ->
             "配音引擎未能启动，已恢复视频原声。请检查手机的系统文字转语音服务和中文语音数据。"

@@ -74,6 +74,7 @@ data class PlayerUiState(
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
     val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
+    val speakerRebuildInProgress: Boolean = false,
     val qualityOptions: List<String> = emptyList(),
     val selectedQuality: String = "",
     val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
@@ -105,6 +106,8 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
+    private var speakerRebuildJob: Job? = null
+    private var speakerRebuildRevision: Int = 0
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -293,6 +296,9 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        speakerRebuildRevision++
+        speakerJob?.cancel()
+        speakerRebuildJob?.cancel()
         runCatching { dubbing?.release() }
         runCatching { whisper?.close() }
         runCatching { session?.release() }
@@ -319,6 +325,8 @@ class PlaybackService : MediaSessionService() {
         }
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
+        speakerRebuildRevision++
+        speakerRebuildJob?.cancel(); speakerRebuildJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
         dubbing?.release(); dubbing = null
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
@@ -348,6 +356,7 @@ class PlaybackService : MediaSessionService() {
             sourceLang = resumeState?.sourceLang.orEmpty(),
             engineName = resumeState?.engineName.orEmpty(),
             ttsEngineName = configuredTtsName,
+            speakerRebuildInProgress = false,
         )
         pm.pause()
         prepJob = scope.launch { runPipeline(key, videoId, localUri, resumeState) }
@@ -426,6 +435,9 @@ class PlaybackService : MediaSessionService() {
      */
     fun importTranslatedSubtitles(uri: Uri) {
         prepJob?.cancel()
+        speakerJob?.cancel(); speakerJob = null
+        speakerRebuildRevision++
+        speakerRebuildJob?.cancel(); speakerRebuildJob = null
         dubCollectJob?.cancel()
         dubCollectJob = null
         dubbing?.release()
@@ -505,6 +517,9 @@ class PlaybackService : MediaSessionService() {
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
         prepJob?.cancel()
+        speakerJob?.cancel(); speakerJob = null
+        speakerRebuildRevision++
+        speakerRebuildJob?.cancel(); speakerRebuildJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
         // 导入新字幕前先停止并释放旧配音引擎，避免旧任务与新字幕共用同一缓存目录。
         dubbing?.release()
@@ -1359,9 +1374,13 @@ class PlaybackService : MediaSessionService() {
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
         } else {
-            // If dubbing is enabled but the TTS engine could not be created, restore source audio
-            // rather than honoring the default mute and leaving the entire video silent.
-            if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty()) {
+            // During first preparation or a speaker rebuild, source audio is the intentional fallback.
+            // Do not misreport this short-lived null engine as a TTS initialization failure.
+            if (st.dubbingOn && st.lines.isNotEmpty() &&
+                (st.phase == Phase.SYNTHESIZING || st.speakerRebuildInProgress)
+            ) {
+                pm.originalVolume = 1f
+            } else if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty()) {
                 pm.originalVolume = 1f
                 if (st.noModelHint == null) {
                     ui.update { current ->
@@ -1402,9 +1421,20 @@ class PlaybackService : MediaSessionService() {
      * 模型仅在用户点击自动区分时下载，不会拖慢普通视频打开流程。
      */
     fun autoAssignSpeakers() {
-        if (speakerJob?.isActive == true) return
-        if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
-            ui.update { it.copy(error = "多人物区分配音需要 Kokoro 音色模型，请切换配音引擎后重试") }
+        if (speakerJob?.isActive == true || speakerRebuildJob?.isActive == true) return
+        val configuredEngine = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("tts_engine", "kokoro") ?: "kokoro"
+        if (configuredEngine != "kokoro") {
+            ui.update { it.copy(error = "自动人物识别和逐句切换音色目前需要 Kokoro 多音色引擎；请先在设置中选择 Kokoro。") }
+            return
+        }
+        if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+            ui.update {
+                it.copy(
+                    error = null,
+                    noModelHint = "自动人物识别需要 Kokoro 配音模型。请先到「设置 → 模型管理」下载并安装配音模型，再重新识别人物。",
+                )
+            }
             return
         }
         val originalLines = ui.value.lines
@@ -1436,62 +1466,32 @@ class PlaybackService : MediaSessionService() {
                     ui.update { it.copy(progress = message) }
                 }
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
+                val mappingSegments = segments.map {
+                    SpeakerVoiceMapping.Segment(it.startSec, it.endSec, it.speaker)
+                }
                 val updated = originalLines.map { line ->
-                    val start = line.startMs / 1000f
-                    val end = line.endMs / 1000f
-                    val duration = (end - start).coerceAtLeast(0.01f)
-                    val overlapBySpeaker = segments.asSequence()
-                        .mapNotNull { seg ->
-                            val overlap = (minOf(end, seg.endSec) - maxOf(start, seg.startSec)).coerceAtLeast(0f)
-                            if (overlap > 0f) seg.speaker to overlap else null
-                        }
-                        .groupBy({ it.first }, { it.second })
-                        .mapValues { (_, overlaps) -> overlaps.sum() }
-                    val best = overlapBySpeaker.maxByOrNull { it.value }
-                    val speaker = if (best != null && best.value >= minOf(0.25f, duration * 0.2f)) best.key else -1
-                    // Kokoro 的默认音色用于第一位说话人，其余说话人映射到不同预设音色。
-                    val voice = when {
-                        speaker == 0 -> -1
-                        speaker in 1..53 -> {
-                            val candidate = speaker - 1
-                            if (candidate >= preferredVoice) candidate + 1 else candidate
-                        }
-                        else -> -1
-                    }
-                    line.copy(speakerId = voice)
-                }
-                val distinctVoices = updated.map { it.speakerId }.distinct().size
-                ui.update {
-                    it.copy(lines = updated, progress = "已区分人物，使用 $distinctVoices 种音色", phase = Phase.SYNTHESIZING,
-                        totalLines = updated.size, preparedUntil = 0, currentLine = -1)
-                }
-                dubbing?.release()
-                dubbing = null
-                if (io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
-                    val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                    d.attach(makeTts(), updated)
-                    dubbing = d
-                    dubCollectJob?.cancel()
-                    dubCollectJob = scope.launch {
-                        d.preparedUntil.collect { n -> ui.update { state -> state.copy(preparedUntil = n) } }
-                    }
-                }
-                val arr = org.json.JSONArray()
-                for (line in updated) arr.put(
-                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
-                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
-                )
-                if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
-                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
-                        io.translatetube.local.data.SubtitleCacheEntity(
-                            "$videoKey|zh|${prefs.getLong("active_api_id", -1L)}",
-                            ui.value.sourceLang, arr.toString(), System.currentTimeMillis()
+                    line.copy(
+                        speakerId = SpeakerVoiceMapping.voiceForCue(
+                            startMs = line.startMs,
+                            endMs = line.endMs,
+                            segments = mappingSegments,
+                            preferredDefaultVoice = preferredVoice,
                         )
                     )
                 }
+                val recognizedCount = segments.map { it.speaker }.distinct().size
+                val distinctVoices = updated.map { it.speakerId }.distinct().size
+                android.util.Log.i(
+                    "PlaybackService",
+                    "Speaker diarization mapped $recognizedCount diarized speakers to $distinctVoices Kokoro voices for $videoKey",
+                )
                 lastLineIdx = Int.MIN_VALUE
-                ui.update { it.copy(phase = Phase.READY, progress = "人物区分完成：已识别 ${segments.map { s -> s.speaker }.distinct().size} 位说话人") }
+                rebuildDubbingForSpeakerLines(
+                    updated = updated,
+                    expectedVideoKey = videoKey,
+                    progressLabel = "人物识别完成，正在准备配音",
+                    completedMessage = "人物区分完成：已识别 $recognizedCount 位说话人，使用 $distinctVoices 种音色",
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1503,55 +1503,183 @@ class PlaybackService : MediaSessionService() {
     }
 
     fun setLineSpeaker(index: Int, speakerId: Int) {
-        if (getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") == "system") {
-            ui.update { it.copy(error = "多人物音色切换需要 Kokoro 音色模型，请切换配音引擎后重试") }
+        val selectedEngine = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("tts_engine", "kokoro") ?: "kokoro"
+        if (selectedEngine != "kokoro") {
+            ui.update { it.copy(error = "逐句切换人物音色需要 Kokoro 多音色引擎；系统 TTS 使用手机当前选定的语音。") }
+            return
+        }
+        if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+            ui.update {
+                it.copy(
+                    error = null,
+                    noModelHint = "Kokoro 配音模型尚未就绪，暂时不能切换人物音色。请先在「设置 → 模型管理」完成下载。",
+                )
+            }
+            return
+        }
+        if (!SpeakerVoiceMapping.isValidVoiceSelection(speakerId)) {
+            ui.update { it.copy(error = "无效的配音音色编号，请重新选择。") }
             return
         }
         val oldLines = ui.value.lines
         if (index !in oldLines.indices) return
         if (oldLines[index].speakerId == speakerId) return
+        if (speakerJob?.isActive == true) {
+            ui.update { it.copy(error = "人物识别尚未完成，请完成后再切换音色。") }
+            return
+        }
         val updated = oldLines.mapIndexed { i, line ->
             if (i == index) line.copy(speakerId = speakerId) else line
         }
+        rebuildDubbingForSpeakerLines(
+            updated = updated,
+            expectedVideoKey = videoKey,
+            progressLabel = "正在更新人物音色",
+            completedMessage = "人物音色已更新",
+        )
+    }
+
+    /**
+     * Rebuild selected-engine PCM without leaving the playback screen. During this short window
+     * the source track remains audible, and a revision token prevents an older rebuild from
+     * installing itself after a newer user selection or a different video has opened.
+     */
+    private fun rebuildDubbingForSpeakerLines(
+        updated: List<SubLine>,
+        expectedVideoKey: String,
+        progressLabel: String,
+        completedMessage: String,
+    ): Job {
+        speakerRebuildJob?.cancel()
+        val revision = ++speakerRebuildRevision
         dubCollectJob?.cancel()
+        dubCollectJob = null
         dubbing?.release()
         dubbing = null
+        runCatching { if (::pm.isInitialized) pm.originalVolume = 1f }
         ui.update {
-            it.copy(lines = updated, preparedUntil = 0, totalLines = updated.size,
-                currentLine = -1, phase = Phase.SYNTHESIZING, progress = "更新人物音色…")
+            it.copy(
+                lines = updated,
+                totalLines = updated.size,
+                preparedUntil = 0,
+                currentLine = -1,
+                phase = Phase.READY,
+                progress = "$progressLabel 0/${updated.size} 行",
+                speakerRebuildInProgress = true,
+                noModelHint = null,
+                error = null,
+            )
         }
-        scope.launch {
+
+        val job = scope.launch {
+            var candidate: DubbingEngine? = null
             try {
-                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                d.attach(makeTts(), updated)
-                dubbing = d
-                dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n ->
-                        ui.update { state -> state.copy(preparedUntil = n,
-                            phase = if (n >= updated.size) Phase.READY else Phase.SYNTHESIZING,
-                            progress = if (n >= updated.size) "" else "正在准备多人物配音…") }
+                if (expectedVideoKey != videoKey) return@launch
+                if (!io.translatetube.local.data.ModelFiles.ttsReady(this@PlaybackService)) {
+                    throw IllegalStateException("Kokoro 配音模型尚未就绪")
+                }
+                val tts = makeTts("kokoro")
+                val created = DubbingEngine(this@PlaybackService, expectedVideoKey, scope)
+                candidate = created
+                created.onSynthesisError = { detail ->
+                    ui.update { state ->
+                        if (state.key == expectedVideoKey && speakerRebuildRevision == revision) {
+                            state.copy(
+                                ttsEngineName = tts.name,
+                                muteOriginal = false,
+                                noModelHint = state.noModelHint
+                                    ?: "当前选择的「${tts.name}」配音失败；应用未切换到其他引擎。$detail",
+                            )
+                        } else state
+                    }
+                    scope.launch(Dispatchers.Main) {
+                        if (speakerRebuildRevision == revision && ::pm.isInitialized) {
+                            runCatching { pm.originalVolume = 1f }
+                        }
                     }
                 }
-                val arr = org.json.JSONArray()
-                for (line in updated) arr.put(
-                    org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
-                        .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
-                )
-                if (updated.isNotEmpty() && updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
-                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-                    val src = ui.value.sourceLang
-                    AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
-                        io.translatetube.local.data.SubtitleCacheEntity(
-                            "$videoKey|zh|${prefs.getLong("active_api_id", -1L)}", src,
-                            arr.toString(), System.currentTimeMillis()
-                        )
-                    )
+                created.attach(tts, updated)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (expectedVideoKey != videoKey || speakerRebuildRevision != revision) {
+                    created.release()
+                    candidate = null
+                    return@launch
                 }
-                lastLineIdx = Int.MIN_VALUE
+                dubbing = created
+                candidate = null
+                dubCollectJob = scope.launch {
+                    created.preparedUntil.collect { count ->
+                        ui.update { state ->
+                            if (state.key != expectedVideoKey || speakerRebuildRevision != revision) {
+                                state
+                            } else {
+                                val allPrepared = count >= updated.size
+                                state.copy(
+                                    preparedUntil = count,
+                                    phase = Phase.READY,
+                                    speakerRebuildInProgress = !allPrepared,
+                                    progress = if (allPrepared) completedMessage
+                                        else "$progressLabel $count/${updated.size} 行",
+                                )
+                            }
+                        }
+                    }
+                }
+                try {
+                    saveSpeakerAssignments(updated, expectedVideoKey)
+                } catch (e: Exception) {
+                    android.util.Log.w("PlaybackService", "Unable to persist speaker assignment", e)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                ui.update { it.copy(phase = Phase.ERROR, error = "切换人物音色失败：${e.message}") }
+                android.util.Log.e("PlaybackService", "Speaker voice rebuild failed", e)
+                if (expectedVideoKey == videoKey && speakerRebuildRevision == revision) {
+                    runCatching { pm.originalVolume = 1f }
+                    ui.update {
+                        it.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            speakerRebuildInProgress = false,
+                            muteOriginal = false,
+                            noModelHint = TtsEngineMessages.engineUnavailable("Kokoro"),
+                            error = "重新生成配音失败：${e.message ?: e.javaClass.simpleName}",
+                        )
+                    }
+                }
+            } finally {
+                candidate?.release()
             }
         }
+        speakerRebuildJob = job
+        return job
+    }
+
+    private suspend fun saveSpeakerAssignments(lines: List<SubLine>, expectedVideoKey: String) {
+        if (expectedVideoKey != videoKey || lines.isEmpty() ||
+            lines.count { !it.zh.isNullOrBlank() } <= lines.size / 2
+        ) return
+        val array = org.json.JSONArray()
+        lines.forEach { line ->
+            array.put(
+                org.json.JSONObject()
+                    .put("s", line.startMs)
+                    .put("e", line.endMs)
+                    .put("t", line.text)
+                    .put("zh", line.zh ?: "")
+                    .put("sp", line.speakerId)
+            )
+        }
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        AppDatabase.get(this).subtitleCacheDao().put(
+            io.translatetube.local.data.SubtitleCacheEntity(
+                "$expectedVideoKey|zh|${prefs.getLong("active_api_id", -1L)}",
+                ui.value.sourceLang,
+                array.toString(),
+                System.currentTimeMillis(),
+            )
+        )
     }
 
     fun toggleDub() {

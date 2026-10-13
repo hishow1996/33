@@ -84,7 +84,9 @@ fun PlayerScreen(
     var advancedMenuExpanded by remember { mutableStateOf(false) }
     var showSubtitleDownloadDialog by remember { mutableStateOf(false) }
     var pendingSubtitleTrack by remember { mutableStateOf<SubtitleTrackOption?>(null) }
-    val isSpeakerBusy = state.progress.contains("人物识别") ||
+    val canUseKokoroSpeakers = TtsEngineMessages.supportsKokoroSpeakers(state.ttsEngineName)
+    val isSpeakerBusy = state.speakerRebuildInProgress ||
+        state.progress.contains("人物识别") ||
         state.progress.contains("人物说话") ||
         state.progress.contains("分离")
 
@@ -1282,9 +1284,13 @@ private fun ControlBar(
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Face,
-                label = if (isSpeakerBusy) "识别中" else "人物",
+                label = when {
+                    isSpeakerBusy -> "识别中"
+                    canUseKokoroSpeakers -> "人物"
+                    else -> "人物音色"
+                },
                 selected = false,
-                enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
+                enabled = state.lines.isNotEmpty() && !isSpeakerBusy && canUseKokoroSpeakers,
                 onClick = { svc?.autoAssignSpeakers() },
             )
             PlayerToolTile(
@@ -1378,6 +1384,29 @@ private fun SubtitleList(
             }
         }
         HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
+        if (state.speakerRebuildInProgress) {
+            val realProgress = if (state.totalLines > 0) {
+                (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            } else 0f
+            Column(
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    state.progress.ifBlank { "正在准备人物配音…" },
+                    color = SubText,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                LinearProgressIndicator(
+                    progress = { realProgress },
+                    modifier = Modifier.fillMaxWidth().height(3.dp),
+                    color = BrandBright,
+                    trackColor = OutlineSoft,
+                )
+            }
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -1454,15 +1483,21 @@ private fun SubtitleList(
                         )
                     }
                     if (active) {
+                        val canChangeSpeaker = TtsEngineMessages.supportsKokoroSpeakers(state.ttsEngineName) &&
+                            !state.speakerRebuildInProgress
                         Spacer(Modifier.height(7.dp))
                         Surface(
                             onClick = {
-                                val ids = listOf(-1, 0, 1, 2, 3)
-                                val index = ids.indexOf(line.speakerId).let { if (it < 0) 0 else it }
-                                svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
+                                if (canChangeSpeaker) {
+                                    val ids = listOf(-1, 0, 1, 2, 3)
+                                    val index = ids.indexOf(line.speakerId).let { if (it < 0) 0 else it }
+                                    svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
+                                }
                             },
+                            enabled = canChangeSpeaker,
                             shape = RoundedCornerShape(50),
-                            color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
+                            color = if (!canChangeSpeaker) SurfaceHigh.copy(alpha = 0.5f)
+                                else if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
                             contentColor = if (activeDub) Color(0xFF30343B) else SubText,
                         ) {
                             Row(
@@ -1471,12 +1506,17 @@ private fun SubtitleList(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Icon(Icons.Filled.Face, contentDescription = "切换配音人物", modifier = Modifier.size(16.dp))
-                                Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
-                                Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Text(
+                                    if (canChangeSpeaker) speakerLabel(line.speakerId)
+                                    else "系统音色固定",
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                                if (canChangeSpeaker) {
+                                    Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
+                                }
                             }
                         }
-                    }
-                }
+                    }                }
             }
         }
     }

@@ -31,4 +31,11 @@ class TtsEngineMessagesTest {
         assertTrue(TtsEngineMessages.partialFailure("kokoro").contains("Kokoro"))
         assertTrue(TtsEngineMessages.displayName("系统 TTS").contains("系统"))
     }
+    @Test
+    fun manualMultiVoiceControlsAreOnlyEnabledForKokoroReadyState() {
+        assertTrue(TtsEngineMessages.supportsKokoroSpeakers("Kokoro"))
+        assertFalse(TtsEngineMessages.supportsKokoroSpeakers("Kokoro（未就绪）"))
+        assertFalse(TtsEngineMessages.supportsKokoroSpeakers("系统 TTS"))
+        assertFalse(TtsEngineMessages.supportsKokoroSpeakers(""))
+    }
 }
