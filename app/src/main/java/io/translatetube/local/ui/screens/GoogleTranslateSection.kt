@@ -23,20 +23,18 @@ private data class OfflineTranslationPack(val title: String, val source: String,
 
 @Composable
 fun GoogleTranslateIcon() {
-    Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF8FAFF))) {
-        Box(
-            Modifier.padding(start = 4.dp, top = 3.dp).size(width = 25.dp, height = 23.dp)
-                .clip(RoundedCornerShape(5.dp)).background(Color(0xFF4285F4)),
-            contentAlignment = Alignment.Center,
-        ) { Text("G", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold) }
-        Box(
-            Modifier.align(Alignment.BottomEnd).padding(end = 3.dp, bottom = 3.dp)
-                .size(width = 24.dp, height = 21.dp).clip(RoundedCornerShape(5.dp))
-                .background(Color(0xFF1A73E8)),
-            contentAlignment = Alignment.Center,
-        ) { Text("文", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-        Box(Modifier.align(Alignment.BottomStart).padding(start = 3.dp, bottom = 3.dp)
-            .size(5.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF34A853))) {}
+    Box(
+        Modifier.size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFFF8FAFF)),
+        contentAlignment = Alignment.Center,
+    ) {
+        coil.compose.AsyncImage(
+            model = io.translatetube.local.R.raw.google_translate_logo,
+            contentDescription = "Google 翻译矢量图标",
+            modifier = Modifier.size(38.dp),
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+        )
     }
 }
 
