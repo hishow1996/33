@@ -5,7 +5,15 @@ import kotlin.math.min
 
 /** Pure mapping between diarizer speaker labels and Kokoro voice IDs. */
 internal object SpeakerVoiceMapping {
-    data class Segment(val startSec: Float, val endSec: Float, val speaker: Int)
+    data class Segment(
+        val startSec: Float,
+        val endSec: Float,
+        val speaker: Int,
+        /** 0..1 when supplied by the diarizer; 1 means unknown confidence, not guaranteed certainty. */
+        val confidence: Float = 1f,
+    )
+
+    private const val MIN_CONFIDENCE = 0.25f
 
     fun voiceForSpeaker(speaker: Int, preferredDefaultVoice: Int): Int {
         val preferred = preferredDefaultVoice.coerceIn(0, 53)
@@ -32,8 +40,10 @@ internal object SpeakerVoiceMapping {
         val duration = end - start
         val overlapBySpeaker = mutableMapOf<Int, Float>()
         for (segment in segments) {
+            val confidence = segment.confidence
             if (!segment.startSec.isFinite() || !segment.endSec.isFinite() ||
-                segment.startSec < 0f || segment.endSec <= segment.startSec || segment.speaker < 0
+                segment.startSec < 0f || segment.endSec <= segment.startSec || segment.speaker < 0 ||
+                (confidence.isFinite() && confidence in 0f..1f && confidence < MIN_CONFIDENCE)
             ) continue
             val overlap = max(0f, min(end, segment.endSec) - max(start, segment.startSec))
             if (overlap > 0f) {

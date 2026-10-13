@@ -39,6 +39,31 @@ class SpeakerVoiceMappingTest {
     }
 
     @Test
+    fun lowConfidenceSegmentsDoNotOverrideDefaultVoice() {
+        val segments = listOf(
+            SpeakerVoiceMapping.Segment(0.0f, 1.0f, 4, confidence = 0.12f),
+        )
+        assertEquals(-1, SpeakerVoiceMapping.voiceForCue(100, 900, segments, 14))
+    }
+
+    @Test
+    fun highConfidenceSpeakerWinsEvenWhenLowConfidenceSegmentOverlapsMore() {
+        val segments = listOf(
+            SpeakerVoiceMapping.Segment(0.0f, 0.9f, 2, confidence = 0.10f),
+            SpeakerVoiceMapping.Segment(0.2f, 0.7f, 3, confidence = 0.91f),
+        )
+        assertEquals(2, SpeakerVoiceMapping.voiceForCue(100, 900, segments, 14))
+    }
+
+    @Test
+    fun invalidConfidenceIsTreatedAsUnknownRatherThanCrashing() {
+        val segments = listOf(
+            SpeakerVoiceMapping.Segment(0.0f, 1.0f, 2, confidence = Float.NaN),
+        )
+        assertEquals(1, SpeakerVoiceMapping.voiceForCue(100, 900, segments, 14))
+    }
+
+    @Test
     fun voiceSelectionsAreRangeChecked() {
         assertTrue(SpeakerVoiceMapping.isValidVoiceSelection(-1))
         assertTrue(SpeakerVoiceMapping.isValidVoiceSelection(53))

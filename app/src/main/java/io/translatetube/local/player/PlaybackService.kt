@@ -1469,7 +1469,14 @@ class PlaybackService : MediaSessionService() {
                 }
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
                 val mappingSegments = segments.map {
-                    SpeakerVoiceMapping.Segment(it.startSec, it.endSec, it.speaker)
+                    SpeakerVoiceMapping.Segment(
+                    startSec = it.startSec,
+                    endSec = it.endSec,
+                    speaker = it.speaker,
+                    // Some bundled sherpa builds omit confidence; a negative sentinel means
+                    // "not provided", so preserve the segment rather than rejecting all speakers.
+                    confidence = it.confidence.takeIf { value -> value.isFinite() && value in 0f..1f } ?: 1f,
+                )
                 }
                 val updated = originalLines.map { line ->
                     line.copy(
