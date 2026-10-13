@@ -1672,7 +1672,7 @@ class PlaybackService : MediaSessionService() {
         return updatedLines
     }
 
-        private suspend fun downloadAudio(
+    private suspend fun downloadAudio(
         url: String,
         sessionKey: String,
         sessionRevision: Long,
@@ -1902,6 +1902,7 @@ class PlaybackService : MediaSessionService() {
             try {
                 ui.update { state ->
                     if (state.key == expectedVideoKey &&
+                        isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision) &&
                         expectedVideoKey == videoKey &&
                         recognitionRevision == speakerRebuildRevision.get()
                     ) {
@@ -1918,7 +1919,9 @@ class PlaybackService : MediaSessionService() {
                     if (expectedVideoId != null) {
                         val stream = NewPipeRepo.audioForAsr(expectedVideoId)
                             ?: throw IllegalStateException("无法获取当前视频的音频流")
-                        if (!isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision)) return@launch
+                        if (!isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision)) {
+                            throw kotlinx.coroutines.CancellationException("Playback session changed during speaker audio download")
+                        }
                         tempAudio = downloadAudio(stream.content, expectedVideoKey, expectedSessionRevision)
                         sourceFile = tempAudio
                         sourceUri = null
@@ -1929,16 +1932,19 @@ class PlaybackService : MediaSessionService() {
                     AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision.get()) return@launch
+                if (expectedVideoKey != videoKey || !isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision) ||
+                    recognitionRevision != speakerRebuildRevision.get()) return@launch
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision.get()) {
+                    if (expectedVideoKey == videoKey && isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision) &&
+                        recognitionRevision == speakerRebuildRevision.get()) {
                         ui.update { state ->
                             if (state.key == expectedVideoKey) state.copy(progress = message) else state
                         }
                     }
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision.get()) return@launch
+                if (expectedVideoKey != videoKey || !isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision) ||
+                    recognitionRevision != speakerRebuildRevision.get()) return@launch
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
                 val mappingSegments = segments.map {
                     SpeakerVoiceMapping.Segment(
@@ -1967,7 +1973,8 @@ class PlaybackService : MediaSessionService() {
                     "Speaker diarization mapped $recognizedCount diarized speakers to $distinctVoices Kokoro voices for $videoKey",
                 )
                 lastLineIdx = Int.MIN_VALUE
-                if (expectedVideoKey != videoKey || recognitionRevision != speakerRebuildRevision.get()) return@launch
+                if (expectedVideoKey != videoKey || !isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision) ||
+                    recognitionRevision != speakerRebuildRevision.get()) return@launch
                 rebuildDubbingForSpeakerLines(
                     updated = updated,
                     expectedVideoKey = expectedVideoKey,
@@ -1977,7 +1984,8 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (expectedVideoKey == videoKey && recognitionRevision == speakerRebuildRevision.get()) {
+                if (expectedVideoKey == videoKey && isCurrentPlaybackSession(expectedVideoKey, expectedSessionRevision) &&
+                        recognitionRevision == speakerRebuildRevision.get()) {
                     ui.update { state ->
                         if (state.key == expectedVideoKey) state.copy(
                             phase = Phase.READY,
