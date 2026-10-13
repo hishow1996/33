@@ -977,7 +977,7 @@ class PlaybackService : MediaSessionService() {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 ui.update { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
                 val audioFile = if (videoId != null) {
-                    obtainAsrAudioFile(videoId, "复用已下载音频，避免重复下载…")
+                    obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
                 } else {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -1611,16 +1611,27 @@ class PlaybackService : MediaSessionService() {
      * Serialize the lookup/download per video so ASR and speaker recognition can never download
      * the same source audio concurrently. The second caller rechecks the cache after acquiring it.
      */
-    private suspend fun obtainAsrAudioFile(videoId: String, cacheHitProgress: String): File {
+    private suspend fun obtainAsrAudioFile(
+        videoId: String,
+        sessionKey: String,
+        cacheHitProgress: String,
+    ): File {
         val mutex = asrAudioDownloadLocks.computeIfAbsent(videoId) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
             reusableAsrAudioFile(videoId)?.let { cached ->
-                ui.update { it.copy(progress = cacheHitProgress) }
+                ui.update { state ->
+                    if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
+                }
                 return@withLock cached
+            }
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")
+                } else state
             }
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
-            downloadAudio(stream.content, asrAudioCacheFile(videoId)).also {
+            downloadAudio(stream.content, asrAudioCacheFile(videoId), sessionKey).also {
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
             }
         }
@@ -1674,7 +1685,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private suspend fun downloadAudio(url: String, destination: File? = null): File {
+    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String? = null): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
         val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
@@ -1709,7 +1720,12 @@ class PlaybackService : MediaSessionService() {
                                 if (got > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
                                 out.write(buf, 0, n)
                                 if (total > 0) {
-                                    ui.update { it.copy(progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))) }
+                                    val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))
+                                    ui.update { state ->
+                                        if (sessionKey == null || state.key == sessionKey) {
+                                            state.copy(progress = progress)
+                                        } else state
+                                    }
                                 }
                             }
                             out.flush()
@@ -1933,7 +1949,12 @@ class PlaybackService : MediaSessionService() {
                     val sourceUri: Uri?
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
-                        val audio = obtainAsrAudioFile(id, "复用已下载音频，正在分析人物声音…")
+                        val audio = obtainAsrAudioFile(id, sessionKey, "复用已下载音频，正在分析人物声音…")
+                        ui.update { state ->
+                            if (state.key == sessionKey) {
+                                state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
+                            } else state
+                        }
                         sourceFile = audio
                         sourceUri = null
                     } else {
