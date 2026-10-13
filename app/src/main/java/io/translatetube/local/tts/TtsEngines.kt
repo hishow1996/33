@@ -91,6 +91,7 @@ class SystemTts(context: Context) : TtsEngine {
         }
     private val ready = java.util.concurrent.CountDownLatch(1)
     @Volatile private var ok = false
+    @Volatile private var closed = false
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile private var activeError = false
@@ -139,6 +140,7 @@ class SystemTts(context: Context) : TtsEngine {
 
     @Synchronized
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+        if (closed) throw IllegalStateException("系统 TTS 实例已经关闭")
         if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
         val tts = ttsRef.get()
             ?: throw IllegalStateException("系统 TTS 实例已经关闭")
@@ -160,6 +162,8 @@ class SystemTts(context: Context) : TtsEngine {
                 runCatching { tts.stop() }
                 throw IllegalStateException("系统 TTS 合成超时")
             }
+            // close() also releases this latch; never decode a file after that early wake-up.
+            if (closed) throw IllegalStateException("系统 TTS 已关闭，本次合成已取消")
             if (activeError) {
                 throw IllegalStateException("系统 TTS 合成回调返回错误")
             }
@@ -178,106 +182,16 @@ class SystemTts(context: Context) : TtsEngine {
     private fun contextCacheDir(): java.io.File =
         java.io.File(appCtx.cacheDir, "tts_tmp").apply { mkdirs() }
 
-    /** Traverse RIFF chunks; sample rate is fmt data +4, not the byteRate field. */
-    /** Decode common WAV PCM/float formats to mono float PCM for AudioTrack. */
-    private fun readWav(f: java.io.File): TtsAudio {
-        val bytes = f.readBytes()
-        if (bytes.size < 44) throw IllegalStateException("系统 TTS WAV 文件过短")
-
-        var offset = 12
-        var formatCode = 0
-        var channels = 1
-        var sampleRate = 16_000
-        var bitsPerSample = 16
-        var dataStart = -1
-        var dataLen = 0
-
-        fun u16(p: Int): Int =
-            (bytes[p].toInt() and 0xFF) or ((bytes[p + 1].toInt() and 0xFF) shl 8)
-        fun i32(p: Int): Int =
-            (bytes[p].toInt() and 0xFF) or
-                ((bytes[p + 1].toInt() and 0xFF) shl 8) or
-                ((bytes[p + 2].toInt() and 0xFF) shl 16) or
-                ((bytes[p + 3].toInt() and 0xFF) shl 24)
-
-        // Continue scanning after the data chunk too; WAV chunks are not required to be
-        // arranged in exactly the same order by every system TTS provider.
-        while (offset + 8 <= bytes.size) {
-            val id = String(bytes, offset, 4, Charsets.US_ASCII)
-            val chunkSize = i32(offset + 4).coerceAtLeast(0)
-            val chunkDataStart = offset + 8
-            val available = (bytes.size - chunkDataStart).coerceAtLeast(0)
-            val safeSize = chunkSize.coerceAtMost(available)
-            when (id) {
-                "fmt " -> if (safeSize >= 16) {
-                    formatCode = u16(chunkDataStart)
-                    channels = u16(chunkDataStart + 2)
-                    sampleRate = i32(chunkDataStart + 4)
-                    bitsPerSample = u16(chunkDataStart + 14)
-                }
-                "data" -> {
-                    dataStart = chunkDataStart
-                    dataLen = safeSize
-                }
-            }
-            val next = chunkDataStart.toLong() + safeSize.toLong() + (safeSize and 1)
-            if (next > Int.MAX_VALUE) break
-            offset = next.toInt()
-        }
-
-        if (dataStart < 0 || dataLen <= 0) {
-            throw IllegalStateException("系统 TTS WAV 中没有 data 音频块")
-        }
-        if (sampleRate !in 8_000..192_000) {
-            throw IllegalStateException("系统 TTS WAV 采样率无效：$sampleRate")
-        }
-        if (channels !in 1..8) {
-            throw IllegalStateException("系统 TTS WAV 声道数不支持：$channels")
-        }
-        val bytesPerSample = when {
-            formatCode == 1 && bitsPerSample in listOf(8, 16, 24, 32) -> bitsPerSample / 8
-            formatCode == 3 && bitsPerSample == 32 -> 4
-            else -> throw IllegalStateException("系统 TTS WAV 格式不支持：format=$formatCode, bits=$bitsPerSample")
-        }
-        val frameSize = bytesPerSample * channels
-        val frameCount = dataLen / frameSize
-        if (frameCount <= 0) throw IllegalStateException("系统 TTS WAV 没有完整音频帧")
-
-        val samples = FloatArray(frameCount)
-        var p = dataStart
-        for (frame in 0 until frameCount) {
-            var sum = 0f
-            for (channel in 0 until channels) {
-                val value = when {
-                    formatCode == 3 && bitsPerSample == 32 -> Float.fromBits(i32(p))
-                    bitsPerSample == 8 -> ((bytes[p].toInt() and 0xFF) - 128) / 128f
-                    bitsPerSample == 16 -> {
-                        val raw = u16(p)
-                        (if (raw >= 32768) raw - 65536 else raw) / 32768f
-                    }
-                    bitsPerSample == 24 -> {
-                        var raw = (bytes[p].toInt() and 0xFF) or
-                            ((bytes[p + 1].toInt() and 0xFF) shl 8) or
-                            ((bytes[p + 2].toInt() and 0xFF) shl 16)
-                        if ((raw and 0x800000) != 0) raw = raw or -0x1000000
-                        raw / 8_388_608f
-                    }
-                    else -> i32(p) / 2_147_483_648f
-                }
-                sum += if (value.isFinite()) value.coerceIn(-1f, 1f) else 0f
-                p += bytesPerSample
-            }
-            samples[frame] = (sum / channels).coerceIn(-1f, 1f)
-        }
-        if (samples.none { kotlin.math.abs(it) > 0.00001f }) {
-            throw IllegalStateException("系统 TTS WAV 只有静音采样")
-        }
-        return TtsAudio(samples, sampleRate)
-    }
+    private fun readWav(file: java.io.File): TtsAudio = SystemTtsWavDecoder.decode(file)
 
     override fun close() {
+        // Set this before waking synth(): a released waiter must not read the temp WAV.
+        closed = true
         activeLatch?.countDown()
-        try { ttsRef.get()?.stop(); ttsRef.get()?.shutdown() } catch (_: Exception) {}
-        ttsRef.set(null)
+        val engine = ttsRef.getAndSet(null)
+        if (engine != null) {
+            runCatching { engine.stop() }
+            runCatching { engine.shutdown() }
+        }
     }
 }
