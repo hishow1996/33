@@ -2132,20 +2132,26 @@ class PlaybackService : MediaSessionService() {
                         phase = Phase.TRANSCRIBING,
                     )
                 }
-                if (selectedTts == "system") {
-                    val systemTts = makeTts("system") as? io.translatetube.local.tts.SystemTts
-                        ?: throw IllegalStateException("系统 TTS 引擎不可用")
-                    pendingTts = systemTts
-                    if (!systemTts.supportsMultipleChineseVoices) {
-                        updateUiForSession(sessionKey) {
-                            it.copy(
-                                phase = Phase.READY,
-                                progress = "",
-                                error = "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
-                            )
-                        }
-                        return@launch
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        progress = if (selectedTts == "system") "检查手机可用的中文音色…" else "初始化所选配音引擎…",
+                    )
+                }
+                // Initialize the selected engine before the expensive diarization step and before
+                // retiring the current dubbing engine. If TTS setup fails, playback remains intact.
+                val preflightEngine = makeTts(selectedTts)
+                pendingTts = preflightEngine
+                if (preflightEngine is io.translatetube.local.tts.SystemTts &&
+                    !preflightEngine.supportsMultipleChineseVoices
+                ) {
+                    updateUiForSession(sessionKey) {
+                        it.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            error = "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
+                        )
                     }
+                    return@launch
                 }
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
@@ -2235,8 +2241,8 @@ class PlaybackService : MediaSessionService() {
                         )
                     } else state
                 }
-                // This operation is explicitly Kokoro-only; a settings change mid-task must not
-                // silently switch engines or leave a false-success state with no dubbing engine.
+                // Keep the configured engine fixed for this operation. The selected TTS was
+                // preflighted before diarization so construction failures cannot stop the current dub.
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
