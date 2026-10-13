@@ -1,4 +1,9 @@
-import io.translatetube.build.PatchNewPipeApiTask
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.HttpURLConnection
+import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -6,13 +11,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
-}
-
-// Keep the unmodified NewPipe artifact outside the app compile classpath; its calls to newer
-// Java APIs must be rewritten before D8 sees the bytecode.
-val newPipeExtractorArtifacts = configurations.create("newPipeExtractorArtifacts") {
-    isCanBeConsumed = false
-    isCanBeResolved = true
 }
 
 // Release 签名仅从本机 signing.properties 或环境变量读取，不将密钥和密码写入仓库。
@@ -45,13 +43,18 @@ android {
         versionCode = 8
         versionName = "1.0.6"
         ndk {
-            // arm64 单架构（304MB 传输上限内；v7a 版存档）
-            abiFilters += "arm64-v8a"
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
-    if (releaseSigningReady) {
-        signingConfigs {
+    signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+        if (releaseSigningReady) {
             create("release") {
                 storeFile = file(requireNotNull(releaseStorePath))
                 storePassword = requireNotNull(releaseStorePassword)
@@ -62,6 +65,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
+        }
         release {
             isMinifyEnabled = false
             // 没有本机签名配置时，仍可 assembleRelease；生成未签名 APK。
@@ -82,6 +88,63 @@ android {
     packaging {
         resources.excludes += "META-INF/*"
         jniLibs.useLegacyPackaging = false
+    }
+}
+
+val sherpaAarFile = file("libs/sherpa-onnx.aar")
+if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {
+    sherpaAarFile.parentFile?.mkdirs()
+    val downloadUrls = listOf(
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar",
+        "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar",
+        "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar"
+    )
+    var downloaded = false
+    for (urlStr in downloadUrls) {
+        try {
+            logger.lifecycle("Downloading sherpa-onnx.aar from $urlStr...")
+            var cur = urlStr
+            var redirects = 0
+            while (redirects < 10) {
+                val uri = URI(cur)
+                val conn = (uri.toURL().openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    connectTimeout = 30000
+                    readTimeout = 60000
+                    setRequestProperty("User-Agent", "Mozilla/5.0")
+                }
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location") ?: throw IllegalStateException("Missing Location header")
+                    cur = if (loc.startsWith("http")) loc else uri.resolve(loc).toString()
+                    conn.disconnect()
+                    redirects++
+                    continue
+                }
+                if (code in 200..299) {
+                    val temp = File(sherpaAarFile.parentFile, "sherpa-onnx.aar.tmp")
+                    temp.delete()
+                    conn.inputStream.use { input: InputStream ->
+                        FileOutputStream(temp).use { output: OutputStream ->
+                            input.copyTo(output)
+                        }
+                    }
+                    conn.disconnect()
+                    if (!temp.renameTo(sherpaAarFile)) {
+                        temp.copyTo(sherpaAarFile, overwrite = true)
+                        temp.delete()
+                    }
+                    logger.lifecycle("Downloaded sherpa-onnx.aar successfully (${sherpaAarFile.length()} bytes)")
+                    downloaded = true
+                    break
+                }
+                conn.disconnect()
+                break
+            }
+            if (downloaded) break
+        } catch (e: Exception) {
+            logger.warn("Failed to download sherpa-onnx.aar from $urlStr: ${e.message}")
+        }
     }
 }
 
@@ -111,9 +174,8 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-extractor:1.4.1")
 
-    // Resolve NewPipe and its transitive dependencies separately. The extractor bytecode is
-    // patched at build time because its calls to Java 10/33 APIs are unavailable on Android 9.
-    add(newPipeExtractorArtifacts.name, "com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
+    // NewPipe Extractor
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
 
     // 离线翻译（bundled 引擎，不依赖 GMS）
     implementation("com.google.mlkit:translate:17.0.3")
@@ -135,36 +197,3 @@ dependencies {
     // 模型包解压（.tar.bz2）
     implementation("org.apache.commons:commons-compress:1.26.1")
 }
-
-
-// Patch extractor bytecode for Android 9, and put its transitive dependencies on the normal app classpath.
-val newPipeExtractorResolvedArtifacts = providers.provider {
-    newPipeExtractorArtifacts.resolvedConfiguration.resolvedArtifacts.toList()
-}
-val rawNewPipeExtractor = providers.provider {
-    newPipeExtractorResolvedArtifacts.get().firstOrNull {
-        it.moduleVersion.id.group.equals("com.github.TeamNewPipe", ignoreCase = true)
-            && it.moduleVersion.id.name == "NewPipeExtractor"
-    }?.file ?: throw GradleException(
-        "Could not find com.github.TeamNewPipe:NewPipeExtractor in the resolved artifacts."
-    )
-}
-val patchNewPipeExtractor = tasks.register<PatchNewPipeApiTask>("patchNewPipeExtractor") {
-    inputJar.set(layout.file(rawNewPipeExtractor))
-    outputJar.set(layout.buildDirectory.file("patched-libs/NewPipeExtractor-android9.jar"))
-}
-dependencies.add(
-    "implementation",
-    files(patchNewPipeExtractor.flatMap { it.outputJar }).builtBy(patchNewPipeExtractor)
-)
-dependencies.add(
-    "implementation",
-    files(providers.provider {
-        newPipeExtractorResolvedArtifacts.get()
-            .filterNot {
-                it.moduleVersion.id.group.equals("com.github.TeamNewPipe", ignoreCase = true)
-                    && it.moduleVersion.id.name == "NewPipeExtractor"
-            }
-            .map { it.file }
-    })
-)

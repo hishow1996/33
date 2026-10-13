@@ -955,6 +955,9 @@ class PlaybackService : MediaSessionService() {
         if (activeId == -1L || activeId == -2L) {
             engine = GoogleHybridEngine(this)
             engineName = engine.displayName
+        } else if (activeId == EngineFactory.ID_FREE_GEMINI || activeId == EngineFactory.ID_FREE_DEEPSEEK) {
+            engine = EngineFactory.getBuiltinEngine(activeId, this)
+            engineName = if (activeId == EngineFactory.ID_FREE_GEMINI) "Google Gemini (免费)" else "DeepSeek (免费)"
         }
         val active = profiles.firstOrNull { it.id == activeId }
         if (engine == null && active != null) {
@@ -1005,6 +1008,18 @@ class PlaybackService : MediaSessionService() {
                         "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
                     } else {
                         "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+                    }
+                } else if (activeId == EngineFactory.ID_FREE_GEMINI) {
+                    if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                        "Google Gemini 翻译失败：需要有效 API Key。请在 API 管理中点击 Google Gemini 卡片右侧「•••」填入您的 Gemini API Key（可前往 Google AI Studio 免费获取）。"
+                    } else {
+                        "Google Gemini 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 Gemini 配置。"
+                    }
+                } else if (activeId == EngineFactory.ID_FREE_DEEPSEEK) {
+                    if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                        "DeepSeek 翻译失败：需要有效 API Key。请在 API 管理中点击 DeepSeek 卡片右侧「•••」填入您的 DeepSeek API Key。"
+                    } else {
+                        "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
                     }
                 } else {
                     "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"

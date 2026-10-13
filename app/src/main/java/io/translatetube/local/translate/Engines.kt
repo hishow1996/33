@@ -208,6 +208,9 @@ class OpenAiCompatEngine(
     }
 
     private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (apiKey.isBlank()) {
+            throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
+        }
         val src = LangMap.display(srcLang)
         val tgt = LangMap.display(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
@@ -275,6 +278,9 @@ class GeminiEngine(
     }
 
     private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (apiKey.isBlank()) {
+            throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
+        }
         val src = LangMap.display(srcLang)
         val tgt = LangMap.display(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
@@ -444,8 +450,45 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
     }
 }
 
-/** 引擎工厂：从 ApiProfile 构建实例 */
+/** 免费大模型默认配置 */
+object FreeModelDefaults {
+    const val GEMINI_MODEL = "gemini-2.5-flash"
+    const val GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
+    const val DEFAULT_GEMINI_KEY = ""
+
+    const val DEEPSEEK_MODEL = "deepseek-chat"
+    const val DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+    const val DEFAULT_DEEPSEEK_KEY = ""
+}
+
+/** 引擎工厂：从 ApiProfile 或内置服务 ID 构建实例 */
 object EngineFactory {
+    const val ID_GOOGLE = -1L
+    const val ID_GOOGLE_ALT = -2L
+    const val ID_FREE_GEMINI = -10L
+    const val ID_FREE_DEEPSEEK = -11L
+
+    fun getBuiltinEngine(activeId: Long, context: Context): TranslationEngine? {
+        val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        return when (activeId) {
+            ID_GOOGLE, ID_GOOGLE_ALT -> GoogleHybridEngine(context)
+            ID_FREE_GEMINI -> {
+                val encKey = prefs.getString("free_gemini_key", "").orEmpty()
+                val key = if (encKey.isNotBlank()) Crypto.decrypt(encKey) else FreeModelDefaults.DEFAULT_GEMINI_KEY
+                val model = prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL) ?: FreeModelDefaults.GEMINI_MODEL
+                GeminiEngine(apiKey = key, model = model, baseUrl = FreeModelDefaults.GEMINI_BASE_URL)
+            }
+            ID_FREE_DEEPSEEK -> {
+                val encKey = prefs.getString("free_deepseek_key", "").orEmpty()
+                val key = if (encKey.isNotBlank()) Crypto.decrypt(encKey) else FreeModelDefaults.DEFAULT_DEEPSEEK_KEY
+                val baseUrl = prefs.getString("free_deepseek_base_url", FreeModelDefaults.DEEPSEEK_BASE_URL) ?: FreeModelDefaults.DEEPSEEK_BASE_URL
+                val model = prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL) ?: FreeModelDefaults.DEEPSEEK_MODEL
+                OpenAiCompatEngine(baseUrl = baseUrl, apiKey = key, model = model)
+            }
+            else -> null
+        }
+    }
+
     fun fromProfile(p: io.translatetube.local.data.ApiProfile): TranslationEngine {
         val key = Crypto.decrypt(p.apiKey)
         return when (p.type) {

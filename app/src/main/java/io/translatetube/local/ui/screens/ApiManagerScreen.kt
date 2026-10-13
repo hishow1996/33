@@ -55,6 +55,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import io.translatetube.local.translate.EngineFactory
+import io.translatetube.local.translate.FreeModelDefaults
+import io.translatetube.local.translate.GeminiEngine
+import io.translatetube.local.translate.OpenAiCompatEngine
+import android.widget.Toast
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.withContext
 
@@ -71,10 +75,57 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
 
+    var geminiModel by remember {
+        mutableStateOf(prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL) ?: FreeModelDefaults.GEMINI_MODEL)
+    }
+    var geminiKeyConfigured by remember {
+        mutableStateOf(prefs.getString("free_gemini_key", "").orEmpty().isNotBlank())
+    }
+    var deepSeekModel by remember {
+        mutableStateOf(prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL) ?: FreeModelDefaults.DEEPSEEK_MODEL)
+    }
+    var deepSeekKeyConfigured by remember {
+        mutableStateOf(prefs.getString("free_deepseek_key", "").orEmpty().isNotBlank())
+    }
+    var configuringFreeModel by remember { mutableStateOf<String?>(null) }
+    var testingFreeModel by remember { mutableStateOf<String?>(null) }
+
+    fun refreshFreeModelPrefs() {
+        geminiModel = prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL) ?: FreeModelDefaults.GEMINI_MODEL
+        geminiKeyConfigured = prefs.getString("free_gemini_key", "").orEmpty().isNotBlank()
+        deepSeekModel = prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL) ?: FreeModelDefaults.DEEPSEEK_MODEL
+        deepSeekKeyConfigured = prefs.getString("free_deepseek_key", "").orEmpty().isNotBlank()
+    }
+
     // 手动切换翻译引擎：写 prefs 即刻生效（下次翻译起用新源）
     fun setActive(id: Long) {
         activeId = id
         prefs.edit().putLong("active_api_id", id).apply()
+    }
+
+    fun testFreeModel(targetId: Long, name: String) {
+        scope.launch(Dispatchers.IO) {
+            testingFreeModel = name
+            try {
+                val engine = EngineFactory.getBuiltinEngine(targetId, ctx)
+                    ?: throw IllegalStateException("未能创建引擎")
+                val started = System.currentTimeMillis()
+                engine.testConnection()
+                val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(ctx, "$name 连接成功 · ${elapsed}ms", Toast.LENGTH_SHORT).show()
+                    testingFreeModel = null
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                val msg = formatConnectionErrorMessage(e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(ctx, "$name $msg", Toast.LENGTH_LONG).show()
+                    testingFreeModel = null
+                }
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -136,148 +187,291 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         }
 
         var googleExpanded by remember { mutableStateOf(false) }
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
-                .background(Color.White)
-                .clickable { googleExpanded = !googleExpanded }
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            GoogleTranslateIcon()
-            Spacer(Modifier.width(10.dp))
-            RadioButton(
-                selected = activeId == -1L || activeId == -2L,
-                onClick = { setActive(-2L) },
-                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
-            )
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Google 翻译", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                Text("内置翻译 · 离线语言包可选", color = SubText, style = MaterialTheme.typography.bodySmall)
-            }
-            if (activeId == -1L || activeId == -2L) {
-                Text("已选", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-            }
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                imageVector = if (googleExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                contentDescription = if (googleExpanded) "收起 Google 翻译设置" else "展开 Google 翻译设置",
-                tint = SubText,
-                modifier = Modifier.size(24.dp),
-            )
-        }
-        Spacer(Modifier.height(10.dp))
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (googleExpanded) item { GoogleTranslateSection() }
-            if (profiles.isEmpty()) {
-                item {
-                    Column(
-                        modifier = Modifier.fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(SurfaceDark)
-                            .padding(horizontal = 20.dp, vertical = 22.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // 1. Google 翻译 (内置混合引擎)
+            item(key = "builtin_google") {
+                val isGoogleActive = activeId == -1L || activeId == -2L
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.White)
+                        .clickable { setActive(-1L) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(52.dp).clip(RoundedCornerShape(15.dp))
+                            .background(if (isGoogleActive) Color(0xFFEAF1FF) else Color(0xFFF7F9FC)),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text("还没有 API 配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "也可以直接使用上方的 Google 翻译。",
-                            color = SubText,
-                            style = MaterialTheme.typography.bodySmall,
+                        GoogleTranslateIcon()
+                    }
+                    Text(
+                        "Google 翻译",
+                        color = OnBg,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                    )
+                    if (isGoogleActive) {
+                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    IconButton(
+                        onClick = { googleExpanded = !googleExpanded },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (googleExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = if (googleExpanded) "收起离线语言包" else "展开离线语言包",
+                            tint = SubText,
                         )
-                        OutlinedButton(
-                            onClick = { adding = true },
-                            shape = RoundedCornerShape(11.dp),
-                        ) { Text("添加 API") }
                     }
                 }
             }
+
+            if (googleExpanded) item(key = "google_section") {
+                GoogleTranslateSection()
+            }
+
+            // 2. Google Gemini (免费大模型)
+            item(key = "free_gemini") {
+                val isGeminiActive = activeId == EngineFactory.ID_FREE_GEMINI
+                var geminiMenuExpanded by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.White)
+                        .clickable { setActive(EngineFactory.ID_FREE_GEMINI) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    GeminiLogo(selected = isGeminiActive)
+                    Text(
+                        "Google Gemini",
+                        color = OnBg,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                    )
+                    if (isGeminiActive) {
+                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { geminiMenuExpanded = true },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Text("•••", color = SubText, style = MaterialTheme.typography.titleMedium)
+                        }
+                        DropdownMenu(
+                            expanded = geminiMenuExpanded,
+                            onDismissRequest = { geminiMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (testingFreeModel == "Google Gemini") "正在测试连接…" else "测试连接") },
+                                onClick = {
+                                    geminiMenuExpanded = false
+                                    testFreeModel(EngineFactory.ID_FREE_GEMINI, "Google Gemini")
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("配置参数 / 覆盖私有密钥") },
+                                onClick = {
+                                    geminiMenuExpanded = false
+                                    configuringFreeModel = "GEMINI"
+                                },
+                            )
+                            if (!isGeminiActive) {
+                                DropdownMenuItem(
+                                    text = { Text("设为当前服务") },
+                                    onClick = {
+                                        geminiMenuExpanded = false
+                                        setActive(EngineFactory.ID_FREE_GEMINI)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. DeepSeek (免费大模型)
+            item(key = "free_deepseek") {
+                val isDeepSeekActive = activeId == EngineFactory.ID_FREE_DEEPSEEK
+                var deepSeekMenuExpanded by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.White)
+                        .clickable { setActive(EngineFactory.ID_FREE_DEEPSEEK) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DeepSeekLogo(selected = isDeepSeekActive)
+                    Text(
+                        "DeepSeek",
+                        color = OnBg,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                    )
+                    if (isDeepSeekActive) {
+                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { deepSeekMenuExpanded = true },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Text("•••", color = SubText, style = MaterialTheme.typography.titleMedium)
+                        }
+                        DropdownMenu(
+                            expanded = deepSeekMenuExpanded,
+                            onDismissRequest = { deepSeekMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (testingFreeModel == "DeepSeek") "正在测试连接…" else "测试连接") },
+                                onClick = {
+                                    deepSeekMenuExpanded = false
+                                    testFreeModel(EngineFactory.ID_FREE_DEEPSEEK, "DeepSeek")
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("配置参数 / 覆盖私有密钥") },
+                                onClick = {
+                                    deepSeekMenuExpanded = false
+                                    configuringFreeModel = "DEEPSEEK"
+                                },
+                            )
+                            if (!isDeepSeekActive) {
+                                DropdownMenuItem(
+                                    text = { Text("设为当前服务") },
+                                    onClick = {
+                                        deepSeekMenuExpanded = false
+                                        setActive(EngineFactory.ID_FREE_DEEPSEEK)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. 用户自定义添加的 API 列表
             items(profiles, key = { it.id }) { p ->
-                Column(
-                    Modifier.fillMaxWidth()
+                val selectedProfile = activeId == p.id && p.enabled
+                var profileMenuExpanded by remember(p.id) { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(18.dp))
                         .background(Color.White)
                         .clickable(enabled = p.enabled) { setActive(p.id) }
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val selectedProfile = activeId == p.id && p.enabled
-                    var profileMenuExpanded by remember(p.id) { mutableStateOf(false) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ApiProviderLogo(profile = p, selected = selectedProfile)
-                        Column(
-                            Modifier.weight(1f).padding(start = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ApiProviderLogo(profile = p, selected = selectedProfile)
+                    Text(
+                        p.name,
+                        color = if (p.enabled) OnBg else SubText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                    )
+                    if (selectedProfile) {
+                        Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { profileMenuExpanded = true },
+                            modifier = Modifier.size(36.dp),
                         ) {
-                            Text(p.name, color = OnBg, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                if (selectedProfile) "当前服务 · ${typeLabel(p.type)}" else typeLabel(p.type),
-                                color = SubText,
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                            )
+                            Text("•••", color = SubText, style = MaterialTheme.typography.titleMedium)
                         }
-                        if (selectedProfile) {
-                            Text("✓", color = Color(0xFF25965B), style = MaterialTheme.typography.titleLarge)
-                            Spacer(Modifier.width(6.dp))
-                            Box {
-                                Text(
-                                    "•••",
-                                    color = SubText,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    modifier = Modifier.clickable { profileMenuExpanded = true }
-                                        .padding(horizontal = 5.dp, vertical = 8.dp),
+                        DropdownMenu(
+                            expanded = profileMenuExpanded,
+                            onDismissRequest = { profileMenuExpanded = false },
+                        ) {
+                            if (!selectedProfile && p.enabled) {
+                                DropdownMenuItem(
+                                    text = { Text("设为当前服务") },
+                                    onClick = {
+                                        profileMenuExpanded = false
+                                        setActive(p.id)
+                                    },
                                 )
-                                DropdownMenu(
-                                    expanded = profileMenuExpanded,
-                                    onDismissRequest = { profileMenuExpanded = false },
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("编辑配置") },
-                                        onClick = {
-                                            profileMenuExpanded = false
-                                            editing = p
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("停用服务") },
-                                        onClick = {
-                                            profileMenuExpanded = false
-                                            scope.launch {
-                                                db.apiProfileDao().upsert(p.copy(enabled = false))
-                                                if (activeId == p.id) setActive(-1L)
-                                            }
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("删除配置") },
-                                        onClick = {
-                                            profileMenuExpanded = false
-                                            if (activeId == p.id) setActive(-1L)
-                                            scope.launch { db.apiProfileDao().delete(p.id) }
-                                        },
-                                    )
-                                }
                             }
-                        } else {
-                            Switch(
-                                checked = p.enabled,
-                                onCheckedChange = { en ->
-                                    scope.launch {
-                                        db.apiProfileDao().upsert(p.copy(enabled = en))
-                                        if (!en && activeId == p.id) setActive(-1L)
+                            DropdownMenuItem(
+                                text = { Text("编辑配置") },
+                                onClick = {
+                                    profileMenuExpanded = false
+                                    editing = p
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("测试连接") },
+                                onClick = {
+                                    profileMenuExpanded = false
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            val started = System.currentTimeMillis()
+                                            EngineFactory.fromProfile(p).testConnection()
+                                            val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(ctx, "${p.name} 连接成功 · ${elapsed}ms", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } catch (c: CancellationException) {
+                                            throw c
+                                        } catch (e: Exception) {
+                                            val msg = apiConnectionFailureMessage(p, e)
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(ctx, "${p.name} $msg", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
                                     }
                                 },
-                                colors = SwitchDefaults.colors(checkedTrackColor = Brand, checkedThumbColor = BrandBright),
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (p.enabled) "停用服务" else "启用服务") },
+                                onClick = {
+                                    profileMenuExpanded = false
+                                    scope.launch {
+                                        val newEnabled = !p.enabled
+                                        db.apiProfileDao().upsert(p.copy(enabled = newEnabled))
+                                        if (!newEnabled && activeId == p.id) setActive(-1L)
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除配置") },
+                                onClick = {
+                                    profileMenuExpanded = false
+                                    if (activeId == p.id) setActive(-1L)
+                                    scope.launch { db.apiProfileDao().delete(p.id) }
+                                },
                             )
                         }
                     }
-
-
-
                 }
             }
         }
+    }
+
+    if (configuringFreeModel != null) {
+        FreeModelConfigDialog(
+            type = configuringFreeModel!!,
+            onDismiss = { configuringFreeModel = null },
+            onSaved = { refreshFreeModelPrefs() },
+        )
     }
 
     if (adding || editing != null) {
@@ -291,6 +485,72 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 }
             },
         )
+    }
+}
+
+private const val GEMINI_LOGO_PATH =
+    "M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+
+private const val DEEPSEEK_LOGO_PATH =
+    "M23.748 4.482c-.254-.124-.364.113-.512.234-.051.039-.094.09-.137.136-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.156-.708-.311-.955-.65-.172-.241-.219-.51-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.093.172.187.129.323-.082.28-.18.552-.266.833-.055.179-.137.217-.329.14a5.526 5.526 0 01-1.736-1.18c-.857-.828-1.631-1.742-2.597-2.458a11.365 11.365 0 00-.689-.471c-.985-.957.13-1.743.388-1.836.27-.098.093-.432-.779-.428-.872.004-1.67.295-2.687.684a3.055 3.055 0 01-.465.137 9.597 9.597 0 00-2.883-.102c-1.885.21-3.39 1.102-4.497 2.623C.082 8.606-.231 10.684.152 12.85c.403 2.284 1.569 4.175 3.36 5.653 1.858 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.133-.284 4.994-1.86.47.234.962.327 1.78.397.63.059 1.236-.03 1.705-.128.735-.156.684-.837.419-.961-2.155-1.004-1.682-.595-2.113-.926 1.096-1.296 2.746-2.642 3.392-7.003.05-.347.007-.565 0-.845-.004-.17.035-.237.23-.256a4.173 4.173 0 001.545-.475c1.396-.763 1.96-2.015 2.093-3.517.02-.23-.004-.467-.247-.588zM11.581 18c-2.089-1.642-3.102-2.183-3.52-2.16-.392.024-.321.471-.235.763.09.288.207.486.371.739.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.167-1.361-.802-2.5-1.86-3.301-3.307-.774-1.393-1.224-2.887-1.298-4.482-.02-.386.093-.522.477-.592a4.696 4.696 0 011.529-.039c2.132.312 3.946 1.265 5.468 2.774.868.86 1.525 1.887 2.202 2.891.72 1.066 1.494 2.082 2.48 2.914.348.292.625.514.891.677-.802.09-2.14.11-3.054-.614zm1-6.44a.306.306 0 01.415-.287.302.302 0 01.2.288.306.306 0 01-.31.307.303.303 0 01-.304-.308zm3.11 1.596c-.2.081-.399.151-.59.16a1.245 1.245 0 01-.798-.254c-.274-.23-.47-.358-.552-.758a1.73 1.73 0 01.016-.588c.07-.327-.008-.537-.239-.727-.187-.156-.426-.199-.688-.199a.559.559 0 01-.254-.078c-.11-.054-.2-.19-.114-.358.028-.054.16-.186.192-.21.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.391.451.462.576.685.914.176.265.336.537.445.848.067.195-.019.354-.25.452z"
+
+@Composable
+fun GeminiLogo(selected: Boolean = false) {
+    val geminiPath = remember {
+        PathParser().parsePathString(GEMINI_LOGO_PATH).toPath().apply {
+            fillType = PathFillType.EvenOdd
+        }
+    }
+    Box(
+        Modifier.size(52.dp)
+            .clip(RoundedCornerShape(15.dp))
+            .background(if (selected) Color(0xFFEAF1FF) else Color(0xFFF7F9FC)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(34.dp)) {
+            val scaleX = size.width / 24f
+            val scaleY = size.height / 24f
+            withTransform({ scale(scaleX, scaleY, pivot = Offset.Zero) }) {
+                drawPath(geminiPath, color = Color(0xFF8E75B2))
+            }
+        }
+    }
+}
+
+@Composable
+fun DeepSeekLogo(selected: Boolean = false) {
+    val deepSeekPath = remember {
+        PathParser().parsePathString(DEEPSEEK_LOGO_PATH).toPath().apply {
+            fillType = PathFillType.EvenOdd
+        }
+    }
+    Box(
+        Modifier.size(52.dp)
+            .clip(RoundedCornerShape(15.dp))
+            .background(if (selected) Color(0xFFEAF1FF) else Color(0xFFF7F9FC)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(34.dp)) {
+            val scaleX = size.width / 24f
+            val scaleY = size.height / 24f
+            withTransform({ scale(scaleX, scaleY, pivot = Offset.Zero) }) {
+                drawPath(deepSeekPath, color = Color(0xFF4D6BFE))
+            }
+        }
+    }
+}
+
+private fun formatConnectionErrorMessage(error: Exception): String {
+    val detail = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+    return when {
+        detail.contains("API Key 为空", ignoreCase = true) -> "API Key 为空，请点击「•••」配置私有密钥后重试。"
+        detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true) || detail.contains("API_KEY_INVALID", ignoreCase = true) ->
+            "认证失败（401/403）：API Key 无效或未授权，请检查密钥。"
+        detail.contains("404", ignoreCase = true) -> "服务端返回 404：模型未找到或接口地址错误。"
+        detail.contains("429", ignoreCase = true) -> "请求过于频繁（429 限流）：请稍候重试。"
+        detail.contains("Unable to resolve host", ignoreCase = true) || detail.contains("ConnectException", ignoreCase = true) ->
+            "网络连接失败，请检查网络设置。"
+        else -> "连接失败：" + detail.take(200)
     }
 }
 
@@ -346,11 +606,11 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
         Color(0xFF111111),
     )
     val deepSeek = ApiLogoLayer(
-        """M23.748 4.482c-.254-.124-.364.113-.512.234-.051.039-.094.09-.137.136-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.156-.708-.311-.955-.65-.172-.241-.219-.51-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.093.172.187.129.323-.082.28-.18.552-.266.833-.055.179-.137.217-.329.14a5.526 5.526 0 01-1.736-1.18c-.857-.828-1.631-1.742-2.597-2.458a11.365 11.365 0 00-.689-.471c-.985-.957.13-1.743.388-1.836.27-.098.093-.432-.779-.428-.872.004-1.67.295-2.687.684a3.055 3.055 0 01-.465.137 9.597 9.597 0 00-2.883-.102c-1.885.21-3.39 1.102-4.497 2.623C.082 8.606-.231 10.684.152 12.85c.403 2.284 1.569 4.175 3.36 5.653 1.858 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.133-.284 4.994-1.86.47.234.962.327 1.78.397.63.059 1.236-.03 1.705-.128.735-.156.684-.837.419-.961-2.155-1.004-1.682-.595-2.113-.926 1.096-1.296 2.746-2.642 3.392-7.003.05-.347.007-.565 0-.845-.004-.17.035-.237.23-.256a4.173 4.173 0 001.545-.475c1.396-.763 1.96-2.015 2.093-3.517.02-.23-.004-.467-.247-.588zM11.581 18c-2.089-1.642-3.102-2.183-3.52-2.16-.392.024-.321.471-.235.763.09.288.207.486.371.739.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.167-1.361-.802-2.5-1.86-3.301-3.307-.774-1.393-1.224-2.887-1.298-4.482-.02-.386.093-.522.477-.592a4.696 4.696 0 011.529-.039c2.132.312 3.946 1.265 5.468 2.774.868.86 1.525 1.887 2.202 2.891.72 1.066 1.494 2.082 2.48 2.914.348.292.625.514.891.677-.802.09-2.14.11-3.054-.614zm1-6.44a.306.306 0 01.415-.287.302.302 0 01.2.288.306.306 0 01-.31.307.303.303 0 01-.304-.308zm3.11 1.596c-.2.081-.399.151-.59.16a1.245 1.245 0 01-.798-.254c-.274-.23-.47-.358-.552-.758a1.73 1.73 0 01.016-.588c.07-.327-.008-.537-.239-.727-.187-.156-.426-.199-.688-.199a.559.559 0 01-.254-.078c-.11-.054-.2-.19-.114-.358.028-.054.16-.186.192-.21.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.391.451.462.576.685.914.176.265.336.537.445.848.067.195-.019.354-.25.452z""",
+        DEEPSEEK_LOGO_PATH,
         Color(0xFF4D6BFE),
     )
     val gemini = ApiLogoLayer(
-        """M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z""",
+        GEMINI_LOGO_PATH,
         Color(0xFF8E75B2),
     )
     val qwen = ApiLogoLayer(
@@ -753,6 +1013,265 @@ private fun GenericApiLogo() {
     }
 }
 
+@Composable
+private fun FreeModelConfigDialog(
+    type: String, // "GEMINI" or "DEEPSEEK"
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = remember { ctx.getSharedPreferences("settings", 0) }
+
+    val isGemini = type == "GEMINI"
+    val title = if (isGemini) "Google Gemini 配置" else "DeepSeek 配置"
+    val defaultModel = if (isGemini) FreeModelDefaults.GEMINI_MODEL else FreeModelDefaults.DEEPSEEK_MODEL
+
+    val initialEncKey = remember {
+        prefs.getString(if (isGemini) "free_gemini_key" else "free_deepseek_key", "").orEmpty()
+    }
+    var apiKey by remember {
+        mutableStateOf(if (initialEncKey.isNotBlank()) Crypto.decrypt(initialEncKey) else "")
+    }
+    var showApiKey by remember { mutableStateOf(false) }
+
+    var baseUrl by remember {
+        mutableStateOf(
+            if (isGemini) FreeModelDefaults.GEMINI_BASE_URL
+            else prefs.getString("free_deepseek_base_url", FreeModelDefaults.DEEPSEEK_BASE_URL) ?: FreeModelDefaults.DEEPSEEK_BASE_URL
+        )
+    }
+    var model by remember {
+        mutableStateOf(
+            prefs.getString(
+                if (isGemini) "free_gemini_model" else "free_deepseek_model",
+                defaultModel
+            ) ?: defaultModel
+        )
+    }
+
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    val configuration = LocalConfiguration.current
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Column(
+            Modifier.fillMaxWidth(0.92f)
+                .heightIn(max = (configuration.screenHeightDp * 0.85f).dp)
+                .clip(RoundedCornerShape(20.dp)).background(SurfaceDark)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isGemini) GeminiLogo(selected = true) else DeepSeekLogo(selected = true)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(title, style = MaterialTheme.typography.titleLarge, color = OnBg, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                    Text("免费大模型 · 覆盖私有参数与密钥", style = MaterialTheme.typography.bodySmall, color = SubText)
+                }
+            }
+
+            Box(Modifier.fillMaxWidth().height(1.dp).background(OutlineSoft))
+
+            // API Key
+            Labeled("私有 API Key（可选，覆盖默认配置）") {
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { showApiKey = !showApiKey }) {
+                            Text(if (showApiKey) "隐藏" else "显示", color = SubText, style = MaterialTheme.typography.labelSmall)
+                        }
+                    },
+                    placeholder = {
+                        Text(if (isGemini) "填入 Google AI Studio API Key" else "填入 DeepSeek API Key")
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BrandBright,
+                        unfocusedBorderColor = SurfaceHigh,
+                        focusedTextColor = OnBg,
+                        unfocusedTextColor = OnBg,
+                    ),
+                )
+            }
+
+            if (!isGemini) {
+                Labeled("Base URL") {
+                    OutlinedTextField(
+                        value = baseUrl,
+                        onValueChange = { baseUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = { Text("https://api.deepseek.com") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BrandBright,
+                            unfocusedBorderColor = SurfaceHigh,
+                            focusedTextColor = OnBg,
+                            unfocusedTextColor = OnBg,
+                        ),
+                    )
+                }
+            }
+
+            // Model
+            Labeled("模型 ID") {
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(defaultModel) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BrandBright,
+                        unfocusedBorderColor = SurfaceHigh,
+                        focusedTextColor = OnBg,
+                        unfocusedTextColor = OnBg,
+                    ),
+                )
+            }
+
+            // Quick model selection chips
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val candidateModels = if (isGemini) {
+                    listOf("gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro")
+                } else {
+                    listOf("deepseek-chat", "deepseek-reasoner")
+                }
+                candidateModels.forEach { candidate ->
+                    FilterChip(
+                        selected = model == candidate,
+                        onClick = { model = candidate },
+                        label = { Text(candidate, style = MaterialTheme.typography.labelSmall) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = BrandBright.copy(alpha = 0.15f),
+                            selectedLabelColor = BrandBright,
+                        ),
+                    )
+                }
+            }
+
+            // Test connection result
+            testResult?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (it.startsWith("连接成功")) Color(0xFF25965B) else WarnYellow,
+                )
+            }
+
+            // Test connection button
+            OutlinedButton(
+                onClick = {
+                    testing = true
+                    testResult = null
+                    scope.launch(Dispatchers.IO) {
+                        val started = System.currentTimeMillis()
+                        try {
+                            val engine = if (isGemini) {
+                                GeminiEngine(apiKey = apiKey.trim(), model = model.trim().ifEmpty { defaultModel }, baseUrl = FreeModelDefaults.GEMINI_BASE_URL)
+                            } else {
+                                OpenAiCompatEngine(baseUrl = baseUrl.trim().ifEmpty { FreeModelDefaults.DEEPSEEK_BASE_URL }, apiKey = apiKey.trim(), model = model.trim().ifEmpty { defaultModel })
+                            }
+                            engine.testConnection()
+                            val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
+                            withContext(Dispatchers.Main) {
+                                testResult = "连接成功 · 耗时 ${elapsed}ms"
+                                testing = false
+                            }
+                        } catch (c: CancellationException) {
+                            throw c
+                        } catch (e: Exception) {
+                            val msg = formatConnectionErrorMessage(e)
+                            withContext(Dispatchers.Main) {
+                                testResult = msg
+                                testing = false
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                enabled = !testing,
+            ) {
+                Text(if (testing) "测试中…" else "测试此配置连接")
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // Action buttons
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = {
+                        val editor = prefs.edit()
+                        if (isGemini) {
+                            editor.remove("free_gemini_key")
+                            editor.remove("free_gemini_model")
+                        } else {
+                            editor.remove("free_deepseek_key")
+                            editor.remove("free_deepseek_base_url")
+                            editor.remove("free_deepseek_model")
+                        }
+                        editor.apply()
+                        onSaved()
+                        onDismiss()
+                    },
+                ) {
+                    Text("恢复默认", color = SubText)
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                TextButton(onClick = onDismiss) {
+                    Text("取消", color = SubText)
+                }
+
+                Button(
+                    onClick = {
+                        val editor = prefs.edit()
+                        if (isGemini) {
+                            if (apiKey.isNotBlank()) {
+                                editor.putString("free_gemini_key", Crypto.encrypt(apiKey.trim()))
+                            } else {
+                                editor.remove("free_gemini_key")
+                            }
+                            editor.putString("free_gemini_model", model.trim().ifEmpty { defaultModel })
+                        } else {
+                            if (apiKey.isNotBlank()) {
+                                editor.putString("free_deepseek_key", Crypto.encrypt(apiKey.trim()))
+                            } else {
+                                editor.remove("free_deepseek_key")
+                            }
+                            editor.putString("free_deepseek_base_url", baseUrl.trim().ifEmpty { FreeModelDefaults.DEEPSEEK_BASE_URL })
+                            editor.putString("free_deepseek_model", model.trim().ifEmpty { defaultModel })
+                        }
+                        editor.apply()
+                        onSaved()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BrandBright),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text("保存配置", color = Color.White)
+                }
+            }
+        }
+    }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (ApiProfile) -> Unit) {
@@ -854,6 +1373,43 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         ) {
             Text(if (initial == null) "添加翻译 API" else "编辑 API", style = MaterialTheme.typography.titleLarge, color = OnBg)
             Spacer(Modifier.height(10.dp))
+
+            if (initial == null) {
+                Text("快捷填入服务预设：", style = MaterialTheme.typography.labelSmall, color = SubText)
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    SuggestionChip(
+                        onClick = {
+                            name = "DeepSeek"
+                            type = "OPENAI"
+                            baseUrl = "https://api.deepseek.com"
+                            model = "deepseek-chat"
+                        },
+                        label = { Text("DeepSeek", style = MaterialTheme.typography.labelSmall) },
+                    )
+                    SuggestionChip(
+                        onClick = {
+                            name = "Google Gemini"
+                            type = "GEMINI"
+                            baseUrl = ""
+                            model = "gemini-2.5-flash"
+                        },
+                        label = { Text("Gemini", style = MaterialTheme.typography.labelSmall) },
+                    )
+                    SuggestionChip(
+                        onClick = {
+                            name = "NVIDIA"
+                            type = "OPENAI"
+                            baseUrl = "https://integrate.api.nvidia.com/v1"
+                            model = "meta/llama-3.3-70b-instruct"
+                        },
+                        label = { Text("NVIDIA", style = MaterialTheme.typography.labelSmall) },
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+            }
 
             Labeled("名称") { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("如 DeepSeek") }) }
 
