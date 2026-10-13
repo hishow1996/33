@@ -93,6 +93,13 @@ private data class YouTubeQualityInventory(
     val audioUrl: String,
 )
 
+private data class QualitySwitchSnapshot(
+    val key: String,
+    val revision: Long,
+    val positionMs: Long,
+    val playWhenReady: Boolean,
+)
+
 /** Build only playable choices; adaptive video-only tracks require a separate audio URL. */
 private fun buildYouTubeQualityInventory(
     info: org.schabi.newpipe.extractor.stream.StreamInfo,
@@ -168,6 +175,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     private var qualityJob: Job? = null
+    // Kept across rapid quality taps so cancelling an in-flight switch never loses the
+    // original playback position or play/pause intent.
+    private var qualitySwitchSnapshot: QualitySwitchSnapshot? = null
     private var importedLines: List<SubLine>? = null
     @Volatile private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
@@ -532,6 +542,7 @@ class PlaybackService : MediaSessionService() {
         // Preserve parsed metadata/subtitles when resuming a translation failure.
         if (videoId != null && resumeState == null) NewPipeRepo.invalidate(videoId)
         qualityJob?.cancel()
+        qualitySwitchSnapshot = null
         qualitySources = emptyList()
         qualityAudioUrl = ""
         lastLineIdx = Int.MIN_VALUE
@@ -665,13 +676,36 @@ class PlaybackService : MediaSessionService() {
             var wasPlaying: Boolean? = null
             try {
                 if (!isCurrentPlaybackSession(request.key, request.revision)) return@launch
-                positionMs = withContext(Dispatchers.Main) {
-                    if (isCurrentPlaybackSession(request.key, request.revision)) pm.position() else null
-                } ?: return@launch
-                wasPlaying = withContext(Dispatchers.Main) {
-                    // playWhenReady preserves the user's intent even if the current stream is buffering.
-                    if (isCurrentPlaybackSession(request.key, request.revision)) pm.player.playWhenReady else null
-                } ?: return@launch
+                val savedSnapshot = synchronized(sessionLock) {
+                    qualitySwitchSnapshot?.takeIf {
+                        it.key == request.key && it.revision == request.revision
+                    }
+                }
+                if (savedSnapshot != null) {
+                    positionMs = savedSnapshot.positionMs
+                    wasPlaying = savedSnapshot.playWhenReady
+                } else {
+                    val capturedPosition = withContext(Dispatchers.Main) {
+                        if (isCurrentPlaybackSession(request.key, request.revision)) pm.position() else null
+                    } ?: return@launch
+                    val capturedPlayWhenReady = withContext(Dispatchers.Main) {
+                        // playWhenReady preserves the user's intent even if the current stream is buffering.
+                        if (isCurrentPlaybackSession(request.key, request.revision)) pm.player.playWhenReady else null
+                    } ?: return@launch
+                    val snapshot = QualitySwitchSnapshot(
+                        key = request.key,
+                        revision = request.revision,
+                        positionMs = capturedPosition,
+                        playWhenReady = capturedPlayWhenReady,
+                    )
+                    synchronized(sessionLock) {
+                        if (isCurrentPlaybackSession(request.key, request.revision)) {
+                            qualitySwitchSnapshot = snapshot
+                        } else return@launch
+                    }
+                    positionMs = capturedPosition
+                    wasPlaying = capturedPlayWhenReady
+                }
 
                 updateUiForSession(request.key, request.revision) {
                     it.copy(progress = "正在切换清晰度至 ${request.source.label}…", error = null)
@@ -700,6 +734,11 @@ class PlaybackService : MediaSessionService() {
                 awaitPlayerReadyForSession(request.key, request.revision)
                 updateUiForSession(request.key, request.revision) {
                     it.copy(selectedQuality = request.source.label, progress = "", error = null)
+                }
+                synchronized(sessionLock) {
+                    if (qualitySwitchSnapshot?.key == request.key &&
+                        qualitySwitchSnapshot?.revision == request.revision
+                    ) qualitySwitchSnapshot = null
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -748,6 +787,11 @@ class PlaybackService : MediaSessionService() {
                             "切换清晰度失败：${e.message ?: e.javaClass.simpleName}"
                         },
                     )
+                }
+                synchronized(sessionLock) {
+                    if (qualitySwitchSnapshot?.key == request.key &&
+                        qualitySwitchSnapshot?.revision == request.revision
+                    ) qualitySwitchSnapshot = null
                 }
             }
         }
@@ -1414,8 +1458,13 @@ class PlaybackService : MediaSessionService() {
                 }
                 val fallbackCandidates = candidates
                     .filter { it.label != defaultQuality.label }
-                    .sortedBy { kotlin.math.abs(it.height - defaultQuality.height) }
-                    .take(2)
+                    .sortedWith(
+                        compareBy<YouTubeQualitySource> { kotlin.math.abs(it.height - defaultQuality.height) }
+                            .thenBy { it.height }
+                    )
+                    // Try more than just two nearby resolutions: some extractor URLs are
+                    // advertised but rejected by the CDN or device decoder at runtime.
+                    .take(4)
                 val attemptCandidates = listOf(defaultQuality) + fallbackCandidates
                 var selectedQuality: YouTubeQualitySource? = null
                 var lastQualityError = ""
