@@ -154,6 +154,12 @@ class PlaybackService : MediaSessionService() {
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
     val isReady: Boolean get() = playerReady && ::pm.isInitialized
 
+    private fun ensureCurrentSession(sessionKey: String) {
+        if (videoKey != sessionKey || ui.value.key != sessionKey) {
+            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
+        }
+    }
+
     /** 主线程把画面 TextureView 交给播放器 */
     fun attachSurface(tv: android.view.TextureView) {
         // Service 初始化失败时，PlayerScreen 仍可能尝试挂载 TextureView。
@@ -523,6 +529,7 @@ class PlaybackService : MediaSessionService() {
      * 支持 SRT/VTT/ASS；双语 cue 会优先取含中文的行作为译文。
      */
     fun importTranslatedSubtitles(uri: Uri) {
+        val sessionKey = videoKey
         prepJob?.cancel()
         dubCollectJob?.cancel()
         dubCollectJob = null
@@ -537,6 +544,7 @@ class PlaybackService : MediaSessionService() {
                         ?: throw IllegalStateException("无法读取字幕文件")
                 }
                 val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
+                ensureCurrentSession(sessionKey)
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
                 val chinesePattern = Regex("[\\u4e00-\\u9fff]")
                 val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
@@ -551,8 +559,9 @@ class PlaybackService : MediaSessionService() {
                         zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
                     )
                 })
+                ensureCurrentSession(sessionKey)
                 pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.SYNTHESIZING,
                         progress = "已载入 " + translatedLines.size + " 条已翻译字幕，正在准备中文配音…",
@@ -567,17 +576,19 @@ class PlaybackService : MediaSessionService() {
                 }
                 previousDubbing?.releaseAndJoin()
                 awaitRetiredDubbingEngines()
+                ensureCurrentSession(sessionKey)
                 val tts = makeTts()
-                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                registerDubbingFailureHandler(d, tts)
+                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, translatedLines)
                 dubbing = d
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                    d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
                 }
                 lastLineIdx = Int.MIN_VALUE
+                ensureCurrentSession(sessionKey)
                 withContext(Dispatchers.Main) { pm.play() }
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.READY,
                         progress = "",
@@ -592,7 +603,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 runCatching { pm.originalVolume = 1f }
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
@@ -606,6 +617,7 @@ class PlaybackService : MediaSessionService() {
 
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
+        val sessionKey = videoKey
         prepJob?.cancel()
         dubCollectJob?.cancel()
         dubCollectJob = null
@@ -618,7 +630,7 @@ class PlaybackService : MediaSessionService() {
 
         prepJob = scope.launch {
             try {
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.PARSING,
                         progress = "正在读取字幕文件…",
@@ -634,12 +646,13 @@ class PlaybackService : MediaSessionService() {
                         ?.use { it.readText() }
                         ?: throw IllegalStateException("无法读取字幕文件")
                     SubtitleParsers.parseAuto(text)
+                ensureCurrentSession(sessionKey)
                 }
                 if (parsedLines.isEmpty()) {
                     throw IllegalStateException("字幕文件为空或格式不支持")
                 }
 
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.TRANSLATING,
                         progress = "翻译导入的字幕（${parsedLines.size} 行）…",
@@ -648,9 +661,10 @@ class PlaybackService : MediaSessionService() {
                 val srcLang = detectLangFromText(parsedLines.take(12).joinToString(" ") { it.text })
                 val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
                     .getLong("active_api_id", -1L)
-                val importedCacheKey = importedTranslationCacheKey(videoKey, activeTranslationId, parsedLines)
+                val importedCacheKey = importedTranslationCacheKey(sessionKey, activeTranslationId, parsedLines)
+                ensureCurrentSession(sessionKey)
                 // Preserve the imported source identity if this translation is later retried.
-                ui.update { state ->
+                updateUiForSession(sessionKey) { state ->
                     state.copy(
                         translationCacheKey = importedCacheKey,
                         lines = parsedLines,
@@ -663,17 +677,18 @@ class PlaybackService : MediaSessionService() {
                     if (isChineseLanguage(srcLang)) {
                         parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
-                        translateLines(videoKey, parsedLines, srcLang, importedCacheKey)
+                        translateLines(sessionKey, parsedLines, srcLang, importedCacheKey)
                     }
                 )
                 previousDubbing?.releaseAndJoin()
+                ensureCurrentSession(sessionKey)
                 val tts = makeTts()
-                val d = DubbingEngine(this@PlaybackService, videoKey, scope)
-                registerDubbingFailureHandler(d, tts)
+                val d = DubbingEngine(this@PlaybackService, sessionKey, scope)
+                registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, translatedLines)
                 dubbing = d
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> ui.update { it.copy(preparedUntil = n) } }
+                    d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
                 }
 
                 // Store a cache only after import + translation produced useful subtitle rows.
@@ -698,7 +713,7 @@ class PlaybackService : MediaSessionService() {
                         )
                     )
                 }
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         lines = translatedLines,
                         totalLines = translatedLines.size,
@@ -707,12 +722,13 @@ class PlaybackService : MediaSessionService() {
                         error = null,
                     )
                 }
+                ensureCurrentSession(sessionKey)
                 lastLineIdx = Int.MIN_VALUE
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Subtitle import failed", e)
-                ui.update {
+                updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
