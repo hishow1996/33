@@ -33,11 +33,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import android.net.Uri
+import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.net.URI
+import java.security.MessageDigest
+import java.util.Locale
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
-import coil.request.CachePolicy
-import coil.request.ImageRequest
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -390,29 +397,26 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
 
 @Composable
 private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
-    val context = LocalContext.current
+    val context = LocalContext.current.applicationContext
     val spec = remember(profile.type, profile.name, profile.baseUrl) {
         apiLogoSpec(profile)
     }
     val host = remember(profile.baseUrl) {
-        runCatching { Uri.parse(profile.baseUrl.trim()).host?.lowercase()?.trimEnd('.') }
+        runCatching { Uri.parse(profile.baseUrl.trim()).host?.lowercase(Locale.ROOT)?.trimEnd('.') }
             .getOrNull()
             ?.takeIf(::isPublicLogoLookupHost)
     }
-    val remoteLogoUrl = remember(host) {
-        host?.let { "https://www.google.com/s2/favicons?domain=$it&sz=128" }
-    }
-    val request = remember(remoteLogoUrl) {
-        remoteLogoUrl?.let { url ->
-            ImageRequest.Builder(context)
-                .data(url)
-                // Cache by provider host so later visits prefer the local disk/memory copy.
-                .diskCacheKey("api-provider-logo-${host}")
-                .memoryCacheKey("api-provider-logo-${host}")
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .crossfade(true)
-                .build()
+    val needsOnlineLogo = spec.layers.isEmpty() && !spec.useGoogleTranslate
+    val downloadedLogo by produceState<File?>(initialValue = null, host, needsOnlineLogo) {
+        value = null
+        if (!needsOnlineLogo || host == null) return@produceState
+        val cached = findCachedProviderLogo(context, host)
+        if (cached != null) {
+            value = cached
+        } else {
+            value = withContext(Dispatchers.IO) {
+                resolveAndCacheProviderLogo(context, host)
+            }
         }
     }
 
@@ -440,11 +444,11 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
                     }
                 }
             }
-            request != null -> {
+            downloadedLogo != null -> {
                 SubcomposeAsyncImage(
-                    model = request,
-                    contentDescription = "${profile.name} 服务商网站图标",
-                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(7.dp)),
+                    model = downloadedLogo,
+                    contentDescription = "${profile.name} 官方网站图标",
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(7.dp)),
                     contentScale = ContentScale.Fit,
                     loading = { GenericApiLogo() },
                     error = { GenericApiLogo() },
@@ -457,9 +461,250 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
 }
 
 /**
- * Best-effort online logo lookup is only attempted for public DNS hostnames.
- * Private/local endpoints are not sent to a third-party favicon service.
+ * Public site logo discovery pipeline:
+ * 1) inspect the provider's own website metadata and icon declarations;
+ * 2) try common first-party icon paths;
+ * 3) use multiple public favicon aggregators as fallbacks;
+ * 4) validate and persist a small image file locally for future visits.
  */
+private val providerLogoHttpClient: OkHttpClient by lazy {
+    OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .build()
+}
+
+private fun resolveAndCacheProviderLogo(context: android.content.Context, host: String): File? {
+    findCachedProviderLogo(context, host)?.let { return it }
+    val siteHosts = candidateWebsiteHosts(host)
+    val branded = linkedSetOf<String>()
+    val fallbacks = linkedSetOf<String>()
+
+    for (siteHost in siteHosts) {
+        val homePage = "https://$siteHost/"
+        val html = fetchSmallText(homePage)
+        if (html != null) {
+            val discovered = extractWebsiteLogoCandidates(html.first, html.second)
+            branded.addAll(discovered)
+        }
+        // Common paths are a fallback after the site's declared metadata.
+        fallbacks.add("https://$siteHost/apple-touch-icon.png")
+        fallbacks.add("https://$siteHost/apple-touch-icon-precomposed.png")
+        fallbacks.add("https://$siteHost/favicon.png")
+        fallbacks.add("https://$siteHost/favicon.ico")
+        fallbacks.add("https://$siteHost/favicon.svg")
+    }
+
+    // Aggregators frequently have a higher-resolution favicon than the default /favicon.ico.
+    for (siteHost in siteHosts) {
+        fallbacks.add("https://www.google.com/s2/favicons?domain=$siteHost&sz=128")
+        fallbacks.add("https://icons.duckduckgo.com/ip3/$siteHost.ico")
+        fallbacks.add("https://favicon.im/$siteHost?larger=true")
+        fallbacks.add("https://icon.horse/icon/$siteHost")
+    }
+
+    val candidates = LinkedHashSet<String>().apply {
+        addAll(branded)
+        addAll(fallbacks)
+    }
+    for (url in candidates) {
+        val logo = downloadAndCacheProviderImage(context, host, url)
+        if (logo != null) return logo
+    }
+    return null
+}
+
+private fun candidateWebsiteHosts(host: String): List<String> {
+    val normalized = host.lowercase(Locale.ROOT).removePrefix("www.")
+    val parts = normalized.split('.')
+    val twoLevelSuffixes = setOf(
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au",
+        "co.jp", "ne.jp", "or.jp", "com.cn", "net.cn", "org.cn", "com.sg",
+        "com.hk", "com.tw", "co.in", "firm.in", "com.br", "com.mx", "co.nz"
+    )
+    val suffix = parts.takeLast(2).joinToString(".")
+    val rootLabels = if (suffix in twoLevelSuffixes) 3 else 2
+    val root = parts.takeLast(rootLabels.coerceAtMost(parts.size)).joinToString(".")
+    return listOf(root, normalized).distinct().filter(::isPublicLogoLookupHost)
+}
+
+private fun fetchSmallText(url: String): Pair<String, String>? {
+    val request = Request.Builder()
+        .url(url)
+        .header("User-Agent", "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
+        .header("Accept", "text/html,application/xhtml+xml")
+        .get()
+        .build()
+    return try {
+        providerLogoHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val finalUrl = response.request.url
+            if (finalUrl.scheme != "https" || !isPublicLogoLookupHost(finalUrl.host)) return null
+            val body = response.body ?: return null
+            val type = body.contentType()?.toString().orEmpty()
+            if (type.isNotBlank() && !type.contains("text/html", true) &&
+                !type.contains("application/xhtml+xml", true)
+            ) return null
+            val bytes = readBounded(body.byteStream(), 768 * 1024) ?: return null
+            bytes.toString(Charsets.UTF_8) to finalUrl.toString()
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun extractWebsiteLogoCandidates(html: String, pageUrl: String): List<String> {
+    val logo = linkedSetOf<String>()
+    val apple = linkedSetOf<String>()
+    val icons = linkedSetOf<String>()
+    val social = linkedSetOf<String>()
+
+    fun add(target: MutableSet<String>, value: String?) {
+        val raw = value?.trim()?.replace("&amp;", "&")?.replace("&quot;", "\"")
+            ?.replace("&#39;", "'") ?: return
+        if (raw.isBlank() || raw.startsWith("data:", true) || raw.startsWith("javascript:", true)) return
+        val resolved = runCatching { URI(pageUrl).resolve(raw).normalize() }.getOrNull() ?: return
+        if (resolved.scheme != "https") return
+        val resolvedHost = resolved.host?.lowercase(Locale.ROOT)?.trimEnd('.') ?: return
+        if (!isPublicLogoLookupHost(resolvedHost)) return
+        target.add(resolved.toASCIIString())
+    }
+
+    val tagRegex = Regex("""(?is)<(link|meta)\b[^>]*>""")
+    val attrRegex = Regex("""(?is)([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+    for (match in tagRegex.findAll(html)) {
+        val tag = match.groupValues[1].lowercase(Locale.ROOT)
+        val attrs = linkedMapOf<String, String>()
+        for (attr in attrRegex.findAll(match.value)) {
+            val key = attr.groupValues[1].lowercase(Locale.ROOT)
+            val value = attr.groupValues[2].ifBlank {
+                attr.groupValues[3].ifBlank { attr.groupValues[4] }
+            }
+            attrs[key] = value
+        }
+        if (tag == "link") {
+            val rel = attrs["rel"].orEmpty().lowercase(Locale.ROOT)
+            val href = attrs["href"]
+            when {
+                rel.contains("apple-touch-icon") -> add(apple, href)
+                rel.contains("logo") -> add(logo, href)
+                rel.contains("icon") || rel.contains("shortcut") -> add(icons, href)
+            }
+        } else {
+            val key = (attrs["property"].orEmpty() + " " + attrs["name"].orEmpty() +
+                " " + attrs["itemprop"].orEmpty()).lowercase(Locale.ROOT)
+            when {
+                key.contains("og:logo") || key.contains("logo") -> add(logo, attrs["content"])
+                key.contains("twitter:image") || key.contains("og:image") -> add(social, attrs["content"])
+            }
+        }
+    }
+
+    // Schema.org JSON-LD commonly exposes the official brand logo even where no <link> does.
+    val jsonLdLogo = Regex(
+        """(?is)["']logo["']\s*:\s*(?:["']([^"']+)["']|\{\s*["']url["']\s*:\s*["']([^"']+)["'])"""
+    )
+    for (match in jsonLdLogo.findAll(html)) add(logo, match.groupValues[1].ifBlank { match.groupValues[2] })
+
+    return buildList {
+        addAll(logo)
+        addAll(apple)
+        addAll(icons)
+        addAll(social)
+    }
+}
+
+private fun downloadAndCacheProviderImage(context: android.content.Context, providerHost: String, url: String): File? {
+    val request = runCatching {
+        Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
+            .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            .get()
+            .build()
+    }.getOrNull() ?: return null
+
+    return try {
+        providerLogoHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val finalUrl = response.request.url
+            if (finalUrl.scheme != "https" || !isPublicLogoLookupHost(finalUrl.host)) return null
+            val body = response.body ?: return null
+            val bytes = readBounded(body.byteStream(), 4 * 1024 * 1024) ?: return null
+            val extension = providerImageExtension(bytes) ?: return null
+            val folder = File(context.filesDir, "provider-logo-cache")
+            if (!folder.exists() && !folder.mkdirs()) return null
+            val hash = sha256(providerHost)
+            val file = File(folder, "$hash.$extension")
+            file.outputStream().use { it.write(bytes) }
+            file
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray? {
+    input.use { stream ->
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val count = stream.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > maxBytes) return null
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+}
+
+private fun providerImageExtension(bytes: ByteArray): String? {
+    if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return null
+    val prefix = bytes.toString(Charsets.UTF_8).take(2048).trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+    if (prefix.contains("<svg", ignoreCase = true)) return "svg"
+
+    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    if (options.outWidth <= 0 || options.outHeight <= 0 ||
+        options.outWidth > 8192 || options.outHeight > 8192
+    ) return null
+
+    return when {
+        bytes.size >= 8 && bytes[0] == 0x89.toByte() &&
+            bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte() -> "png"
+        bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte() -> "jpg"
+        bytes.size >= 12 && bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
+            bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP" -> "webp"
+        bytes.size >= 6 && (bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) == "GIF87a" ||
+            bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) == "GIF89a") -> "gif"
+        else -> "png"
+    }
+}
+
+private fun findCachedProviderLogo(context: android.content.Context, host: String): File? {
+    val folder = File(context.filesDir, "provider-logo-cache")
+    val prefix = sha256(host) + "."
+    return folder.listFiles()
+        ?.firstOrNull { it.isFile && it.name.startsWith(prefix) && it.length() > 0L }
+        ?.takeIf { file ->
+            val extension = file.extension.lowercase(Locale.ROOT)
+            extension == "svg" || runCatching {
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, options)
+                options.outWidth > 0 && options.outHeight > 0
+            }.getOrDefault(false)
+        }
+}
+
+private fun sha256(value: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
 private fun isPublicLogoLookupHost(host: String): Boolean {
     if (host.length !in 4..253 || !host.contains('.')) return false
     if (host == "localhost" || host.endsWith(".localhost") ||
