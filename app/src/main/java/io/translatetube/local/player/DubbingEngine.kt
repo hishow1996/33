@@ -392,6 +392,15 @@ class DubbingEngine(
                         return@execute
                     }
                     newTrack.setVolume(volume.coerceIn(0.0f, 1.0f))
+                    // Pause/seek can invalidate a queued creation while setVolume is executing.
+                    // Check one last time immediately before play() so stale audio cannot leak.
+                    if (released || playbackGeneration.get() != generation) {
+                        if (track === newTrack) track = null
+                        try { newTrack.pause(); newTrack.flush() } catch (_: Exception) {}
+                        newTrack.release()
+                        created = null
+                        return@execute
+                    }
                     newTrack.play()
                     created = null
                 } catch (e: Exception) {
