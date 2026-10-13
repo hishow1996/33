@@ -1820,7 +1820,7 @@ class PlaybackService : MediaSessionService() {
                     if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
                     val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
                     val total = body.contentLength()
-                    if (total > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
+                    if (total > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
                     body.byteStream().use { ins ->
                         writeTarget.outputStream().buffered().use { out ->
                             val buf = ByteArray(64 * 1024)
@@ -1830,7 +1830,7 @@ class PlaybackService : MediaSessionService() {
                                 val n = ins.read(buf)
                                 if (n < 0) break
                                 got += n
-                                if (got > maxBytes) throw IllegalStateException("音频文件超过 512 MB 限制，已停止下载以保护设备存储")
+                                if (got > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
                                 out.write(buf, 0, n)
                                 if (total > 0) {
                                     val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))

@@ -2,7 +2,7 @@ package io.translatetube.local.player
 
 /** Pure policy for keeping retry audio small, bounded and short-lived. */
 internal object AsrAudioCachePolicy {
-    const val MAX_AUDIO_BYTES = 512L * 1024L * 1024L
+    const val MAX_AUDIO_BYTES = 160L * 1024L * 1024L
     const val CACHE_BUDGET_BYTES = 160L * 1024L * 1024L
     const val TTL_MS = 7L * 24L * 60L * 60L * 1_000L
 
