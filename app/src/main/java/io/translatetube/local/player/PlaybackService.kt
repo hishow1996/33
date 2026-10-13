@@ -1708,7 +1708,7 @@ class PlaybackService : MediaSessionService() {
         val thisJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         try {
             val oldHeight = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }?.height
-            updateUiForSession(key) { state ->
+            updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) state.copy(
                     phase = Phase.PARSING,
                     progress = "YouTube 视频流加载失败，正在刷新播放地址…",
@@ -1731,7 +1731,7 @@ class PlaybackService : MediaSessionService() {
                 qualitySources = choices.sources
                 qualityAudioUrl = choices.audioUrl
                 pm.errorSink.value = null
-                updateUiForSession(key) { state ->
+                updateUiForSession(sessionKey) { state ->
                     state.copy(
                         phase = Phase.PARSING,
                         progress = "正在尝试兼容清晰度 ${fallback.label}…",
@@ -1759,7 +1759,7 @@ class PlaybackService : MediaSessionService() {
                 if (ui.value.key == sessionKey && videoId == failedVideoId) {
                     pm.errorSink.value = null
                     runCatching { pm.originalVolume = 1f }
-                    updateUiForSession(key) {
+                    updateUiForSession(sessionKey) {
                         it.copy(
                             phase = Phase.ERROR,
                             progress = "",
