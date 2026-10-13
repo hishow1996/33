@@ -13,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
