@@ -604,7 +604,7 @@ class PlaybackService : MediaSessionService() {
                         progress = "翻译导入的字幕（${parsedLines.size} 行）…",
                     )
                 }
-                val srcLang = detectLangFromText(parsedLines.firstOrNull()?.text ?: "")
+                val srcLang = detectLangFromText(parsedLines.take(12).joinToString(" ") { it.text })
                 // Use immutable copies so StateFlow/Compose sees translated subtitle text.
                 val translatedLines = applySavedLineOverrides(
                     if (isChineseLanguage(srcLang)) {
@@ -918,7 +918,7 @@ class PlaybackService : MediaSessionService() {
             // 用户导入的字幕优先（SRT/VTT 导入入口）
             if (importedLines != null && importedLines!!.isNotEmpty()) {
                 lines = importedLines
-                srcLang = detectLangFromText(importedLines!!.first().text)
+                srcLang = detectLangFromText(importedLines!!.take(12).joinToString(" ") { it.text })
             }
 
             if (cached != null) {
