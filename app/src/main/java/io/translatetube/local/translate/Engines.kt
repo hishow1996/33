@@ -90,12 +90,37 @@ private fun parseModelTranslations(content: String, size: Int): List<String> {
 }
 
 
+/**
+ * Show the actual response URL in connection errors so endpoint/redirect problems can be
+ * diagnosed. Never include API keys or access tokens from query parameters in user-visible errors.
+ */
+private fun safeDiagnosticUrl(url: okhttp3.HttpUrl): String {
+    val sensitive = setOf("key", "api_key", "apikey", "token", "access_token")
+    val builder = url.newBuilder()
+    url.queryParameterNames
+        .filter { it.lowercase(java.util.Locale.ROOT) in sensitive }
+        .forEach { name -> builder.setQueryParameter(name, "[redacted]") }
+    return builder.build().toString()
+}
+
+private fun responseRoute(response: okhttp3.Response): String {
+    val hops = mutableListOf<String>()
+    var current: okhttp3.Response? = response
+    while (current != null) {
+        hops += "${current.request.method} ${safeDiagnosticUrl(current.request.url)}"
+        current = current.priorResponse
+    }
+    return hops.asReversed().joinToString(" -> ")
+}
+
 private fun post(url: String, headers: Map<String, String>, body: String): String {
     val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
     headers.forEach { (k, v) -> b.header(k, v) }
     http.newCall(b.build()).execute().use { resp ->
         val text = resp.body?.string() ?: throw IllegalStateException("空响应")
-        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}: ${text.take(300)}")
+        if (!resp.isSuccessful) {
+            throw IllegalStateException("HTTP ${resp.code} [${responseRoute(resp)}]: ${text.take(500)}")
+        }
         return text
     }
 }
@@ -105,7 +130,9 @@ private fun get(url: String, headers: Map<String, String>): String {
     headers.forEach { (k, v) -> b.header(k, v) }
     http.newCall(b.build()).execute().use { resp ->
         val text = resp.body?.string() ?: throw IllegalStateException("空响应")
-        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}: ${text.take(300)}")
+        if (!resp.isSuccessful) {
+            throw IllegalStateException("HTTP ${resp.code} [${responseRoute(resp)}]: ${text.take(500)}")
+        }
         return text
     }
 }
