@@ -53,6 +53,8 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
     // 手动切换翻译引擎：写 prefs 即刻生效（下次翻译起用新源）
     fun setActive(id: Long) {
+        // Selecting a provider changes the active engine, not the inline editor visibility.
+        inlineEditingId = null
         activeId = id
         prefs.edit().putLong("active_api_id", id).apply()
     }
