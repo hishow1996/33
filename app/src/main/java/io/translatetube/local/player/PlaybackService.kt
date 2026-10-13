@@ -880,8 +880,38 @@ class PlaybackService : MediaSessionService() {
                     audioFile.delete()
                     if (transientAudio == audioFile) transientAudio = null
                 }
-                lines = asrLines.mapIndexed { i, (a, b, text) -> SubLine(i, a, b, text) }
+                val transcribedLines = asrLines.mapIndexed { i, (a, b, text) ->
+                    SubLine(i, a, b, text)
+                }
+                lines = transcribedLines
                 srcLang = whisper?.lastLang?.takeIf { it.isNotBlank() } ?: "en"
+
+                // Keep the completed ASR transcript as the source-subtitle cache. The downloaded
+                // audio is intentionally transient; without this checkpoint, a later translation
+                // retry would download the same 30–40 MB audio stream and run ASR again.
+                if (videoId != null && importedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                    val sourceArr = org.json.JSONArray()
+                    for (line in transcribedLines) {
+                        sourceArr.put(
+                            org.json.JSONObject()
+                                .put("s", line.startMs)
+                                .put("e", line.endMs)
+                                .put("t", line.text)
+                        )
+                    }
+                    db.subtitleCacheDao().put(
+                        io.translatetube.local.data.SubtitleCacheEntity(
+                            sourceSubtitleCacheKey,
+                            srcLang,
+                            sourceArr.toString(),
+                            System.currentTimeMillis(),
+                        )
+                    )
+                    android.util.Log.i(
+                        "PlaybackService",
+                        "Cached ${transcribedLines.size} ASR source subtitle cues for retry reuse",
+                    )
+                }
                 }
             }
 
