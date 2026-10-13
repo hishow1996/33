@@ -85,6 +85,7 @@ class SystemTts(context: Context) : TtsEngine {
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
     private val ready = java.util.concurrent.CountDownLatch(1)
     @Volatile private var ok = false
+    @Volatile private var closed = false
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile private var activeError = false
@@ -134,6 +135,7 @@ class SystemTts(context: Context) : TtsEngine {
     @Synchronized
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
         if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
+        if (closed) throw IllegalStateException("系统 TTS 实例已经关闭")
         val tts = ttsRef.get()
             ?: throw IllegalStateException("系统 TTS 实例已经关闭")
         if (!ok) throw IllegalStateException("系统 TTS 尚未初始化成功")
@@ -154,6 +156,9 @@ class SystemTts(context: Context) : TtsEngine {
                 runCatching { tts.stop() }
                 throw IllegalStateException("系统 TTS 合成超时")
             }
+            // close() wakes a blocked synth when a playback session is replaced; that is not a
+            // completed synthesis and the temporary WAV must not be consumed as if it were ready.
+            if (closed) throw IllegalStateException("系统 TTS 合成已取消")
             if (activeError) {
                 throw IllegalStateException("系统 TTS 合成回调返回错误")
             }
@@ -270,8 +275,10 @@ class SystemTts(context: Context) : TtsEngine {
     }
 
     override fun close() {
+        closed = true
+        activeError = true
         activeLatch?.countDown()
-        try { ttsRef.get()?.stop(); ttsRef.get()?.shutdown() } catch (_: Exception) {}
-        ttsRef.set(null)
+        val current = ttsRef.getAndSet(null)
+        try { current?.stop(); current?.shutdown() } catch (_: Exception) {}
     }
 }
