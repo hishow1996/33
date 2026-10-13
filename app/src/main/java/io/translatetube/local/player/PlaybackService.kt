@@ -2022,17 +2022,17 @@ class PlaybackService : MediaSessionService() {
         }
 
         if (d != null && st.dubbingOn) {
-            val activeLine = st.lines.getOrNull(dubLine)
-            // Empty audio can also mean translation is missing, engine initialization failed,
-            // or an earlier run cached an empty marker. Never keep the whole video silent.
-            if (dubLine >= 0 && activeLine?.zh?.isNotBlank() == true && d.isSilent(dubLine)) {
+            // Empty audio can mean translation is missing, synthesis failed, or an old
+            // cache has an empty marker. In every case preserve the source audio for this cue,
+            // including when the user has requested original-audio muting.
+            if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
                 if (st.muteOriginal || st.noModelHint == null) {
                     ui.update {
                         it.copy(
                             muteOriginal = false,
-                            noModelHint = "部分字幕未能合成配音，已自动恢复原声，避免出现无声片段。请检查系统文字转语音引擎/语音数据，或重新下载 Kokoro 配音模型。"
+                            noModelHint = "部分字幕没有可播放的中文配音（译文为空或合成失败），已自动恢复原声，避免出现无声片段。请检查译文完整性、系统文字转语音引擎/语音数据，或重新下载 Kokoro 配音模型。"
                         )
                     }
                 }
