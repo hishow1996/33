@@ -474,7 +474,7 @@ private fun apiConnectionFailureMessage(profile: ApiProfile, error: Exception): 
         authModeMismatch && profile.type == "GEMINI" ->
             "Google 返回 OAuth2 认证错误：请求地址不接受 API Key。已修正 Gemini 的官方地址与认证头；请更新此版本，并确认密钥来自 Google AI Studio、模型 ID 可用。原始响应：" + detail
         authModeMismatch && profile.type == "GCLOUD" ->
-            "当前 Google 服务接口要求 OAuth2，不能使用 API Key。此应用的 Google 翻译 API 配置走支持 API Key 的 Cloud Translation Basic v2；不要将它配置为 Translation v3 或 Vertex AI 等 OAuth-only 接口。原始响应：" + detail
+            "Google 翻译配置已固定使用 Cloud Translation Basic v2，并通过 key 查询参数发送 API Key。返回 OAuth2-only 错误与该接口不符；请先安装包含本次修复的新版，再确认 Google Cloud 项目已启用 Cloud Translation API，且 API Key 的 API 限制允许该服务。原始响应：" + detail
         authModeMismatch ->
             "Google 服务端拒绝了 API Key，当前请求地址很可能要求 OAuth2。请核对服务类型和请求地址，不要把 Vertex AI/Cloud Translation v3 地址当作 Gemini Developer API。原始响应：" + detail
         else ->
