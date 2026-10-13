@@ -1207,7 +1207,8 @@ private fun SubtitleList(
                 val translatedText = line.zh
                     ?.let { SubtitleParsers.cleanTranslatedText(it) }
                     ?.takeIf { it.isNotBlank() }
-                    ?: "正在翻译…"
+                    // SubtitleList is shown after processing reaches READY; don't leave stale progress text.
+                    ?: "译文暂不可用"
                 val showOriginalText = activeDub && line.text.isNotBlank() &&
                     subtitleComparisonKey(line.text) != subtitleComparisonKey(translatedText)
 

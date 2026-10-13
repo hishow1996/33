@@ -919,12 +919,13 @@ class PlaybackService : MediaSessionService() {
                 throw TranslationFailureException(message, e)
             }
 
-            if (translated != null) {
+            val batchTranslations = translated
+            if (batchTranslations != null) {
                 updatedLines = updatedLines.mapIndexed { index, line ->
                     if (index in start until end) {
                         line.copy(
                             zh = SubtitleParsers.cleanTranslatedText(
-                                translated.getOrNull(index - start)
+                                batchTranslations.getOrNull(index - start)
                             )
                         )
                     } else line
