@@ -1255,7 +1255,6 @@ class PlaybackService : MediaSessionService() {
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
-                activeAsrAudioPaths.acquire(leasedAudioPath)
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcmFile = try {
@@ -2178,19 +2177,27 @@ class PlaybackService : MediaSessionService() {
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
             val destination = asrAudioCacheFile(videoId)
-            val downloaded = try {
-                downloadAudio(stream.content, destination, sessionKey)
-            } catch (manifest: HlsManifestPayloadException) {
-                HlsAudioDownloader.download(stream.content, destination) { detail ->
-                    updateUiForSession(sessionKey) { state ->
-                        if (state.key == sessionKey) {
-                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
-                        } else state
+            // Lease the destination before publishing a completed cache file, preventing a
+            // concurrent cache prune from deleting it before the caller starts decoding.
+            activeAsrAudioPaths.acquire(destination.absolutePath)
+            var leaseTransferred = false
+            try {
+                val downloaded = try {
+                    downloadAudio(stream.content, destination, sessionKey)
+                } catch (manifest: HlsManifestPayloadException) {
+                    HlsAudioDownloader.download(stream.content, destination) { detail ->
+                        updateUiForSession(sessionKey) { state ->
+                            if (state.key == sessionKey) {
+                                state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                            } else state
+                        }
                     }
                 }
-            }
-            downloaded.also {
-                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
+                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = downloaded)
+                leaseTransferred = true
+                downloaded
+            } finally {
+                if (!leaseTransferred) activeAsrAudioPaths.release(destination.absolutePath)
             }
         }
     }
@@ -2231,20 +2238,10 @@ class PlaybackService : MediaSessionService() {
                 cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             }
             val destination = asrAudioCacheFile(identity)
-            val cachedAudio = if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
-                HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
-                    updateUiForSession(sessionKey) { state ->
-                        if (state.key == sessionKey) {
-                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
-                        } else state
-                    }
-                }
-            } else {
-                try {
-                    downloadAudio(mediaUrl, destination, sessionKey, headers)
-                } catch (manifest: HlsManifestPayloadException) {
-                    // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
-                    // Detect the response body, then re-open through the bounded HLS segment path.
+            activeAsrAudioPaths.acquire(destination.absolutePath)
+            var leaseTransferred = false
+            try {
+                val cachedAudio = if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
                     HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
                         updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {
@@ -2252,10 +2249,26 @@ class PlaybackService : MediaSessionService() {
                             } else state
                         }
                     }
+                } else {
+                    try {
+                        downloadAudio(mediaUrl, destination, sessionKey, headers)
+                    } catch (manifest: HlsManifestPayloadException) {
+                        // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
+                        // Detect the response body, then re-open through the bounded HLS segment path.
+                        HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                                } else state
+                            }
+                        }
+                    }
                 }
-            }
-            cachedAudio.also {
-                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
+                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = cachedAudio)
+                leaseTransferred = true
+                cachedAudio
+            } finally {
+                if (!leaseTransferred) activeAsrAudioPaths.release(destination.absolutePath)
             }
         }
     }
@@ -2266,6 +2279,8 @@ class PlaybackService : MediaSessionService() {
         val now = System.currentTimeMillis()
         if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
             file.setLastModified(now)
+            // A cache hit transfers one reader lease to the caller before pruning or returning.
+            activeAsrAudioPaths.acquire(file.absolutePath)
             file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
             return file
         }
@@ -2712,7 +2727,6 @@ class PlaybackService : MediaSessionService() {
                         sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
                     val leasedPath = sourceFile?.absolutePath
-                    activeAsrAudioPaths.acquire(leasedPath)
                     try {
                         AudioExtract.decodeTo16kMono(
                             this@PlaybackService,
