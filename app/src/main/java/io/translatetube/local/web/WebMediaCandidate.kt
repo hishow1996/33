@@ -52,7 +52,7 @@ internal object WebMediaCandidatePolicy {
         }.getOrNull()?.lowercase(Locale.ROOT)
 
         val queryMime = queryValue(setOf("mime", "type", "content_type")).orEmpty()
-        val queryFormat = queryValue(setOf("format", "output", "container", "stream_type")).orEmpty()
+        val queryFormat = queryValue(setOf("format", "output", "container", "stream_type", "type")).orEmpty()
         val effectiveMime = mime.ifBlank { queryMime }
         val isHls = extension == "m3u8" ||
             queryFormat in setOf("m3u8", "hls", "application/x-mpegurl", "application/vnd.apple.mpegurl") ||
