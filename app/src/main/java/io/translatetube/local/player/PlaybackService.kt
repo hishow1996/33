@@ -346,6 +346,7 @@ class PlaybackService : MediaSessionService() {
         // Do not use Android's indeterminate notification animation as a fake progress display.
         val measuredPercent: Int? = when (state.phase) {
             Phase.DOWNLOADING_AUDIO -> percentFromProgress(state.progress)
+                ?: ratioPercentFromProgress(state.progress)
             Phase.TRANSCRIBING -> ratioPercentFromProgress(state.progress)
                 ?: percentFromProgress(state.progress)
             Phase.TRANSLATING -> ratioPercentFromProgress(state.progress)
