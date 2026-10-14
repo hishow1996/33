@@ -26,6 +26,58 @@ class ActiveFileLeaseRegistryTest {
     }
 
     @Test
+    fun conditionalDeletionWaitsUntilAllLeasesAreReleased() {
+        val leases = ActiveFileLeaseRegistry()
+        val path = "/cache/asr_audio/video.bin"
+        var deleted = false
+
+        leases.acquire(path)
+        leases.acquire(path)
+        assertFalse(leases.deleteIfUnleased(path) {
+            deleted = true
+            true
+        })
+        assertFalse(deleted)
+
+        leases.release(path)
+        assertFalse(leases.deleteIfUnleased(path) {
+            deleted = true
+            true
+        })
+        assertFalse(deleted)
+
+        leases.release(path)
+        assertTrue(leases.deleteIfUnleased(path) {
+            deleted = true
+            true
+        })
+        assertTrue(deleted)
+    }
+
+    @Test
+    fun currentReaderCanDeleteFailedFileOnlyWhenNoOtherReaderOwnsIt() {
+        val leases = ActiveFileLeaseRegistry()
+        val path = "/cache/asr_audio/video.bin"
+        var deleted = false
+
+        leases.acquire(path)
+        assertTrue(leases.deleteIfLeaseCountAtMost(path, allowedLeaseCount = 1) {
+            deleted = true
+            true
+        })
+        assertTrue(deleted)
+
+        deleted = false
+        leases.acquire(path)
+        leases.acquire(path)
+        assertFalse(leases.deleteIfLeaseCountAtMost(path, allowedLeaseCount = 1) {
+            deleted = true
+            true
+        })
+        assertFalse(deleted)
+    }
+
+    @Test
     fun ignoresBlankPathsAndExtraReleases() {
         val leases = ActiveFileLeaseRegistry()
 
