@@ -301,6 +301,34 @@ fun WebVideoScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+                if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
+                    var updatingRules by remember(currentPage) { mutableStateOf(false) }
+                    TextButton(
+                        enabled = !updatingRules && !ytDlpBusy,
+                        onClick = {
+                            updatingRules = true
+                            ytDlpHint = null
+                            status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
+                            ytScope.launch(Dispatchers.IO) {
+                                try {
+                                    val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
+                                    mainHandler.post {
+                                        updatingRules = false
+                                        status = message
+                                    }
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    mainHandler.post {
+                                        updatingRules = false
+                                        ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
+                                        status = "规则更新失败，可稍后重试。"
+                                    }
+                                }
+                            }
+                        },
+                    ) { Text(if (updatingRules) "更新中…" else "更新 yt-dlp 解析规则") }
+                }
             }
             if (candidatesState.value.isEmpty() && WebMediaUrlPolicy.normalizePageUrl(currentPage) != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

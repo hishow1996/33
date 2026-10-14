@@ -2532,11 +2532,12 @@ class PlaybackService : MediaSessionService() {
             try {
                 // yt-dlp 源优先：直接下纯音频（bestaudio）进转写，比流式拉整视频省流量省电；
                 // 失败（站点不支持纯音频/网络异常/产物异常）自动回落现有 HLS/直链管线。
-                val ytdlpPage = io.translatetube.local.yt.YtDlpRepo.claimForMediaUrl(mediaUrl)
-                if (ytdlpPage != null) {
+                val ytdlpOrigin = io.translatetube.local.yt.YtDlpRepo.claimForMediaUrl(mediaUrl)
+                if (ytdlpOrigin != null) {
                     try {
                         val directAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
-                            applicationContext, ytdlpPage, destination,
+                            applicationContext, ytdlpOrigin.pageUrl, destination,
+                            cookieHeader = ytdlpOrigin.cookie,
                         ) { percent ->
                             updateUiForSession(sessionKey) { state ->
                                 if (state.key == sessionKey) {

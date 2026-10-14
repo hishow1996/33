@@ -7,6 +7,7 @@ import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.mapper.VideoFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * yt-dlp 通用站点提取封装：B站 / TikTok / Twitter 等上千个网站的视频地址解析。
@@ -41,19 +42,20 @@ object YtDlpRepo {
 
     fun isReady(): Boolean = inited
 
-    // ---- 会话级来源标记：resolve 成功后记录页面地址，供转写音频走 yt-dlp 直下 ----
+    // ---- 会话级来源标记：resolve 成功后记录 mediaUrl → 源页面/Cookie 映射 ----
+    // 最近 8 条（LRU）：用户在多个视频间往返切换时，旧会话的转写仍能走 yt-dlp 直下。
+    // 进程重建后丢失（claim 返回 null），调用方自动回落现有流式管线；
+    // 标记只存内存，Cookie 不持久化，与工程「下载凭据不落盘」约定一致。
 
-    @Volatile private var lastResolvedPageUrl: String? = null
-    @Volatile private var lastResolvedMediaUrl: String? = null
-    @Volatile private var lastResolvedCookie: String? = null
+    data class ClaimedOrigin(val pageUrl: String, val cookie: String?)
 
-    /**
-     * 若 mediaUrl 来自本进程内最近一次 yt-dlp 解析，返回其源页面地址。
-     * 进程重建后标记丢失（返回 null），调用方自动回落现有流式管线；
-     * 标记只存内存，Cookie 不持久化，与工程「下载凭据不落盘」约定一致。
-     */
-    fun claimForMediaUrl(mediaUrl: String): String? =
-        lastResolvedMediaUrl?.takeIf { it == mediaUrl }?.let { lastResolvedPageUrl }
+    private val resolvedOrigins = object : LinkedHashMap<String, ClaimedOrigin>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ClaimedOrigin>): Boolean = size > 8
+    }
+
+    /** 若 mediaUrl 来自本进程内最近几次 yt-dlp 解析，返回其源页面地址与 Cookie。 */
+    fun claimForMediaUrl(mediaUrl: String): ClaimedOrigin? =
+        synchronized(resolvedOrigins) { resolvedOrigins[mediaUrl] }
 
     /**
      * 用 yt-dlp 直接下载网页视频的纯音频（bestaudio），供 Whisper 转写。
@@ -67,6 +69,7 @@ object YtDlpRepo {
         pageUrl: String,
         dest: File,
         onProgress: (Int) -> Unit = {},
+        cookieHeader: String? = null,
     ): File = withContext(Dispatchers.IO) {
         ensureReady(ctx)
         val parent = dest.parentFile
@@ -81,8 +84,12 @@ object YtDlpRepo {
             addOption("--retries", "3")
             // 上限防护：纯音频通常 5~60MB，300M 足够宽容且防爆盘
             addOption("--max-filesize", "300M")
+            // 分片并发下载提速（HLS/dash 音轨常见分段）
+            addOption("-N", "4")
+            // 逐行刷新进度（外部程序解析标准做法，避免单行 \r 刷新吞进度）
+            addOption("--newline")
             addOption("-o", dest.absolutePath)
-            lastResolvedCookie?.takeIf { it.isNotBlank() }?.let {
+            cookieHeader?.takeIf { it.isNotBlank() }?.let {
                 addOption("--add-headers", "Cookie:$it")
             }
         }
@@ -107,6 +114,19 @@ object YtDlpRepo {
         if (!u.startsWith("http://", ignoreCase = true) && !u.startsWith("https://", ignoreCase = true)) return false
         val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull() ?: return false
         return host.isNotEmpty() && !host.endsWith(".local")
+    }
+
+    /**
+     * 更新 yt-dlp 站点解析规则（STABLE 渠道）。
+     * 网站改版后旧规则失效导致解析失败时，更新规则是第一自救手段；
+     * 下载量约 30MB，由用户显式触发。返回用户可读的结果文案。
+     */
+    suspend fun updateRules(ctx: Context): String = withContext(Dispatchers.IO) {
+        ensureReady(ctx)
+        when (YoutubeDL.updateYoutubeDL(ctx.applicationContext, YoutubeDL.UpdateChannel.STABLE)) {
+            YoutubeDL.UpdateStatus.DONE -> "yt-dlp 解析规则已更新到最新版，可重试解析"
+            YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp 解析规则已是最新版；失败可能是站点限制或网络问题"
+        }
     }
 
     /** 解析结果：可直接交给播放器的媒体地址 + 必要的请求头。 */
@@ -165,9 +185,9 @@ object YtDlpRepo {
             val headers = info.httpHeaders.orEmpty()
             val effectiveCookie = headers["Cookie"].orEmpty().ifBlank { cookieHeader.orEmpty() }
             // 记录会话级来源标记：转写音频将优先经 yt-dlp 直下纯音频（downloadAudio）
-            lastResolvedPageUrl = pageUrl.trim()
-            lastResolvedMediaUrl = url
-            lastResolvedCookie = effectiveCookie.ifBlank { null }
+            synchronized(resolvedOrigins) {
+                resolvedOrigins[url] = ClaimedOrigin(pageUrl.trim(), effectiveCookie.ifBlank { null })
+            }
             ResolvedMedia(
                 title = info.title ?: info.fulltitle ?: "yt-dlp 视频",
                 durationSec = info.duration,
