@@ -72,6 +72,7 @@ data class PlayerUiState(
     val lines: List<SubLine> = emptyList(),
     val currentLine: Int = -1,
     val preparedUntil: Int = 0,
+    val preparedCount: Int = 0,
     val totalLines: Int = 0,
     val dubbingOn: Boolean = true,
     val muteOriginal: Boolean = true,
@@ -692,6 +693,7 @@ class PlaybackService : MediaSessionService() {
                         lines = translatedLines,
                         totalLines = translatedLines.size,
                         preparedUntil = 0,
+                    preparedCount = 0,
                         sourceLang = "zh",
                         error = null,
                         noModelHint = null,
@@ -728,7 +730,12 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
+                        .collect { (prefix, readyCount) ->
+                            updateUiForSession(sessionKey) {
+                                it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                            }
+                        }
                 }
                 lastLineIdx = Int.MIN_VALUE
                 ensureCurrentSession(sessionKey)
@@ -743,6 +750,7 @@ class PlaybackService : MediaSessionService() {
                         lines = translatedLines,
                         totalLines = translatedLines.size,
                         preparedUntil = d.preparedUntil.value,
+                        preparedCount = d.preparedCount.value,
                         sourceLang = "zh",
                     )
                 }
@@ -867,7 +875,12 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
+                        .collect { (prefix, readyCount) ->
+                            updateUiForSession(sessionKey) {
+                                it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                            }
+                        }
                 }
 
                 // Store a cache only after import + translation produced useful subtitle rows.
@@ -1728,7 +1741,12 @@ class PlaybackService : MediaSessionService() {
                             throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频配音引擎")
                         }
                         dubCollectJob = scope.launch {
-                            d.preparedUntil.collect { n -> updateUiForSession(key) { it.copy(preparedUntil = n) } }
+                            kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
+                                .collect { (prefix, readyCount) ->
+                                    updateUiForSession(key) {
+                                        it.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                    }
+                                }
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -2926,9 +2944,14 @@ class PlaybackService : MediaSessionService() {
                 }
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n ->
-                        updateUiForSession(sessionKey) { state -> if (state.key == sessionKey) state.copy(preparedUntil = n) else state }
-                    }
+                    kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
+                        .collect { (prefix, readyCount) ->
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(preparedUntil = prefix, preparedCount = readyCount)
+                                } else state
+                            }
+                        }
                 }
                 val arr = org.json.JSONArray()
                 for (line in updated) arr.put(
@@ -3082,15 +3105,17 @@ class PlaybackService : MediaSessionService() {
 
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    engine.preparedUntil.collect { count ->
-                        updateUiForSession(sessionKey) { state ->
-                            state.copy(
-                                preparedUntil = count,
-                                phase = if (count >= updated.size) Phase.READY else Phase.SYNTHESIZING,
-                                progress = if (count >= updated.size) "" else "正在准备多人物配音…",
-                            )
+                    kotlinx.coroutines.flow.combine(engine.preparedUntil, engine.preparedCount) { prefix, readyCount -> prefix to readyCount }
+                        .collect { (prefix, readyCount) ->
+                            updateUiForSession(sessionKey) { state ->
+                                state.copy(
+                                    preparedUntil = prefix,
+                                    preparedCount = readyCount,
+                                    phase = if (prefix >= updated.size) Phase.READY else Phase.SYNTHESIZING,
+                                    progress = if (prefix >= updated.size) "" else "正在准备多人物配音…",
+                                )
+                            }
                         }
-                    }
                 }
 
                 val cacheRows = org.json.JSONArray()
