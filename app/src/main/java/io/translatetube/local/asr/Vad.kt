@@ -19,18 +19,27 @@ fun vadSegments(
     val segments = mutableListOf<Pair<Long, Long>>()
     try {
         val window = 512
+        // VAD consumes each window synchronously; reuse one fixed buffer rather than allocating
+        // a new FloatArray for every 32 ms window on long tracks.
+        val windowSamples = FloatArray(window)
         var offset = 0
         while (offset + window <= pcm.size) {
             checkActive()
-            vad.acceptWaveform(pcm.copyOfRange(offset, offset + window))
+            pcm.copyInto(
+                windowSamples,
+                destinationOffset = 0,
+                startIndex = offset,
+                endIndex = offset + window,
+            )
+            vad.acceptWaveform(windowSamples)
             drainVad(vad, sr, segments, pcm.size.toLong())
             offset += window
         }
         if (offset < pcm.size) {
             checkActive()
-            val tail = FloatArray(window)
-            pcm.copyInto(tail, destinationOffset = 0, startIndex = offset, endIndex = pcm.size)
-            vad.acceptWaveform(tail)
+            windowSamples.fill(0f)
+            pcm.copyInto(windowSamples, destinationOffset = 0, startIndex = offset, endIndex = pcm.size)
+            vad.acceptWaveform(windowSamples)
             drainVad(vad, sr, segments, pcm.size.toLong())
         }
         checkActive()
@@ -54,13 +63,14 @@ fun vadSegmentsFromFile(
     val segments = mutableListOf<Pair<Long, Long>>()
     val window = 512
     val windowBytes = ByteArray(window * 2)
+    // Reuse one conversion window for the entire file-backed pass to avoid sustained GC churn.
+    val floats = FloatArray(window)
     try {
         BufferedInputStream(FileInputStream(pcmFile.file), 32 * 1024).use { input ->
             var remainingSamples = pcmFile.sampleCount
             while (remainingSamples >= window) {
                 checkActive()
                 readFully(input, windowBytes)
-                val floats = FloatArray(window)
                 var byteIndex = 0
                 for (sampleIndex in 0 until window) {
                     val raw = (windowBytes[byteIndex].toInt() and 0xff) or
@@ -77,7 +87,6 @@ fun vadSegmentsFromFile(
                 val tailByteCount = remainingSamples.toInt() * 2
                 windowBytes.fill(0)
                 readFully(input, windowBytes, tailByteCount)
-                val floats = FloatArray(window)
                 var byteIndex = 0
                 for (sampleIndex in 0 until window) {
                     val raw = (windowBytes[byteIndex].toInt() and 0xff) or
