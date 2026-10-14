@@ -108,6 +108,8 @@ class PlaybackService : MediaSessionService() {
     private var dubbing: DubbingEngine? = null
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
     private var whisper: WhisperEngine? = null
+    // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
+    private val whisperMutex = kotlinx.coroutines.sync.Mutex()
 
     private fun retireCurrentDubbing() {
         val previous = dubbing ?: return
@@ -1142,14 +1144,25 @@ class PlaybackService : MediaSessionService() {
                     else AudioExtract.decodeTo16kMono(this@PlaybackService, audioFile as Uri, null)
                 }
                 ensureCurrentSession(key)
-                if (whisper == null) whisper = WhisperEngine(this)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) { vadSegments(this@PlaybackService, pcm.samples) }
                 ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
-                val asrLines = withContext(Dispatchers.IO) {
-                    whisper!!.transcribeBySegments(pcm.samples, segs) { done, total ->
-                        updateUiForSession(key) { it.copy(progress = "转写中 $done/$total 段") }
+                // A canceled coroutine cannot interrupt a blocking native decode immediately.
+                // Serialize access to the shared recognizer and stop the old transcript between
+                // VAD segments as soon as that native call returns.
+                val asrLines = whisperMutex.withLock {
+                    ensureCurrentSession(key)
+                    withContext(Dispatchers.IO) {
+                        val engine = whisper ?: WhisperEngine(this@PlaybackService).also { whisper = it }
+                        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        engine.transcribeBySegments(
+                            pcm.samples,
+                            segs,
+                            checkActive = { ownerJob?.ensureActive() },
+                        ) { done, total ->
+                            updateUiForSession(key) { it.copy(progress = "转写中 $done/$total 段") }
+                        }
                     }
                 }
                 ensureCurrentSession(key)

@@ -10,6 +10,7 @@ import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 /** Whisper base 多语言本地转写（sherpa-onnx） */
 class WhisperEngine(ctx: Context) : AutoCloseable {
     private val recognizer: OfflineRecognizer
+    @Volatile private var closed = false
     /** 最近一次转写检测到的语言码（如 "en"/"ja"） */
     @Volatile var lastLang: String = ""
         private set
@@ -35,7 +36,9 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
     }
 
     /** 一次转写整段 PCM（16k mono float），自动检测语言 */
+    @Synchronized
     fun transcribe(pcm: FloatArray): String {
+        check(!closed) { "Whisper 识别器已关闭" }
         require(pcm.isNotEmpty()) { "没有可供 Whisper 转写的音频样本" }
         val stream = recognizer.createStream()
         try {
@@ -51,10 +54,12 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
     }
 
     /** 长音频分段转写：30s 窗口 + 1s 重叠，返回带时间轴文本 */
+    @Synchronized
     fun transcribeSegmented(
         pcm: FloatArray,
         onProgress: (doneSec: Long, totalSec: Long) -> Unit = { _, _ -> },
     ): List<Pair<Long, String>> {
+        check(!closed) { "Whisper 识别器已关闭" }
         val sr = 16000
         val window = 30 * sr
         val hop = 29 * sr
@@ -74,21 +79,28 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
     }
 
     /** VAD 分段精确转写：段起点/终点来自 VAD，行级时间轴 */
+    @Synchronized
     fun transcribeBySegments(
         pcm: FloatArray,
         segs: List<Pair<Long, Long>>,
+        checkActive: () -> Unit = {},
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): List<Triple<Long, Long, String>> {
+        check(!closed) { "Whisper 识别器已关闭" }
         val sr = 16000
         val durationMs = pcm.size.toLong() * 1000L / sr
         val out = mutableListOf<Triple<Long, Long, String>>()
         segs.forEachIndexed { i, (a, b) ->
+            // Cancel between native calls. The current sherpa decode itself is synchronous and
+            // cannot be preempted safely while native memory is in use.
+            checkActive()
             val startMs = a.coerceIn(0L, durationMs)
             val endMs = b.coerceIn(startMs, durationMs)
             val s0 = (startMs * sr / 1000L).toInt()
             val s1 = (endMs * sr / 1000L).toInt()
             if (s1 > s0) {
                 val text = transcribe(pcm.copyOfRange(s0, s1)).trim()
+                checkActive()
                 if (text.isNotEmpty()) out += Triple(startMs, endMs, text)
             }
             onProgress(i + 1, segs.size)
@@ -96,5 +108,10 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         return out
     }
 
-    override fun close() = recognizer.release()
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+        recognizer.release()
+    }
 }
