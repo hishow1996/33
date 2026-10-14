@@ -1885,7 +1885,7 @@ class PlaybackService : MediaSessionService() {
                         muteOriginal = false,
                         noModelHint = null,
                         subtitleTrackStatus = if (extractedLocalAudioForAsr) {
-                            if (ui.value.lines.isNotEmpty()) {
+                            if (it.lines.isNotEmpty()) {
                                 "本地音轨识别已完成，但后续处理失败；已保留字幕结果，点击重试可继续。"
                             } else {
                                 "本地视频音轨提取或语音识别失败；请确认文件包含可读取的音轨。"
