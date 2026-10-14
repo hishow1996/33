@@ -42,19 +42,28 @@ internal object WebMediaCandidatePolicy {
         val path = uri.path.orEmpty().substringAfterLast('/').lowercase(Locale.ROOT)
         val extension = path.substringAfterLast('.', missingDelimiterValue = "")
         val mime = mimeType.orEmpty().substringBefore(';').trim().lowercase(Locale.ROOT)
-        val queryMime = runCatching {
+        fun queryValue(names: Set<String>): String? = runCatching {
             uri.rawQuery.orEmpty().split('&').firstNotNullOfOrNull { part ->
                 val name = part.substringBefore('=').lowercase(Locale.ROOT)
-                if (name in setOf("mime", "type", "content_type")) {
+                if (name in names) {
                     java.net.URLDecoder.decode(part.substringAfter('=', ""), Charsets.UTF_8.name())
                 } else null
             }
-        }.getOrNull()?.lowercase(Locale.ROOT).orEmpty()
+        }.getOrNull()?.lowercase(Locale.ROOT)
+
+        val queryMime = queryValue(setOf("mime", "type", "content_type")).orEmpty()
+        val queryFormat = queryValue(setOf("format", "output", "container", "stream_type")).orEmpty()
         val effectiveMime = mime.ifBlank { queryMime }
+        val isHls = extension == "m3u8" ||
+            queryFormat in setOf("m3u8", "hls", "application/x-mpegurl", "application/vnd.apple.mpegurl") ||
+            effectiveMime.contains("mpegurl")
+        val isDash = extension == "mpd" ||
+            queryFormat in setOf("mpd", "dash", "application/dash+xml") ||
+            effectiveMime.contains("dash+xml")
 
         val kind = when {
-            extension == "m3u8" || effectiveMime.contains("mpegurl") -> WebMediaKind.HLS
-            extension == "mpd" || effectiveMime.contains("dash+xml") -> WebMediaKind.DASH
+            isHls -> WebMediaKind.HLS
+            isDash -> WebMediaKind.DASH
             extension in audioExtensions || effectiveMime.startsWith("audio/") -> WebMediaKind.AUDIO_FILE
             extension in videoExtensions || effectiveMime.startsWith("video/") -> WebMediaKind.VIDEO_FILE
             mediaElement.equals("audio", ignoreCase = true) -> WebMediaKind.MEDIA_ELEMENT
@@ -63,9 +72,9 @@ internal object WebMediaCandidatePolicy {
         }
 
         val inferredMime = when {
-            effectiveMime.isNotBlank() -> effectiveMime
             kind == WebMediaKind.HLS -> "application/x-mpegURL"
             kind == WebMediaKind.DASH -> "application/dash+xml"
+            effectiveMime.isNotBlank() -> effectiveMime
             kind == WebMediaKind.AUDIO_FILE -> when (extension) {
                 "m4a" -> "audio/mp4"
                 "mp3" -> "audio/mpeg"
