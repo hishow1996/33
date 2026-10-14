@@ -154,7 +154,7 @@ Section("转写引擎") {
         )
         AsrProviderCard(
             title = "Kawa",
-            subtitle = "每月 1,000 分钟*",
+            subtitle = "每月 1,000 分钟免费",
             selected = asrEngine == "kawa",
             modifier = Modifier.weight(1f),
             onClick = {
@@ -172,11 +172,6 @@ Section("转写引擎") {
             style = MaterialTheme.typography.bodySmall,
         )
     } else {
-        val providerTitle = when (asrEngine) {
-            "elevenlabs" -> "ElevenLabs Scribe"
-            "cartesia" -> "Cartesia Ink"
-            else -> "Kawa"
-        }
         val selectedApiKey = when (asrEngine) {
             "elevenlabs" -> elevenLabsKey
             "cartesia" -> cartesiaKey
