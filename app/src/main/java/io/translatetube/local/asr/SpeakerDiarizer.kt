@@ -78,8 +78,7 @@ object SpeakerDiarizer {
                     download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive)
                     checkActive()
                     if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
-                    if (embedding.exists() && !embedding.delete()) throw java.io.IOException("无法替换旧声纹模型")
-                    if (!temp.renameTo(embedding)) throw java.io.IOException("无法安装声纹模型")
+                    AtomicFileInstaller.install(temp, embedding)
                 } finally {
                     temp.delete()
                 }
@@ -186,8 +185,7 @@ object SpeakerDiarizer {
                     )
                 }
             }
-            if (destination.exists() && !destination.delete()) throw java.io.IOException("无法替换旧模型文件")
-            if (!temp.renameTo(destination)) throw java.io.IOException("无法安装模型文件")
+            AtomicFileInstaller.install(temp, destination)
         } catch (e: Exception) {
             temp.delete()
             throw e
@@ -230,8 +228,7 @@ object SpeakerDiarizer {
                 }
             }
             if (!found) throw java.io.IOException("模型包中未找到 model.onnx")
-            if (destination.exists() && !destination.delete()) throw java.io.IOException("无法替换旧分离模型")
-            if (!temp.renameTo(destination)) throw java.io.IOException("无法安装分离模型")
+            AtomicFileInstaller.install(temp, destination)
         } catch (e: Exception) {
             temp.delete()
             throw e
