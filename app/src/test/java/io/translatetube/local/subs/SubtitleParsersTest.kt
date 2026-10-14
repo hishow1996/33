@@ -204,4 +204,28 @@ class SubtitleParsersTest {
         assertEquals(360_001_000L, parsed.single().endMs)
     }
 
+
+    @Test
+    fun largeSubtitleParsingHonorsCancellationBetweenInputChunks() {
+        val source = buildString {
+            appendLine("WEBVTT")
+            appendLine()
+            repeat(400) { index ->
+                val start = index.toString().padStart(2, '0')
+                appendLine("00:00:${(index % 60).toString().padStart(2, '0')}.000 --> 00:00:${((index + 1) % 60).toString().padStart(2, '0')}.000")
+                appendLine("subtitle $index")
+                appendLine()
+            }
+        }
+        var checks = 0
+        val error = runCatching {
+            SubtitleParsers.parseAutoCancellable(source) {
+                checks++
+                if (checks == 3) throw java.util.concurrent.CancellationException("subtitle parsing cancelled")
+            }
+        }.exceptionOrNull()
+
+        org.junit.Assert.assertTrue(error is java.util.concurrent.CancellationException)
+        org.junit.Assert.assertEquals(3, checks)
+    }
 }
