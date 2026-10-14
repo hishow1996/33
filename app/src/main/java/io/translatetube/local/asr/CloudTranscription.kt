@@ -94,6 +94,7 @@ object CloudTranscription {
     fun transcribe(
         provider: String,
         apiKey: String,
+        language: String,
         wavFile: File,
         durationMs: Long,
         checkActive: () -> Unit = {},
@@ -113,6 +114,7 @@ object CloudTranscription {
                     addFormDataPart("timestamps_granularity", "word")
                 } else {
                     addFormDataPart("model", "ink-whisper")
+                    addFormDataPart("language", language)
                     addFormDataPart("timestamp_granularities[]", "word")
                 }
             }

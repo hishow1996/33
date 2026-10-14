@@ -1442,6 +1442,7 @@ class PlaybackService : MediaSessionService() {
                     it == "local" || it == "elevenlabs" || it == "cartesia"
                 } ?: "local"
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
+                val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
                 val missingLocalModel = asrProvider == "local" &&
                     !io.translatetube.local.data.ModelFiles.asrReady(this)
                 val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
@@ -1718,6 +1719,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             val result = io.translatetube.local.asr.CloudTranscription.transcribe(
                                 provider = asrProvider,
                                 apiKey = asrApiKey,
+                                language = cartesiaLanguage,
                                 wavFile = cloudWav,
                                 durationMs = pcmFile.durationMs,
                                 checkActive = { ownerJob?.ensureActive() },

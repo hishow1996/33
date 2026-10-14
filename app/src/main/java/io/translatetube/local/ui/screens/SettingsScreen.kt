@@ -41,6 +41,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     var asrEngine by remember { mutableStateOf(prefs.getString("asr_provider", "local") ?: "local") }
     var elevenLabsKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_elevenlabs_key", "").orEmpty())) }
     var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
+    var cartesiaLanguage by remember { mutableStateOf(prefs.getString("asr_cartesia_language", "en") ?: "en") }
+    var cartesiaLanguageMenuExpanded by remember { mutableStateOf(false) }
+    val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "no" to "挪威语") }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
@@ -164,6 +167,23 @@ Section("转写引擎") {
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(start = 4.dp, top = 3.dp),
         )
+        Text("识别语言（按视频原声选择）", color = OnBg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+        Box {
+            OutlinedButton(onClick = { cartesiaLanguageMenuExpanded = true }) {
+                Text(cartesiaLanguages.firstOrNull { it.first == cartesiaLanguage }?.second ?: "英语")
+                Icon(Icons.Filled.ExpandMore, contentDescription = "选择识别语言")
+            }
+            DropdownMenu(expanded = cartesiaLanguageMenuExpanded, onDismissRequest = { cartesiaLanguageMenuExpanded = false }) {
+                cartesiaLanguages.forEach { (code, label) ->
+                    DropdownMenuItem(text = { Text(label) }, onClick = {
+                        cartesiaLanguage = code
+                        prefs.edit().putString("asr_cartesia_language", code).apply()
+                        cartesiaLanguageMenuExpanded = false
+                    })
+                }
+            }
+        }
+        Text("Cartesia 需要指定原声语言；ElevenLabs 会自动检测语种。", color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
     }
     Text(
         "选择云端转写后，无字幕视频会调用对应服务；未填写或无效密钥时会提示错误，不会静默切换引擎。",
