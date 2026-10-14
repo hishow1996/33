@@ -9,7 +9,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URI
-import java.util.concurrent.TimeUnit
 
 /**
  * Downloads a finite, unencrypted HLS VOD rendition into one bounded cache file for
