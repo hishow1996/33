@@ -29,7 +29,7 @@ internal object SafeMediaHttp {
     fun execute(
         url: String,
         requestHeaders: Map<String, String> = emptyMap(),
-        allowedCookieHost: String? = null,
+        allowedCookieOrigin: String? = null,
         userAgent: String = "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36",
     ): Response {
         val initial = url.toHttpUrlOrNull()
@@ -37,7 +37,7 @@ internal object SafeMediaHttp {
         if (initial.scheme !in setOf("http", "https") || initial.username.isNotEmpty() || initial.password.isNotEmpty()) {
             throw IllegalArgumentException("媒体 URL 不是有效的 HTTP/HTTPS 地址。")
         }
-        val cookieHost = (allowedCookieHost ?: initial.host).lowercase(Locale.ROOT)
+        val cookieOrigin = allowedCookieOrigin?.toHttpUrlOrNull() ?: initial
         var current: HttpUrl = initial
 
         for (redirectCount in 0..MAX_REDIRECTS) {
@@ -54,7 +54,9 @@ internal object SafeMediaHttp {
                         }
                     }
                     name.equals("Cookie", ignoreCase = true) &&
-                        current.host.lowercase(Locale.ROOT) == cookieHost -> {
+                        current.scheme == cookieOrigin.scheme &&
+                        current.host.lowercase(Locale.ROOT) == cookieOrigin.host.lowercase(Locale.ROOT) &&
+                        current.port == cookieOrigin.port -> {
                         builder.header("Cookie", value)
                     }
                 }
