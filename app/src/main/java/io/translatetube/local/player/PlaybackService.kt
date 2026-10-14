@@ -219,7 +219,13 @@ class PlaybackService : MediaSessionService() {
 
             pm = PlayerManager(this)
             pm.onTick = { ms -> tick(ms) }
-            pm.onEnded = { ui.update { it.copy(isPlaying = false, currentLine = -1) } }
+            pm.onEnded = {
+            // AudioTrack is independent from ExoPlayer. Once the player reaches STATE_ENDED its
+            // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
+            dubbing?.stop()
+            pm.originalVolume = 1f
+            ui.update { it.copy(isPlaying = false, currentLine = -1) }
+        }
             pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
 
             // Keep dubbed AudioTrack locked to ExoPlayer's playback state. This callback
