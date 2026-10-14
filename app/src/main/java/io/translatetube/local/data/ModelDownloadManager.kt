@@ -437,6 +437,17 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     ) {
         val parent = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型父目录")
+        val old = File(parent, destDir.name + ".old")
+        // Recover a crash between moving the current model to .old and publishing the staged
+        // directory. Never delete the only known-good copy when the destination is missing.
+        if (old.exists()) {
+            if (!old.isDirectory) throw java.io.IOException("模型备份路径不是目录，无法安全恢复")
+            if (destDir.exists()) {
+                if (!old.deleteRecursively()) throw java.io.IOException("无法清理上次模型安装留下的旧备份")
+            } else if (!old.renameTo(destDir)) {
+                throw java.io.IOException("上次模型安装中断，无法恢复保留的模型目录")
+            }
+        }
         val staging = File(parent, destDir.name + ".extract")
         staging.deleteRecursively()
         if (!staging.mkdirs()) throw java.io.IOException("无法创建模型临时目录")
@@ -525,15 +536,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
             }
 
-            val old = File(parent, destDir.name + ".old")
-            old.deleteRecursively()
             val hadOld = destDir.exists()
             if (hadOld && !destDir.renameTo(old)) throw java.io.IOException("无法备份现有模型目录")
             if (!staging.renameTo(destDir)) {
-                if (hadOld) old.renameTo(destDir)
-                throw java.io.IOException("无法安装新模型目录")
+                val installError = java.io.IOException("无法安装新模型目录")
+                if (hadOld && !old.renameTo(destDir)) {
+                    installError.addSuppressed(java.io.IOException("安装失败后无法恢复旧模型目录；备份仍保留在 ${old.absolutePath}"))
+                }
+                throw installError
             }
-            old.deleteRecursively()
+            // The destination has been atomically published; an undeletable backup is safe and
+            // will be reconciled at the start of the next installation attempt.
+            runCatching { old.deleteRecursively() }
         } catch (e: Exception) {
             staging.deleteRecursively()
             throw e
