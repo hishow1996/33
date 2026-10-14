@@ -11,6 +11,7 @@ import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
 import android.webkit.CookieManager
+import android.webkit.CookieManager
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -265,6 +266,38 @@ internal class DashAudioSegmentCache(
         }
         // Re-read cookies for this exact CDN/manifest URL instead of carrying another origin's
         // Cookie header to a different host.
+        runCatching { CookieManager.getInstance().getCookie(url) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { result["Cookie"] = it }
+        return result
+    }
+
+    private fun originOf(value: String): String = runCatching {
+        val uri = URI(value)
+        val scheme = uri.scheme.orEmpty().lowercase(Locale.ROOT)
+        val host = uri.host.orEmpty().lowercase(Locale.ROOT)
+        val port = if (uri.port >= 0) uri.port else if (scheme == "https") 443 else 80
+        "$scheme://$host:$port"
+    }.getOrDefault("")
+
+    private fun headersForTarget(
+        url: String,
+        captured: Map<String, String>,
+        credentialOrigin: String,
+    ): Map<String, String> {
+        val sameOrigin = originOf(url) == credentialOrigin
+        val result = LinkedHashMap<String, String>()
+        captured.forEach { (name, value) ->
+            val normalized = name.trim().lowercase(Locale.ROOT)
+            val allowed = normalized in FORWARDABLE_HEADERS
+            val credential = normalized in setOf("cookie", "authorization", "origin")
+            val safe = value.isNotBlank() &&
+                value.none { it == '\r' || it == '\n' || it == '\u0000' }
+            if (allowed && safe && (!credential || sameOrigin)) {
+                result[name.trim()] = value
+            }
+        }
         runCatching { CookieManager.getInstance().getCookie(url) }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
