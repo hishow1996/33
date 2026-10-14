@@ -538,6 +538,83 @@ class DubbingEngine(
         }
     }
 
+    /**
+     * Float PCM is preferred for fidelity, but some OEM audio stacks fail to initialize or write
+     * PCM_FLOAT tracks. Retry once using the broadly supported PCM_16BIT format before reporting
+     * a dubbing-output failure, so a valid TTS result is not discarded on older devices.
+     */
+    private fun createFilledAudioTrack(samples: FloatArray, sampleRate: Int): AudioTrack {
+        fun attributes() = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+
+        var floatTrack: AudioTrack? = null
+        try {
+            floatTrack = AudioTrack.Builder()
+                .setAudioAttributes(attributes())
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(samples.size * 4)
+                .build()
+
+            if (floatTrack.state == AudioTrack.STATE_INITIALIZED) {
+                val written = floatTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                if (written == samples.size) return floatTrack
+                android.util.Log.w(
+                    "DubbingEngine",
+                    "PCM_FLOAT AudioTrack wrote ${written}/${samples.size}; trying PCM_16BIT",
+                )
+            } else {
+                android.util.Log.w("DubbingEngine", "PCM_FLOAT AudioTrack failed to initialize; trying PCM_16BIT")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("DubbingEngine", "PCM_FLOAT output unavailable; trying PCM_16BIT", e)
+        }
+        try { floatTrack?.release() } catch (_: Exception) {}
+
+        var pcm16Track: AudioTrack? = null
+        try {
+            val pcm16 = DubbingPcm16Converter.convert(samples)
+            pcm16Track = AudioTrack.Builder()
+                .setAudioAttributes(attributes())
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(pcm16.size * 2)
+                .build()
+            if (pcm16Track.state != AudioTrack.STATE_INITIALIZED) {
+                throw IllegalStateException("PCM_16BIT AudioTrack 初始化失败")
+            }
+            val written = pcm16Track.write(pcm16, 0, pcm16.size, AudioTrack.WRITE_BLOCKING)
+            if (written != pcm16.size) {
+                throw IllegalStateException("PCM_16BIT AudioTrack 写入不完整：${written}/${pcm16.size} 个采样点")
+            }
+            android.util.Log.i(
+                "DubbingEngine",
+                "Using PCM_16BIT fallback for ${samples.size} samples at ${sampleRate} Hz",
+            )
+            return pcm16Track
+        } catch (e: Exception) {
+            try { pcm16Track?.release() } catch (_: Exception) {}
+            throw IllegalStateException(
+                "PCM_FLOAT 与 PCM_16BIT 音轨均无法输出中文配音",
+                e,
+            )
+        }
+    }
+
     /** Publish a coherent line/position snapshot from the player ticker. */
     fun updateTimelinePosition(lineIndex: Int, positionMs: Long) {
         latestTimelineCursor = DubbingTimelineCursor(lineIndex, positionMs.coerceAtLeast(0L))
@@ -590,37 +667,15 @@ class DubbingEngine(
                         return@execute
                     }
 
-                    val newTrack = AudioTrack.Builder()
-                        .setAudioAttributes(
-                            AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build()
-                        )
-                        .setAudioFormat(AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                            .setSampleRate(sr)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build())
-                        .setTransferMode(AudioTrack.MODE_STATIC)
-                        .setBufferSizeInBytes(playbackSamples.size * 4)
-                        .build()
+                    val newTrack = createFilledAudioTrack(playbackSamples, sr)
                     created = newTrack
-                    val written = newTrack.write(
-                        playbackSamples, 0, playbackSamples.size, AudioTrack.WRITE_BLOCKING
-                    )
                     // Cancellation/session replacement is expected; a partial/failed write is not.
-                    // The latter must enter the failure handler so original audio is restored instead
-                    // of leaving this cue marked ready while the dubbed AudioTrack remains silent.
+                    // The latter is rejected inside createFilledAudioTrack so original audio is
+                    // restored instead of leaving this cue marked ready while its output is silent.
                     if (released || playbackGeneration.get() != generation) {
                         newTrack.release()
                         created = null
                         return@execute
-                    }
-                    if (written != playbackSamples.size) {
-                        throw IllegalStateException(
-                            "AudioTrack PCM 写入不完整：${written}/${playbackSamples.size} 个采样点"
-                        )
                     }
 
                     runCatching {
