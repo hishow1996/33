@@ -80,6 +80,9 @@ interface SubtitleCacheDao {
     @Query("DELETE FROM subtitle_cache WHERE cacheKey = :k")
     suspend fun delete(k: String)
 
+    @Query("SELECT cacheKey FROM subtitle_cache WHERE substr(cacheKey, -23) = '|speaker-diarization-v1' ORDER BY updatedAt DESC")
+    suspend fun speakerDiarizationCacheKeys(): List<String>
+
     @Query("DELETE FROM subtitle_cache")
     suspend fun clear()
 }
