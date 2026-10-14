@@ -71,7 +71,8 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
         }
         // Sanitize the JNI-returned array in place to avoid a second full PCM allocation.
         val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples)
-        return TtsAudio(clean, sampleRate)
+        // Trim leading/trailing silence so the dubbing starts in step with the subtitle cue.
+        return TtsAudio(TtsEdgeSilenceTrimmer.trim(clean, sampleRate), sampleRate)
     }
 
     override fun close() = tts.release()

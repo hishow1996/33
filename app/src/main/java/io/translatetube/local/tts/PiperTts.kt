@@ -73,7 +73,8 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
         val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples)
-        return TtsAudio(clean, sampleRate)
+        // 裁掉句首句尾静音，让 Piper 配音起点贴近字幕起点
+        return TtsAudio(TtsEdgeSilenceTrimmer.trim(clean, sampleRate), sampleRate)
     }
 
     override fun close() = tts.release()
