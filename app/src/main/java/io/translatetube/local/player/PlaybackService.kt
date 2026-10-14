@@ -2469,6 +2469,37 @@ class PlaybackService : MediaSessionService() {
             activeAsrAudioPaths.acquire(destination.absolutePath)
             var leaseTransferred = false
             try {
+                // yt-dlp 源优先：直接下纯音频（bestaudio）进转写，比流式拉整视频省流量省电；
+                // 失败（站点不支持纯音频/网络异常/产物异常）自动回落现有 HLS/直链管线。
+                val ytdlpPage = io.translatetube.local.yt.YtDlpRepo.claimForMediaUrl(mediaUrl)
+                if (ytdlpPage != null) {
+                    try {
+                        val directAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
+                            applicationContext, ytdlpPage, destination,
+                        ) { percent ->
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(
+                                        phase = Phase.DOWNLOADING_AUDIO,
+                                        progress = "yt-dlp 正在下载音频 $percent%",
+                                    )
+                                } else state
+                            }
+                        }
+                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = directAudio)
+                        leaseTransferred = true
+                        return@withLock directAudio
+                    } catch (cancel: kotlinx.coroutines.CancellationException) {
+                        throw cancel
+                    } catch (e: Exception) {
+                        android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
+                        updateUiForSession(sessionKey) { state ->
+                            if (state.key == sessionKey) {
+                                state.copy(progress = "yt-dlp 音频下载失败，改用流式提取…")
+                            } else state
+                        }
+                    }
+                }
                 val cachedAudio = if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
                     HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
                         updateUiForSession(sessionKey) { state ->
