@@ -20,6 +20,14 @@ class VadSegmentMergePolicyTest {
     }
 
     @Test
+    fun aSingleOversizedVadSpanIsSplitIntoWhisperSafePieces() {
+        assertEquals(
+            listOf(0L to 25_000L, 25_000L to 50_000L, 50_000L to 60_000L),
+            VadSegmentMergePolicy.merge(listOf(0L to 60_000L)),
+        )
+    }
+
+    @Test
     fun nearbyCuesMergeOnlyWhenTheCombinedDurationStaysWithinLimit() {
         val segments = listOf(
             0L to 10_000L,
