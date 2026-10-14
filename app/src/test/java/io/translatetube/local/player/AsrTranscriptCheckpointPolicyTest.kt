@@ -30,7 +30,11 @@ class AsrTranscriptCheckpointPolicyTest {
 
     @Test
     fun onlyResumesMatchingCheckpointWithValidProcessedCount() {
-        val signature = AsrTranscriptCheckpointPolicy.signature(128_000, listOf(0L to 1_000L, 2_000L to 3_000L))
+        val pcm = FloatArray(128_000) { index -> ((index % 113) - 56) / 56f }
+        val signature = AsrTranscriptCheckpointPolicy.signature(
+            pcm,
+            listOf(0L to 1_000L, 2_000L to 3_000L),
+        )
         assertTrue(AsrTranscriptCheckpointPolicy.canResume(signature, signature, 2, 2, 1))
         assertTrue(AsrTranscriptCheckpointPolicy.canResume(signature, signature, 2, 2, 2))
         assertFalse(AsrTranscriptCheckpointPolicy.canResume(signature, "other", 2, 2, 1))
