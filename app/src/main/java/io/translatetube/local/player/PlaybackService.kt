@@ -799,6 +799,7 @@ class PlaybackService : MediaSessionService() {
                     activeTranslationId,
                     parsedLines,
                     translationProfileIdentity,
+                    srcLang,
                 )
                 ensureCurrentSession(sessionKey)
                 // Preserve the imported source identity if this translation is later retried.
@@ -927,7 +928,10 @@ class PlaybackService : MediaSessionService() {
         activeId: Long,
         lines: List<SubLine>,
         profileIdentity: String = "",
-    ): String = TranslationCacheIdentity.importedKey(key, activeId, lines, profileIdentity)
+        sourceLanguage: String = "auto",
+    ): String = TranslationCacheIdentity.importedKey(
+        key, activeId, lines, profileIdentity, sourceLanguage
+    )
 
     /**
      * Identify the engine configuration that would actually be selected by translateLines().
@@ -1134,6 +1138,7 @@ class PlaybackService : MediaSessionService() {
                         selectedTranslationId,
                         resumeState.lines,
                         translationProfileIdentity,
+                        srcLang,
                     )
                 resumeState != null ->
                     TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
@@ -1143,6 +1148,7 @@ class PlaybackService : MediaSessionService() {
                         selectedTranslationId,
                         sourceImportedLines,
                         translationProfileIdentity,
+                        srcLang,
                     )
                 else -> TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
             }

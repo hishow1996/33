@@ -20,8 +20,10 @@ internal object TranslationCacheIdentity {
         activeId: Long,
         lines: List<SubLine>,
         profileIdentity: String = "",
+        sourceLanguage: String = "auto",
     ): String {
         val canonical = buildString {
+            append("lang=").append(normalizeLanguage(sourceLanguage)).append('\n')
             lines.forEach { line ->
                 append(line.startMs).append(':')
                     .append(line.endMs).append(':')

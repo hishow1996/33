@@ -17,9 +17,9 @@ class TranslationCacheIdentityTest {
 
     @Test
     fun identicalImportedSubtitleContentAndProfileProduceStableCacheKey() {
-        val first = TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|https://api.test|model-a")
+        val first = TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|https://api.test|model-a", "en-US")
         val second = TranslationCacheIdentity.importedKey(
-            "video-key", 42L, source.map { it.copy() }, "OPENAI|https://api.test|model-a"
+            "video-key", 42L, source.map { it.copy() }, "OPENAI|https://api.test|model-a", "en_US"
         )
         assertEquals(first, second)
         assertTrue(first.startsWith("video-key|zh|42|profile-"))
@@ -81,6 +81,15 @@ class TranslationCacheIdentityTest {
         assertFalse(TranslationCacheIdentity.sameSourceLanguage("en", "ja"))
         assertFalse(TranslationCacheIdentity.sameSourceLanguage("", "en"))
         assertFalse(TranslationCacheIdentity.sameSourceLanguage("en-US", "en-GB"))
+    }
+
+    @Test
+    fun importedCacheKeySeparatesSourceLanguageButNormalizesEquivalentTags() {
+        val english = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile", "en-US")
+        val equivalentEnglish = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile", "en_US")
+        val japanese = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile", "ja")
+        assertEquals(english, equivalentEnglish)
+        assertNotEquals(english, japanese)
     }
 
 }
