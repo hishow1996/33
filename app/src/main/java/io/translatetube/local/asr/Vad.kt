@@ -148,8 +148,15 @@ private fun readFully(input: InputStream, target: ByteArray, length: Int = targe
     while (offset < length) {
         val count = input.read(target, offset, length - offset)
         if (count < 0) throw java.io.EOFException("PCM 临时文件提前结束")
-        if (count == 0) continue
-        offset += count
+        if (count == 0) {
+            // InputStream is permitted to return zero for a non-empty read. Avoid spinning forever
+            // on unusual filesystem/provider behavior by forcing progress with a single-byte read.
+            val value = input.read()
+            if (value < 0) throw java.io.EOFException("PCM 临时文件提前结束")
+            target[offset++] = value.toByte()
+        } else {
+            offset += count
+        }
     }
 }
 
