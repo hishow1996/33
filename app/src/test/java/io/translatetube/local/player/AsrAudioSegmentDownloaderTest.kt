@@ -90,6 +90,60 @@ class AsrAudioSegmentDownloaderTest {
     }
 
     @Test
+    fun restartsFromZeroWhenRedirectTargetChangesWithoutAValidator() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "asr-redirect-target-test")
+        server.start()
+        try {
+            fun redirect(to: String) = MockResponse()
+                .setResponseCode(302)
+                .setHeader("Location", to)
+
+            server.enqueue(redirect("/asset-v1/audio"))
+            server.enqueue(rangeResponse(0, 3, 8, "ABCD", etag = null))
+            server.enqueue(redirect("/asset-v2/audio"))
+            server.enqueue(rangeResponse(4, 7, 8, "EFGH", etag = null))
+            // The downloader must discard the old prefix and start the new representation at zero.
+            server.enqueue(redirect("/asset-v2/audio"))
+            server.enqueue(rangeResponse(0, 3, 8, "WXYZ", etag = null))
+            server.enqueue(redirect("/asset-v2/audio"))
+            server.enqueue(rangeResponse(4, 7, 8, "QRST", etag = null))
+
+            val destination = File(directory, "audio.bin")
+            AsrAudioSegmentDownloader(
+                client = okhttp3.OkHttpClient(),
+                maxBytes = 100L,
+                chunkBytes = 4L,
+            ).download(
+                url = server.url("/redirect/audio").toString(),
+                destination = destination,
+                sourceKey = "redirected-audio-resource",
+            )
+
+            assertArrayEquals("WXYZQRST".toByteArray(), destination.readBytes())
+            assertEquals(8, server.requestCount)
+            val expected = listOf(
+                "/redirect/audio" to "bytes=0-3",
+                "/asset-v1/audio" to "bytes=0-3",
+                "/redirect/audio" to "bytes=4-7",
+                "/asset-v2/audio" to "bytes=4-7",
+                "/redirect/audio" to "bytes=0-3",
+                "/asset-v2/audio" to "bytes=0-3",
+                "/redirect/audio" to "bytes=4-7",
+                "/asset-v2/audio" to "bytes=4-7",
+            )
+            expected.forEach { (path, range) ->
+                val request = server.takeRequest()
+                assertEquals(path, request.requestUrl?.encodedPath)
+                assertEquals(range, request.getHeader("Range"))
+            }
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun resumesSavedPartialOnlyWithMatchingSourceAndValidator() {
         val server = MockWebServer()
         val directory = createTempDir(prefix = "asr-resume-test")
@@ -139,11 +193,11 @@ class AsrAudioSegmentDownloaderTest {
         end: Int,
         total: Int,
         body: String,
-        etag: String = "\"audio-v1\"",
+        etag: String? = "\"audio-v1\"",
     ): MockResponse = MockResponse()
         .setResponseCode(206)
         .setHeader("Content-Type", "audio/mp4")
         .setHeader("Content-Range", "bytes $start-$end/$total")
-        .setHeader("ETag", etag)
+        .apply { if (etag != null) setHeader("ETag", etag) }
         .setBody(body)
 }
