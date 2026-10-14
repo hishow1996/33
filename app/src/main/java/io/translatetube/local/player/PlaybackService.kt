@@ -1406,24 +1406,23 @@ class PlaybackService : MediaSessionService() {
                         if (savedRows.length() > processed) {
                             throw IllegalStateException("ASR 检查点字幕数量超出已完成分段")
                         }
-                        (0 until savedRows.length()).map { index ->
+                        val restoredRows = (0 until savedRows.length()).map { index ->
+                            if ((index and 0xff) == 0) pcmOwnerJob?.ensureActive()
                             val row = savedRows.optJSONObject(index)
                                 ?: throw IllegalStateException("ASR 检查点第 ${index + 1} 行格式无效")
-                            val rowStart = row.optLong("s", Long.MIN_VALUE)
-                            val rowEnd = row.optLong("e", Long.MIN_VALUE)
-                            val rowText = row.optString("t").trim()
-                            val belongsToProcessedSegment = segs.take(processed).any { segment ->
-                                segment.first == rowStart && segment.second == rowEnd
-                            }
-                            if (rowStart < 0L || rowEnd <= rowStart || rowText.isBlank() ||
-                                !belongsToProcessedSegment
-                            ) {
-                                throw IllegalStateException("ASR 检查点包含无效或未完成的字幕行")
-                            }
-                            Triple(rowStart, rowEnd, rowText)
-                        }.let { rows ->
-                            PartialAsrTranscript(processed, rows, storedPartialAsr.srcLang)
+                            Triple(
+                                row.optLong("s", Long.MIN_VALUE),
+                                row.optLong("e", Long.MIN_VALUE),
+                                row.optString("t").trim(),
+                            )
                         }
+                        // Previous builds checked every row against segs.take(processed), creating a
+                        // new list and rescanning completed segments for each row (quadratic on long
+                        // captions). Validate order, exact bounds and duplicates with one hash set.
+                        if (!AsrTranscriptCheckpointPolicy.areRowsValid(restoredRows, segs.take(processed))) {
+                            throw IllegalStateException("ASR 检查点包含重复、无效或未完成的字幕行")
+                        }
+                        PartialAsrTranscript(processed, restoredRows, storedPartialAsr.srcLang)
                     }.getOrNull()
                     if (restored == null) {
                         android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
