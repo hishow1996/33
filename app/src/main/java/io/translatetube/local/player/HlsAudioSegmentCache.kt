@@ -87,6 +87,17 @@ internal class HlsAudioSegmentCache(
         if (playlist.segments.size > HlsPlaylistParser.MAX_SEGMENTS) {
             throw IOException("HLS 分段数量超过限制")
         }
+        // A refreshed signed playlist can point at new segment URLs. Remove orphaned files
+        // from prior attempts in this same source folder before downloading, while preserving
+        // resumable .part + metadata sidecars for the exact current segment URLs.
+        val expectedSegmentNames = buildSet {
+            playlist.initMapUrl?.let { add(segmentFile(sourceFolder, "init", it).name) }
+            playlist.segments.forEach { segment ->
+                add(segmentFile(sourceFolder, "seg-${segment.index}", segment.url).name)
+            }
+        }
+        pruneOrphanedSegmentFiles(sourceFolder, expectedSegmentNames)
+
         val downloader = AsrAudioSegmentDownloader(
             client = client,
             maxBytes = maxSegmentBytes,
@@ -316,6 +327,22 @@ internal class HlsAudioSegmentCache(
     private fun segmentFile(folder: File, label: String, url: String): File {
         val safeLabel = label.replace(Regex("[^A-Za-z0-9_-]"), "_")
         return File(folder, "${safeLabel}-${sha256(url).take(24)}.seg")
+    }
+
+    private fun pruneOrphanedSegmentFiles(folder: File, expectedNames: Set<String>) {
+        val keep = buildSet {
+            expectedNames.forEach { name ->
+                add(name)
+                add("$name.part")
+                add("$name.part.meta")
+                add("$name.part.meta.tmp")
+            }
+        }
+        folder.listFiles().orEmpty().filter { it.isFile && it.name !in keep }.forEach { file ->
+            if (!file.delete()) {
+                throw IOException("无法清理已过期的 HLS 分段缓存：${file.name}")
+            }
+        }
     }
 
     private fun pruneOldSegmentCaches(root: File, protectedDirectory: File? = null) {
