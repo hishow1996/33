@@ -46,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -125,9 +126,12 @@ fun WebSourceScreen(
         }
     }
 
-    DisposableEffect(browser) {
+    val latestBrowser = rememberUpdatedState(browser)
+    // Do not key this effect to browser: AndroidView.factory sets that state. Keying by it would
+    // dispose the newly-created WebView immediately on its first state update.
+    DisposableEffect(pageUrl) {
         onDispose {
-            browser?.let { view ->
+            latestBrowser.value?.let { view ->
                 runCatching { view.evaluateJavascript(PAUSE_MEDIA_JS, null) }
                 runCatching { view.stopLoading() }
                 runCatching { view.onPause() }
