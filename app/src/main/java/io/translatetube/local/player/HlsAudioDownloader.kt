@@ -342,12 +342,13 @@ internal object HlsAudioDownloader {
         if (lines.any { it.startsWith("#EXT-X-SESSION-KEY:", ignoreCase = true) }) {
             throw IllegalStateException("该 HLS 声明了加密会话密钥；当前仅处理未加密媒体，不会尝试解密受保护内容。")
         }
-        val encryptedKey = lines.firstOrNull { it.startsWith("#EXT-X-KEY:", ignoreCase = true) }
-        if (encryptedKey != null) {
-            val method = parseAttributes(encryptedKey.substringAfter(':'))["METHOD"]
-            if (!method.equals("NONE", ignoreCase = true)) {
-                throw IllegalStateException("该 HLS 媒体清单使用加密密钥；当前仅处理未加密媒体，不会尝试解密受保护内容。")
+        val encryptedKey = lines
+            .filter { it.startsWith("#EXT-X-KEY:", ignoreCase = true) }
+            .firstOrNull { line ->
+                !parseAttributes(line.substringAfter(':'))["METHOD"].equals("NONE", ignoreCase = true)
             }
+        if (encryptedKey != null) {
+            throw IllegalStateException("该 HLS 媒体清单使用加密密钥；当前仅处理未加密媒体，不会尝试解密受保护内容。")
         }
     }
 
@@ -366,6 +367,9 @@ internal object HlsAudioDownloader {
                     it.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:", ignoreCase = true)
             }) {
             throw IllegalStateException("该 HLS 含有时间轴切换标记，当前版本不能安全地拼接这些片段。")
+        }
+        if (lines.any { it.equals("#EXT-X-GAP", ignoreCase = true) }) {
+            throw IllegalStateException("该 HLS 标记了缺失片段；为避免字幕时间轴错位，当前版本暂不处理。")
         }
 
         var initSegment: String? = null
