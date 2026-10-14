@@ -12,6 +12,25 @@ data class SubLine(
 
 object SubtitleParsers {
 
+    // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
+    private val webVttTimestampRegex = Regex("""(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}""")
+    private val cueIndexRegex = Regex("^[0-9]+$")
+    private val ttmlCueRegex = Regex(
+        "<p\\b([^>]*)>(.*?)</p\\s*>",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
+    private val ttmlAttributeRegex = Regex("""([A-Za-z_:][\w:.-]*)\s*=\s*["']([^"']*)["']""")
+    private val ttmlLineBreakRegex = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+    private val ttmlRootRegex = Regex("""<tt[\s>]""", RegexOption.IGNORE_CASE)
+    private val translationProgressRegex = Regex("^(正在)?翻译中\\d*/\\d*行?$")
+    private val translationChunkRegex = Regex("(?<=[。！？!?；;，,])")
+    private val whitespaceRegex = Regex("\\s+")
+    private val assOverrideRegex = Regex("""\{[^}]*\}""")
+    private val assLinebreakRegex = Regex("""\\N|\\n""")
+    private val htmlTagRegex = Regex("<[^>]+>")
+
+
+
     fun fmtTime(ms: Long): String {
         val t = ms / 1000
         return "%02d:%02d:%02d".format(t / 3600, (t % 3600) / 60, t % 60)
@@ -33,7 +52,7 @@ object SubtitleParsers {
         }
         for (raw in src.lines()) {
             val line = raw.trim()
-            val m = Regex("""(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}""").find(line)
+            val m = webVttTimestampRegex.find(line)
             if (m != null) {
                 flush()
                 val parts = m.value.split("-->")
@@ -42,7 +61,7 @@ object SubtitleParsers {
             } else if (line.isEmpty()) {
                 // 行结束标记交给下一条 cue 前统一 flush
             } else if (pendingStart >= 0 && !line.startsWith("NOTE") && !line.startsWith("WEBVTT") &&
-                !line.startsWith("Kind:") && !line.startsWith("Language:") && !Regex("^[0-9]+$").matches(line)
+                !line.startsWith("Kind:") && !line.startsWith("Language:") && !cueIndexRegex.matches(line)
             ) {
                 buf.appendLine(stripTags(line))
             }
@@ -123,11 +142,11 @@ object SubtitleParsers {
             return emptyList()
         }
         val out = mutableListOf<SubLine>()
-        val cueRegex = Regex(
+        val cueRegex = ttmlCueRegex
             "<p\\b([^>]*)>(.*?)</p\\s*>",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
         )
-        val attributeRegex = Regex("([A-Za-z_:][\\w:.-]*)\\s*=\\s*[\"']([^\"']*)[\"']")
+        val attributeRegex = ttmlAttributeRegex
         cueRegex.findAll(src).forEach { match ->
             val attrs = attributeRegex.findAll(match.groupValues[1])
                 .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
@@ -139,7 +158,7 @@ object SubtitleParsers {
                 if (duration <= 0L || start > Long.MAX_VALUE - duration) null else start + duration
             } ?: return@forEach
             if (end <= start) return@forEach
-            val body = match.groupValues[2].replace(
+            val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
                 Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n"
             )
             val text = android.text.Html.fromHtml(
@@ -171,7 +190,7 @@ object SubtitleParsers {
             t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t)
             t.contains("Dialogue:") -> parseAss(t)
             t.startsWith("<?xml") || t.startsWith("<tt", ignoreCase = true) ||
-                Regex("<tt[\\s>]", RegexOption.IGNORE_CASE).containsMatchIn(t) ->
+                ttmlRootRegex.containsMatchIn(t) ->
                 parseTtml(t).ifEmpty { parseTimedTextXml(t) }
             else -> parseSrt(t)
         }
@@ -192,7 +211,7 @@ object SubtitleParsers {
                 "正在翻译", "正在翻译中", "翻译中", "译文暂不可用", "暂无译文",
                 "translating", "translationinprogress", "loadingtranslation",
             )) return true
-        return Regex("^(正在)?翻译中\\d*/\\d*行?$").matches(normalized)
+        return translationProgressRegex.matches(normalized)
     }
 
     /**
@@ -209,7 +228,7 @@ object SubtitleParsers {
             ?: return null
         if (isPlaceholderTranslation(value)) return null
 
-        val chunks = Regex("(?<=[。！？!?；;，,])").split(value)
+        val chunks = translationChunkRegex.split(value)
         val collapsed = ArrayList<String>(chunks.size)
         var previousKey = ""
         var removedDuplicate = false
@@ -253,7 +272,7 @@ object SubtitleParsers {
             }.getOrNull() ?: continue
             val (start, end) = times
             if (start < 0L || end <= start) continue
-            val text = p.drop(9).joinToString(",").replace(Regex("\\{[^}]*\\}"), "").replace(Regex("\\\\N|\\\\n"), "\n").trim()
+            val text = p.drop(9).joinToString(",").replace(assOverrideRegex, "").replace(assLinebreakRegex, "\n").trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return normalizeTimeline(out)
@@ -271,8 +290,8 @@ object SubtitleParsers {
         for (l in lines) {
             val last = out.lastOrNull()
             val sameText = last != null &&
-                last.text.replace(Regex("\\s+"), " ").trim() ==
-                l.text.replace(Regex("\\s+"), " ").trim()
+                last.text.replace(whitespaceRegex, " ").trim() ==
+                l.text.replace(whitespaceRegex, " ").trim()
             val gap = if (last != null) l.startMs - last.endMs else Long.MIN_VALUE
             val startDelta = if (last != null) l.startMs - last.startMs else Long.MAX_VALUE
             // Duplicate cues may overlap (same start time) rather than being exactly adjacent.
@@ -284,7 +303,7 @@ object SubtitleParsers {
         return out
     }
 
-    private fun stripTags(s: String) = s.replace(Regex("<[^>]+>"), "").replace("&nbsp;", " ").trim()
+    private fun stripTags(s: String) = s.replace(htmlTagRegex, "").replace("&nbsp;", " ").trim()
 
     private fun parseTs(s: String): Long {
         val clean = s.replace(",", ".")
