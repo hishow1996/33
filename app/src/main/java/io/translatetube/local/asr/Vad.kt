@@ -9,20 +9,33 @@ import java.io.FileInputStream
 import java.io.InputStream
 
 /** silero VAD 语音分段：全片 PCM → [(startMs, endMs)] */
-fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long, Long>> {
+fun vadSegments(
+    ctx: Context,
+    pcm: FloatArray,
+    sr: Int = 16000,
+    checkActive: () -> Unit = {},
+): List<Pair<Long, Long>> {
     val vad = newVad(ctx, sr)
     val segments = mutableListOf<Pair<Long, Long>>()
     try {
         val window = 512
         var offset = 0
         while (offset + window <= pcm.size) {
+            checkActive()
             vad.acceptWaveform(pcm.copyOfRange(offset, offset + window))
-            drainVad(vad, sr, segments)
+            drainVad(vad, sr, segments, pcm.size.toLong())
             offset += window
+        }
+        if (offset < pcm.size) {
+            checkActive()
+            val tail = FloatArray(window)
+            pcm.copyInto(tail, destinationOffset = 0, startIndex = offset, endIndex = pcm.size)
+            vad.acceptWaveform(tail)
+            drainVad(vad, sr, segments, pcm.size.toLong())
         }
         checkActive()
         vad.flush()
-        drainVad(vad, sr, segments)
+        drainVad(vad, sr, segments, pcm.size.toLong())
     } finally {
         runCatching { vad.release() }
     }
@@ -56,12 +69,29 @@ fun vadSegmentsFromFile(
                     byteIndex += 2
                 }
                 vad.acceptWaveform(floats)
-                drainVad(vad, sr, segments)
+                drainVad(vad, sr, segments, pcmFile.sampleCount)
                 remainingSamples -= window
             }
+            if (remainingSamples > 0L) {
+                checkActive()
+                val tailByteCount = remainingSamples.toInt() * 2
+                windowBytes.fill(0)
+                readFully(input, windowBytes, tailByteCount)
+                val floats = FloatArray(window)
+                var byteIndex = 0
+                for (sampleIndex in 0 until window) {
+                    val raw = (windowBytes[byteIndex].toInt() and 0xff) or
+                        ((windowBytes[byteIndex + 1].toInt() and 0xff) shl 8)
+                    floats[sampleIndex] = raw.toShort() / 32768f
+                    byteIndex += 2
+                }
+                vad.acceptWaveform(floats)
+                drainVad(vad, sr, segments, pcmFile.sampleCount)
+            }
         }
+        checkActive()
         vad.flush()
-        drainVad(vad, sr, segments)
+        drainVad(vad, sr, segments, pcmFile.sampleCount)
     } finally {
         runCatching { vad.release() }
     }
@@ -86,19 +116,28 @@ private fun newVad(ctx: Context, sr: Int): Vad {
     return Vad(null, config)
 }
 
-private fun drainVad(vad: Vad, sr: Int, segments: MutableList<Pair<Long, Long>>) {
+private fun drainVad(
+    vad: Vad,
+    sr: Int,
+    segments: MutableList<Pair<Long, Long>>,
+    maxSamples: Long,
+) {
     while (!vad.empty()) {
         val segment = vad.front()
-        segments += ((segment.start * 1000L) / sr) to
-            (((segment.start + segment.samples.size) * 1000L) / sr)
+        val startSample = segment.start.toLong()
+        val endSample = startSample + segment.samples.size.toLong()
+        VadSegmentMergePolicy.clipToSampleBounds(startSample, endSample, maxSamples)?.let { (start, end) ->
+            segments += (start * 1000L / sr) to (end * 1000L / sr)
+        }
         vad.pop()
     }
 }
 
-private fun readFully(input: InputStream, target: ByteArray) {
+private fun readFully(input: InputStream, target: ByteArray, length: Int = target.size) {
+    require(length in 0..target.size)
     var offset = 0
-    while (offset < target.size) {
-        val count = input.read(target, offset, target.size - offset)
+    while (offset < length) {
+        val count = input.read(target, offset, length - offset)
         if (count < 0) throw java.io.EOFException("PCM 临时文件提前结束")
         if (count == 0) continue
         offset += count

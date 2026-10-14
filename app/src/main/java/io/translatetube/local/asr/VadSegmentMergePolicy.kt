@@ -10,6 +10,18 @@ internal object VadSegmentMergePolicy {
     const val MERGE_GAP_MS = 400L
     const val MAX_MERGED_SEGMENT_MS = 25_000L
 
+    /** Clips a padded VAD span back to the original decoded sample range. */
+    fun clipToSampleBounds(
+        startSample: Long,
+        endSample: Long,
+        sampleCount: Long,
+    ): Pair<Long, Long>? {
+        if (sampleCount <= 0L || startSample < 0L || endSample <= startSample) return null
+        val start = startSample.coerceAtMost(sampleCount)
+        val end = endSample.coerceIn(start, sampleCount)
+        return if (end > start) start to end else null
+    }
+
     fun merge(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
         val boundedSegments = mutableListOf<Pair<Long, Long>>()
         for ((start, end) in segments) {

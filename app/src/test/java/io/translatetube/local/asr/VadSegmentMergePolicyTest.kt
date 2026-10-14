@@ -57,6 +57,18 @@ class VadSegmentMergePolicyTest {
     }
 
     @Test
+    fun paddedFinalWindowIsClippedToTheOriginalAudioLength() {
+        assertEquals(9_900L to 10_000L, VadSegmentMergePolicy.clipToSampleBounds(9_900, 10_400, 10_000))
+    }
+
+    @Test
+    fun ignoresInvalidOrOutOfRangeVadWindows() {
+        assertEquals(null, VadSegmentMergePolicy.clipToSampleBounds(-1, 20, 100))
+        assertEquals(null, VadSegmentMergePolicy.clipToSampleBounds(100, 120, 100))
+        assertEquals(null, VadSegmentMergePolicy.clipToSampleBounds(10, 10, 100))
+    }
+
+    @Test
     fun everyMergedSegmentRespectsWhisperSafeDuration() {
         val segments = (0..20).map { index ->
             val start = index * 12_000L
