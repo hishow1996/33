@@ -676,7 +676,10 @@ class PlaybackService : MediaSessionService() {
             try {
                 if (sessionVideoId != videoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
                 val content = NewPipeRepo.downloadSubtitleContent(track)
-                val cueCount = SubtitleParsers.parseAuto(content).size
+                val parseJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val cueCount = SubtitleParsers.parseAutoCancellable(content) {
+                    parseJob?.ensureActive()
+                }.size
                 if (cueCount == 0) throw IllegalStateException("字幕文件没有可用的时间轴")
                 withContext(Dispatchers.IO) {
                     val output = contentResolver.openOutputStream(outputUri, "wt")
@@ -721,6 +724,7 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
             try {
+                val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val text = withContext(Dispatchers.IO) {
                     val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                     val input = contentResolver.openInputStream(uri)
@@ -737,7 +741,9 @@ class PlaybackService : MediaSessionService() {
                         )
                     }
                 }
-                val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
+                val parsed = SubtitleParsers.parseAutoCancellable(text) {
+                    importOwnerJob?.ensureActive()
+                }.filter { it.startMs >= 0L && it.endMs > it.startMs }
                 ensureCurrentSession(sessionKey)
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
                 val chinesePattern = Regex("[\\u4e00-\\u9fff]")
@@ -887,8 +893,9 @@ class PlaybackService : MediaSessionService() {
                             Charsets.UTF_8,
                         )
                     }
-                    SubtitleParsers.parseAuto(text)
-                        .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+                    SubtitleParsers.parseAutoCancellable(text) {
+                        ownerJob?.ensureActive()
+                    }.filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
                         .mapIndexed { index, line -> line.copy(index = index) }
                 }
                 ensureCurrentSession(sessionKey)
