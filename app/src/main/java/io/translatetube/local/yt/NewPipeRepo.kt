@@ -3,6 +3,13 @@ package io.translatetube.local.yt
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import okhttp3.OkHttpClient
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import java.io.IOException
+import java.util.concurrent.CancellationException
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
@@ -21,6 +28,38 @@ private val newPipeHttpClient = OkHttpClient.Builder()
     .callTimeout(45, TimeUnit.SECONDS)
     .build()
 
+private val extractorOwnerJob = ThreadLocal<Job?>()
+
+/**
+ * The extractor API is synchronous, but its request is owned by a cancellable coroutine.
+ * Cancel the underlying OkHttp call while execute() or body consumption is blocked.
+ */
+@OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+internal fun <T> executeCancellableHttpCall(
+    call: okhttp3.Call,
+    ownerJob: Job?,
+    consume: (okhttp3.Response) -> T,
+): T {
+    val cancellationHandle = ownerJob?.invokeOnCompletion(
+        onCancelling = true,
+        invokeImmediately = true,
+    ) { cause ->
+        if (cause is CancellationException) call.cancel()
+    }
+    try {
+        return call.execute().use(consume)
+    } catch (error: IOException) {
+        if (ownerJob?.isCancelled == true) {
+            throw kotlinx.coroutines.CancellationException("YouTube 请求已取消").also {
+                it.initCause(error)
+            }
+        }
+        throw error
+    } finally {
+        cancellationHandle?.dispose()
+    }
+}
+
 /** NewPipe Extractor 网络层（okhttp 封装） */
 object SimpleDownloader : Downloader() {
 
@@ -35,8 +74,11 @@ object SimpleDownloader : Downloader() {
             "HEAD" -> b.head()
             else -> b.get()
         }
-        newPipeHttpClient.newCall(b.build()).execute().use { resp ->
-            return Response(
+        return executeCancellableHttpCall(
+            call = newPipeHttpClient.newCall(b.build()),
+            ownerJob = extractorOwnerJob.get(),
+        ) { resp ->
+            Response(
                 resp.code, resp.message, resp.headers.toMultimap(),
                 resp.body?.string() ?: "", resp.request.url.toString()
             )
@@ -71,10 +113,18 @@ object NewPipeRepo {
             initOnce()
             // This fetch is intentionally outside infoLock. Each caller returns its own result,
             // and a generation check prevents a stale fetch from being installed after invalidate().
-            val fetched = StreamInfo.getInfo(
-                ServiceList.YouTube,
-                "https://www.youtube.com/watch?v=$videoId",
-            )
+            val ownerJob = currentCoroutineContext()[Job]
+            val previousJob = extractorOwnerJob.get()
+            if (ownerJob == null) extractorOwnerJob.remove() else extractorOwnerJob.set(ownerJob)
+            val fetched = try {
+                StreamInfo.getInfo(
+                    ServiceList.YouTube,
+                    "https://www.youtube.com/watch?v=$videoId",
+                )
+            } finally {
+                if (previousJob == null) extractorOwnerJob.remove()
+                else extractorOwnerJob.set(previousJob)
+            }
             synchronized(infoLock) {
                 if (infoCacheGeneration == requestGeneration) {
                     cachedInfo = fetched
@@ -266,16 +316,17 @@ object NewPipeRepo {
         return streams.getOrNull(selectedIndex)
     }
 
-    private fun downloadText(url: String): String {
+    private suspend fun downloadText(url: String): String = withContext(Dispatchers.IO) {
         val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
-        newPipeHttpClient.newCall(req).execute().use { resp ->
+        val ownerJob = currentCoroutineContext()[Job]
+        executeCancellableHttpCall(newPipeHttpClient.newCall(req), ownerJob) { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("字幕下载失败 ${resp.code}")
-            val body = resp.body ?: return ""
+            val body = resp.body ?: return@executeCancellableHttpCall ""
             if (body.contentLength() > BoundedTextPayload.MAX_BYTES) {
                 throw IllegalStateException("字幕响应超过 16 MB 限制，已停止读取以保护设备内存。")
             }
             val bytes = body.byteStream().use { input -> BoundedTextPayload.readBytes(input) }
-            return String(bytes, Charsets.UTF_8)
+            String(bytes, Charsets.UTF_8)
         }
     }
 
