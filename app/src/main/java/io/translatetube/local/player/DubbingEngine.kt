@@ -668,7 +668,7 @@ class DubbingEngine(
         }
     }
 
-    /** Pause/resume the live voice track with the video; preserve playback head on pause. */
+    /** Pause the live voice track without blocking the player/UI thread. */
     fun pausePlayback() {
         if (released) return
         // Invalidate a line that is still loading/being created so it cannot start after pause.
@@ -679,15 +679,25 @@ class DubbingEngine(
             return
         }
         try {
-            active.pause()
-        } catch (e: Exception) {
-            if (track === active) track = null
+            audioExec.execute {
+                // stop(), seek, or release may have superseded this request while it was queued.
+                if (released || track !== active) return@execute
+                try {
+                    active.pause()
+                } catch (e: Exception) {
+                    if (track === active) track = null
+                    _currentLine.value = -1
+                    try { active.release() } catch (_: Exception) {}
+                    android.util.Log.w("DubbingEngine", "Unable to pause voice track", e)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // release() owns the final AudioTrack cleanup when the executor is shutting down.
             _currentLine.value = -1
-            try { active.release() } catch (_: Exception) {}
-            android.util.Log.w("DubbingEngine", "Unable to pause voice track", e)
         }
     }
 
+    /** Resume a paused track on the same serialized executor as creation, writes, and release. */
     fun resumePlayback() {
         if (released) return
         val active = track
@@ -698,12 +708,19 @@ class DubbingEngine(
             return
         }
         try {
-            active.play()
-        } catch (e: Exception) {
-            if (track === active) track = null
+            audioExec.execute {
+                if (released || track !== active) return@execute
+                try {
+                    active.play()
+                } catch (e: Exception) {
+                    if (track === active) track = null
+                    _currentLine.value = -1
+                    try { active.release() } catch (_: Exception) {}
+                    android.util.Log.w("DubbingEngine", "Unable to resume voice track", e)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
             _currentLine.value = -1
-            try { active.release() } catch (_: Exception) {}
-            android.util.Log.w("DubbingEngine", "Unable to resume voice track", e)
         }
     }
 
