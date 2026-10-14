@@ -129,10 +129,12 @@ class SystemTts(context: Context) : TtsEngine {
         val currentChineseVoice = tts.voice?.takeIf {
             it.locale.language.equals("zh", ignoreCase = true)
         }
-        // Don't pin the session to an online voice when an installed local Chinese voice exists.
-        val defaultVoice = currentChineseVoice?.takeIf { current ->
-            availableChineseVoices.any { it.name == current.name }
-        } ?: availableChineseVoices.firstOrNull()
+        // Prefer a listed offline voice, but preserve the currently selected Chinese voice on
+        // engines whose voices catalogue is empty or incomplete (common on some older ROMs).
+        val defaultVoice = SystemTtsSpeakerVoicePolicy.chooseDefaultVoice(
+            currentChineseVoice,
+            availableChineseVoices,
+        ) { it.name }
         if (defaultVoice == null) {
             runCatching { tts.shutdown() }
             throw IllegalStateException("系统 TTS 没有可用的中文音色")

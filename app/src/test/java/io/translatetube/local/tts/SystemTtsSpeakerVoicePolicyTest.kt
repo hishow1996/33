@@ -30,6 +30,28 @@ class SystemTtsSpeakerVoicePolicyTest {
     }
 
     @Test
+    fun defaultVoiceSurvivesAnEmptyOrIncompleteOemCatalog() {
+        data class Voice(val name: String)
+        val current = Voice("rom-current-zh")
+
+        assertEquals(
+            current,
+            SystemTtsSpeakerVoicePolicy.chooseDefaultVoice(current, emptyList()) { it.name },
+        )
+        assertEquals(
+            Voice("local-a"),
+            SystemTtsSpeakerVoicePolicy.chooseDefaultVoice(
+                current,
+                listOf(Voice("local-a"), Voice("local-b")),
+            ) { it.name },
+        )
+        assertEquals(
+            null,
+            SystemTtsSpeakerVoicePolicy.chooseDefaultVoice<Voice>(null, emptyList()) { it.name },
+        )
+    }
+
+    @Test
     fun knownSpeakersUseAlternativeVoiceCatalogEntries() {
         assertEquals(1, SystemTtsSpeakerVoicePolicy.indexForSpeaker(0, 3))
         assertEquals(2, SystemTtsSpeakerVoicePolicy.indexForSpeaker(1, 3))

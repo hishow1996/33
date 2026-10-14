@@ -14,6 +14,21 @@ internal object SystemTtsSpeakerVoicePolicy {
         return if (offline.isNotEmpty()) offline else voices
     }
 
+    /**
+     * Prefer the current voice if it is listed; otherwise choose a listed voice, and finally
+     * fall back to the current voice when an OEM TTS engine omits it from getVoices().
+     */
+    fun <T> chooseDefaultVoice(
+        current: T?,
+        available: List<T>,
+        name: (T) -> String,
+    ): T? {
+        val currentName = current?.let(name)
+        return currentName?.let { candidate ->
+            available.firstOrNull { name(it) == candidate }
+        } ?: available.firstOrNull() ?: current
+    }
+
     fun indexForSpeaker(speakerId: Int, voiceCount: Int): Int {
         if (voiceCount <= 1 || speakerId < 0) return 0
         return 1 + Math.floorMod(speakerId, voiceCount - 1)
