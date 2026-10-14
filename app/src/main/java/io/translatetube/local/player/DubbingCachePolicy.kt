@@ -10,6 +10,11 @@ internal data class DubbingCacheEntry(
 
 internal object DubbingCachePolicy {
     const val BUDGET_BYTES = 160L * 1024L * 1024L
+    const val MAX_PCM_SAMPLE_COUNT = 16_000_000
+
+    /** Empty PCM is never a successful TTS result and must not persist as a reusable cache hit. */
+    fun isReusablePcmSampleCount(sampleCount: Int): Boolean =
+        sampleCount in 1..MAX_PCM_SAMPLE_COUNT
 
     /** Evict least-recently-used inactive entries until under budget, never choosing active files. */
     fun filesToEvict(

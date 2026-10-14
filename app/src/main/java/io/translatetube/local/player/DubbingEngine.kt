@@ -434,7 +434,8 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
                 val sampleRate = input.readInt()
                 val sampleCount = input.readInt()
-                if (sampleRate !in 8_000..192_000 || sampleCount <= 0 || sampleCount > 16_000_000 ||
+                if (sampleRate !in 8_000..192_000 ||
+                    !DubbingCachePolicy.isReusablePcmSampleCount(sampleCount) ||
                     file.length() != 8L + sampleCount.toLong() * 4L
                 ) {
                     throw java.io.IOException("PCM 缓存头或长度无效（空音频不作为成功缓存）")
@@ -507,7 +508,8 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
                 val sr = d.readInt()
                 val n = d.readInt()
-                if (sr !in 8_000..192_000 || n < 0 || n > 16_000_000 ||
+                if (sr !in 8_000..192_000 ||
+                    !DubbingCachePolicy.isReusablePcmSampleCount(n) ||
                     f.length() != 8L + n.toLong() * 4L) {
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
@@ -515,12 +517,8 @@ class DubbingEngine(
                 if (n > 0 && !DubbingPcmValidation.isValidAudio(sr, samples)) {
                     throw java.io.IOException("PCM 缓存包含静音或无效音频")
                 }
-                if (n == 0) {
-                    readiness.markPrepared(idx, hasAudio = false)
-                } else {
-                    synchronized(mem) { mem[idx] = samples to sr }
-                    readiness.markPrepared(idx, hasAudio = true)
-                }
+                synchronized(mem) { mem[idx] = samples to sr }
+                readiness.markPrepared(idx, hasAudio = true)
                 f.setLastModified(System.currentTimeMillis())
                 samples to sr
             }
