@@ -2708,6 +2708,7 @@ class PlaybackService : MediaSessionService() {
                     }
                     return@launch
                 }
+                val speakerDecodeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcm = withContext(Dispatchers.IO) {
                     val sourceFile: File?
                     val sourceUri: Uri?
@@ -2749,6 +2750,7 @@ class PlaybackService : MediaSessionService() {
                             sourceUri,
                             sourceFile,
                             maxDurationMs = 3 * 60 * 1000L,
+                            checkActive = { speakerDecodeJob?.ensureActive() },
                         )
                     } finally {
                         releaseActiveAsrAudio(leasedPath)

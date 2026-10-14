@@ -144,7 +144,7 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
             if (endSample > startSample) {
                 val sampleCount = endSample - startSample
                 require(sampleCount <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
-                val samples = pcmFile.readFloatSamples(startSample, sampleCount.toInt())
+                val samples = pcmFile.readFloatSamples(startSample, sampleCount.toInt(), checkActive)
                 val text = transcribe(samples).trim()
                 checkActive()
                 if (text.isNotEmpty()) out += Triple(safeStartMs, safeEndMs, text)

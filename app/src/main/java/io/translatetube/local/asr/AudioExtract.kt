@@ -28,7 +28,11 @@ object AudioExtract {
         val durationMs: Long
             get() = if (sampleRate > 0) sampleCount * 1000L / sampleRate else 0L
 
-        fun readFloatSamples(startSample: Long, count: Int): FloatArray {
+        fun readFloatSamples(
+            startSample: Long,
+            count: Int,
+            checkActive: () -> Unit = {},
+        ): FloatArray {
             require(startSample >= 0L && count >= 0 && startSample <= sampleCount) {
                 "无效的 PCM 读取范围"
             }
@@ -42,6 +46,7 @@ object AudioExtract {
                 val bytes = ByteArray(minOf(64 * 1024, maxOf(2L, count.toLong() * 2L)).toInt())
                 var written = 0
                 while (written < count) {
+                    checkActive()
                     val samplesInChunk = minOf(bytes.size / 2, count - written)
                     val byteCount = samplesInChunk * 2
                     input.readFully(bytes, 0, byteCount)
@@ -64,13 +69,24 @@ object AudioExtract {
         src: Uri?,
         file: File?,
         maxDurationMs: Long = Long.MAX_VALUE,
+        checkActive: () -> Unit = {},
     ): Pcm {
-        val pcmFile = decodeTo16kMonoFile(ctx, src, file, maxDurationMs)
+        val pcmFile = decodeTo16kMonoFile(
+            ctx, src, file, maxDurationMs, checkActive = checkActive,
+        )
         try {
+            checkActive()
             if (pcmFile.sampleCount > Int.MAX_VALUE.toLong()) {
                 throw IllegalStateException("音频过长，无法一次性加载到内存；请使用分段识别")
             }
-            return Pcm(pcmFile.readFloatSamples(0L, pcmFile.sampleCount.toInt()), pcmFile.sampleRate)
+            return Pcm(
+                pcmFile.readFloatSamples(
+                    0L,
+                    pcmFile.sampleCount.toInt(),
+                    checkActive = checkActive,
+                ),
+                pcmFile.sampleRate,
+            )
         } finally {
             pcmFile.file.delete()
         }
