@@ -1304,7 +1304,19 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) {
-                    vadSegmentsFromFile(this@PlaybackService, pcmFile, checkActive = { pcmOwnerJob?.ensureActive() })
+                    vadSegmentsFromFile(
+                        ctx = this@PlaybackService,
+                        pcmFile = pcmFile,
+                        checkActive = { pcmOwnerJob?.ensureActive() },
+                        onProgress = { processedSamples, totalSamples ->
+                            val percent = if (totalSamples > 0L) {
+                                ((processedSamples * 100L) / totalSamples).toInt().coerceIn(0, 100)
+                            } else 100
+                            updateUiForSession(key) { state ->
+                                if (state.key == key) state.copy(progress = "语音分段 $percent%") else state
+                            }
+                        },
+                    )
                 }
                 ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
