@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.SubtitleTimelinePolicy
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
 import io.translatetube.local.subs.SubLine
@@ -1399,7 +1400,7 @@ private fun androidx.compose.foundation.layout.BoxScope.LiveChineseSubtitleOverl
         }
     }
 
-    val liveSubtitle = subtitleAtPosition(state.lines, playbackPositionMs)
+    val liveSubtitle = SubtitleTimelinePolicy.lineAtPosition(state.lines, playbackPositionMs)
         ?.zh
         ?.let { SubtitleParsers.cleanTranslatedText(it) }
         ?.takeIf { it.isNotBlank() }
@@ -1428,24 +1429,6 @@ private fun androidx.compose.foundation.layout.BoxScope.LiveChineseSubtitleOverl
     }
 }
 
-private fun subtitleAtPosition(lines: List<SubLine>, positionMs: Long): SubLine? {
-    if (positionMs < 0L || lines.isEmpty()) return null
-    var low = 0
-    var high = lines.lastIndex
-    var candidate = -1
-    while (low <= high) {
-        val mid = low + (high - low) / 2
-        if (lines[mid].startMs <= positionMs) {
-            candidate = mid
-            low = mid + 1
-        } else {
-            high = mid - 1
-        }
-    }
-    if (candidate < 0) return null
-    val line = lines[candidate]
-    return line.takeIf { positionMs >= it.startMs && positionMs < it.endMs }
-}
 
 @Composable
 private fun SubtitleList(
