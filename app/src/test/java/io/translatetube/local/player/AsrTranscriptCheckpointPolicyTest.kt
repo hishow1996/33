@@ -114,4 +114,31 @@ class AsrTranscriptCheckpointPolicyTest {
         assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, 384, false, 0L, 0L))
     }
 
+
+    @Test
+    fun fileBackedSignatureCanBeCancelledBetweenSparseAnchors() {
+        val sampleCount = 8_192
+        val file = File.createTempFile("pcm-signature-cancel-test", ".s16le")
+        try {
+            FileOutputStream(file).use { output ->
+                repeat(sampleCount) {
+                    output.write(0x00)
+                    output.write(0x20)
+                }
+            }
+            val pcm = AudioExtract.PcmFile(file, sampleCount.toLong(), 16_000)
+            var checks = 0
+            val error = runCatching {
+                AsrTranscriptCheckpointPolicy.signature(pcm, listOf(0L to 1_000L)) {
+                    checks++
+                    if (checks == 3) throw java.util.concurrent.CancellationException("fingerprint cancelled")
+                }
+            }.exceptionOrNull()
+
+            assertTrue(error is java.util.concurrent.CancellationException)
+            assertEquals(3, checks)
+        } finally {
+            file.delete()
+        }
+    }
 }
