@@ -470,6 +470,33 @@ fun PlayerScreen(
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
                     )
+                    val liveSubtitle = state.lines.getOrNull(state.currentLine)
+                        ?.zh
+                        ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                        ?.takeIf { it.isNotBlank() }
+                    if (subtitlesVisible && !liveSubtitle.isNullOrBlank()) {
+                        Surface(
+                            modifier = Modifier
+                                .align(androidx.compose.ui.Alignment.BottomCenter)
+                                .fillMaxWidth(0.92f)
+                                .padding(bottom = 62.dp),
+                            color = Color(0xC9000000),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text(
+                                liveSubtitle,
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
                 }
                 // 阶段进度覆盖层
                 val phase = state.phase
