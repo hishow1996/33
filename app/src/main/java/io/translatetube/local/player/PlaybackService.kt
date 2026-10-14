@@ -1383,7 +1383,7 @@ class PlaybackService : MediaSessionService() {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
                 if (storedPartialAsr != null) {
-                    val restored = runCatching {
+                    val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
                         if (checkpoint.optInt("version", -1) != 1) {
                             throw IllegalStateException("ASR 检查点版本不兼容")
@@ -1423,7 +1423,13 @@ class PlaybackService : MediaSessionService() {
                             throw IllegalStateException("ASR 检查点包含重复、无效或未完成的字幕行")
                         }
                         PartialAsrTranscript(processed, restoredRows, storedPartialAsr.srcLang)
-                    }.getOrNull()
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        // Cancellation is control flow, not corrupt checkpoint data. Keep the
+                        // saved progress intact so the next attempt can resume without redoing ASR.
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
                     if (restored == null) {
                         android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
