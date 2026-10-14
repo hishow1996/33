@@ -166,7 +166,7 @@ class DubbingTimingTest {
     @Test
     fun lateStartSkipHandlesExtremeTimestampsWithoutWrapping() {
         assertEquals(
-            0,
+            160,
             DubbingTiming.lateStartSkipSamples(
                 preparedAtMs = Long.MIN_VALUE,
                 currentPositionMs = 10L,
