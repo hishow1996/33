@@ -23,15 +23,25 @@ import io.translatetube.local.ui.theme.BgDark
 import io.translatetube.local.ui.theme.TranslateTubeTheme
 import io.translatetube.local.yt.NewPipeRepo
 
-enum class Screen { HOME, PLAYER, SETTINGS, API }
+enum class Screen { HOME, PLAYER, WEB, SETTINGS, API }
 
 /** 一次播放请求：YouTube 或 本地视频 */
 data class PlayRequest(
     val videoId: String? = null,
     val localUri: String? = null,
+    val mediaUrl: String? = null,
+    val mediaTitle: String? = null,
+    val mediaReferrer: String? = null,
+    val mediaCookie: String? = null,
+    val webPageUrl: String? = null,
     val ts: Long = System.currentTimeMillis(), // 保证同视频重复点击也能触发
 ) {
-    val key: String get() = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+    val key: String get() = when {
+        videoId != null -> "youtube:$videoId"
+        mediaUrl != null -> "remote:$mediaUrl"
+        webPageUrl != null -> "webpage:$webPageUrl"
+        else -> "local:${localUri ?: ""}"
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -58,7 +68,12 @@ class MainActivity : ComponentActivity() {
 
                 // 立即展示主界面；启动品牌画面由 Android windowBackground / 系统启动页负责。
                 // 不再叠加 Compose 启动页或固定延时，减少冷启动等待。
-                LaunchedEffect(req) { if (req != null) screen = Screen.PLAYER }
+                LaunchedEffect(req) {
+                    when {
+                        req?.webPageUrl != null -> screen = Screen.WEB
+                        req != null -> screen = Screen.PLAYER
+                    }
+                }
 
                 // 全局大屏适配：内容限宽居中（平板/折叠屏不拉伸变形）
                 Box(
@@ -73,6 +88,7 @@ class MainActivity : ComponentActivity() {
                                 onResumeTask = { taskKey ->
                                     val request = when {
                                         taskKey.startsWith("youtube:") -> PlayRequest(videoId = taskKey.removePrefix("youtube:"))
+                                        taskKey.startsWith("remote:") -> PlayRequest(mediaUrl = taskKey.removePrefix("remote:"))
                                         taskKey.startsWith("local:") -> PlayRequest(localUri = taskKey.removePrefix("local:"))
                                         else -> null
                                     }
@@ -85,8 +101,25 @@ class MainActivity : ComponentActivity() {
                             Screen.PLAYER -> PlayerScreen(
                                 videoId = req?.videoId,
                                 localUri = req?.localUri?.let(Uri::parse),
+                                mediaUrl = req?.mediaUrl,
+                                mediaTitle = req?.mediaTitle.orEmpty(),
+                                mediaReferrer = req?.mediaReferrer.orEmpty(),
+                                mediaCookie = req?.mediaCookie,
                                 onBack = { screen = Screen.HOME },
                                 onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
+                            )
+                            Screen.WEB -> WebVideoScreen(
+                                initialUrl = req?.webPageUrl.orEmpty(),
+                                onBack = { playReq.value = null; screen = Screen.HOME },
+                                onOpenMedia = { url, title, referrer, cookie ->
+                                    playReq.value = PlayRequest(
+                                        mediaUrl = url,
+                                        mediaTitle = title,
+                                        mediaReferrer = referrer,
+                                        mediaCookie = cookie,
+                                    )
+                                    screen = Screen.PLAYER
+                                },
                             )
                             Screen.SETTINGS -> SettingsScreen(
                                 onBack = { screen = previousScreen },
@@ -111,8 +144,14 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_SEND -> {
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
                 val id = NewPipeRepo.extractVideoId(text)
-                    ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(text)) text else null
-                if (id != null) playReq.value = PlayRequest(videoId = id)
+                    ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(text.trim())) text.trim() else null
+                if (id != null) {
+                    playReq.value = PlayRequest(videoId = id)
+                } else {
+                    io.translatetube.local.web.WebMediaUrlPolicy.normalizePageUrl(text)?.let { url ->
+                        playReq.value = PlayRequest(webPageUrl = url)
+                    }
+                }
             }
             Intent.ACTION_VIEW -> {
                 val uri = intent.data ?: return
@@ -126,7 +165,13 @@ class MainActivity : ComponentActivity() {
                     playReq.value = PlayRequest(localUri = uri.toString())
                 } else {
                     val id = NewPipeRepo.extractVideoId(uri.toString())
-                    if (id != null) playReq.value = PlayRequest(videoId = id)
+                    if (id != null) {
+                        playReq.value = PlayRequest(videoId = id)
+                    } else {
+                        io.translatetube.local.web.WebMediaUrlPolicy.normalizePageUrl(uri.toString())?.let { url ->
+                            playReq.value = PlayRequest(webPageUrl = url)
+                        }
+                    }
                 }
             }
         }
