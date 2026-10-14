@@ -28,6 +28,13 @@ class MediaDownloadRetryPolicyTest {
     }
 
     @Test
+    fun wrappedCancellationIsNeverRetriedOrRefreshed() {
+        val wrapped = IOException("download wrapper", CancellationException("obsolete task"))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(wrapped))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(wrapped))
+    }
+
+    @Test
     fun doesNotRetryPermanentErrorsOrCancellation() {
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 403")))
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 404")))
