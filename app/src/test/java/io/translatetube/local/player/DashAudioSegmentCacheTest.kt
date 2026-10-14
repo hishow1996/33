@@ -15,28 +15,19 @@ class DashAudioSegmentCacheTest {
         val directory = createTempDir(prefix = "dash-audio-cache-test")
         server.start()
         try {
-            server.enqueue(manifestResponse("""
-                <MPD type="static" mediaPresentationDuration="PT8S">
-                  <Period duration="PT8S">
-                    <AdaptationSet contentType="audio" mimeType="audio/mp4">
-                      <SegmentTemplate timescale="1" duration="4"
-                        initialization="init.mp4" media="seg-${'$'}Number${'$'}.m4s" />
-                      <Representation id="audio" bandwidth="128000" />
-                    </AdaptationSet>
-                  </Period>
-                </MPD>
-            """.trimIndent()))
+            server.enqueue(manifestResponse(manifestXml()))
             server.enqueue(segmentResponse("INIT"))
             server.enqueue(segmentResponse("SEGMENT-ONE"))
             server.enqueue(segmentResponse("SEGMENT-TWO"))
 
             val destination = File(directory, "source-audio.bin")
+            val manifestUrl = server.url("/video/manifest.mpd").toString()
             val result = DashAudioSegmentCache(
                 cacheDir = directory,
                 maxOutputBytes = 100L,
                 maxSegmentBytes = 100L,
             ).download(
-                manifestUrl = server.url("/video/manifest.mpd").toString(),
+                manifestUrl = manifestUrl,
                 destination = destination,
                 sourceKey = "webmedia:test-dash-1",
             )
@@ -61,18 +52,7 @@ class DashAudioSegmentCacheTest {
         val directory = createTempDir(prefix = "dash-audio-retry-test")
         server.start()
         try {
-            val manifest = """
-                <MPD type="static" mediaPresentationDuration="PT8S">
-                  <Period duration="PT8S">
-                    <AdaptationSet contentType="audio" mimeType="audio/mp4">
-                      <SegmentTemplate timescale="1" duration="4"
-                        initialization="init.mp4" media="seg-${'$'}Number${'$'}.m4s" />
-                      <Representation id="audio" bandwidth="128000" />
-                    </AdaptationSet>
-                  </Period>
-                </MPD>
-            """.trimIndent()
-            server.enqueue(manifestResponse(manifest))
+            server.enqueue(manifestResponse(manifestXml()))
             server.enqueue(segmentResponse("INIT"))
             server.enqueue(segmentResponse("SEGMENT-ONE"))
             server.enqueue(segmentResponse("SEGMENT-TWO"))
@@ -86,13 +66,13 @@ class DashAudioSegmentCacheTest {
             assertTrue(failure is java.io.IOException)
             assertEquals(4, server.requestCount)
 
-            server.enqueue(manifestResponse(manifest))
+            server.enqueue(manifestResponse(manifestXml()))
             DashAudioSegmentCache(directory, maxOutputBytes = 100L, maxSegmentBytes = 100L)
                 .download(manifestUrl, destination, "webmedia:test-dash-retry")
 
             assertArrayEquals("INITSEGMENT-ONESEGMENT-TWO".toByteArray(), destination.readBytes())
             assertEquals(
-                "Retry should read the manifest but reuse all completed media segments",
+                "Retry should fetch the MPD but reuse completed media segments",
                 5,
                 server.requestCount,
             )
@@ -108,47 +88,27 @@ class DashAudioSegmentCacheTest {
         val directory = createTempDir(prefix = "dash-signed-query-reuse-test")
         server.start()
         try {
-            fun manifest(token: String) = """
-                <MPD type="static" mediaPresentationDuration="PT8S">
-                  <Period duration="PT8S">
-                    <AdaptationSet contentType="audio" mimeType="audio/mp4">
-                      <SegmentTemplate timescale="1" duration="4"
-                        initialization="init.mp4?token=$token"
-                        media="seg-$Number$.m4s?token=$token" />
-                      <Representation id="audio" bandwidth="128000" />
-                    </AdaptationSet>
-                  </Period>
-                </MPD>
-            """.trimIndent()
-
-            server.enqueue(manifestResponse(manifest("old")))
+            server.enqueue(manifestResponse(manifestXml(token = "old")))
             server.enqueue(segmentResponse("INITDATA"))
             server.enqueue(segmentResponse("SEGMENT-ONE"))
             server.enqueue(segmentResponse("SEGMENT-TWO"))
 
-            val destination = File(directory, "audio.bin")
+            val destination = File(directory, "source-audio.bin")
+            val manifestUrl = server.url("/video/manifest.mpd").toString()
             val incompleteAssembly = runCatching {
                 DashAudioSegmentCache(directory, maxOutputBytes = 8L, maxSegmentBytes = 100L)
-                    .download(
-                        server.url("/video/manifest.mpd").toString(),
-                        destination,
-                        "stable-dash-source",
-                    )
+                    .download(manifestUrl, destination, "stable-dash-source")
             }.exceptionOrNull()
             assertTrue(incompleteAssembly is java.io.IOException)
             assertEquals(4, server.requestCount)
 
-            server.enqueue(manifestResponse(manifest("new")))
+            server.enqueue(manifestResponse(manifestXml(token = "new")))
             val result = DashAudioSegmentCache(directory, maxOutputBytes = 100L, maxSegmentBytes = 100L)
-                .download(
-                    server.url("/video/manifest.mpd").toString(),
-                    destination,
-                    "stable-dash-source",
-                )
+                .download(manifestUrl, destination, "stable-dash-source")
 
             assertEquals("INITDATASEGMENT-ONESEGMENT-TWO", result.readText())
             assertEquals(
-                "refreshing only auth parameters should fetch a new MPD, not re-download segments",
+                "Refreshing auth parameters should fetch a new MPD, not re-download segments",
                 5,
                 server.requestCount,
             )
@@ -159,52 +119,21 @@ class DashAudioSegmentCacheTest {
     }
 
     @Test
-    fun removesOrphanedFilesWhenSignedSegmentUrlsChangeBetweenRetries() {
+    fun removesOrphanedFilesWhenSegmentPathsChangeBetweenRetries() {
         val server = MockWebServer()
         val directory = createTempDir(prefix = "dash-rotated-url-test")
         server.start()
         try {
-            fun manifest(init: String, segmentPrefix: String) = """
-                <MPD type="static" mediaPresentationDuration="PT8S">
-                  <Period duration="PT8S">
-                    <AdaptationSet contentType="audio" mimeType="audio/mp4">
-                      <SegmentTemplate timescale="1" duration="4"
-                        initialization="$init" media="$segmentPrefix-${'
-        .setResponseCode(200)
-        .setHeader("Content-Type", "application/dash+xml")
-        .setBody(xml)
-
-    private fun segmentResponse(text: String) = MockResponse()
-        .setResponseCode(200)
-        .setHeader("Content-Type", "video/mp4")
-        .setBody(text)
-}
-}Number${'
-        .setResponseCode(200)
-        .setHeader("Content-Type", "application/dash+xml")
-        .setBody(xml)
-
-    private fun segmentResponse(text: String) = MockResponse()
-        .setResponseCode(200)
-        .setHeader("Content-Type", "video/mp4")
-        .setBody(text)
-}
-}.m4s" />
-                      <Representation id="audio" bandwidth="128000" />
-                    </AdaptationSet>
-                  </Period>
-                </MPD>
-            """.trimIndent()
-
-            server.enqueue(manifestResponse(manifest("old-init.mp4", "old")))
+            server.enqueue(manifestResponse(manifestXml(initPath = "old-init.mp4", segmentPrefix = "old")))
             server.enqueue(segmentResponse("OLD-INIT"))
             server.enqueue(segmentResponse("OLD-ONE"))
             server.enqueue(segmentResponse("OLD-TWO"))
 
             val destination = File(directory, "source-audio.bin")
+            val manifestUrl = server.url("/video/manifest.mpd").toString()
             val firstFailure = runCatching {
                 DashAudioSegmentCache(directory, maxOutputBytes = 8L, maxSegmentBytes = 100L)
-                    .download(server.url("/video/manifest.mpd").toString(), destination, "rotating-dash-source")
+                    .download(manifestUrl, destination, "rotating-dash-source")
             }.exceptionOrNull()
             assertTrue(firstFailure is java.io.IOException)
 
@@ -213,19 +142,22 @@ class DashAudioSegmentCacheTest {
             val orphan = File(sourceFolder, "expired-signed-url.seg")
             orphan.writeText("stale")
 
-            server.enqueue(manifestResponse(manifest("new-init.mp4?token=refreshed", "new")))
+            server.enqueue(manifestResponse(manifestXml(
+                initPath = "new-init.mp4?token=refreshed",
+                segmentPrefix = "new",
+            )))
             server.enqueue(segmentResponse("NEW-INIT"))
             server.enqueue(segmentResponse("NEW-ONE"))
             server.enqueue(segmentResponse("NEW-TWO"))
 
             val secondFailure = runCatching {
                 DashAudioSegmentCache(directory, maxOutputBytes = 8L, maxSegmentBytes = 100L)
-                    .download(server.url("/video/manifest.mpd").toString(), destination, "rotating-dash-source")
+                    .download(manifestUrl, destination, "rotating-dash-source")
             }.exceptionOrNull()
             assertTrue(secondFailure is java.io.IOException)
             assertTrue("orphaned cache entry should be removed", !orphan.exists())
             assertEquals(
-                "only current initialization + media segments should remain after failed assembly",
+                "Only current init + media segments should remain after failed assembly",
                 3,
                 sourceFolder.listFiles().orEmpty().count { it.isFile },
             )
@@ -233,6 +165,28 @@ class DashAudioSegmentCacheTest {
             server.shutdown()
             directory.deleteRecursively()
         }
+    }
+
+    private fun manifestXml(
+        token: String? = null,
+        initPath: String = "init.mp4",
+        segmentPrefix: String = "seg",
+    ): String {
+        val dollar = 36.toChar().toString()
+        val query = token?.let { "?token=$it" }.orEmpty()
+        val media = "$segmentPrefix-" + dollar + "Number" + dollar + ".m4s" + query
+        val initialization = initPath + if (token == null || initPath.contains('?')) "" else query
+        return """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT8S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <SegmentTemplate timescale="1" duration="4"
+                    initialization="$initialization" media="$media" />
+                  <Representation id="audio" bandwidth="128000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
     }
 
     private fun manifestResponse(xml: String) = MockResponse()
