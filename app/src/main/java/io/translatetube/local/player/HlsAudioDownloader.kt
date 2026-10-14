@@ -229,10 +229,13 @@ internal object HlsAudioDownloader {
         val directories = parent.listFiles()
             ?.filter { it.isDirectory && it.name.endsWith(".segments") }
             .orEmpty()
-        fun lastActivity(directory: File): Long = sequence {
-            yield(directory.lastModified())
-            directory.walkTopDown().filter { it.isFile }.forEach { yield(it.lastModified()) }
-        }.maxOrNull() ?: directory.lastModified()
+        fun lastActivity(directory: File): Long {
+            var latest = directory.lastModified()
+            directory.walkTopDown().filter { it.isFile }.forEach { file ->
+                latest = maxOf(latest, file.lastModified())
+            }
+            return latest
+        }
         fun size(directory: File): Long = directory.walkTopDown()
             .filter { it.isFile }
             .sumOf { it.length() }
