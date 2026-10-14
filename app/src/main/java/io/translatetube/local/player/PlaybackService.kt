@@ -399,16 +399,27 @@ class PlaybackService : MediaSessionService() {
         runCatching { dubbing?.release() }
         if (activePipeline != null && !activePipeline.isCompleted) {
             // Cancellation is cooperative around blocking JNI calls. Close the recognizer only
-            // after the owning pipeline has actually completed, not merely when isActive turns false.
-            activePipeline.invokeOnCompletion { releaseWhisper() }
+            // after the owning pipeline has completed. Do cleanup off-main because older canceled
+            // jobs may still be returning from a synchronous native decode.
+            activePipeline.invokeOnCompletion { releaseWhisperOffMainThread() }
         } else {
-            releaseWhisper()
+            releaseWhisperOffMainThread()
         }
         runCatching { session?.release() }
         if (::pm.isInitialized) runCatching { pm.release() }
         playerReady = false
         if (instance === this) instance = null
         super.onDestroy()
+    }
+
+    private fun releaseWhisperOffMainThread() {
+        Thread(
+            { releaseWhisper() },
+            "tt-whisper-release",
+        ).apply {
+            isDaemon = true
+            start()
+        }
     }
 
     private fun releaseWhisper() {
