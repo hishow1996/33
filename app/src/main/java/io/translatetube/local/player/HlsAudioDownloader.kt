@@ -417,6 +417,7 @@ internal object HlsAudioDownloader {
                     url = url,
                     requestHeaders = segmentHeaders,
                     allowedCookieOrigin = rootOrigin,
+                    ownerJob = ownerJob,
                 ).use { response ->
                     validateSegmentResponse(
                         code = response.code,
@@ -658,6 +659,7 @@ internal object HlsAudioDownloader {
             url = url,
             requestHeaders = headers,
             allowedCookieOrigin = rootOrigin,
+            ownerJob = ownerJob,
         ).use { response ->
             validateManifestResponseStatus(response.code)
             val body = response.body ?: throw IllegalStateException("HLS 清单响应为空。")
