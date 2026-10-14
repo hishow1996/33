@@ -2273,6 +2273,7 @@ class PlaybackService : MediaSessionService() {
             // A complete file supersedes any leftover partial from an earlier failed attempt.
             File(file.parentFile, file.name + ".part").delete()
             File(file.parentFile, file.name + ".part.meta").delete()
+            File(file.parentFile, file.name + ".part.meta.tmp").delete()
             file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
             return file
         }
@@ -2289,6 +2290,10 @@ class PlaybackService : MediaSessionService() {
      * Keep audio and partial segments under a shared cache budget. Interrupted partials survive
      * for 24 hours, but stale/orphaned sidecars and least-recently-used audio are removed.
      */
+    private companion object {
+        const val SIDECAR_TEMP_TTL_MS = 5L * 60L * 1_000L
+    }
+
     private fun pruneAsrAudioCache(directory: File, keep: File?, keepPart: File? = null) {
         val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
@@ -2305,6 +2310,19 @@ class PlaybackService : MediaSessionService() {
             File(directory, file.name + ".meta").delete()
             File(directory, file.name + ".meta.tmp").delete()
         }
+
+        // A metadata .tmp is only a write-in-progress file, never a resumable checkpoint.
+        // Remove it only when it is orphaned or older than five minutes so a concurrent downloader
+        // is not interrupted while atomically publishing its sidecar.
+        allFiles.filter { file -> file.isFile && file.name.endsWith(".part.meta.tmp") }
+            .forEach { temp ->
+                val meta = File(directory, temp.name.removeSuffix(".tmp"))
+                val part = File(directory, temp.name.removeSuffix(".meta.tmp"))
+                val age = now - temp.lastModified()
+                if (!part.isFile || !meta.isFile || age < 0L || age > SIDECAR_TEMP_TTL_MS) {
+                    temp.delete()
+                }
+            }
 
         // Sidecar files are meaningful only while their paired partial file exists.
         allFiles.filter { file -> file.isFile && file.name.endsWith(".part.meta") }
@@ -2333,7 +2351,10 @@ class PlaybackService : MediaSessionService() {
             }
             if (!isProtected && (file.length() <= 0L || expired)) {
                 file.delete()
-                if (file.name.endsWith(".part")) File(directory, file.name + ".meta").delete()
+                if (file.name.endsWith(".part")) {
+                    File(directory, file.name + ".meta").delete()
+                    File(directory, file.name + ".meta.tmp").delete()
+                }
             } else {
                 totalBytes += file.length()
             }
@@ -2346,7 +2367,10 @@ class PlaybackService : MediaSessionService() {
             val size = file.length()
             if (file.delete()) {
                 totalBytes -= size
-                if (file.name.endsWith(".part")) File(directory, file.name + ".meta").delete()
+                if (file.name.endsWith(".part")) {
+                    File(directory, file.name + ".meta").delete()
+                    File(directory, file.name + ".meta.tmp").delete()
+                }
             }
         }
     }
