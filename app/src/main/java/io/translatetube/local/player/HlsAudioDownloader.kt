@@ -323,7 +323,7 @@ internal object HlsAudioDownloader {
                 part.delete()
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
-                if (attempt == 3 || !shouldRetrySegment(error)) throw error
+                if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
                 onRetry(attempt + 1)
                 try {
                     Thread.sleep(250L * attempt)
@@ -338,13 +338,6 @@ internal object HlsAudioDownloader {
         throw IllegalStateException("HLS 音轨片段下载失败。", lastError)
     }
 
-    private fun shouldRetrySegment(error: Exception): Boolean {
-        if (error is java.io.IOException) return true
-        val message = error.message.orEmpty()
-        val statusCode = Regex("HTTP (\\d{3})").find(message)?.groupValues?.get(1)?.toIntOrNull()
-        if (statusCode != null && statusCode in setOf(408, 425, 429, 500, 502, 503, 504)) return true
-        return message.contains("下载不完整")
-    }
 
     private fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
         val lines = body.removePrefix("\uFEFF").lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
