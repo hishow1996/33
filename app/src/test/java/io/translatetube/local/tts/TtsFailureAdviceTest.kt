@@ -11,7 +11,7 @@ class TtsFailureAdviceTest {
         assertTrue(message.contains("文字转语音"))
         assertTrue(message.contains("中文语音数据"))
         assertFalse(message.contains("重新准备模型"))
-        assertFalse(message.contains("下载 Kokoro 模型"))
+        assertFalse(message.contains("请检查 Kokoro"))
     }
 
     @Test
