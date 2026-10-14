@@ -273,7 +273,7 @@ internal class HlsAudioSegmentCache(
             val allowed = normalized in FORWARDABLE_HEADERS
             val credential = normalized in setOf("cookie", "authorization", "origin")
             val safeValue = value.isNotBlank() &&
-                value.none { it == '\\r' || it == '\\n' || it == '\\u0000' }
+                value.none { it == '\r' || it == '\n' || it == '\u0000' }
             if (allowed && safeValue && (!credential || sameOrigin)) {
                 headers[name.trim()] = value
             }
