@@ -1299,7 +1299,7 @@ class PlaybackService : MediaSessionService() {
                     }
                     throw error
                 } finally {
-                    leasedAudioPath?.let(activeAsrAudioPaths::remove)
+                    releaseActiveAsrAudio(leasedAudioPath)
                 }
                 transientPcmFile = pcmFile
                 ensureCurrentSession(key)
@@ -2270,6 +2270,15 @@ class PlaybackService : MediaSessionService() {
     }
 
     /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
+    private fun releaseActiveAsrAudio(path: String?) {
+        if (path.isNullOrBlank()) return
+        activeAsrAudioPaths.remove(path)
+        val file = File(path)
+        file.parentFile?.let { parent ->
+            pruneAsrAudioCache(parent, keep = file.takeIf { it.isFile })
+        }
+    }
+
     private fun pruneAsrAudioCache(directory: File, keep: File?) {
         val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
@@ -2708,7 +2717,7 @@ class PlaybackService : MediaSessionService() {
                             maxDurationMs = 3 * 60 * 1000L,
                         )
                     } finally {
-                        leasedPath?.let(activeAsrAudioPaths::remove)
+                        releaseActiveAsrAudio(leasedPath)
                     }
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
