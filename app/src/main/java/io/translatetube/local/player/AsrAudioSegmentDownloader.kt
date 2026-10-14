@@ -307,6 +307,8 @@ internal class AsrAudioSegmentDownloader(
         onProgress: (Long) -> Unit,
     ): Long {
         var written = 0L
+        var nextDiskSpaceCheckAt = 0L
+        val parent = part.parentFile ?: throw IOException("音频缓存没有父目录")
         val existingBytes = if (append && part.isFile) part.length() else 0L
         FileOutputStream(part, append).use { fileOut ->
             java.io.BufferedOutputStream(fileOut, IO_BUFFER_BYTES).use { out ->
@@ -321,6 +323,10 @@ internal class AsrAudioSegmentDownloader(
                     if (count == 0) continue
                     if (existingBytes + written + count.toLong() > maxBytes) {
                         throw IOException("音频文件超过 ${maxBytes / (1024L * 1024L)} MB 限制")
+                    }
+                    if (existingBytes + written >= nextDiskSpaceCheckAt) {
+                        ensureDiskSpace(parent, count.toLong())
+                        nextDiskSpaceCheckAt = existingBytes + written + DISK_SPACE_CHECK_INTERVAL_BYTES
                     }
                     out.write(buffer, 0, count)
                     written += count
@@ -458,6 +464,7 @@ internal class AsrAudioSegmentDownloader(
         private const val MAX_RANGE_RETRIES = 3
         private const val RETRY_DELAY_MS = 250L
         private const val MIN_FREE_STORAGE_BYTES = 32L * 1024L * 1024L
+        private const val DISK_SPACE_CHECK_INTERVAL_BYTES = 1L * 1024L * 1024L
         private val FORWARDABLE_HEADER_NAMES = setOf(
             "user-agent", "referer", "origin", "cookie", "authorization", "accept-language"
         )
