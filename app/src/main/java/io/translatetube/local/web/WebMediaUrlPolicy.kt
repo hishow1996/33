@@ -60,7 +60,9 @@ internal object WebMediaUrlPolicy {
             return "检测到 HLS/DASH 分片清单；当前音轨缓存流程尚未支持这种清单格式。"
         }
         val uri = runCatching { URI(raw) }.getOrNull()
-        if (uri?.scheme?.lowercase() !in setOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null) {
+        if (uri == null || uri.scheme?.lowercase() !in setOf("http", "https") ||
+            uri.host.isNullOrBlank() || uri.userInfo != null
+        ) {
             return "未检测到可直接访问的 HTTP/HTTPS 媒体地址。"
         }
         return null
