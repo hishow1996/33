@@ -1151,18 +1151,19 @@ class PlaybackService : MediaSessionService() {
                 // A canceled coroutine cannot interrupt a blocking native decode immediately.
                 // Serialize access to the shared recognizer and stop the old transcript between
                 // VAD segments as soon as that native call returns.
-                val asrLines = whisperMutex.withLock {
+                val (asrLines, detectedAsrLang) = whisperMutex.withLock {
                     ensureCurrentSession(key)
                     withContext(Dispatchers.IO) {
                         val engine = whisper ?: WhisperEngine(this@PlaybackService).also { whisper = it }
                         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                        engine.transcribeBySegments(
+                        val rows = engine.transcribeBySegments(
                             pcm.samples,
                             segs,
                             checkActive = { ownerJob?.ensureActive() },
                         ) { done, total ->
                             updateUiForSession(key) { it.copy(progress = "转写中 $done/$total 段") }
                         }
+                        rows to engine.lastLang
                     }
                 }
                 ensureCurrentSession(key)
@@ -1191,7 +1192,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 lines = transcribedLines
-                srcLang = whisper?.lastLang?.takeIf { it.isNotBlank() } ?: "en"
+                srcLang = detectedAsrLang.takeIf { it.isNotBlank() } ?: "en"
 
                 // Keep the completed ASR transcript as an independent checkpoint. The bounded
                 // source-audio cache is retained for retries and later speaker diarization, while
