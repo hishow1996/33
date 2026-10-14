@@ -88,10 +88,14 @@ class SystemTts(context: Context) : TtsEngine {
         get() {
             val engine = ttsRef.get()
             return listOf(
-                name,
+                "system-voice-v2",
                 engine?.defaultEngine.orEmpty(),
                 defaultChineseVoice?.name.orEmpty(),
-                chineseVoiceCatalog.joinToString(",") { "${it.name}@${it.locale}" },
+                chineseVoiceCatalog.joinToString(",") { voice ->
+                    "${voice.name}@${voice.locale}" +
+                        ":network=${voice.isNetworkConnectionRequired}" +
+                        ":quality=${voice.quality}:latency=${voice.latency}"
+                },
             ).joinToString("|")
         }
     private val ready = java.util.concurrent.CountDownLatch(1)
