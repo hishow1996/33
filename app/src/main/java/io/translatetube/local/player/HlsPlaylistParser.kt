@@ -87,49 +87,66 @@ internal object HlsPlaylistParser {
             }
         }
 
-        val audioVariants = variants.filter { it.audioOnly }
-        if (audioVariants.isNotEmpty()) {
-            return audioVariants.minWithOrNull(compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url })?.url
-        }
+        // Select a video variant's declared AUDIO group before unrelated audio-only variants.
+        // A master may expose a low-bandwidth commentary/audio-only variant alongside a video
+        // variant whose preferred English track lives in an external rendition group.
+        val groupedVariant = variants
+            .filter { !it.audioGroupId.isNullOrBlank() }
+            .minWithOrNull(compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url })
 
-        // AUDIO renditions belong to a specific GROUP-ID. Choose the rendition associated with
-        // the selected muxed variant, not an arbitrary DEFAULT audio track elsewhere in the master
-        // playlist (which might be Japanese while the selected video variant uses an English group).
-        val selectedVariant = variants.minWithOrNull(
-            compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url }
-        )
-        val matchingRenditions = selectedVariant?.audioGroupId?.let { groupId ->
-            audioRenditions.filter { (attributes, _) ->
-                attributes["GROUP-ID"].equals(groupId, ignoreCase = false)
-            }
-        }.orEmpty()
-        fun preferredRendition(
+        fun renditionOrder(
             renditions: List<Pair<Map<String, String>, String?>>
-        ): String? = renditions.sortedWith(
+        ): List<Pair<Map<String, String>, String?>> = renditions.sortedWith(
             compareByDescending<Pair<Map<String, String>, String?>> {
                 it.first["DEFAULT"].equals("YES", true)
             }.thenByDescending {
                 it.first["AUTOSELECT"].equals("YES", true)
             }.thenBy {
-                // For a speech-transcription source, prefer English when no rendition is marked
-                // default, then stable language/name ordering for deterministic results.
+                // For speech transcription, prefer English when no rendition is explicitly default.
                 if (it.first["LANGUAGE"].equals("en", true)) 0 else 1
             }.thenBy { it.first["LANGUAGE"].orEmpty() }
                 .thenBy { it.first["NAME"].orEmpty() }
-        ).firstOrNull()?.second
+        )
 
-        preferredRendition(matchingRenditions)?.let { return it }
-        if (selectedVariant != null) return selectedVariant.url
+        if (groupedVariant != null) {
+            val matchingRenditions = audioRenditions.filter { (attributes, _) ->
+                attributes["GROUP-ID"] == groupedVariant.audioGroupId
+            }
+            val preferred = renditionOrder(matchingRenditions).firstOrNull()
+            if (preferred != null) {
+                // URI is optional in HLS. A preferred in-band rendition means the variant URL
+                // itself carries the audio; do not jump to a standalone commentary variant.
+                return preferred.second ?: groupedVariant.url
+            }
+        }
+
+        // Only use a standalone audio-only variant when no associated external/in-band audio group
+        // could be selected from the chosen video variant.
+        val audioVariants = variants.filter { it.audioOnly }
+        if (audioVariants.isNotEmpty()) {
+            return audioVariants.minWithOrNull(compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url })?.url
+        }
+
+        // If codec declarations identify an audio-bearing stream, avoid choosing a video-only
+        // variant simply because it has a lower BANDWIDTH value.
+        val audioBearingVariants = variants.filter { declaresAudioCodec(it.codecs) }
+        if (audioBearingVariants.isNotEmpty()) {
+            return audioBearingVariants.minWithOrNull(
+                compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url }
+            )?.url
+        }
 
         // A malformed master containing only audio media declarations has no variant-to-group
         // association. Permit a sole group, but avoid guessing when several unrelated groups exist.
         val declaredGroups = audioRenditions.mapNotNull { it.first["GROUP-ID"] }.distinct()
-        if (declaredGroups.size == 1) {
-            preferredRendition(audioRenditions)?.let { return it }
+        if (variants.isEmpty() && declaredGroups.size == 1) {
+            val preferred = renditionOrder(audioRenditions).firstOrNull()
+            preferred?.second?.let { return it }
         }
 
-        // No usable external audio rendition exists; process the selected variant's muxed audio.
-        return null
+        // No codec or group metadata identifies a better source; the lowest declared variant is
+        // the last-resort choice and will still undergo real audio-track validation during ASR.
+        return variants.minWithOrNull(compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url })?.url
     }
 
     fun parseMediaPlaylist(playlistUrl: String, text: String): MediaPlaylist {
@@ -236,6 +253,16 @@ internal object HlsPlaylistParser {
     private fun isMediaPlaylist(lines: List<String>): Boolean =
         lines.any { it.startsWith("#EXTINF:", true) } ||
             lines.any { it.startsWith("#EXT-X-TARGETDURATION:", true) }
+
+    private fun declaresAudioCodec(codecs: String?): Boolean {
+        if (codecs.isNullOrBlank()) return false
+        return codecs.split(',').map { it.trim().lowercase(Locale.ROOT) }.any { codec ->
+            codec.startsWith("mp4a") || codec.startsWith("ac-3") ||
+                codec.startsWith("ec-3") || codec.startsWith("opus") ||
+                codec.startsWith("vorbis") || codec.startsWith("flac") ||
+                codec.startsWith("alac") || codec.startsWith("mp3")
+        }
+    }
 
     private fun isClearlyAudioOnly(codecs: String?): Boolean {
         if (codecs.isNullOrBlank()) return false
