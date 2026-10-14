@@ -22,7 +22,9 @@ class HlsAudioDownloaderTest {
                 java.io.File(this, "00000.seg").writeBytes(byteArrayOf(4, 5, 6))
             }
 
-            assertEquals(true, HlsAudioDownloader.cleanupSegmentCache(destination))
+            assertEquals(true, kotlinx.coroutines.runBlocking {
+                HlsAudioDownloader.cleanupSegmentCache(destination)
+            })
             assertEquals(false, matching.exists())
             assertEquals(true, unrelated.exists())
             assertEquals(true, HlsAudioDownloader.cleanupSegmentCache(destination))
