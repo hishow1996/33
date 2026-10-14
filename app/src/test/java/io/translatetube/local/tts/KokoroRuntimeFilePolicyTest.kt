@@ -19,12 +19,12 @@ class KokoroRuntimeFilePolicyTest {
         assertTrue(missing.contains("tokens.txt"))
         assertTrue(missing.contains("lexicon-zh.txt"))
         assertTrue(missing.contains("espeak-ng-data/"))
-        assertTrue(missing.contains("dict/"))
     }
 
     @Test
-    fun completeRuntimeTreeIsReady() = withTempDir { dir ->
+    fun dictDirectoryIsOptionalWhenAllDocumentedRuntimeFilesExist() = withTempDir { dir ->
         createCompleteRuntime(dir)
+        File(dir, "dict").deleteRecursively()
         assertEquals(emptyList<String>(), KokoroRuntimeFilePolicy.missingRuntimeFiles(dir))
     }
 
@@ -47,7 +47,6 @@ class KokoroRuntimeFilePolicyTest {
         createSizedFile(dir, "date-zh.fst", 20L * 1024)
         createSizedFile(dir, "number-zh.fst", 32L * 1024)
         createSizedFile(File(dir, "espeak-ng-data"), "phontab", 16L)
-        createSizedFile(File(dir, "dict"), "README", 16L)
     }
 
     private fun createSizedFile(dir: File, name: String, size: Long) {

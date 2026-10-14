@@ -15,7 +15,7 @@ internal object KokoroRuntimeFilePolicy {
         "date-zh.fst" to 20L * 1024,
         "number-zh.fst" to 32L * 1024,
     )
-    private val requiredDirectories = listOf("espeak-ng-data", "dict")
+    private val requiredDirectories = listOf("espeak-ng-data")
     private val signatureRoots = minimumBytes.keys.toList() + requiredDirectories
 
     fun isValidRequiredFile(name: String, file: File): Boolean =
