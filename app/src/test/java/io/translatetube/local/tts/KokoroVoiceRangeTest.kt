@@ -31,10 +31,12 @@ class KokoroVoiceRangeTest {
         val mapped = (0..KokoroVoiceRange.MAX_SPEAKER_ID).mapNotNull { personId ->
             KokoroVoiceRange.voiceForDiarizedSpeaker(personId, preferredVoiceId = 14)
         }
+        // -1 means the configured preferred voice (14), so compare resolved model IDs.
+        val actualVoiceIds = mapped.map { if (it == -1) 14 else it }
 
-        assertEquals(103, mapped.size)
-        assertEquals(103, mapped.distinct().size)
-        assertEquals(-1, mapped.first())
+        assertEquals(103, actualVoiceIds.size)
+        assertEquals(103, actualVoiceIds.distinct().size)
+        assertEquals(14, actualVoiceIds.first())
         assertEquals(15, KokoroVoiceRange.voiceForDiarizedSpeaker(15, 14))
         assertEquals(102, KokoroVoiceRange.voiceForDiarizedSpeaker(102, 14))
         assertEquals(null, KokoroVoiceRange.voiceForDiarizedSpeaker(103, 14))
