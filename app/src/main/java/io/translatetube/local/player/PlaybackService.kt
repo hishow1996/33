@@ -758,6 +758,7 @@ class PlaybackService : MediaSessionService() {
                     }
                 )
                 previousDubbing?.releaseAndJoin()
+                awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
                 val tts = makeTts()
                 try {
