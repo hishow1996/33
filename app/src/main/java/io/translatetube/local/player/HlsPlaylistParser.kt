@@ -52,16 +52,19 @@ internal object HlsPlaylistParser {
 
         val variants = mutableListOf<MasterVariant>()
         var pendingAttributes: Map<String, String>? = null
-        var audioRenditions = mutableListOf<Pair<Map<String, String>, String>>()
+        val audioRenditions = mutableListOf<Pair<Map<String, String>, String?>>()
 
         for (line in lines) {
             when {
                 line.startsWith("#EXT-X-MEDIA:", ignoreCase = true) -> {
                     val attrs = parseAttributes(line.substringAfter(':'))
                     if (attrs["TYPE"].equals("AUDIO", true)) {
+                        // URI is optional by HLS spec. Keep declarations without URI so a default
+                        // in-band rendition is not accidentally replaced by another group's external
+                        // audio URI simply because the latter is the only one with an address.
                         val uri = attrs["URI"]?.takeIf { it.isNotBlank() }
                             ?.let { resolveHttpUrl(manifestUrl, it) }
-                        if (uri != null) audioRenditions += attrs to uri
+                        audioRenditions += attrs to uri
                     }
                 }
                 line.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true) -> {
