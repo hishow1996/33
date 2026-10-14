@@ -2,7 +2,10 @@ package io.translatetube.local.player
 
 import android.content.Context
 import android.net.Uri
+import android.webkit.CookieManager
 import androidx.media3.common.MediaItem
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -17,6 +20,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+private val WEB_REQUEST_HEADER_ALLOWLIST = setOf(
+    "user-agent", "referer", "origin", "cookie", "authorization", "accept-language"
+)
 
 /** ExoPlayer 封装：源装配 / 音量 / 倍速 / 时间轴轮询 */
 class PlayerManager(private val ctx: Context) {
@@ -228,6 +234,75 @@ class PlayerManager(private val ctx: Context) {
             uri.scheme?.equals("http", ignoreCase = true) == true) &&
             !uri.host.isNullOrBlank()
     }.getOrDefault(false)
+
+    /**
+     * Play a webpage media URL using Media3's native HLS/DASH/progressive source selection.
+     *
+     * Captured page headers are resolved per request. Cookies are re-read for the actual segment
+     * URL, and captured Cookie/Authorization headers are only forwarded to the original media
+     * origin to avoid leaking them to cross-origin HLS/DASH renditions.
+     */
+    fun setExternalMediaSource(
+        uri: Uri,
+        headers: Map<String, String>,
+        title: String = "",
+        artist: String = "",
+        artworkUrl: String? = null,
+    ) {
+        errorSink.value = null
+        if (!isValidHttpMediaUrl(uri.toString())) {
+            errorSink.value = "网页媒体地址无效：只支持 HTTP/HTTPS 媒体链接"
+            return
+        }
+
+        try {
+            val originalOrigin = mediaOrigin(uri)
+            val resolver = ResolvingDataSource.Resolver { dataSpec ->
+                val target = dataSpec.uri
+                val targetOrigin = mediaOrigin(target)
+                val sameOrigin = originalOrigin == targetOrigin
+                val resolvedHeaders = LinkedHashMap(dataSpec.httpRequestHeaders)
+                headers.forEach { (name, value) ->
+                    val normalized = name.trim().lowercase(java.util.Locale.ROOT)
+                    val permitted = normalized in WEB_REQUEST_HEADER_ALLOWLIST
+                    val sensitive = normalized in setOf("cookie", "authorization", "origin")
+                    val safeValue = value.isNotBlank() &&
+                        value.none { it == '\\r' || it == '\\n' || it == '\\u0000' }
+                    if (permitted && safeValue && (!sensitive || sameOrigin)) {
+                        resolvedHeaders[name.trim()] = value
+                    }
+                }
+                // Use Android's scoped cookie jar for the actual child manifest/segment URL.
+                // It avoids reusing the initial URL's Cookie header on a different CDN host.
+                runCatching { CookieManager.getInstance().getCookie(target.toString()) }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { resolvedHeaders["Cookie"] = it }
+                dataSpec.buildUpon().setHttpRequestHeaders(resolvedHeaders).build()
+            }
+            val remoteDataSource = ResolvingDataSource.Factory(
+                DefaultDataSource.Factory(ctx, httpFactory),
+                resolver,
+            )
+            val item = MediaItem.Builder()
+                .setUri(uri)
+                .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
+                .build()
+            val source = DefaultMediaSourceFactory(remoteDataSource).createMediaSource(item)
+            player.setMediaSource(source)
+            player.prepare()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerManager", "External webpage media setup failed", e)
+            errorSink.value = "无法初始化网页媒体：${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    private fun mediaOrigin(uri: Uri): String {
+        val scheme = uri.scheme.orEmpty().lowercase(java.util.Locale.ROOT)
+        val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+        val port = if (uri.port >= 0) uri.port else if (scheme == "https") 443 else 80
+        return "$scheme://$host:$port"
+    }
 
     /** 本地文件 / 直链 */
     fun setUriSource(uri: Uri, title: String = "", artist: String = "", artworkUrl: String? = null) {
