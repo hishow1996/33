@@ -23,7 +23,6 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ false }} # Temporarily disabled until the full multi-stage upgrade is ready.
     name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -57,6 +56,7 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      # This is the final integration build. Run unit tests before creating installable APK artifacts.
       # Speech models are downloaded by the app on first use; do not bundle the 300MB+ ONNX models into the APK.
 
       - name: Download sherpa-onnx AAR
@@ -66,8 +66,11 @@ jobs:
             -o app/libs/sherpa-onnx.aar \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
 
+      - name: Run JVM unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
       - name: Build debug and release APKs
-        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug assembleRelease
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
 
       # Debug APKs are signed with Android's debug key and can be installed directly.
       - name: Upload installable debug APK
