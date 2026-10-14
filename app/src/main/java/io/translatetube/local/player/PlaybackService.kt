@@ -156,6 +156,7 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
+    private var subtitleDownloadJob: Job? = null
     private val asrAudioDownloadLocks = KeyedMutex<String>()
     // Do not evict downloaded audio while MediaExtractor is actively reading it.
     private val activeAsrAudioPaths = ActiveFileLeaseRegistry()
@@ -529,6 +530,7 @@ class PlaybackService : MediaSessionService() {
             return
         }
         prepJob?.cancel()
+        subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
@@ -670,21 +672,37 @@ class PlaybackService : MediaSessionService() {
     fun downloadSubtitle(track: SubtitleTrackOption, outputUri: Uri) {
         val sessionKey = ui.value.key
         val sessionVideoId = videoId
-        scope.launch {
-            ensureCurrentSession(sessionKey)
-            updateUiForSession(sessionKey) { it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…") }
+        subtitleDownloadJob?.cancel()
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             try {
-                if (sessionVideoId != videoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
+                ensureCurrentSession(sessionKey)
+                updateUiForSession(sessionKey) {
+                    it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…")
+                }
+                if (sessionVideoId != videoId) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
+                }
                 val content = NewPipeRepo.downloadSubtitleContent(track)
-                val parseJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                ensureCurrentSession(sessionKey)
+                if (sessionVideoId != videoId) {
+                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
+                }
                 val cueCount = SubtitleParsers.parseAutoCancellable(content) {
-                    parseJob?.ensureActive()
+                    ownerJob?.ensureActive()
                 }.size
                 if (cueCount == 0) throw IllegalStateException("字幕文件没有可用的时间轴")
                 withContext(Dispatchers.IO) {
+                    ownerJob?.ensureActive()
+                    if (sessionVideoId != videoId || ui.value.key != sessionKey) {
+                        throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕写入")
+                    }
                     val output = contentResolver.openOutputStream(outputUri, "wt")
                         ?: throw IllegalStateException("无法写入所选文件")
-                    output.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+                    output.use {
+                        ownerJob?.ensureActive()
+                        it.write(content.toByteArray(Charsets.UTF_8))
+                    }
                 }
                 updateUiForSession(sessionKey) {
                     it.copy(
@@ -699,8 +717,12 @@ class PlaybackService : MediaSessionService() {
                 updateUiForSession(sessionKey) {
                     it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
                 }
+            } finally {
+                if (subtitleDownloadJob === ownerJob) subtitleDownloadJob = null
             }
         }
+        subtitleDownloadJob = job
+        job.start()
     }
 
     /**
@@ -709,6 +731,7 @@ class PlaybackService : MediaSessionService() {
      */
     fun importTranslatedSubtitles(uri: Uri) {
         val sessionKey = videoKey
+        subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
         prepJob = null
         speakerJob?.cancel()
@@ -851,6 +874,7 @@ class PlaybackService : MediaSessionService() {
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
         val sessionKey = videoKey
+        subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
         prepJob = null
         speakerJob?.cancel()
