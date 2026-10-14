@@ -42,6 +42,28 @@ class PcmTempFilePolicyTest {
     }
 
     @Test
+    fun completePcmPayloadRequiresAnExistingNonEmptyFileOfDeclaredLength() {
+        val dir = createTempDir(prefix = "pcm-payload-test")
+        try {
+            val complete = File(dir, "complete.s16le").apply {
+                writeBytes(byteArrayOf(1, 0, 2, 0))
+            }
+            val truncated = File(dir, "truncated.s16le").apply {
+                writeBytes(byteArrayOf(1, 0))
+            }
+            val missing = File(dir, "missing.s16le")
+
+            assertTrue(PcmTempFilePolicy.hasCompletePcm16Payload(complete, 2L))
+            assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(truncated, 2L))
+            assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(missing, 1L))
+            assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(complete, 0L))
+            assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(complete, Long.MAX_VALUE))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun scratchPcmWritesAreBoundedByThe512MiBBudget() {
         val budget = PcmTempFilePolicy.MAX_PCM_BYTES
         assertTrue(PcmTempFilePolicy.canAppendSamples(0L, 1))
