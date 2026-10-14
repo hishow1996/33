@@ -2416,6 +2416,18 @@ class PlaybackService : MediaSessionService() {
                 val assignmentSnapshot = loadSpeakerAssignments(sessionKey)
                 val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
                 val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
+                // sherpa-onnx cluster labels are arbitrary identifiers, not persistent person IDs.
+                // Normalize them by first appearance so a fresh diarization run cannot swap voices
+                // merely because the model numbered the same people differently.
+                val canonicalSpeakerIds = SpeakerAssignmentPolicy.canonicalSpeakerIds(
+                    segments.map { segment ->
+                        SpeakerAssignmentPolicy.SpeakerObservation(
+                            speakerId = segment.speaker,
+                            startMs = (segment.startSec * 1000f).toLong(),
+                            endMs = (segment.endSec * 1000f).toLong(),
+                        )
+                    }
+                )
                 val updated = originalLines.map { line ->
                     val start = line.startMs / 1000f
                     val end = line.endMs / 1000f
@@ -2428,7 +2440,10 @@ class PlaybackService : MediaSessionService() {
                         .groupBy({ it.first }, { it.second })
                         .mapValues { (_, overlaps) -> overlaps.sum() }
                     val best = overlapBySpeaker.maxByOrNull { it.value }
-                    val speaker = if (best != null && best.value >= minOf(0.25f, duration * 0.2f)) best.key else -1
+                    val detectedSpeaker = if (
+                        best != null && best.value >= minOf(0.25f, duration * 0.2f)
+                    ) best.key else -1
+                    val speaker = canonicalSpeakerIds[detectedSpeaker] ?: -1
                     // Assign each diarized person a stable voice for this video. Manual cue
                     // choices take precedence over the automatic speaker mapping.
                     val suggestedVoice = when {

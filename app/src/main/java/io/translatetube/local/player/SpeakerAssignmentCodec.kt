@@ -11,7 +11,8 @@ internal data class SpeakerAssignmentSnapshot(
 )
 
 internal object SpeakerAssignmentCodec {
-    private const val VERSION = "speaker-map-v1"
+    private const val VERSION = "speaker-map-v2"
+    private const val PREVIOUS_VERSION = "speaker-map-v1"
 
     fun lineKey(startMs: Long, endMs: Long): String = "$startMs:$endMs"
 
@@ -32,7 +33,14 @@ internal object SpeakerAssignmentCodec {
     fun decode(encoded: String?): SpeakerAssignmentSnapshot {
         if (encoded.isNullOrBlank()) return SpeakerAssignmentSnapshot()
         val parts = encoded.split('|')
-        if (parts.firstOrNull() != VERSION) return SpeakerAssignmentSnapshot()
+        val payloadVersion = parts.firstOrNull()
+        if (payloadVersion != VERSION && payloadVersion != PREVIOUS_VERSION) {
+            return SpeakerAssignmentSnapshot()
+        }
+        // v1 used the raw sherpa diarizer cluster IDs as persistent speaker IDs. These labels
+        // can be renumbered after a new inference, so retaining that map could assign the wrong
+        // voice. Migrate cue-level choices but rebuild the person map using normalized IDs.
+        val legacySpeakerIds = payloadVersion == PREVIOUS_VERSION
 
         val speakers = linkedMapOf<Int, Int>()
         val lines = linkedMapOf<String, Int>()
@@ -45,7 +53,9 @@ internal object SpeakerAssignmentCodec {
             val kind = left.substringBefore(':')
             val key = left.substringAfter(':', "")
             when (kind) {
-                "s" -> key.toIntOrNull()?.takeIf { it in 0..53 }?.let { speakers[it] = voice }
+                "s" -> if (!legacySpeakerIds) {
+                    key.toIntOrNull()?.takeIf { it in 0..53 }?.let { speakers[it] = voice }
+                }
                 "v" -> if (isValidLineKey(key)) lines[key] = voice
                 "m" -> if (isValidLineKey(key)) overrides[key] = voice
             }

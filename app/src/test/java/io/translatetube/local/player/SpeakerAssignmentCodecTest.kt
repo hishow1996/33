@@ -21,11 +21,23 @@ class SpeakerAssignmentCodecTest {
         assertEquals(SpeakerAssignmentSnapshot(), SpeakerAssignmentCodec.decode(null))
         assertEquals(SpeakerAssignmentSnapshot(), SpeakerAssignmentCodec.decode("old-format|s:1=8"))
         val decoded = SpeakerAssignmentCodec.decode(
-            "speaker-map-v1|s:999=2|s:2=99|v:100:0=2|m:0:100=-2|x:4=3|s:3=12"
+            "speaker-map-v2|s:999=2|s:2=99|v:100:0=2|m:0:100=-2|x:4=3|s:3=12"
         )
         assertEquals(mapOf(3 to 12), decoded.speakerVoices)
         assertTrue(decoded.lineVoices.isEmpty())
         assertTrue(decoded.lineOverrides.isEmpty())
+    }
+
+    @Test
+    fun v1MigrationKeepsCueChoicesButDropsUnstableDiarizerIds() {
+        val decoded = SpeakerAssignmentCodec.decode(
+            "speaker-map-v1|s:0=14|s:1=8|v:1000:2000=12|m:2000:3000=21"
+        )
+
+        assertTrue(decoded.speakerVoices.isEmpty())
+        assertEquals(mapOf("1000:2000" to 12), decoded.lineVoices)
+        assertEquals(mapOf("2000:3000" to 21), decoded.lineOverrides)
+        assertEquals("speaker-map-v2", SpeakerAssignmentCodec.encode(decoded).substringBefore('|'))
     }
 
     @Test
