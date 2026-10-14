@@ -69,6 +69,21 @@ class VadSegmentMergePolicyTest {
     }
 
     @Test
+    fun sortsUnorderedSegmentsAndDropsInvalidNegativeSpans() {
+        assertEquals(
+            listOf(0L to 1_000L, 2_000L to 3_000L),
+            VadSegmentMergePolicy.merge(
+                listOf(
+                    2_000L to 3_000L,
+                    -500L to 800L,
+                    1_000L to 900L,
+                    0L to 1_000L,
+                )
+            ),
+        )
+    }
+
+    @Test
     fun everyMergedSegmentRespectsWhisperSafeDuration() {
         val segments = (0..20).map { index ->
             val start = index * 12_000L
