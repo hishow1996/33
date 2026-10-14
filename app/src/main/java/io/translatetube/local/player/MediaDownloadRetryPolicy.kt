@@ -9,7 +9,7 @@ internal object MediaDownloadRetryPolicy {
 
     /** Refresh a cached YouTube StreamInfo once when its signed media URL is stale. */
     fun shouldRefreshSignedStream(error: Throwable): Boolean {
-        if (error is CancellationException) return false
+        if (hasCancellationCause(error)) return false
         val messages = generateSequence(error) { it.cause }
             .mapNotNull { it.message }
             .joinToString(" ")
@@ -45,4 +45,7 @@ internal object MediaDownloadRetryPolicy {
             messages.contains("响应不完整") ||
             messages.contains("片段不完整")
     }
+
+    private fun hasCancellationCause(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.any { it is CancellationException }
 }
