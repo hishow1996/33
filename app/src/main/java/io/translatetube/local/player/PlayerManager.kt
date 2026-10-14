@@ -16,6 +16,9 @@ import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -26,9 +29,21 @@ private val WEB_REQUEST_HEADER_ALLOWLIST = setOf(
 
 /** ExoPlayer 封装：源装配 / 音量 / 倍速 / 时间轴轮询 */
 class PlayerManager(private val ctx: Context) {
+    // YouTube keeps its existing factory; webpage media uses explicit safe redirect handling.
     private val httpFactory = DefaultHttpDataSource.Factory()
         .setUserAgent(UA)
         .setAllowCrossProtocolRedirects(true)
+
+    private val safeWebHttpFactory = OkHttpDataSource.Factory(
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .addInterceptor(SafeRedirectInterceptor())
+            .build()
+    ).setUserAgent(UA)
 
     private val bufferConfig: PlayerBufferConfig = run {
         val activityManager = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
@@ -238,9 +253,9 @@ class PlayerManager(private val ctx: Context) {
     /**
      * Play a webpage media URL using Media3's native HLS/DASH/progressive source selection.
      *
-     * Captured page headers are resolved per request. Cookies are re-read for the actual segment
-     * URL, and captured Cookie/Authorization headers are only forwarded to the original media
-     * origin to avoid leaking them to cross-origin HLS/DASH renditions.
+     * Captured page headers are resolved per request. Cookies are re-read for each child segment.
+     * SafeRedirectInterceptor removes credentials on cross-origin HTTP redirects; YouTube playback
+     * continues to use its existing datasource.
      */
     fun setExternalMediaSource(
         uri: Uri,
@@ -282,7 +297,7 @@ class PlayerManager(private val ctx: Context) {
                 dataSpec.buildUpon().setHttpRequestHeaders(resolvedHeaders).build()
             }
             val remoteDataSource = ResolvingDataSource.Factory(
-                DefaultDataSource.Factory(ctx, httpFactory),
+                DefaultDataSource.Factory(ctx, safeWebHttpFactory),
                 resolver,
             )
             val itemBuilder = MediaItem.Builder()
