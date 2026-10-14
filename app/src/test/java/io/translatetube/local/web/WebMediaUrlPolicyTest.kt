@@ -15,11 +15,12 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
-    fun acceptsDirectHttpMediaButRejectsTemporaryAndManifestStreams() {
+    fun acceptsDirectHttpAndHlsMediaButRejectsTemporaryAndDashStreams() {
         assertEquals("https://cdn.example/video.mp4?token=abc",
             WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/video.mp4?token=abc"))
+        assertEquals("https://cdn.example/master.m3u8?token=abc",
+            WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/master.m3u8?token=abc"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("blob:https://example.com/abc"))
-        assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/master.m3u8"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/stream.mpd"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("data:video/mp4;base64,abc"))
     }
@@ -36,7 +37,8 @@ class WebMediaUrlPolicyTest {
     @Test
     fun givesSpecificReasonForUnsupportedMediaSources() {
         assertEquals(true, WebMediaUrlPolicy.unsupportedReason("blob:https://example.com/1")!!.contains("blob"))
-        assertEquals(true, WebMediaUrlPolicy.unsupportedReason("https://cdn.example/index.m3u8")!!.contains("HLS/DASH"))
+        assertNull(WebMediaUrlPolicy.unsupportedReason("https://cdn.example/index.m3u8"))
+        assertEquals(true, WebMediaUrlPolicy.unsupportedReason("https://cdn.example/index.mpd")!!.contains("DASH"))
         assertNull(WebMediaUrlPolicy.unsupportedReason("https://cdn.example/video.mp4"))
     }
 }
