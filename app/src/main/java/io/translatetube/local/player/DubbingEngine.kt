@@ -31,8 +31,9 @@ class DubbingEngine(
 ) {
     // videoKey may contain a content:// URI with slashes. Hash it to keep all cache files
     // inside one bounded, collision-resistant directory instead of creating nested path segments.
+    private val cacheRootDir = File(ctx.cacheDir, "dub").apply { mkdirs() }
     private val cacheDir = File(
-        File(ctx.cacheDir, "dub").apply { mkdirs() },
+        cacheRootDir,
         DubbingCachePath.directoryName(videoKey),
     ).apply { mkdirs() }
     /** 内存缓存：行号 → (采样点, 采样率) */
@@ -145,6 +146,8 @@ class DubbingEngine(
                         else -> pending.offerLast(i)
                     }
                 }
+
+                pruneOldDubbingCaches()
 
                 // A seek can happen while cache validation is running. Honor the latest cue
                 // before starting synthesis instead of letting the whole first pass run in order.
@@ -361,6 +364,42 @@ class DubbingEngine(
         _preparedUntil.value = n
     }
 
+    /**
+     * Keep recently used subtitle PCM for quick repeat playback without allowing old videos
+     * to grow the app cache forever. The currently attached video is never evicted here.
+     */
+    private fun pruneOldDubbingCaches() {
+        val root = cacheRootDir
+        if (!root.isDirectory) return
+        val staleTemps = root.walkTopDown()
+            .filter { file ->
+                file.isFile && file.name.endsWith(".pcm.tmp") &&
+                    file.parentFile?.absolutePath != cacheDir.absolutePath
+            }
+            .toList()
+        staleTemps.forEach { temp ->
+            if (temp.delete()) temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+        }
+
+        val pcmFiles = root.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".pcm") }
+            .toList()
+        val entries = pcmFiles.map { file ->
+            DubbingCacheEntry(
+                path = file.absolutePath,
+                bytes = file.length(),
+                lastModified = file.lastModified(),
+                isCurrentVideo = file.parentFile?.absolutePath == cacheDir.absolutePath,
+            )
+        }
+        for (entry in DubbingCachePolicy.filesToEvict(entries)) {
+            val file = File(entry.path)
+            if (file.delete()) {
+                file.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+            }
+        }
+    }
+
     private fun cacheFile(idx: Int): File {
         val line = lines.getOrNull(idx)
         val voice = line?.speakerId ?: -1
@@ -485,6 +524,7 @@ class DubbingEngine(
                     synchronized(mem) { mem[idx] = samples to sr }
                     readiness.markPrepared(idx, hasAudio = true)
                 }
+                f.setLastModified(System.currentTimeMillis())
                 samples to sr
             }
         } catch (e: Exception) {
