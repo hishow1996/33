@@ -275,7 +275,14 @@ fun PlayerScreen(
         val sb = StringBuilder()
         for (line in state.lines) {
             val zh = line.zh ?: ""
-            if (zh.isNotBlank()) sb.append(line.text).append('\n').append(zh).append('\n').append('\n')
+            if (zh.isNotBlank()) {
+                // 中文源视频译文与原文相同：只导出一行，避免重复
+                if (subtitleComparisonKey(zh) == subtitleComparisonKey(line.text)) {
+                    sb.append(line.text).append('\n').append('\n')
+                } else {
+                    sb.append(line.text).append('\n').append(zh).append('\n').append('\n')
+                }
+            }
         }
         val text = sb.toString().trim()
         if (text.isNotEmpty()) {

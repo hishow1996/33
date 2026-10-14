@@ -957,6 +957,52 @@ class PlaybackService : MediaSessionService() {
                 )
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
+                if (isChineseLanguage(srcLang)) {
+                    // 中文源字幕：字幕文本即中文，原声就是目标语言——
+                    // 只显示中文字幕、保留原声，跳过 TTS 配音；字幕缓存与开播照常。
+                    pm.originalVolume = 1f
+                    val arr = org.json.JSONArray()
+                    for (line in translatedLines) arr.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                    ensureCurrentSession(sessionKey)
+                    if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
+                        translatedLines.size / 2
+                    ) {
+                        AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
+                            io.translatetube.local.data.SubtitleCacheEntity(
+                                importedCacheKey,
+                                srcLang,
+                                arr.toString(),
+                                System.currentTimeMillis(),
+                            )
+                        )
+                    }
+                    updateUiForSession(sessionKey) {
+                        it.copy(
+                            phase = Phase.READY,
+                            progress = "",
+                            ttsEngineName = "",
+                            dubbingStatus = "中文视频：显示中文字幕，保留原声",
+                            muteOriginal = false,
+                            noModelHint = null,
+                            lines = translatedLines,
+                            totalLines = translatedLines.size,
+                            error = null,
+                        )
+                    }
+                    ensureCurrentSession(sessionKey)
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(sessionKey)
+                        pm.play()
+                    }
+                    return@launch
+                }
                 val tts = makeTts()
                 try {
                     ensureCurrentSession(sessionKey)
@@ -1853,7 +1899,22 @@ class PlaybackService : MediaSessionService() {
                     "kokoro" -> kokoroRuntimeReady()
                     else -> false
                 }
-                if (selectedEngineReady) {
+                if (selectedEngineReady && isChineseLanguage(srcLang)) {
+                    // 中文源视频：字幕文本即中文，原声就是目标语言——
+                    // 只显示中文字幕、保留原声，跳过 TTS 配音（避免把中文再念一遍）。
+                    // startupDubbing 为 null 时首句等待逻辑自动跳过，公共尾部照常开播。
+                    updateUiForSession(key) {
+                        it.copy(
+                            ttsEngineName = "",
+                            dubbingStatus = "中文视频：显示中文字幕，保留原声",
+                            muteOriginal = false,
+                            noModelHint = null,
+                        )
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                    }
+                } else if (selectedEngineReady) {
                     try {
                         // Pass the saved selection explicitly so a settings change during parsing
                         // cannot cause the readiness check and actual engine to disagree.
