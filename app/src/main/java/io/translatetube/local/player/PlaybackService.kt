@@ -1118,6 +1118,14 @@ class PlaybackService : MediaSessionService() {
 
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
+            // Determine imported source language before computing its cache identity. Previously
+            // this was detected later when the imported rows were installed, so the first run used
+            // an empty language tag and a retry used "en"/"ja", needlessly missing its checkpoint.
+            if (!sourceImportedLines.isNullOrEmpty()) {
+                srcLang = detectLangFromText(
+                    sourceImportedLines.take(12).joinToString(" ") { it.text }
+                ).ifBlank { "auto" }
+            }
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationProfileIdentity = translationEngineCacheIdentity(selectedTranslationId)
             val savedResumeCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
