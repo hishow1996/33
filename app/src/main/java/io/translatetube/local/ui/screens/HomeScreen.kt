@@ -37,6 +37,7 @@ import io.translatetube.local.player.Phase
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -166,11 +167,11 @@ fun HomeScreen(
                     value = link,
                     onValueChange = { link = it; linkError = false },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("https://youtube.com/watch?v=…", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    placeholder = { Text("YouTube 链接或网页视频地址", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = SubText) },
                     isError = linkError,
                     supportingText = if (linkError) {
-                        { Text("链接格式不正确，请检查后重试") }
+                        { Text("请输入有效的 YouTube 链接或 HTTP/HTTPS 网页地址") }
                     } else null,
                     singleLine = true,
                     shape = RoundedCornerShape(17.dp),
@@ -187,14 +188,22 @@ fun HomeScreen(
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = {
-                        val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(link)
-                            ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(link.trim())) link.trim() else null
+                        val input = link.trim()
+                        val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(input)
+                            ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(input)) input else null
                         if (id != null) {
                             linkError = false
                             onPlay(PlayRequest(videoId = id))
                             link = ""
                         } else {
-                            linkError = true
+                            val pageUrl = WebMediaUrlPolicy.normalizePageUrl(input)
+                            if (pageUrl != null) {
+                                linkError = false
+                                onPlay(PlayRequest(webPageUrl = pageUrl))
+                                link = ""
+                            } else {
+                                linkError = true
+                            }
                         }
                     },
                     enabled = link.isNotBlank(),
