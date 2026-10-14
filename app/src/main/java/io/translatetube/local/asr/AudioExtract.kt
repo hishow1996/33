@@ -45,6 +45,8 @@ object AudioExtract {
                 "单次 PCM 浮点读取超过 32 MB 安全上限，请缩小分段范围"
             }
             if (count == 0) return FloatArray(0)
+            // A cancelled/stale ASR task must stop before reserving a potentially large array.
+            checkActive()
 
             val result = FloatArray(count)
             RandomAccessFile(file, "r").use { input ->
