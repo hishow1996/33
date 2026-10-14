@@ -88,6 +88,8 @@ class DubbingEngine(
     val totalLines: StateFlow<Int> = _totalLines
     private val _currentLine = MutableStateFlow(-1)
     val currentLine: StateFlow<Int> = _currentLine
+    // Set only after AudioTrack.play() succeeds; PCM readiness alone does not mean voice is audible.
+    @Volatile private var playbackStartedLine = -1
 
     fun attach(tts: TtsEngine, lines: List<SubLine>) {
         if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
@@ -686,6 +688,7 @@ class DubbingEngine(
         val line = lines.getOrNull(idx) ?: return
         stop()
         activeVolume = volume.coerceIn(0.0f, 1.0f)
+        playbackStartedLine = -1
         // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
         // override it while cache loading / AudioTrack creation is still in progress.
         activePlayerSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
@@ -818,6 +821,7 @@ class DubbingEngine(
                     newTrack.play()
                     created = null
                     if (!released && playbackGeneration.get() == generation) {
+                        playbackStartedLine = idx
                         runCatching { onPlaybackStarted?.invoke(idx) }
                             .onFailure {
                                 android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
@@ -898,6 +902,7 @@ class DubbingEngine(
 
     fun stop() {
         playbackGeneration.incrementAndGet()
+        playbackStartedLine = -1
         _currentLine.value = -1
         val old = track
         track = null
@@ -971,6 +976,11 @@ class DubbingEngine(
     fun isSilent(idx: Int): Boolean = readiness.isSilent(idx)
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
+
+    /** True only after this cue's AudioTrack actually started, not while PCM is merely ready. */
+    fun hasStartedPlaybackFor(idx: Int): Boolean =
+        !released && idx >= 0 && _currentLine.value == idx && playbackStartedLine == idx
+
     fun release() {
         // Publish the released state under the same lock used to install cache files. Any write
         // that commits first is complete; any later write sees released and aborts.
