@@ -11,7 +11,6 @@ import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
 import android.webkit.CookieManager
-import android.webkit.CookieManager
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -55,7 +54,7 @@ internal class DashAudioSegmentCache(
         if (!sourceFolder.isDirectory && !sourceFolder.mkdirs()) {
             throw IOException("无法创建当前视频的 DASH 分段目录")
         }
-        pruneOldSegmentCaches(root, protected = sourceFolder)
+        pruneOldSegmentCaches(root, protectedDirectory = sourceFolder)
         val credentialOrigin = originOf(manifestUrl)
 
         val manifestText = fetchManifest(
@@ -172,7 +171,7 @@ internal class DashAudioSegmentCache(
             // a long transfer from byte zero.
             throw e
         } finally {
-            pruneOldSegmentCaches(root, protected = sourceFolder)
+            pruneOldSegmentCaches(root, protectedDirectory = sourceFolder)
         }
     }
 
@@ -281,38 +280,6 @@ internal class DashAudioSegmentCache(
         "$scheme://$host:$port"
     }.getOrDefault("")
 
-    private fun headersForTarget(
-        url: String,
-        captured: Map<String, String>,
-        credentialOrigin: String,
-    ): Map<String, String> {
-        val sameOrigin = originOf(url) == credentialOrigin
-        val result = LinkedHashMap<String, String>()
-        captured.forEach { (name, value) ->
-            val normalized = name.trim().lowercase(Locale.ROOT)
-            val allowed = normalized in FORWARDABLE_HEADERS
-            val credential = normalized in setOf("cookie", "authorization", "origin")
-            val safe = value.isNotBlank() &&
-                value.none { it == '\r' || it == '\n' || it == '\u0000' }
-            if (allowed && safe && (!credential || sameOrigin)) {
-                result[name.trim()] = value
-            }
-        }
-        runCatching { CookieManager.getInstance().getCookie(url) }
-            .getOrNull()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { result["Cookie"] = it }
-        return result
-    }
-
-    private fun originOf(value: String): String = runCatching {
-        val uri = URI(value)
-        val scheme = uri.scheme.orEmpty().lowercase(Locale.ROOT)
-        val host = uri.host.orEmpty().lowercase(Locale.ROOT)
-        val port = if (uri.port >= 0) uri.port else if (scheme == "https") 443 else 80
-        "$scheme://$host:$port"
-    }.getOrDefault("")
-
     private fun applySafeHeaders(builder: Request.Builder, headers: Map<String, String>) {
         headers.forEach { (name, value) ->
             if (name.trim().lowercase(Locale.ROOT) in FORWARDABLE_HEADERS &&
@@ -329,11 +296,11 @@ internal class DashAudioSegmentCache(
         return File(folder, "${safeLabel}-${sha256(url).take(24)}.seg")
     }
 
-    private fun pruneOldSegmentCaches(root: File, protected: File? = null) {
+    private fun pruneOldSegmentCaches(root: File, protectedDirectory: File? = null) {
         val now = System.currentTimeMillis()
         val dirs = root.listFiles()?.filter { it.isDirectory }.orEmpty()
         dirs.filter { dir ->
-            dir.absolutePath != protected?.absolutePath &&
+            dir.absolutePath != protectedDirectory?.absolutePath &&
                 (dir.lastModified() <= 0L || now < dir.lastModified() ||
                     now - dir.lastModified() > SEGMENT_TTL_MS)
         }.forEach { it.deleteRecursively() }
@@ -343,7 +310,7 @@ internal class DashAudioSegmentCache(
         val budget = minOf(SEGMENT_CACHE_BUDGET_BYTES, AsrAudioCachePolicy.CACHE_BUDGET_BYTES / 2)
         for (dir in current.sortedBy { it.lastModified() }) {
             if (total <= budget) break
-            if (dir.absolutePath == protected?.absolutePath) continue
+            if (dir.absolutePath == protectedDirectory?.absolutePath) continue
             val size = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
             if (dir.deleteRecursively()) total = (total - size).coerceAtLeast(0L)
         }
