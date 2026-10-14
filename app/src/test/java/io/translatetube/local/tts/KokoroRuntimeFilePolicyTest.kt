@@ -38,6 +38,24 @@ class KokoroRuntimeFilePolicyTest {
         assertFalse(first == second)
     }
 
+    @Test
+    fun cacheSignatureDetectsSmallFileContentChangesWhenSizeAndTimestampStayTheSame() = withTempDir { dir ->
+        createCompleteRuntime(dir)
+        val file = File(dir, "tokens.txt")
+        val originalTimestamp = file.lastModified()
+        val first = KokoroRuntimeFilePolicy.cacheSignature(dir)
+
+        java.io.RandomAccessFile(file, "rw").use { stream ->
+            stream.seek(0L)
+            stream.write(1)
+        }
+        assertTrue(file.setLastModified(originalTimestamp))
+        assertEquals(512L, file.length())
+
+        val second = KokoroRuntimeFilePolicy.cacheSignature(dir)
+        assertFalse(first == second)
+    }
+
     private fun createCompleteRuntime(dir: File) {
         createSizedFile(dir, "model.int8.onnx", 1L * 1024 * 1024)
         createSizedFile(dir, "voices.bin", 1L * 1024 * 1024)

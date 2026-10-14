@@ -6,6 +6,8 @@ import java.security.MessageDigest
 /** Android-free validation of the complete file set used by the app's sherpa-onnx Kokoro config. */
 internal object KokoroRuntimeFilePolicy {
     private const val MIN_CORE_BYTES = 1L * 1024 * 1024
+    // Hash modest support files for content identity, but never read the huge ONNX/voice blobs.
+    private const val MAX_CONTENT_HASH_BYTES = 8L * 1024 * 1024
     private val minimumBytes = linkedMapOf(
         "model.int8.onnx" to MIN_CORE_BYTES,
         "voices.bin" to MIN_CORE_BYTES,
@@ -51,6 +53,19 @@ internal object KokoroRuntimeFilePolicy {
                             .toByteArray(Charsets.UTF_8)
                     )
                 }
+            } else if (root.isFile && root.length() <= MAX_CONTENT_HASH_BYTES) {
+                // Size/mtime can be preserved by file-copy tools or a restore. Content hashing
+                // protects small lexicon/FST/token files from colliding with stale PCM identities.
+                digest.update("content:".toByteArray(Charsets.UTF_8))
+                root.inputStream().buffered().use { input ->
+                    val buffer = ByteArray(32 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                }
+                digest.update(byteArrayOf(0))
             }
         }
         return digest.digest().take(10).joinToString("") { "%02x".format(it.toInt() and 0xff) }
