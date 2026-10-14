@@ -162,7 +162,8 @@ object SpeakerDiarizer {
             http.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw java.io.IOException("模型下载失败 HTTP ${response.code}")
                 val body = response.body ?: throw java.io.IOException("模型下载响应为空")
-                if (body.contentLength() > maxBytes) throw java.io.IOException("模型文件超过大小限制")
+                val expectedBytes = body.contentLength()
+                if (expectedBytes > maxBytes) throw java.io.IOException("模型文件超过大小限制")
                 var total = 0L
                 body.byteStream().use { input ->
                     FileOutputStream(temp).use { output ->
@@ -179,6 +180,11 @@ object SpeakerDiarizer {
                     }
                 }
                 if (total == 0L) throw java.io.IOException("下载的模型文件为空")
+                if (expectedBytes > 0L && total != expectedBytes) {
+                    throw java.io.IOException(
+                        "模型下载不完整：响应声明 ${expectedBytes} 字节，实际收到 ${total} 字节"
+                    )
+                }
             }
             if (destination.exists() && !destination.delete()) throw java.io.IOException("无法替换旧模型文件")
             if (!temp.renameTo(destination)) throw java.io.IOException("无法安装模型文件")
