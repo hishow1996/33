@@ -209,11 +209,15 @@ object AudioExtract {
                             AudioFormat.ENCODING_PCM_FLOAT -> 4
                             else -> throw IllegalStateException("音频解码器返回了不支持的 PCM 编码：${pcmEncoding}")
                         }
-                        if (info.offset < 0 || info.size < 0 || info.size % bytesPerSample != 0 ||
-                            endOffset > outputBuffer.capacity().toLong()
+                        if (!PcmFrameLayout.isValidBuffer(
+                                offsetBytes = info.offset,
+                                sizeBytes = info.size,
+                                bytesPerSample = bytesPerSample,
+                                channels = sourceChannels,
+                            ) || endOffset > outputBuffer.capacity().toLong()
                         ) {
                             codec.releaseOutputBuffer(outBufferIndex, false)
-                            throw IllegalStateException("音频解码缓冲区偏移或长度无效")
+                            throw IllegalStateException("音频解码缓冲区未按 PCM 声道帧对齐，偏移或长度无效")
                         }
 
                         // MediaCodec may leave stale bytes outside BufferInfo's valid range.
