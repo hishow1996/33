@@ -4,9 +4,19 @@ import java.security.MessageDigest
 
 /** Stable identity and bounds for partial Whisper transcripts tied to a PCM/VAD layout. */
 internal object AsrTranscriptCheckpointPolicy {
-    fun signature(sampleCount: Int, segments: List<Pair<Long, Long>>): String {
+    fun signature(pcmSamples: FloatArray, segments: List<Pair<Long, Long>>): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        digest.update("${sampleCount}|${segments.size}|".toByteArray(Charsets.UTF_8))
+        digest.update("${pcmSamples.size}|${segments.size}|".toByteArray(Charsets.UTF_8))
+
+        // Sparse, evenly spaced PCM anchors distinguish same-length tracks without hashing every
+        // sample on older devices. The VAD boundaries below add another inexpensive identity check.
+        val stride = maxOf(1, pcmSamples.size / 1_024)
+        val sampleBuffer = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (index in pcmSamples.indices step stride) {
+            sampleBuffer.clear()
+            sampleBuffer.putInt(pcmSamples[index].toRawBits())
+            digest.update(sampleBuffer.array())
+        }
         segments.forEach { (start, end) ->
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }

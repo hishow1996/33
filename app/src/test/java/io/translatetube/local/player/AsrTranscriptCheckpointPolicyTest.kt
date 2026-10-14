@@ -16,11 +16,15 @@ class AsrTranscriptCheckpointPolicyTest {
     }
 
     @Test
-    fun signatureChangesWhenAudioLengthOrVadLayoutChanges() {
+    fun signatureChangesWhenAudioLengthPcmContentOrVadLayoutChanges() {
+        val pcm = FloatArray(4_096) { index -> (index % 31) / 31f }
         val segments = listOf(0L to 900L, 1_200L to 2_400L)
-        val signature = AsrTranscriptCheckpointPolicy.signature(64_000, segments)
-        assertFalse(signature == AsrTranscriptCheckpointPolicy.signature(64_001, segments))
-        assertFalse(signature == AsrTranscriptCheckpointPolicy.signature(64_000, listOf(0L to 800L, 1_200L to 2_400L)))
+        val signature = AsrTranscriptCheckpointPolicy.signature(pcm, segments)
+
+        assertFalse(signature == AsrTranscriptCheckpointPolicy.signature(FloatArray(4_097), segments))
+        val changedPcm = pcm.copyOf().also { it[2_048] = -0.75f }
+        assertFalse(signature == AsrTranscriptCheckpointPolicy.signature(changedPcm, segments))
+        assertFalse(signature == AsrTranscriptCheckpointPolicy.signature(pcm, listOf(0L to 800L, 1_200L to 2_400L)))
     }
 
     @Test
