@@ -351,16 +351,24 @@ object AudioExtract {
     ) {
         if (samples.isEmpty()) return
         checkActive()
-        val bytes = ByteArray(samples.size * 2)
-        var byteIndex = 0
-        samples.forEachIndexed { index, sample ->
-            if ((index and 0x1fff) == 0) checkActive()
-            val value = sample.toInt()
-            bytes[byteIndex++] = (value and 0xff).toByte()
-            bytes[byteIndex++] = ((value shr 8) and 0xff).toByte()
+        // Convert and write small chunks instead of duplicating an entire codec buffer.
+        // This bounds temporary memory on older phones and keeps cancellation responsive.
+        val bytes = ByteArray(16 * 1024)
+        val samplesPerChunk = bytes.size / 2
+        var sampleOffset = 0
+        while (sampleOffset < samples.size) {
+            checkActive()
+            val count = minOf(samplesPerChunk, samples.size - sampleOffset)
+            var byteIndex = 0
+            for (index in sampleOffset until sampleOffset + count) {
+                val value = samples[index].toInt()
+                bytes[byteIndex++] = (value and 0xff).toByte()
+                bytes[byteIndex++] = ((value shr 8) and 0xff).toByte()
+            }
+            output.write(bytes, 0, byteIndex)
+            sampleOffset += count
         }
         checkActive()
-        output.write(bytes)
     }
 
     /** Legacy whole-array linear resampling, retained for bounded operations and test references. */
