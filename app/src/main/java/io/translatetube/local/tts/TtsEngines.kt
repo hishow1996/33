@@ -24,20 +24,24 @@ interface TtsEngine {
 class KokoroTts(private val ctx: Context, private val speakerId: Int = KokoroVoiceRange.DEFAULT_SPEAKER_ID, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
 
-    // Model assets can be refreshed independently of the app version. Fingerprint every file,
-    // including nested eSpeak language data and dictionaries, so PCM cache never survives a
-    // pronunciation-resource update merely because the ONNX file itself stayed unchanged.
+    // Model assets can be refreshed independently of the app version. Hash every file's
+    // metadata once (including nested eSpeak and dictionaries), then reuse only the compact digest
+    // while walking subtitle rows. This keeps cache-key construction cheap on older phones.
     private val modelAssetsFingerprint: String by lazy {
         val dir = io.translatetube.local.data.ModelFiles.ttsDir(ctx)
         if (!dir.isDirectory) {
             "missing-kokoro-assets"
         } else {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
             dir.walkTopDown()
                 .filter { it.isFile }
                 .sortedBy { it.relativeTo(dir).invariantSeparatorsPath }
-                .joinToString("|") { file ->
-                    "${file.relativeTo(dir).invariantSeparatorsPath}:${file.length()}:${file.lastModified()}"
+                .forEach { file ->
+                    val record = "${file.relativeTo(dir).invariantSeparatorsPath}:${file.length()}:${file.lastModified()}\n"
+                    digest.update(record.toByteArray(Charsets.UTF_8))
                 }
+            digest.digest().take(16)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
         }
     }
 
