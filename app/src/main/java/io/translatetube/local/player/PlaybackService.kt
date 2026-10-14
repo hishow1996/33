@@ -143,6 +143,7 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var localUri: Uri? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
+    @Volatile private var playerSourceReady: Boolean = false
     @Volatile private var qualityRecoveryAttempted = false
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
@@ -274,6 +275,7 @@ class PlaybackService : MediaSessionService() {
                             error = err,
                             videoId = videoId,
                             hasCurrentYouTubeStreams = qualitySources.isNotEmpty(),
+                            hasActiveSource = playerSourceReady,
                         )
                     ) {
                         if (!err.isNullOrBlank()) {
@@ -495,6 +497,7 @@ class PlaybackService : MediaSessionService() {
         qualityJob?.cancel()
         qualitySources = emptyList()
         qualityAudioUrl = ""
+        playerSourceReady = false
         // Clear the prior item's error only after the new session identity and stream cache are
         // reset, so delayed listeners cannot recover the old URL against the new video ID.
         pm.errorSink.value = null
@@ -1653,6 +1656,7 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key)
+                    playerSourceReady = true
                     pm.setYouTubeQuality(
                         videoUrl = defaultQuality.url,
                         audioUrl = audioUrl,
@@ -1666,6 +1670,7 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key)
+                    playerSourceReady = true
                     pm.setUriSource(localUri!!, meta.title, "本地视频", null)
                 }
             }

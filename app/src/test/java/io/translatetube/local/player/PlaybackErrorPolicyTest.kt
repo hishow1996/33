@@ -6,20 +6,22 @@ import org.junit.Test
 
 class PlaybackErrorPolicyTest {
     @Test
-    fun ignoresEmptyErrorEvents() {
-        assertFalse(PlaybackErrorPolicy.shouldHandle(null, null, false))
-        assertFalse(PlaybackErrorPolicy.shouldHandle("", "yt-id", false))
-        assertFalse(PlaybackErrorPolicy.shouldHandle("   ", null, false))
+    fun ignoresEmptyErrorEventsAndErrorsBeforeAnyCurrentSourceIsInstalled() {
+        assertFalse(PlaybackErrorPolicy.shouldHandle(null, null, false, false))
+        assertFalse(PlaybackErrorPolicy.shouldHandle("", "yt-id", false, false))
+        assertFalse(PlaybackErrorPolicy.shouldHandle("decoder failed", null, false, false))
+        assertFalse(PlaybackErrorPolicy.shouldHandle("old stream failed", "new-id", false, false))
     }
 
     @Test
-    fun localMediaErrorsRemainActionable() {
-        assertTrue(PlaybackErrorPolicy.shouldHandle("decoder failed", null, false))
+    fun localMediaErrorsBecomeActionableAfterTheUriIsInstalled() {
+        assertTrue(PlaybackErrorPolicy.shouldHandle("decoder failed", null, false, true))
     }
 
     @Test
-    fun youtubeErrorsAreActionableOnlyAfterCurrentStreamCandidatesExist() {
-        assertFalse(PlaybackErrorPolicy.shouldHandle("old stream failed", "new-id", false))
-        assertTrue(PlaybackErrorPolicy.shouldHandle("current stream failed", "current-id", true))
+    fun youtubeErrorsNeedBothTheActiveSourceAndCurrentStreamCandidates() {
+        assertFalse(PlaybackErrorPolicy.shouldHandle("stale error", "current-id", false, true))
+        assertFalse(PlaybackErrorPolicy.shouldHandle("stale error", "current-id", true, false))
+        assertTrue(PlaybackErrorPolicy.shouldHandle("current stream failed", "current-id", true, true))
     }
 }
