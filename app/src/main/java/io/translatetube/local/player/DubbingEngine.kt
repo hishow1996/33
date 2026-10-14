@@ -314,7 +314,16 @@ class DubbingEngine(
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
-                            if (!DubbingPcmValidation.isValidAudio(generated.sampleRate, generated.samples)) {
+                            if (!DubbingPcmValidation.isValidAudio(
+                                    generated.sampleRate,
+                                    generated.samples,
+                                    checkActive = {
+                                        if (released || workerJob?.isActive == false) {
+                                            throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
+                                        }
+                                    },
+                                )
+                            ) {
                                 throw IllegalStateException(
                                     "所选引擎返回静音、无效采样或不支持的采样率（${generated.sampleRate} Hz）"
                                 )
@@ -358,6 +367,11 @@ class DubbingEngine(
                             val fasterIsValid = DubbingPcmValidation.isValidAudio(
                                 faster.sampleRate,
                                 faster.samples,
+                                checkActive = {
+                                    if (released || workerJob?.isActive == false) {
+                                        throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
+                                    }
+                                },
                             )
                             val fasterIsShorter = fasterIsValid &&
                                 faster.samples.size.toDouble() / faster.sampleRate <
@@ -380,7 +394,15 @@ class DubbingEngine(
                     )
                     val boundedSamples = if (maxUsefulSamples in 1 until readyAudio.samples.size) {
                         readyAudio.samples.copyOf(maxUsefulSamples).takeIf {
-                            DubbingPcmValidation.isValidAudio(readyAudio.sampleRate, it)
+                            DubbingPcmValidation.isValidAudio(
+                                readyAudio.sampleRate,
+                                it,
+                                checkActive = {
+                                    if (released || workerJob?.isActive == false) {
+                                        throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
+                                    }
+                                },
+                            )
                         } ?: readyAudio.samples
                     } else {
                         readyAudio.samples
@@ -658,15 +680,21 @@ class DubbingEngine(
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
                 val samples = FloatArray(n)
+                var hasAudibleSample = false
                 for (sampleIndex in 0 until n) {
                     // PCM may contain millions of samples. Cancel stale playback loads in bounded
                     // chunks so a seek doesn't wait for an entire large file to be materialized.
                     if ((sampleIndex and 0x1fff) == 0 && !isCurrent()) return null
-                    samples[sampleIndex] = d.readFloat()
+                    val sample = d.readFloat()
+                    if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
+                    if (!hasAudibleSample && DubbingPcmValidation.isAudibleSample(sample)) {
+                        hasAudibleSample = true
+                    }
+                    samples[sampleIndex] = sample
                 }
                 if (!isCurrent()) return null
-                if (n > 0 && !DubbingPcmValidation.isValidAudio(sr, samples)) {
-                    throw java.io.IOException("PCM 缓存包含静音或无效音频")
+                if (n > 0 && !hasAudibleSample) {
+                    throw java.io.IOException("PCM 缓存包含静音音频")
                 }
                 if (n == 0) {
                     readiness.markPrepared(idx, hasAudio = false)
