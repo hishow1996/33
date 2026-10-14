@@ -96,6 +96,67 @@ class HlsAudioSegmentCacheTest {
         }
     }
 
+    @Test
+    fun removesOrphanedFilesWhenSignedSegmentUrlsChangeBetweenRetries() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "hls-rotated-url-test")
+        server.start()
+        try {
+            val oldPlaylist = """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:4
+                #EXTINF:4.0,
+                old-1.ts
+                #EXTINF:4.0,
+                old-2.ts
+                #EXT-X-ENDLIST
+            """.trimIndent()
+            server.enqueue(playlistResponse(oldPlaylist))
+            server.enqueue(segmentResponse("OLD-ONE"))
+            server.enqueue(segmentResponse("OLD-TWO"))
+
+            val destination = File(directory, "audio.bin")
+            val firstFailure = runCatching {
+                HlsAudioSegmentCache(directory, maxOutputBytes = 4, maxSegmentBytes = 100)
+                    .download(server.url("/media/list.m3u8").toString(), destination, "rotating-signed-source")
+            }.exceptionOrNull()
+            assertTrue(firstFailure is java.io.IOException)
+
+            val root = File(directory, "asr_hls_segments")
+            val sourceFolder = root.listFiles().orEmpty().single()
+            val orphan = File(sourceFolder, "expired-signed-url.seg")
+            orphan.writeText("stale")
+
+            val refreshedPlaylist = """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:4
+                #EXTINF:4.0,
+                new-1.ts?token=refreshed
+                #EXTINF:4.0,
+                new-2.ts?token=refreshed
+                #EXT-X-ENDLIST
+            """.trimIndent()
+            server.enqueue(playlistResponse(refreshedPlaylist))
+            server.enqueue(segmentResponse("NEW-ONE"))
+            server.enqueue(segmentResponse("NEW-TWO"))
+
+            val secondFailure = runCatching {
+                HlsAudioSegmentCache(directory, maxOutputBytes = 4, maxSegmentBytes = 100)
+                    .download(server.url("/media/list.m3u8").toString(), destination, "rotating-signed-source")
+            }.exceptionOrNull()
+            assertTrue(secondFailure is java.io.IOException)
+            assertTrue("orphaned cache entry should be removed", !orphan.exists())
+            assertEquals(
+                "only the two current playlist segments should remain after failed assembly",
+                2,
+                sourceFolder.listFiles().orEmpty().count { it.isFile },
+            )
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
     private fun playlistResponse(text: String) = MockResponse()
         .setResponseCode(200)
         .setHeader("Content-Type", "application/vnd.apple.mpegurl")
