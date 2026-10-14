@@ -761,6 +761,32 @@ class DubbingEngine(
     }
 
     /**
+     * Blocking AudioTrack writes may report fewer samples than requested. Continue from the
+     * returned offset instead of treating a positive partial write as a failed engine.
+     */
+    private fun writeFully(track: AudioTrack, samples: FloatArray): Int {
+        var offset = 0
+        while (offset < samples.size) {
+            val written = track.write(samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING)
+            if (written < 0) return written
+            if (written == 0) return offset
+            offset += written
+        }
+        return offset
+    }
+
+    private fun writeFully(track: AudioTrack, samples: ShortArray): Int {
+        var offset = 0
+        while (offset < samples.size) {
+            val written = track.write(samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING)
+            if (written < 0) return written
+            if (written == 0) return offset
+            offset += written
+        }
+        return offset
+    }
+
+    /**
      * Float PCM is preferred for fidelity, but some OEM audio stacks fail to initialize or write
      * PCM_FLOAT tracks. Retry once using the broadly supported PCM_16BIT format before reporting
      * a dubbing-output failure, so a valid TTS result is not discarded on older devices.
@@ -787,7 +813,7 @@ class DubbingEngine(
                 .build()
 
             if (floatTrack.state == AudioTrack.STATE_INITIALIZED) {
-                val written = floatTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                val written = writeFully(floatTrack, samples)
                 if (written == samples.size) return floatTrack
                 android.util.Log.w(
                     "DubbingEngine",
@@ -819,7 +845,7 @@ class DubbingEngine(
             if (pcm16Track.state != AudioTrack.STATE_INITIALIZED) {
                 throw IllegalStateException("PCM_16BIT AudioTrack 初始化失败")
             }
-            val written = pcm16Track.write(pcm16, 0, pcm16.size, AudioTrack.WRITE_BLOCKING)
+            val written = writeFully(pcm16Track, pcm16)
             if (written != pcm16.size) {
                 throw IllegalStateException("PCM_16BIT AudioTrack 写入不完整：${written}/${pcm16.size} 个采样点")
             }
