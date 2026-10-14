@@ -128,7 +128,7 @@ internal class AsrAudioSegmentDownloader(
                     if (!validator.isNullOrBlank()) requestBuilder.header("If-Range", validator)
                 }
 
-                client.newCall(requestBuilder.build()).execute().use { response ->
+                SafeMediaHttp.execute(client, requestBuilder.build()).use { response ->
                     checkActive()
                     when (response.code) {
                         200 -> {
