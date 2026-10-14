@@ -12,6 +12,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withLock
 
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -58,6 +59,8 @@ object NewPipeRepo {
     @Volatile private var cachedId: String? = null
     @Volatile private var cachedAtMs = 0L
     private val infoLock = Any()
+    /** Avoid duplicate StreamInfo extraction when resolve/subtitle/stream callers start together. */
+    private val infoFetchMutex = kotlinx.coroutines.sync.Mutex()
     /** Invalidations and newer requests prevent older in-flight fetches from replacing fresh data. */
     private var infoCacheGeneration = 0L
     private var infoRequestGeneration = 0L
@@ -65,50 +68,54 @@ object NewPipeRepo {
     /** StreamInfo contains signed URLs; keep it for a short window and refresh before URLs grow stale. */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val cached = synchronized(infoLock) {
+            fun freshCached(): StreamInfo? = synchronized(infoLock) {
                 if (cachedId == videoId &&
                     StreamInfoCachePolicy.isFresh(cachedAtMs, System.currentTimeMillis())
                 ) cachedInfo else null
             }
-            if (cached != null) return@withContext cached
+            freshCached()?.let { return@withContext it }
 
-            val request = synchronized(infoLock) {
-                infoRequestGeneration += 1L
-                infoCacheGeneration to infoRequestGeneration
-            }
-            initOnce()
-            // Resolve outside infoLock so invalidation stays responsive. Only the newest request
-            // for the current invalidation generation may publish into the one-video cache.
-            val videoUrl = "https://www.youtube.com/watch?v=$videoId"
-            val fetched = try {
-                StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (!StreamInfoCachePolicy.isRetryableFailure(e)) throw e
-                android.util.Log.w(
-                    "NewPipeRepo",
-                    "Transient YouTube metadata request failed; retrying once for video=$videoId",
-                    e,
-                )
-                kotlinx.coroutines.delay(400L)
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
-            }
-            synchronized(infoLock) {
-                if (StreamInfoCachePolicy.mayPublish(
-                        requestGeneration = request.second,
-                        currentRequestGeneration = infoRequestGeneration,
-                        invalidationGeneration = request.first,
-                        currentInvalidationGeneration = infoCacheGeneration,
-                    )
-                ) {
-                    cachedInfo = fetched
-                    cachedId = videoId
-                    cachedAtMs = System.currentTimeMillis()
+            // A second check after obtaining the mutex means simultaneous callers for the same
+            // video share one network extraction rather than receiving separate signed URL sets.
+            infoFetchMutex.withLock {
+                freshCached()?.let { return@withLock it }
+                val request = synchronized(infoLock) {
+                    infoRequestGeneration += 1L
+                    infoCacheGeneration to infoRequestGeneration
                 }
+                initOnce()
+                // Network work remains outside infoLock so invalidate() can run while it is in flight.
+                val videoUrl = "https://www.youtube.com/watch?v=$videoId"
+                val fetched = try {
+                    StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (!StreamInfoCachePolicy.isRetryableFailure(e)) throw e
+                    android.util.Log.w(
+                        "NewPipeRepo",
+                        "Transient YouTube metadata request failed; retrying once for video=$videoId",
+                        e,
+                    )
+                    kotlinx.coroutines.delay(400L)
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                }
+                synchronized(infoLock) {
+                    if (StreamInfoCachePolicy.mayPublish(
+                            requestGeneration = request.second,
+                            currentRequestGeneration = infoRequestGeneration,
+                            invalidationGeneration = request.first,
+                            currentInvalidationGeneration = infoCacheGeneration,
+                        )
+                    ) {
+                        cachedInfo = fetched
+                        cachedId = videoId
+                        cachedAtMs = System.currentTimeMillis()
+                    }
+                }
+                fetched
             }
-            fetched
         }
 
     fun init(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) {
