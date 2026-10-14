@@ -459,7 +459,11 @@ class DubbingEngine(
 
     private fun reportSynthesisError(message: String) {
         if (!released && synthesisErrorReported.compareAndSet(false, true)) {
-            onSynthesisError?.invoke(message)
+            // A UI/notification callback must never terminate the synthesis worker itself.
+            runCatching { onSynthesisError?.invoke(message) }
+                .onFailure {
+                    android.util.Log.w("DubbingEngine", "Synthesis-error callback failed", it)
+                }
         }
     }
 
