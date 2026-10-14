@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,8 +68,8 @@ class TranslationCacheIdentityTest {
         val imported = TranslationCacheIdentity.importedKey("video-key", 42L, source, "provider-A")
         assertTrue(TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-A"))
         assertTrue(TranslationCacheIdentity.matchesProfile(imported, "video-key", 42L, "provider-A"))
-        assertNotEquals(true, TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-B"))
-        assertNotEquals(true, TranslationCacheIdentity.matchesProfile(matching, "another-video", 42L, "provider-A"))
+        assertFalse(TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-B"))
+        assertFalse(TranslationCacheIdentity.matchesProfile(matching, "another-video", 42L, "provider-A"))
     }
 
 }
