@@ -40,3 +40,12 @@ class SafeMediaHttpTest {
         }
     }
 }
+
+    @Test
+    fun recognizesCommonHtmlAndJsonErrorPayloads() {
+        assertTrue(isHtmlOrJsonContentType("text/html; charset=utf-8"))
+        assertTrue(isHtmlOrJsonContentType("application/problem+json"))
+        assertTrue(isHtmlOrJsonContentType("application/json"))
+        assertEquals(false, isHtmlOrJsonContentType("application/octet-stream"))
+        assertEquals(false, isHtmlOrJsonContentType("application/vnd.apple.mpegurl"))
+    }
