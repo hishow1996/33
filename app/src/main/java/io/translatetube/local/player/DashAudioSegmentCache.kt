@@ -57,13 +57,17 @@ internal class DashAudioSegmentCache(
         pruneOldSegmentCaches(root, protectedDirectory = sourceFolder)
         val credentialOrigin = originOf(manifestUrl)
 
-        val manifestText = fetchManifest(
+        val fetchedManifest = fetchManifest(
             manifestUrl,
             headersForTarget(manifestUrl, headers, credentialOrigin),
             checkActive,
         )
+        // Relative SegmentTemplate URLs must resolve against the final response URL when an MPD
+        // redirects to a CDN/path with a different base directory.
+        val effectiveManifestUrl = fetchedManifest.first
+        val manifestText = fetchedManifest.second
         val manifest = try {
-            DashAudioManifestParser.parse(manifestUrl, manifestText)
+            DashAudioManifestParser.parse(effectiveManifestUrl, manifestText)
         } catch (e: UnsupportedOperationException) {
             throw IOException(e.message ?: "该 DASH 音轨暂不支持", e)
         } catch (e: IllegalArgumentException) {
@@ -221,7 +225,7 @@ internal class DashAudioSegmentCache(
         url: String,
         headers: Map<String, String>,
         checkActive: () -> Unit,
-    ): String {
+    ): Pair<String, String> {
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
@@ -248,7 +252,7 @@ internal class DashAudioSegmentCache(
                     output.write(buffer, 0, count)
                 }
             }
-            return output.toString(Charsets.UTF_8.name()).removePrefix("\uFEFF")
+            return response.request.url.toString() to output.toString(Charsets.UTF_8.name()).removePrefix("\uFEFF")
         }
     }
 
