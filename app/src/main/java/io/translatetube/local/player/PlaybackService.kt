@@ -2306,12 +2306,24 @@ class PlaybackService : MediaSessionService() {
                         }
                         body.byteStream().use { ins ->
                             var got = 0L
+                            val payloadPrefix = ByteArray(512)
+                            var payloadPrefixSize = 0
                             writeTarget.outputStream().buffered().use { out ->
                                 val buf = ByteArray(64 * 1024)
                                 while (true) {
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                                     val n = ins.read(buf)
                                     if (n < 0) break
+                                    if (payloadPrefixSize < payloadPrefix.size) {
+                                        val copyCount = minOf(n, payloadPrefix.size - payloadPrefixSize)
+                                        System.arraycopy(buf, 0, payloadPrefix, payloadPrefixSize, copyCount)
+                                        payloadPrefixSize += copyCount
+                                        if (isLikelyTextErrorPayload(payloadPrefix, payloadPrefixSize)) {
+                                            throw IllegalStateException(
+                                                "服务器返回了登录页、错误页或文本清单，而不是音频数据；链接可能过期或需要登录。"
+                                            )
+                                        }
+                                    }
                                     got += n
                                     if (got > maxBytes) {
                                         throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
