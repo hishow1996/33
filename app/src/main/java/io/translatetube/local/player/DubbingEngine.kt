@@ -270,7 +270,19 @@ class DubbingEngine(
                 val text = line.zh
                 if (text.isNullOrBlank()) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    writeCache(idx, 16000, FloatArray(0))
+                    // An empty translation is intentionally silent. Persisting its empty marker is
+                    // only an optimization; a full cache must not terminate the whole TTS queue.
+                    try {
+                        writeCache(idx, 16000, FloatArray(0))
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.w(
+                            "DubbingEngine",
+                            "Could not persist empty-translation marker for line ${idx + 1}; keeping session readiness",
+                            e,
+                        )
+                    }
                     readiness.markPrepared(idx, hasAudio = false)
                     bumpPrepared()
                     continue
@@ -377,11 +389,15 @@ class DubbingEngine(
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
                         writeCache(idx, 16000, FloatArray(0))
-                        readiness.markPrepared(idx, hasAudio = false)
-                        bumpPrepared()
                     } catch (writeError: Exception) {
+                        if (writeError is kotlinx.coroutines.CancellationException) throw writeError
+                        // Session readiness is independent of persistence. Even when storage is
+                        // unavailable, finish this cue as silent so playback falls back to source
+                        // audio and the worker can continue with later subtitles.
                         android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
                     }
+                    readiness.markPrepared(idx, hasAudio = false)
+                    bumpPrepared()
                 }
             }
             }
