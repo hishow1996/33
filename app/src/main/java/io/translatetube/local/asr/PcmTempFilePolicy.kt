@@ -29,7 +29,8 @@ internal object PcmTempFilePolicy {
         bytesToWrite: Long,
         minFreeBytes: Long = MIN_FREE_SPACE_BYTES,
     ): Boolean {
-        if (usableSpace <= 0L) return true
+        if (usableSpace < 0L) return true
+        if (usableSpace == 0L) return false
         if (bytesToWrite < 0L || minFreeBytes < 0L) return false
         if (usableSpace < minFreeBytes) return false
         return bytesToWrite <= usableSpace - minFreeBytes
