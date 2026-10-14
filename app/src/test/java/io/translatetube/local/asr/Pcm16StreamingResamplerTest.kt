@@ -8,7 +8,8 @@ import org.junit.Test
 class Pcm16StreamingResamplerTest {
     @Test
     fun streamedOutputMatchesWholeArrayResamplingAcrossChunkBoundaries() {
-        for (sourceRate in listOf(8_000, 16_000, 22_050, 44_100, 48_000)) {
+        // Include the lowest formats accepted by AudioExtract, where upsampling is most aggressive.
+        for (sourceRate in listOf(1_000, 2_000, 4_000, 8_000, 16_000, 22_050, 44_100, 48_000)) {
             val input = ShortArray(997) { index -> ((index * 37) % 65_536 - 32_768).toShort() }
             val expected = referenceResample(input, sourceRate, 16_000)
             val resampler = Pcm16StreamingResampler(sourceRate, 16_000)
