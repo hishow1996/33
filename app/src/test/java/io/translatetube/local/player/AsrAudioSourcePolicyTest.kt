@@ -7,35 +7,29 @@ import org.junit.Test
 class AsrAudioSourcePolicyTest {
     @Test
     fun localContentAndFileUrisAlwaysUseMediaExtractor() {
-        // URI details are resolved by Android's Uri at the call site. Neither local URI scheme is
-        // an HTTP source, so it must go straight to MediaExtractor rather than network downloader.
-        assertEquals(
-            AsrAudioSourcePolicy.Mode.MEDIA_EXTRACTOR,
-            AsrAudioSourcePolicy.choose(
-                hasYouTubeVideoId = false,
-                isHttpSource = false,
-                shouldCacheRemoteAudio = false,
-            ),
-        )
-        assertEquals(
-            AsrAudioSourcePolicy.Mode.MEDIA_EXTRACTOR,
-            AsrAudioSourcePolicy.choose(
-                hasYouTubeVideoId = false,
-                isHttpSource = false,
-                shouldCacheRemoteAudio = true,
-            ),
-        )
+        // Local document URIs must never be sent to the network downloader.
+        listOf("content", "file").forEach { scheme ->
+            assertEquals(
+                scheme,
+                AsrAudioSourcePolicy.Mode.MEDIA_EXTRACTOR,
+                AsrAudioSourcePolicy.choose(
+                    hasYouTubeVideoId = false,
+                    sourceScheme = scheme,
+                    shouldCacheRemoteAudio = true,
+                ),
+            )
+        }
     }
 
     @Test
     fun progressiveRemoteVideoUsesMediaExtractorButDirectAudioAndManifestsUseCache() {
         assertEquals(
             AsrAudioSourcePolicy.Mode.MEDIA_EXTRACTOR,
-            AsrAudioSourcePolicy.choose(false, isHttpSource = true, shouldCacheRemoteAudio = false),
+            AsrAudioSourcePolicy.choose(false, sourceScheme = "https", shouldCacheRemoteAudio = false),
         )
         assertEquals(
             AsrAudioSourcePolicy.Mode.REMOTE_AUDIO_CACHE,
-            AsrAudioSourcePolicy.choose(false, isHttpSource = true, shouldCacheRemoteAudio = true),
+            AsrAudioSourcePolicy.choose(false, sourceScheme = "https", shouldCacheRemoteAudio = true),
         )
     }
 
@@ -45,7 +39,7 @@ class AsrAudioSourcePolicyTest {
             AsrAudioSourcePolicy.Mode.YOUTUBE_AUDIO_CACHE,
             AsrAudioSourcePolicy.choose(
                 hasYouTubeVideoId = true,
-                isHttpSource = true,
+                sourceScheme = "https",
                 shouldCacheRemoteAudio = false,
             ),
         )
