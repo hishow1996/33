@@ -216,25 +216,26 @@ class PlayerManager(private val ctx: Context) {
         title: String = "",
         artist: String = "",
         artworkUrl: String? = null,
-    ) {
+    ): Boolean {
         errorSink.value = null
         if (!isValidHttpMediaUrl(videoUrl)) {
             errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
-            return
+            return false
         }
         if (muxed) {
-            try {
+            return try {
                 setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
+                true
             } catch (e: Exception) {
                 errorSink.value = "无法初始化 YouTube 合并视频流：${e.message ?: e.javaClass.simpleName}"
+                false
             }
-            return
         }
         if (!isValidHttpMediaUrl(audioUrl)) {
             errorSink.value = "该清晰度缺少有效的视频或音频流地址"
-            return
+            return false
         }
-        try {
+        return try {
             val meta = buildMetadata(title, artist, artworkUrl)
             val videoSource = ProgressiveMediaSource.Factory(httpFactory)
                 .createMediaSource(
@@ -246,9 +247,11 @@ class PlayerManager(private val ctx: Context) {
                 )
             player.setMediaSource(MergingMediaSource(videoSource, audioSource))
             player.prepare()
+            true
         } catch (e: Exception) {
             android.util.Log.e("PlayerManager", "YouTube quality setup failed", e)
             errorSink.value = "无法初始化 ${title.ifEmpty { "YouTube" }} 视频流：${e.message ?: e.javaClass.simpleName}"
+            false
         }
     }
 
