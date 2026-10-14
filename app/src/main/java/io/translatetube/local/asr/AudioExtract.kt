@@ -32,7 +32,20 @@ object AudioExtract {
         val sampleRate: Int = 16000,
     ) {
         val durationMs: Long
-            get() = if (sampleRate > 0) sampleCount * 1000L / sampleRate else 0L
+            get() {
+                if (sampleRate <= 0 || sampleCount <= 0L) return 0L
+                val rate = sampleRate.toLong()
+                val wholeSeconds = sampleCount / rate
+                val remainderSamples = sampleCount % rate
+                if (wholeSeconds > Long.MAX_VALUE / 1_000L) return Long.MAX_VALUE
+                val wholeMs = wholeSeconds * 1_000L
+                val remainderMs = remainderSamples * 1_000L / rate
+                return if (wholeMs > Long.MAX_VALUE - remainderMs) {
+                    Long.MAX_VALUE
+                } else {
+                    wholeMs + remainderMs
+                }
+            }
 
         fun readFloatSamples(
             startSample: Long,
