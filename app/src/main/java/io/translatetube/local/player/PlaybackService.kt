@@ -1238,59 +1238,92 @@ class PlaybackService : MediaSessionService() {
             }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
-                if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
-                    // 方案 B：转写模型未下载——优雅降级（原声播放 + 引导提示），不崩
-                    updateUiForSession(key) { it.copy(noModelHint = "该视频无字幕。下载「转写模型」后即可生成中文字幕与配音（设置 → 语音模型）") }
-                } else {
-                // ---- 2b. 无字幕 → 本地转写 ----
-                updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
-                val audioFile: File?
-                val audioUri: Uri?
                 val sourceUri = localUri
-                when {
-                    videoId != null -> {
-                        audioFile = obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
-                        audioUri = null
+                if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
+                    // A local video needs Whisper only when it has no reusable subtitle result.
+                    // Keep the video playable, but explain the exact next step needed for captions.
+                    val hint = if (sourceUri != null && !isHttpMediaUri(sourceUri)) {
+                        AsrAudioSourcePolicy.missingLocalAsrModelHint()
+                    } else {
+                        "该视频无可复用字幕。下载「转写模型」后即可识别语音、生成中文字幕与中文配音（设置 → 语音模型）。"
                     }
-                    sourceUri != null && isHttpMediaUri(sourceUri) &&
-                        !shouldStreamRemoteVideoForAsr(sourceUri, sourceMimeType) -> {
-                        // Small direct audio files and clear HLS VOD are cached/resumable on disk.
-                        audioFile = obtainRemoteAsrAudioFile(
-                            url = sourceUri.toString(),
-                            cacheKey = key,
-                            sessionKey = key,
-                            headers = sourceHeaders,
-                            mimeType = sourceMimeType,
+                    updateUiForSession(key) { state ->
+                        state.copy(
+                            noModelHint = hint,
+                            subtitleTrackStatus = if (sourceUri != null && !isHttpMediaUri(sourceUri)) {
+                                "本地视频尚未生成字幕：准备好转写模型后即可提取音轨并生成中文字幕。"
+                            } else state.subtitleTrackStatus,
                         )
-                        audioUri = null
                     }
-                    sourceUri != null -> {
-                        // For progressive webpage video, stream the audio track through Android's
-                        // MediaExtractor with the original safe headers. Do not download the whole
-                        // MP4 just to extract speech. PCM itself is still spooled to disk.
-                        audioFile = null
-                        audioUri = sourceUri
-                        if (isHttpMediaUri(sourceUri)) {
-                            updateUiForSession(key) {
-                                it.copy(
-                                    phase = Phase.TRANSCRIBING,
-                                    progress = "正在直接读取网页音轨（不下载整部视频）…",
-                                )
+                } else {
+                    // ---- 2b. No reusable captions: extract/prepare audio, then Whisper → translation → TTS. ----
+                    updateUiForSession(key) {
+                        it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕缓存，准备语音转写…")
+                    }
+                    val audioFile: File?
+                    val audioUri: Uri?
+                    val isHttpSource = sourceUri?.let(::isHttpMediaUri) == true
+                    val inputMode = AsrAudioSourcePolicy.choose(
+                        hasYouTubeVideoId = videoId != null,
+                        isHttpSource = isHttpSource,
+                        shouldCacheRemoteAudio = isHttpSource &&
+                            sourceUri != null && !shouldStreamRemoteVideoForAsr(sourceUri, sourceMimeType),
+                    )
+                    when (inputMode) {
+                        AsrAudioSourcePolicy.Mode.YOUTUBE_AUDIO_CACHE -> {
+                            val id = videoId ?: throw IllegalStateException("缺少 YouTube 视频 ID")
+                            audioFile = obtainAsrAudioFile(id, key, "复用已下载音频，避免重复下载…")
+                            audioUri = null
+                        }
+                        AsrAudioSourcePolicy.Mode.REMOTE_AUDIO_CACHE -> {
+                            val remoteUri = sourceUri ?: throw IllegalStateException("缺少网页音频地址")
+                            // Direct audio and supported clear HLS/DASH VOD are cached/resumable.
+                            audioFile = obtainRemoteAsrAudioFile(
+                                url = remoteUri.toString(),
+                                cacheKey = key,
+                                sessionKey = key,
+                                headers = sourceHeaders,
+                                mimeType = sourceMimeType,
+                            )
+                            audioUri = null
+                        }
+                        AsrAudioSourcePolicy.Mode.MEDIA_EXTRACTOR -> {
+                            val mediaUri = sourceUri ?: throw IllegalStateException("本地视频或网页媒体源为空")
+                            // Local content:// and file:// videos come here too: extract their audio
+                            // track in-place through MediaExtractor; never upload or copy the video
+                            // itself. Only bounded 16 kHz mono PCM is spooled to the cache directory.
+                            audioFile = null
+                            audioUri = mediaUri
+                            if (isHttpMediaUri(mediaUri)) {
+                                updateUiForSession(key) {
+                                    it.copy(
+                                        phase = Phase.TRANSCRIBING,
+                                        progress = "正在直接读取网页视频音轨（不下载整部视频）…",
+                                    )
+                                }
+                            } else {
+                                updateUiForSession(key) {
+                                    it.copy(
+                                        phase = Phase.DOWNLOADING_AUDIO,
+                                        progress = AsrAudioSourcePolicy.localExtractionProgress(),
+                                        subtitleTrackStatus = AsrAudioSourcePolicy.localSubtitleStatus(),
+                                    )
+                                }
                             }
                         }
                     }
-                    else -> throw IllegalStateException("无音频源")
-                }
-                updateUiForSession(key) {
-                    it.copy(
-                        phase = Phase.TRANSCRIBING,
-                        progress = if (audioUri != null && isHttpMediaUri(audioUri)) {
-                            "正在直接读取网络音轨并转为 16 kHz PCM…"
-                        } else {
-                            "解码音频…"
-                        },
-                    )
-                }
+                    updateUiForSession(key) {
+                        it.copy(
+                            phase = Phase.TRANSCRIBING,
+                            progress = when {
+                                audioUri != null && isHttpMediaUri(audioUri) ->
+                                    "正在直接读取网页视频音轨并转为 16 kHz 单声道 PCM…"
+                                audioUri != null ->
+                                    AsrAudioSourcePolicy.localExtractionProgress()
+                                else -> "正在解码已准备好的音频并转换为 16 kHz 单声道 PCM…"
+                            },
+                        )
+                    }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcmFile = withContext(Dispatchers.IO) {
                     AudioExtract.decodeTo16kMonoFile(
