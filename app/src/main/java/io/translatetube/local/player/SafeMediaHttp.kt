@@ -101,3 +101,36 @@ internal fun isHtmlOrJsonContentType(contentType: String?): Boolean {
         value == "text/xml" ||
         value.endsWith("+json")
 }
+
+/**
+ * Detect common login/error documents when servers mislabel them as generic binary data.
+ * Only inspect a small prefix and require it to look like readable text so binary media
+ * headers/containers are not mistaken for an error page.
+ */
+internal fun isLikelyTextErrorPayload(bytes: ByteArray, count: Int): Boolean {
+    if (count <= 0 || bytes.isEmpty()) return false
+    val sampleSize = minOf(count, bytes.size, 512)
+    val text = bytes.copyOfRange(0, sampleSize)
+        .toString(Charsets.UTF_8)
+        .removePrefix("\uFEFF")
+        .trimStart()
+    if (text.isEmpty()) return false
+    val printable = text.count { char ->
+        char == '\n' || char == '\r' || char == '\t' || char.toInt() >= 0x20
+    }
+    if (printable.toFloat() / text.length < 0.85f) return false
+    val normalized = text.lowercase(Locale.ROOT)
+    return normalized.startsWith("<!doctype html") ||
+        normalized.startsWith("<html") ||
+        normalized.startsWith("<?xml") ||
+        normalized.startsWith("{") ||
+        normalized.startsWith("[") ||
+        normalized.startsWith("#extm3u") ||
+        normalized.startsWith("access denied") ||
+        normalized.startsWith("unauthorized") ||
+        normalized.startsWith("forbidden") ||
+        normalized.startsWith("request has expired") ||
+        normalized.startsWith("signature has expired") ||
+        normalized.startsWith("invalid signature") ||
+        normalized.startsWith("error:")
+}
