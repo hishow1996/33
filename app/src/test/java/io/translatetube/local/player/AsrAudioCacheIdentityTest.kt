@@ -9,8 +9,8 @@ import org.junit.Test
 class AsrAudioCacheIdentityTest {
     @Test
     fun rotatingCommonSignatureParametersKeepsSameMediaIdentity() {
-        val first = "webmedia:https://cdn.example.test/video/manifest.m3u8?videoId=abc&format=m3u8&token=old&expires=100&signature=aaa"
-        val refreshed = "webmedia:https://cdn.example.test/video/manifest.m3u8?signature=bbb&expires=999&format=m3u8&token=new&videoId=abc"
+        val first = "webmedia:https://cdn.example.test/video/manifest.m3u8?videoId=abc&format=m3u8&token=old&expires=100&signature=aaa&hdnts=old-token"
+        val refreshed = "webmedia:https://cdn.example.test/video/manifest.m3u8?signature=bbb&expires=999&format=m3u8&token=new&videoId=abc&hdnts=new-token"
 
         assertEquals(
             AsrAudioCacheIdentity.canonicalSource(first),
