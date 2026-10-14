@@ -1436,9 +1436,22 @@ class PlaybackService : MediaSessionService() {
             }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
-                if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
-                    // 方案 B：转写模型未下载——优雅降级（原声播放 + 引导提示），不崩
-                    updateUiForSession(key) { it.copy(noModelHint = "该视频无字幕。下载「转写模型」后即可生成中文字幕与配音（设置 → 语音模型）") }
+                val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
+                    .getString("asr_provider", "local") ?: "local"
+                val asrProvider = storedAsrProvider.takeIf {
+                    it == "local" || it == "elevenlabs" || it == "cartesia"
+                } ?: "local"
+                val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
+                val missingLocalModel = asrProvider == "local" &&
+                    !io.translatetube.local.data.ModelFiles.asrReady(this)
+                val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
+                if (missingLocalModel || missingCloudKey) {
+                    val hint = when (asrProvider) {
+                        "local" -> "该视频无字幕。请在设置 → 模型管理中下载本地 Whisper 转写模型。"
+                        "elevenlabs" -> "已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎中填写 API Key。"
+                        else -> "已选择 Cartesia 云端转写，请先在设置 → 转写引擎中填写 API Key。"
+                    }
+                    updateUiForSession(key) { it.copy(noModelHint = hint) }
                 } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
@@ -1531,7 +1544,9 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 ensureCurrentSession(key)
-                updateUiForSession(key) { it.copy(progress = "语音分段…") }
+                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
+                val (asrLines, detectedAsrLang) = if (asrProvider == "local") {
+updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) {
                     vadSegmentsFromFile(
                         this@PlaybackService,
@@ -1542,7 +1557,6 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
                 // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
-                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
                 val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs) {
                     pcmOwnerJob?.ensureActive()
                 }
@@ -1614,7 +1628,7 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
 
-                val (asrLines, detectedAsrLang) = whisperMutex.withLock {
+                val localAsrResult = whisperMutex.withLock {
                     ensureCurrentSession(key)
                     withContext(Dispatchers.IO) {
                         val engine = whisper ?: WhisperEngine(this@PlaybackService).also { whisper = it }
@@ -1688,6 +1702,34 @@ class PlaybackService : MediaSessionService() {
                             android.util.Log.i("PlaybackService", "Released Whisper recognizer after ASR because of memory pressure")
                         }
                         rows to language
+                    }
+                }
+                    localAsrResult
+                } else {
+                    val providerName = if (asrProvider == "elevenlabs") "ElevenLabs" else "Cartesia"
+                    updateUiForSession(key) { it.copy(progress = "正在使用 " + providerName + " 云端转写…") }
+                    val cloudWav = File.createTempFile("asr-cloud-", ".wav", cacheDir)
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                            io.translatetube.local.asr.CloudTranscription.writeWavFile(
+                                pcmFile, cloudWav, checkActive = { ownerJob?.ensureActive() },
+                            )
+                            val result = io.translatetube.local.asr.CloudTranscription.transcribe(
+                                provider = asrProvider,
+                                apiKey = asrApiKey,
+                                wavFile = cloudWav,
+                                durationMs = pcmFile.durationMs,
+                                checkActive = { ownerJob?.ensureActive() },
+                            )
+                            ownerJob?.ensureActive()
+                            updateUiForSession(key) { it.copy(progress = "云端转写完成，正在整理字幕…") }
+                            val language = result.language.takeIf { it.isNotBlank() }
+                                ?: detectLangFromText(result.cues.joinToString(" ") { it.third })
+                            result.cues to language
+                        }
+                    } finally {
+                        cloudWav.delete()
                     }
                 }
                 ensureCurrentSession(key)

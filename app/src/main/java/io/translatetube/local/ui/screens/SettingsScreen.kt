@@ -25,6 +25,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.ui.theme.*
+import io.translatetube.local.translate.Crypto
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import io.translatetube.local.floating.FloatingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,6 +38,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
+    var asrEngine by remember { mutableStateOf(prefs.getString("asr_provider", "local") ?: "local") }
+    var elevenLabsKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_elevenlabs_key", "").orEmpty())) }
+    var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
@@ -93,6 +98,80 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
 
 Section("翻译引擎", onHeaderClick = onApiManager) {}
+
+Section("转写引擎") {
+    Text(
+        "选择没有现成字幕时使用的语音转写方式。本地 Whisper 保留不变；云端模式只上传提取后的音频，不上传视频画面。",
+        color = SubText,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Spacer(Modifier.height(8.dp))
+    EngineOption("local", "本地 Whisper · 离线转写", asrEngine) { engine ->
+        asrEngine = engine
+        prefs.edit().putString("asr_provider", engine).apply()
+    }
+    HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+    EngineOption("elevenlabs", "ElevenLabs Scribe · 云端转写", asrEngine) { engine ->
+        asrEngine = engine
+        prefs.edit().putString("asr_provider", engine).apply()
+    }
+    HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+    EngineOption("cartesia", "Cartesia Ink · 云端转写", asrEngine) { engine ->
+        asrEngine = engine
+        prefs.edit().putString("asr_provider", engine).apply()
+    }
+    if (asrEngine == "elevenlabs") {
+        Spacer(Modifier.height(8.dp))
+        Text("填写 ElevenLabs API Key。密钥使用 Android Keystore 加密后保存在本机；云端额度以账户为准。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = elevenLabsKey,
+            onValueChange = { value ->
+                elevenLabsKey = value
+                prefs.edit().putString("asr_elevenlabs_key", Crypto.encrypt(value.trim())).apply()
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("ElevenLabs API Key") },
+            placeholder = { Text("粘贴 API Key") },
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Text(
+            if (elevenLabsKey.isBlank()) "尚未填写密钥" else "密钥已保存在本机",
+            color = if (elevenLabsKey.isBlank()) SubText else BrandBright,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(start = 4.dp, top = 3.dp),
+        )
+    } else if (asrEngine == "cartesia") {
+        Spacer(Modifier.height(8.dp))
+        Text("填写 Cartesia API Key。密钥使用 Android Keystore 加密后保存在本机；云端额度以账户为准。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = cartesiaKey,
+            onValueChange = { value ->
+                cartesiaKey = value
+                prefs.edit().putString("asr_cartesia_key", Crypto.encrypt(value.trim())).apply()
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Cartesia API Key") },
+            placeholder = { Text("粘贴 API Key") },
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Text(
+            if (cartesiaKey.isBlank()) "尚未填写密钥" else "密钥已保存在本机",
+            color = if (cartesiaKey.isBlank()) SubText else BrandBright,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(start = 4.dp, top = 3.dp),
+        )
+    }
+    Text(
+        "选择云端转写后，无字幕视频会调用对应服务；未填写或无效密钥时会提示错误，不会静默切换引擎。",
+        color = SubText,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(start = 8.dp, top = 5.dp),
+    )
+}
 
 Section("配音设置") {
             EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
@@ -161,8 +240,11 @@ Section("视频源（yt-dlp）") {
 
 Section("模型管理") {
             Text(
-                if (ttsEngine == "system") "系统 TTS 不需要配音模型；语音转写模型可单独下载。"
-                else "配音模型用于离线合成语音，语音转写模型用于生成字幕。",
+                when {
+                    asrEngine != "local" -> "当前选用云端转写；本地 Whisper 模型仍保留，切回本地时即可继续使用。"
+                    ttsEngine == "system" -> "系统 TTS 不需要配音模型；本地语音转写模型可单独下载。"
+                    else -> "配音模型用于离线合成语音，本地语音转写模型用于生成字幕。"
+                },
                 color = SubText,
                 style = MaterialTheme.typography.bodySmall,
             )
