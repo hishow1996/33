@@ -173,6 +173,2582 @@ class DashAudioManifestParserTest {
     }
 
     @Test
+    fun calculatesSegmentCountInManifestTimescaleInsteadOfRoundedMilliseconds() {
+        val manifest = """
+            <MPD type="static" mediaPresentationDuration="PT10S">
+              <Period duration="PT10S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <SegmentTemplate timescale="3" duration="1"
+                    initialization="init.mp4" media="seg-${'
+        val numberOverflow = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT8S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <SegmentTemplate timescale="1" duration="4"
+                    startNumber="9223372036854775807"
+                    initialization="init.mp4" media="seg-${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" />
+                  <Representation id="audio" bandwidth="96000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val timelineOverflow = """
+            <MPD type="static" mediaPresentationDuration="PT2S">
+              <Period duration="PT2S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <SegmentTemplate timescale="1"
+                    initialization="init.mp4" media="seg-${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}-${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Time${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s">
+                    <SegmentTimeline>
+                      <S t="9223372036854775807" d="1" r="1" />
+                    </SegmentTimeline>
+                  </SegmentTemplate>
+                  <Representation id="audio" bandwidth="96000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/n.mpd", numberOverflow)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/t.mpd", timelineOverflow)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+        val numberOverflow = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT8S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <SegmentTemplate timescale="1" duration="4"
+                    startNumber="9223372036854775807"
+                    initialization="init.mp4" media="seg-${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" />
+                  <Representation id="audio" bandwidth="96000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val timelineOverflow = """
+            <MPD type="static" mediaPresentationDuration="PT2S">
+              <Period duration="PT2S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <SegmentTemplate timescale="1"
+                    initialization="init.mp4" media="seg-${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}-${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Time${'
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s">
+                    <SegmentTimeline>
+                      <S t="9223372036854775807" d="1" r="1" />
+                    </SegmentTimeline>
+                  </SegmentTemplate>
+                  <Representation id="audio" bandwidth="96000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/n.mpd", numberOverflow)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/t.mpd", timelineOverflow)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}Number${'
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" initialization="init.mp4" />
+                  <Representation id="low" bandwidth="64000" mimeType="audio/mp4" />
+                  <Representation id="high" bandwidth="256000" mimeType="audio/mp4" />
+                </AdaptationSet>
+                <AdaptationSet contentType="video" mimeType="video/mp4">
+                  <Representation id="v" bandwidth="1000000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+        val selected = DashAudioManifestParser.parse(
+            "https://cdn.example.test/manifest.mpd",
+            multiRepresentation,
+        )
+        assertEquals("https://cdn.example.test/a-1.m4s", selected.segments.first().url)
+
+        val encrypted = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" />
+              <Period duration="PT4S"><AdaptationSet contentType="audio" /></Period>
+            </MPD>
+        """.trimIndent()
+        val dynamic = """
+            <MPD type="dynamic"><Period><AdaptationSet contentType="audio" /></Period></MPD>
+        """.trimIndent()
+        val multiPeriod = """
+            <MPD type="static" mediaPresentationDuration="PT8S">
+              <Period duration="PT4S"/><Period duration="PT4S"/>
+            </MPD>
+        """.trimIndent()
+        val segmentBase = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <Representation id="a"><SegmentBase indexRange="0-100"/></Representation>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+        val negativeRepeat = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S"><AdaptationSet contentType="audio">
+                <SegmentTemplate media="seg-${'$'}Number${'$'}.m4s" initialization="init.mp4">
+                  <SegmentTimeline><S t="0" d="4" r="-1"/></SegmentTimeline>
+                </SegmentTemplate>
+                <Representation id="a" bandwidth="96000"/>
+              </AdaptationSet></Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", encrypted)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", dynamic)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", multiPeriod)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", segmentBase)
+        }
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/m.mpd", negativeRepeat)
+        }
+    }
+
+    @Test
+    fun refusesOversizedAndUnsafeManifestUrls() {
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "file:///sdcard/manifest.mpd",
+                "<MPD/>",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DashAudioManifestParser.parse(
+                "https://cdn.example.test/manifest.mpd",
+                "<MPD>" + " ".repeat(DashAudioManifestParser.MAX_MANIFEST_CHARS + 1) + "</MPD>",
+            )
+        }
+        assertTrue(DashAudioManifestParser.MAX_SEGMENTS > 0)
+    }
+}
+}.m4s" />
+                  <Representation id="audio" bandwidth="96000" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+
+        val parsed = DashAudioManifestParser.parse(
+            "https://cdn.example.test/fractional.mpd",
+            manifest,
+        )
+        assertEquals(30, parsed.segments.size)
+        assertEquals(10_000L, parsed.totalDurationMs)
+    }
+
+    @Test
     fun refusesSegmentNumberAndTimelineOverflow() {
         val numberOverflow = """
             <MPD type="static" mediaPresentationDuration="PT8S">
