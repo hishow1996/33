@@ -1121,14 +1121,24 @@ class PlaybackService : MediaSessionService() {
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationProfileIdentity = translationEngineCacheIdentity(selectedTranslationId)
             val savedResumeCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
-            val resumeCacheMatchesProfile = resumeState != null &&
-                savedResumeCacheKey != null &&
-                TranslationCacheIdentity.matchesProfile(
-                    savedResumeCacheKey,
+            val expectedResumeCacheKey = if (
+                resumeState != null && savedResumeCacheKey?.contains("|imported-") == true
+            ) {
+                importedTranslationCacheKey(
                     key,
                     selectedTranslationId,
+                    resumeState.lines,
                     translationProfileIdentity,
+                    srcLang,
                 )
+            } else {
+                TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
+            }
+            // Compare the complete expected key. For imported captions this also checks source
+            // language, cue text and timestamps; a shared video/profile prefix is not sufficient.
+            val resumeCacheMatchesProfile = resumeState != null &&
+                savedResumeCacheKey != null &&
+                savedResumeCacheKey == expectedResumeCacheKey
             val translationProfileChangedOnResume = resumeState != null && !resumeCacheMatchesProfile
             val translationCacheKey = when {
                 resumeCacheMatchesProfile -> requireNotNull(savedResumeCacheKey)
