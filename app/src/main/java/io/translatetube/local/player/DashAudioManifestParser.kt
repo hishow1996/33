@@ -88,8 +88,9 @@ internal object DashAudioManifestParser {
         val representation = chooseRepresentation(representations)
         val representationId = representation.getAttribute("id").ifBlank { "audio" }
         val bandwidth = representation.getAttribute("bandwidth").toLongOrNull() ?: 0L
+        val explicitRepresentationBase = childText(representation, "BaseURL")
         var representationBase = adaptationBase
-        childText(representation, "BaseURL")?.let { representationBase = resolveHttpUrl(representationBase, it) }
+        explicitRepresentationBase?.let { representationBase = resolveHttpUrl(representationBase, it) }
 
         val representationList = child(representation, "SegmentList")
         val adaptationList = child(adaptation, "SegmentList")
@@ -153,9 +154,16 @@ internal object DashAudioManifestParser {
         }
 
         val directUrl = representationBase
-        if (looksLikeDirectAudioUrl(directUrl) || representation.getAttribute("mimeType")
-                .startsWith("audio/", ignoreCase = true)
-        ) {
+        // Do not mistake the MPD URL itself for an audio file merely because the Representation
+        // declares audio/mp4. A direct media BaseURL must be explicit, unless its URL has a known
+        // audio-file extension.
+        val explicitAdaptationBase = childText(adaptation, "BaseURL")
+        val explicitAudioBase = explicitRepresentationBase != null || explicitAdaptationBase != null
+        val declaresAudioMime =
+            representation.getAttribute("mimeType").startsWith("audio/", ignoreCase = true) ||
+                adaptation.getAttribute("mimeType").startsWith("audio/", ignoreCase = true) ||
+                adaptation.getAttribute("contentType").equals("audio", ignoreCase = true)
+        if (looksLikeDirectAudioUrl(directUrl) || (explicitAudioBase && declaresAudioMime)) {
             return AudioManifest(
                 manifestUrl = manifestUrl,
                 initializationUrl = null,
