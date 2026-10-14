@@ -78,14 +78,23 @@ class DubbingEngine(
     private val readiness = DubbingReadiness()
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
-    private var synthJob: Job? = null
-    private var cacheInitJob: Job? = null
+    @Volatile private var synthJob: Job? = null
+    @Volatile private var cacheInitJob: Job? = null
+    private val synthStartLock = Any()
     private val cacheInitGeneration = AtomicInteger(0)
 
     private val _preparedUntil = MutableStateFlow(0)   // 已合成到第几行（0-based 含义：前 N 行就绪）
     val preparedUntil: StateFlow<Int> = _preparedUntil
     private val _totalLines = MutableStateFlow(0)
     val totalLines: StateFlow<Int> = _totalLines
+
+    /** Cache validation or synthesis is still running even after playback has entered READY. */
+    val isPreparing: Boolean
+        get() = !released && (
+            cacheInitJob?.isActive == true ||
+                synthJob?.isActive == true ||
+                pending.isNotEmpty()
+            )
     private val _currentLine = MutableStateFlow(-1)
     val currentLine: StateFlow<Int> = _currentLine
     // Set only after AudioTrack.play() succeeds; PCM readiness alone does not mean voice is audible.
@@ -209,11 +218,14 @@ class DubbingEngine(
     }
 
     private fun startSynthLoop() {
-        // Never cancel an active provider call just to restart queue processing: many TTS
-        // providers perform blocking native work and cancellation cannot stop it immediately.
-        // Starting a second worker could then call the same engine concurrently.
-        if (released || synthJob?.isActive == true) return
-        synthJob = scope.launch(Dispatchers.Default) {
+        // Queue recovery and cache initialization can request startup concurrently. Serialize
+        // the check-and-launch pair; otherwise both callers could observe an idle worker and
+        // invoke the same native TTS engine concurrently.
+        synchronized(synthStartLock) {
+            // Never cancel an active provider call just to restart queue processing: many TTS
+            // providers perform blocking native work and cancellation cannot stop it immediately.
+            if (released || synthJob?.isActive == true) return
+            synthJob = scope.launch(Dispatchers.Default) {
             // Poll under the same lock used by prioritizeAround(). Do not inspect isEmpty()
             // outside the lock: queue reordering temporarily drains the deque, and a separate
             // isEmpty() check could let this worker exit before the reordered work is restored.
@@ -371,6 +383,7 @@ class DubbingEngine(
                         android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
                     }
                 }
+            }
             }
         }
     }
