@@ -7,6 +7,13 @@ internal object PcmTempFilePolicy {
     const val PREFIX = "translate-pcm-"
     const val SUFFIX = ".s16le"
     const val MAX_AGE_MS = 24L * 60L * 60L * 1_000L
+    /** Keep decoded scratch PCM bounded on older devices even for unusually long source files. */
+    const val MAX_PCM_BYTES = 512L * 1024L * 1024L
+
+    fun canAppendSamples(currentBytes: Long, sampleCount: Int): Boolean {
+        if (currentBytes !in 0L..MAX_PCM_BYTES || sampleCount < 0) return false
+        return sampleCount.toLong() <= (MAX_PCM_BYTES - currentBytes) / 2L
+    }
 
     fun isStale(fileName: String, lastModifiedMs: Long, nowMs: Long, maxAgeMs: Long = MAX_AGE_MS): Boolean {
         if (!fileName.startsWith(PREFIX) || !fileName.endsWith(SUFFIX)) return false
