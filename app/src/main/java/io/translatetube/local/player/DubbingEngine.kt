@@ -107,112 +107,112 @@ class DubbingEngine(
         // Publish the TTS instance, subtitle list and cache-init Job atomically with release().
         // Otherwise a concurrent retirement could miss this TTS instance or the newly launched job.
         synchronized(cacheWriteLock) {
-        if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
-        this.tts = tts
-        this.lines = lines.toList()
-        this.timeline = DubbingTimeline(this.lines)
-        synthesisErrorReported.set(false)
-        firstSynthesisReported.set(false)
-        _totalLines.value = this.lines.size
-        _preparedUntil.value = 0
-        _preparedCount.value = 0
-        readiness.clear()
-        pending.clear()
-        priorityTarget = -1
-        latestTimelineCursor = DubbingTimelineCursor()
-        cacheInitJob?.cancel()
-        val generation = cacheInitGeneration.incrementAndGet()
-        // 清内存缓存：防止旧会话同 idx 行的音频串台。
-        synchronized(mem) { mem.clear() }
+            if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
+            this.tts = tts
+            this.lines = lines.toList()
+            this.timeline = DubbingTimeline(this.lines)
+            synthesisErrorReported.set(false)
+            firstSynthesisReported.set(false)
+            _totalLines.value = this.lines.size
+            _preparedUntil.value = 0
+            _preparedCount.value = 0
+            readiness.clear()
+            pending.clear()
+            priorityTarget = -1
+            latestTimelineCursor = DubbingTimelineCursor()
+            cacheInitJob?.cancel()
+            val generation = cacheInitGeneration.incrementAndGet()
+            // 清内存缓存：防止旧会话同 idx 行的音频串台。
+            synchronized(mem) { mem.clear() }
 
-        // Inspecting PCM validates every sample, so doing this loop on the caller thread can
-        // freeze playback UI on older phones. Move cache scanning and pruning to Dispatchers.IO.
-        cacheInitJob = scope.launch(Dispatchers.IO) {
-            val cacheInitCoroutine = kotlinx.coroutines.currentCoroutineContext()[Job]
-            fun checkCacheInitActive() {
-                if (released || generation != cacheInitGeneration.get() ||
-                    cacheInitCoroutine?.isActive == false
-                ) {
-                    throw kotlinx.coroutines.CancellationException("配音缓存校验已取消")
-                }
-            }
-            try {
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (released || generation != cacheInitGeneration.get()) return@launch
-
-                val expectedCacheNames = this@DubbingEngine.lines.indices
-                    .map { cacheFile(it).name }.toHashSet()
-                val existing = cacheDir.listFiles().orEmpty()
-                for (file in existing) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    if (released || generation != cacheInitGeneration.get()) return@launch
-                    if ((file.name.endsWith(".pcm") || file.name.endsWith(".pcm.tmp")) &&
-                        file.name !in expectedCacheNames
+            // Inspecting PCM validates every sample, so doing this loop on the caller thread can
+            // freeze playback UI on older phones. Move cache scanning and pruning to Dispatchers.IO.
+            cacheInitJob = scope.launch(Dispatchers.IO) {
+                val cacheInitCoroutine = kotlinx.coroutines.currentCoroutineContext()[Job]
+                fun checkCacheInitActive() {
+                    if (released || generation != cacheInitGeneration.get() ||
+                        cacheInitCoroutine?.isActive == false
                     ) {
-                        file.delete()
+                        throw kotlinx.coroutines.CancellationException("配音缓存校验已取消")
                     }
                 }
-
-                for (i in this@DubbingEngine.lines.indices) {
+                try {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
-                    val file = cacheFile(i)
-                    val cacheHasAudio = inspectCache(file, ::checkCacheInitActive)
-                    val blankTranslation = this@DubbingEngine.lines[i].zh.isNullOrBlank()
-                    when {
-                        blankTranslation && cacheHasAudio == false ->
-                            readiness.markPrepared(i, hasAudio = false)
-                        blankTranslation && cacheHasAudio == true -> {
-                            // A blank translation must never reuse a non-empty cache entry.
-                            file.delete()
-                            pending.offerLast(i)
-                        }
-                        !blankTranslation && cacheHasAudio == true ->
-                            readiness.markPrepared(i, hasAudio = true)
-                        !blankTranslation && cacheHasAudio == false -> {
-                            // Empty PCM from a failed old run isn't a successful cache hit.
-                            file.delete()
-                            pending.offerLast(i)
-                        }
-                        else -> pending.offerLast(i)
-                    }
-                }
 
-                pruneOldDubbingCaches()
-
-                // A seek can happen while cache validation is running. Honor the latest cue
-                // before starting synthesis instead of letting the whole first pass run in order.
-                synchronized(pending) {
-                    val target = priorityTarget
-                    if (target in this@DubbingEngine.lines.indices) {
-                        val queued = mutableListOf<Int>()
-                        pending.drainTo(queued)
-                        DubbingQueueOrder.prioritize(
-                            queued,
-                            target,
-                            this@DubbingEngine.lines.size,
-                        ).forEach { pending.offerLast(it) }
+                    val expectedCacheNames = this@DubbingEngine.lines.indices
+                        .map { cacheFile(it).name }.toHashSet()
+                    val existing = cacheDir.listFiles().orEmpty()
+                    for (file in existing) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (released || generation != cacheInitGeneration.get()) return@launch
+                        if ((file.name.endsWith(".pcm") || file.name.endsWith(".pcm.tmp")) &&
+                            file.name !in expectedCacheNames
+                        ) {
+                            file.delete()
+                        }
                     }
-                }
-                if (!released && generation == cacheInitGeneration.get()) {
-                    bumpPrepared()
-                    startSynthLoop()
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                android.util.Log.e("DubbingEngine", "PCM cache initialization failed", e)
-                if (!released && generation == cacheInitGeneration.get()) {
-                    // Cache I/O failure must not permanently strand the dubbing queue.
-                    pending.clear()
-                    this@DubbingEngine.lines.indices
-                        .filterNot { readiness.isReady(it) }
-                        .forEach { pending.offerLast(it) }
-                    bumpPrepared()
-                    startSynthLoop()
+
+                    for (i in this@DubbingEngine.lines.indices) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (released || generation != cacheInitGeneration.get()) return@launch
+                        val file = cacheFile(i)
+                        val cacheHasAudio = inspectCache(file, ::checkCacheInitActive)
+                        val blankTranslation = this@DubbingEngine.lines[i].zh.isNullOrBlank()
+                        when {
+                            blankTranslation && cacheHasAudio == false ->
+                                readiness.markPrepared(i, hasAudio = false)
+                            blankTranslation && cacheHasAudio == true -> {
+                                // A blank translation must never reuse a non-empty cache entry.
+                                file.delete()
+                                pending.offerLast(i)
+                            }
+                            !blankTranslation && cacheHasAudio == true ->
+                                readiness.markPrepared(i, hasAudio = true)
+                            !blankTranslation && cacheHasAudio == false -> {
+                                // Empty PCM from a failed old run isn't a successful cache hit.
+                                file.delete()
+                                pending.offerLast(i)
+                            }
+                            else -> pending.offerLast(i)
+                        }
+                    }
+
+                    pruneOldDubbingCaches()
+
+                    // A seek can happen while cache validation is running. Honor the latest cue
+                    // before starting synthesis instead of letting the whole first pass run in order.
+                    synchronized(pending) {
+                        val target = priorityTarget
+                        if (target in this@DubbingEngine.lines.indices) {
+                            val queued = mutableListOf<Int>()
+                            pending.drainTo(queued)
+                            DubbingQueueOrder.prioritize(
+                                queued,
+                                target,
+                                this@DubbingEngine.lines.size,
+                            ).forEach { pending.offerLast(it) }
+                        }
+                    }
+                    if (!released && generation == cacheInitGeneration.get()) {
+                        bumpPrepared()
+                        startSynthLoop()
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e("DubbingEngine", "PCM cache initialization failed", e)
+                    if (!released && generation == cacheInitGeneration.get()) {
+                        // Cache I/O failure must not permanently strand the dubbing queue.
+                        pending.clear()
+                        this@DubbingEngine.lines.indices
+                            .filterNot { readiness.isReady(it) }
+                            .forEach { pending.offerLast(it) }
+                        bumpPrepared()
+                        startSynthLoop()
+                    }
                 }
             }
-        }
         }
     }
 
