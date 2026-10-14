@@ -1203,6 +1203,9 @@ class PlaybackService : MediaSessionService() {
                     // truncated media container from an older version. Do not let that bad file
                     // poison every later retry: refresh metadata and redownload only on a cache hit.
                     if (failedVideoId == null || !audioCacheHit || failedCachedFile == null) throw e
+                    // A canceled/obsolete session must not trigger an extra network download.
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    ensureCurrentSession(key)
                     android.util.Log.w(
                         "PlaybackService",
                         "Cached ASR audio could not be decoded for $failedVideoId; refreshing it once",
@@ -1219,6 +1222,7 @@ class PlaybackService : MediaSessionService() {
                         key,
                         "已更新音频缓存，正在解码…",
                     )
+                    ensureCurrentSession(key)
                     try {
                         val recovered = withContext(Dispatchers.IO) {
                             AudioExtract.decodeTo16kMono(this@PlaybackService, null, refreshedAudio)
