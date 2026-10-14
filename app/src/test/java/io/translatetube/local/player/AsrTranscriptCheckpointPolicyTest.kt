@@ -7,11 +7,12 @@ import org.junit.Test
 
 class AsrTranscriptCheckpointPolicyTest {
     @Test
-    fun signatureIsStableForSamePcmLengthAndVadSegments() {
+    fun signatureIsStableForSamePcmAndVadSegments() {
         val segments = listOf(0L to 900L, 1_200L to 2_400L, 3_100L to 4_000L)
+        val pcm = FloatArray(64_000) { index -> ((index % 97) - 48) / 48f }
         assertEquals(
-            AsrTranscriptCheckpointPolicy.signature(64_000, segments),
-            AsrTranscriptCheckpointPolicy.signature(64_000, segments.toList()),
+            AsrTranscriptCheckpointPolicy.signature(pcm, segments),
+            AsrTranscriptCheckpointPolicy.signature(pcm, segments.toList()),
         )
     }
 
