@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,6 +49,22 @@ class DubbingTimingTest {
         assertEquals(3_000, plan.sampleCount)
         assertEquals(2.0f, plan.syncRate, 0.001f)
         assertFalse(plan.truncated)
+    }
+
+    @Test
+    fun fullUnmodifiedCueReusesInputArrayToAvoidAnotherLargePcmAllocation() {
+        val samples = FloatArray(32_000) { 0.25f }
+        val plan = DubbingTiming.createPlan(
+            sampleCount = samples.size,
+            sampleRate = 16_000,
+            lineStartMs = 0,
+            lineEndMs = 2_000,
+            positionMs = 0,
+            playerSpeed = 1.0f,
+        )
+
+        assertFalse(plan.truncated)
+        assertSame(samples, DubbingTiming.slice(samples, plan, 16_000))
     }
 
     @Test
