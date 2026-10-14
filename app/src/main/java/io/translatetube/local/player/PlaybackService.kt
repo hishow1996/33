@@ -143,6 +143,10 @@ class PlaybackService : MediaSessionService() {
     private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
+    private var remoteMediaUrl: String? = null
+    private var remoteMediaTitle: String = ""
+    private var remoteMediaReferrer: String = ""
+    private var remoteMediaCookie: String? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var qualityRecoveryAttempted = false
@@ -483,6 +487,10 @@ class PlaybackService : MediaSessionService() {
         localUri: Uri?,
         importedLines: List<SubLine>? = null,
         resumeState: PlayerUiState? = null,
+        remoteMediaUrl: String? = null,
+        remoteMediaTitle: String = "",
+        remoteMediaReferrer: String = "",
+        remoteMediaCookie: String? = null,
     ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
@@ -497,6 +505,10 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
+        this.remoteMediaUrl = remoteMediaUrl
+        this.remoteMediaTitle = remoteMediaTitle
+        this.remoteMediaReferrer = remoteMediaReferrer
+        this.remoteMediaCookie = remoteMediaCookie
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -535,7 +547,7 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot)
+            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
         }
     }
 
@@ -960,6 +972,10 @@ class PlaybackService : MediaSessionService() {
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
         sourceImportedLines: List<SubLine>? = null,
+        remoteMediaUrl: String? = null,
+        remoteMediaTitle: String = "",
+        remoteMediaReferrer: String = "",
+        remoteMediaCookie: String? = null,
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
@@ -969,7 +985,7 @@ class PlaybackService : MediaSessionService() {
             awaitRetiredDubbingEngines()
             ensureCurrentSession(key)
             var meta = VideoEntity(
-                key = key, videoId = videoId, localUri = localUri?.toString(),
+                key = key, videoId = videoId, localUri = localUri?.toString() ?: remoteMediaUrl,
                 title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
                 durationSec = (resumeState?.durationMs ?: 0L) / 1000,
                 thumbUrl = resumeState?.thumbUrl,
@@ -995,6 +1011,13 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
                 updateUiForSession(key) { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
+            } else if (remoteMediaUrl != null && resumeState == null) {
+                val remoteUri = Uri.parse(remoteMediaUrl)
+                val title = remoteMediaTitle.takeIf { it.isNotBlank() }
+                    ?: remoteUri.lastPathSegment?.substringBefore('?')?.takeIf { it.isNotBlank() }
+                    ?: "网页视频"
+                meta = meta.copy(title = title, localUri = remoteMediaUrl)
+                updateUiForSession(key) { it.copy(title = title, durationMs = 0L) }
             } else if (resumeState == null) {
                 localUri?.let { u ->
                     // 本地视频：取真实标题/时长
@@ -1052,7 +1075,7 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     "$key|zh|$selectedTranslationId"
                 }
-            val sourceSubtitleCacheKey = if (videoId != null) "$key|source|youtube" else "$key|source|local-asr-v1"
+            val sourceSubtitleCacheKey = when { videoId != null -> "$key|source|youtube"; remoteMediaUrl != null -> "$key|source|remote-asr-v1"; else -> "$key|source|local-asr-v1" }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
@@ -1103,7 +1126,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             val sourceCached = if (
-                resumeState == null && (videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()
+                resumeState == null && (videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -1186,7 +1209,7 @@ class PlaybackService : MediaSessionService() {
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
-                (videoId != null || localUri != null)) {
+                (videoId != null || localUri != null || remoteMediaUrl != null)) {
                 if (restoredSourceLines != null) {
                     lines = restoredSourceLines
                     srcLang = restoredSourceLang
@@ -1210,10 +1233,16 @@ class PlaybackService : MediaSessionService() {
                 } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
-                val audioFile = if (videoId != null) {
-                    obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
-                } else {
-                    localUri ?: throw IllegalStateException("无音频源")
+                val audioFile: Any = when {
+                    videoId != null -> obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
+                    remoteMediaUrl != null -> obtainRemoteMediaAsrFile(
+                        remoteMediaUrl,
+                        remoteMediaReferrer,
+                        remoteMediaCookie,
+                        key,
+                        "复用网页视频音频缓存，避免重复下载…",
+                    )
+                    else -> localUri ?: throw IllegalStateException("无音频源")
                 }
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -1244,7 +1273,7 @@ class PlaybackService : MediaSessionService() {
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
-                val storedPartialAsr = if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()) {
+                val storedPartialAsr = if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
                 if (storedPartialAsr != null) {
@@ -1332,7 +1361,7 @@ class PlaybackService : MediaSessionService() {
                             rows.addAll(chunkRows)
                             processed = chunkEnd
 
-                            if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()) {
+                            if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                                 ensureCurrentSession(key)
                                 val rowsJson = org.json.JSONArray()
                                 rows.forEach { (startMs, endMs, text) ->
@@ -1385,7 +1414,7 @@ class PlaybackService : MediaSessionService() {
                 transientPcmFile = null
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
                 // YouTube audio remains cached until its ASR subtitles have been saved successfully.
-                if (audioFile is File && videoId == null) {
+                if (audioFile is File && videoId == null && remoteMediaUrl == null) {
                     audioFile.delete()
                     if (transientAudio == audioFile) transientAudio = null
                 }
@@ -1399,7 +1428,7 @@ class PlaybackService : MediaSessionService() {
                         SubLine(index, startMs, endMs, text)
                     }
                 if (transcribedLines.isEmpty()) {
-                    if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()) {
+                    if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     }
                     throw IllegalStateException(
@@ -1417,7 +1446,7 @@ class PlaybackService : MediaSessionService() {
                 // source-audio cache is retained for retries and later speaker diarization, while
                 // this subtitle cache lets translation retry without running ASR again.
                 ensureCurrentSession(key)
-                if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for (line in transcribedLines) {
                         sourceArr.put(
@@ -1550,7 +1579,20 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key)
-                    pm.setUriSource(localUri!!, meta.title, "本地视频", null)
+                    val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
+                    ?: throw IllegalStateException("无可播放的视频地址")
+                val requestHeaders = buildMap {
+                    remoteMediaReferrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                        ?.let { put("Referer", it) }
+                    remoteMediaCookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+                }
+                pm.setUriSource(
+                    sourceUri,
+                    meta.title,
+                    if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                    null,
+                    requestHeaders,
+                )
                 }
             }
 
@@ -2090,6 +2132,42 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * Download a direct, unencrypted webpage media URL into a bounded cache for Whisper.
+     * The referrer/cookie are obtained from the current WebView session and are never persisted.
+     */
+    private suspend fun obtainRemoteMediaAsrFile(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        sessionKey: String,
+        cacheHitProgress: String,
+    ): File {
+        val identity = "remote:$mediaUrl"
+        val mutex = asrAudioDownloadLocks.computeIfAbsent(identity) { kotlinx.coroutines.sync.Mutex() }
+        return mutex.withLock {
+            reusableAsrAudioFile(identity)?.let { cached ->
+                updateUiForSession(sessionKey) { state ->
+                    if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
+                }
+                return@withLock cached
+            }
+            updateUiForSession(sessionKey) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在缓存网页视频音轨…")
+                } else state
+            }
+            val headers = buildMap {
+                referrer.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                    ?.let { put("Referer", it) }
+                cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+            }
+            downloadAudio(mediaUrl, asrAudioCacheFile(identity), sessionKey, headers).also {
+                pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
+            }
+        }
+    }
+
     /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
     private fun reusableAsrAudioFile(videoId: String): File? {
         val file = asrAudioCacheFile(videoId)
@@ -2138,7 +2216,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String): File {
+    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String, requestHeaders: Map<String, String> = emptyMap()): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
         val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
@@ -2151,9 +2229,14 @@ class PlaybackService : MediaSessionService() {
         val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
-        val req = Request.Builder().url(url)
+        val requestBuilder = Request.Builder().url(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0")
-            .build()
+        requestHeaders.forEach { (name, value) ->
+            if (value.isNotBlank() && (name.equals("Referer", true) || name.equals("Cookie", true))) {
+                requestBuilder.header(name, value)
+            }
+        }
+        val req = requestBuilder.build()
         try {
             withContext(Dispatchers.IO) {
                 client.newCall(req).execute().use { resp ->
