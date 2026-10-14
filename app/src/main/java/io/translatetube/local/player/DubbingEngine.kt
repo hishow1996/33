@@ -125,6 +125,14 @@ class DubbingEngine(
         // Inspecting PCM validates every sample, so doing this loop on the caller thread can
         // freeze playback UI on older phones. Move cache scanning and pruning to Dispatchers.IO.
         cacheInitJob = scope.launch(Dispatchers.IO) {
+            val cacheInitCoroutine = kotlinx.coroutines.currentCoroutineContext()[Job]
+            fun checkCacheInitActive() {
+                if (released || generation != cacheInitGeneration.get() ||
+                    cacheInitCoroutine?.isActive == false
+                ) {
+                    throw kotlinx.coroutines.CancellationException("配音缓存校验已取消")
+                }
+            }
             try {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (released || generation != cacheInitGeneration.get()) return@launch
@@ -146,7 +154,7 @@ class DubbingEngine(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
                     val file = cacheFile(i)
-                    val cacheHasAudio = inspectCache(file)
+                    val cacheHasAudio = inspectCache(file, ::checkCacheInitActive)
                     val blankTranslation = this@DubbingEngine.lines[i].zh.isNullOrBlank()
                     when {
                         blankTranslation && cacheHasAudio == false ->
@@ -236,7 +244,12 @@ class DubbingEngine(
             while (!released) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
-                val cachedAudioState = cached(idx)
+                val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val cachedAudioState = cached(idx) {
+                    if (released || workerJob?.isActive == false) {
+                        throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
+                    }
+                }
                 if (cachedAudioState != null) {
                     // A cache file is usable only after its header and exact payload length are
                     // validated. Preserve empty failure markers separately from corrupt entries.
@@ -498,7 +511,10 @@ class DubbingEngine(
      * Return true for a valid non-empty PCM cache, false for a valid empty marker,
      * and null when the entry is missing/corrupt and should be synthesized again.
      */
-    private fun inspectCache(file: File): Boolean? {
+    private fun inspectCache(
+        file: File,
+        checkActive: () -> Unit = {},
+    ): Boolean? {
         if (!file.isFile) return null
         if (file.length() < 8L) {
             file.delete()
@@ -518,7 +534,10 @@ class DubbingEngine(
                 // promote it to "ready" on attach; a translated cue with such a cache must
                 // be queued for synthesis again instead of silently falling back during playback.
                 var hasAudibleSample = false
-                repeat(sampleCount) {
+                repeat(sampleCount) { index ->
+                    // Large PCM caches can contain millions of samples. Check cancellation
+                    // periodically so replacing a video does not wait for a full cache scan.
+                    if ((index and 0x1fff) == 0) checkActive()
                     val sample = input.readFloat()
                     if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
                     if (DubbingPcmValidation.isAudibleSample(sample)) hasAudibleSample = true
@@ -529,6 +548,8 @@ class DubbingEngine(
                     else -> throw java.io.IOException("PCM 缓存只有静音采样")
                 }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             file.delete()
             null
@@ -543,9 +564,15 @@ class DubbingEngine(
     }
 
     /** true = valid audio, false = valid empty marker, null = missing or corrupt cache. */
-    private fun cached(idx: Int): Boolean? {
-        if (synchronized(mem) { mem.containsKey(idx) }) return true
-        return inspectCache(cacheFile(idx))
+    private fun cached(
+        idx: Int,
+        checkActive: () -> Unit = {},
+    ): Boolean? {
+        if (synchronized(mem) { mem.containsKey(idx) }) {
+            checkActive()
+            return true
+        }
+        return inspectCache(cacheFile(idx), checkActive)
     }
 
     /**
