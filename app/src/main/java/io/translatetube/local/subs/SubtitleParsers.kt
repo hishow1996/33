@@ -123,7 +123,13 @@ object SubtitleParsers {
         val attrs = timedTextAttributeRegex.findAll(attributes)
             .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
         val startSeconds = attrs["start"]?.toDoubleOrNull() ?: return null
-        val durationSeconds = attrs["dur"]?.toDoubleOrNull() ?: 3.0
+        // Default only when the provider omits duration. A present but malformed value
+        // must reject the cue rather than silently inventing a three-second time window.
+        val durationSeconds = if (attrs.containsKey("dur")) {
+            attrs["dur"]?.toDoubleOrNull() ?: return null
+        } else {
+            3.0
+        }
         if (!startSeconds.isFinite() || !durationSeconds.isFinite() ||
             startSeconds < 0.0 || durationSeconds <= 0.0
         ) return null
