@@ -162,6 +162,7 @@ class PlaybackService : MediaSessionService() {
         /** 播放画面 TextureView（供悬浮窗摘取 reparent） */
         @Volatile var videoSurfaceView: android.view.TextureView? = null
         const val CH_MAIN = "playback"
+        const val SIDECAR_TEMP_TTL_MS = 5L * 60L * 1_000L
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -2290,10 +2291,6 @@ class PlaybackService : MediaSessionService() {
      * Keep audio and partial segments under a shared cache budget. Interrupted partials survive
      * for 24 hours, but stale/orphaned sidecars and least-recently-used audio are removed.
      */
-    private companion object {
-        const val SIDECAR_TEMP_TTL_MS = 5L * 60L * 1_000L
-    }
-
     private fun pruneAsrAudioCache(directory: File, keep: File?, keepPart: File? = null) {
         val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
@@ -2319,7 +2316,7 @@ class PlaybackService : MediaSessionService() {
                 val meta = File(directory, temp.name.removeSuffix(".tmp"))
                 val part = File(directory, temp.name.removeSuffix(".meta.tmp"))
                 val age = now - temp.lastModified()
-                if (!part.isFile || !meta.isFile || age < 0L || age > SIDECAR_TEMP_TTL_MS) {
+                if (age < 0L || age > SIDECAR_TEMP_TTL_MS) {
                     temp.delete()
                 }
             }
