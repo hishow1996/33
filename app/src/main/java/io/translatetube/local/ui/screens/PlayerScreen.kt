@@ -1483,7 +1483,14 @@ private fun SubtitleList(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
                                     Icon(Icons.Filled.Face, contentDescription = "选择配音音色", modifier = Modifier.size(16.dp))
-                                    Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
+                                    Text(
+                                        SpeakerVoiceOptionPolicy.labelFor(
+                                            line.speakerId,
+                                            isSystemTts = state.isSystemTtsSelected,
+                                            systemVoiceNames = state.systemTtsVoiceNames,
+                                        ),
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
                                     Icon(Icons.Filled.ExpandMore, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
                                 }
                             }
@@ -1516,16 +1523,6 @@ private fun SubtitleList(
 
 private fun subtitleComparisonKey(text: String): String =
     text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
-
-private fun speakerLabel(id: Int): String = when (id) {
-    -1 -> "人物1·默认"
-    0 -> "人物2"
-    1 -> "人物3"
-    2 -> "人物4"
-    3 -> "人物5"
-    else -> "音色$id"
-}
-
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
