@@ -155,6 +155,10 @@ Section("配音设置") {
             }
         }
 
+Section("视频源（yt-dlp）") {
+    YtDlpUpdateSection()
+}
+
 Section("模型管理") {
             Text(
                 if (ttsEngine == "system") "系统 TTS 不需要配音模型；语音转写模型可单独下载。"
@@ -481,6 +485,73 @@ private fun PiperModelSection() {
             }
         }
         HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
+    }
+}
+
+/** yt-dlp 解析规则版本管理：自动检测（上午/下午/晚上各一次）+ 应用内更新。 */
+@Composable
+private fun YtDlpUpdateSection() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val state by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsState()
+    var updating by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    // 进入设置页时补一次检查：时段内去重回填状态，跨时段则真查
+    LaunchedEffect(Unit) {
+        runCatching { io.translatetube.local.yt.YtDlpRepo.checkForUpdate(ctx.applicationContext) }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("解析规则版本", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+            val desc = when {
+                state.current == null -> "尚未使用过 yt-dlp；首次解析网页视频后开启检测"
+                state.hasUpdate && state.latest != null ->
+                    "发现新版本 ${state.latest}（当前 ${state.current}）"
+                state.latest != null -> "当前 ${state.current} · 已是最新"
+                else -> "当前 ${state.current}"
+            }
+            Text(desc, color = if (state.hasUpdate) BrandBright else SubText, style = MaterialTheme.typography.bodySmall)
+            if (state.hasUpdate) {
+                Text(
+                    "网站改版后旧规则可能解析失败，建议更新（约 30MB）",
+                    color = SubText, style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            message?.let {
+                Text(it, color = BrandBright, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (state.hasUpdate) {
+            TextButton(
+                enabled = !updating,
+                onClick = {
+                    updating = true
+                    message = null
+                    scope.launch {
+                        try {
+                            message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
+                        } catch (e: Exception) {
+                            message = "更新失败：${e.message ?: "网络错误"}"
+                        } finally {
+                            updating = false
+                        }
+                    }
+                },
+            ) { Text(if (updating) "更新中…" else "立即更新") }
+        } else {
+            TextButton(
+                enabled = !state.checking,
+                onClick = {
+                    scope.launch {
+                        runCatching {
+                            io.translatetube.local.yt.YtDlpRepo.checkForUpdate(ctx.applicationContext, force = true)
+                        }
+                    }
+                },
+            ) { Text(if (state.checking) "检查中…" else "检查更新") }
+        }
     }
 }
 

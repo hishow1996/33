@@ -6,8 +6,14 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.mapper.VideoFormat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * yt-dlp 通用站点提取封装：B站 / TikTok / Twitter 等上千个网站的视频地址解析。
@@ -29,6 +35,133 @@ object YtDlpRepo {
 
     @Volatile private var inited = false
 
+    // ---- 版本自动检测（每日最多一次；仅在用过 yt-dlp 后启用） ----
+
+    data class UpdateState(
+        /** 当前已安装的解析规则版本；null = 尚未在本机使用过 yt-dlp */
+        val current: String? = null,
+        /** GitHub 上游 STABLE 最新版；null = 未检查或检查失败 */
+        val latest: String? = null,
+        val hasUpdate: Boolean = false,
+        /** 上次成功检查的时间戳（ms） */
+        val lastCheckMs: Long = 0L,
+        val checking: Boolean = false,
+    )
+
+    private val _updateState = MutableStateFlow(UpdateState())
+    val updateState: StateFlow<UpdateState> = _updateState
+
+    private val checkHttp = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 检查 yt-dlp 是否有新版本（GitHub STABLE 渠道，仅几 KB 流量）。
+     * - 从未用过 yt-dlp 的设备跳过（不打扰）；
+     * - 上午/下午/晚上三个时段各检测一次（同一时段内不重复；0~4 点深夜静默）；
+     *   [force]=true 时立即检查（设置页手动按钮，不受时段限制）；
+     * - 网络失败静默（保持旧状态），下次启动再试。
+     */
+    suspend fun checkForUpdate(ctx: Context, force: Boolean = false) = withContext(Dispatchers.IO) {
+        val appCtx = ctx.applicationContext
+        val prefs = appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE)
+        if (!force && !prefs.getBoolean("used", false)) return@withContext
+        val last = prefs.getLong("last_check_ms", 0L)
+        val slot = updateSlotKey(System.currentTimeMillis())
+        if (!force) {
+            // 深夜（0~4 点）不检查；同一时段已检查过则只回填持久化结论
+            if (slot == null) return@withContext
+            if (slot == prefs.getString("last_check_slot", null)) {
+                _updateState.value = _updateState.value.copy(
+                    current = prefs.getString("current_version", null),
+                    latest = prefs.getString("latest_version", null),
+                    hasUpdate = prefs.getBoolean("has_update", false),
+                    lastCheckMs = last,
+                )
+                return@withContext
+            }
+        }
+        if (!force) {
+            // 自动路径先尝试读本地版本（不用先解包运行时：仅当本进程已 init）
+            if (!inited) {
+                val persistedCurrent = prefs.getString("current_version", null)
+                val latestKnown = fetchLatestReleaseTag() ?: return@withContext
+                val hasUpdate = persistedCurrent != null && persistedCurrent != latestKnown
+                prefs.edit()
+                    .putLong("last_check_ms", System.currentTimeMillis())
+                    .putString("last_check_slot", slot)
+                    .putString("latest_version", latestKnown)
+                    .putBoolean("has_update", hasUpdate)
+                    .apply()
+                _updateState.value = UpdateState(
+                    current = persistedCurrent,
+                    latest = latestKnown,
+                    hasUpdate = hasUpdate,
+                    lastCheckMs = System.currentTimeMillis(),
+                )
+                return@withContext
+            }
+        }
+        // 强制路径 / 本进程已 init：以运行时真实版本为准
+        _updateState.value = _updateState.value.copy(checking = true)
+        try {
+            val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+            val latestKnown = fetchLatestReleaseTag() ?: run {
+                _updateState.value = _updateState.value.copy(checking = false)
+                return@withContext
+            }
+            val hasUpdate = currentVersion != null && currentVersion != latestKnown
+            prefs.edit()
+                .putLong("last_check_ms", System.currentTimeMillis())
+                .putString("last_check_slot", slot)
+                .putString("current_version", currentVersion)
+                .putString("latest_version", latestKnown)
+                .putBoolean("has_update", hasUpdate)
+                .apply()
+            _updateState.value = UpdateState(
+                current = currentVersion,
+                latest = latestKnown,
+                hasUpdate = hasUpdate,
+                lastCheckMs = System.currentTimeMillis(),
+                checking = false,
+            )
+        } finally {
+            _updateState.value = _updateState.value.copy(checking = false)
+        }
+    }
+
+    /** 检测时段：上午 5-11 / 下午 12-17 / 晚上 18-23；0-4 点深夜返回 null（不检查）。 */
+    private fun updateSlotKey(nowMs: Long): String? {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = nowMs
+        val slot = when (cal.get(java.util.Calendar.HOUR_OF_DAY)) {
+            in 5..11 -> "AM"
+            in 12..17 -> "PM"
+            in 18..23 -> "NIGHT"
+            else -> return null
+        }
+        val date = "%04d-%02d-%02d".format(
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        )
+        return "$date-$slot"
+    }
+
+    private fun fetchLatestReleaseTag(): String? = runCatching {
+        checkHttp.newCall(
+            Request.Builder()
+                .url("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")
+                .header("Accept", "application/vnd.github+json")
+                .build()
+        ).execute().use { response ->
+            if (!response.isSuccessful) return@runCatching null
+            val body = response.body?.string() ?: return@runCatching null
+            JSONObject(body).optString("tag_name").takeIf { it.isNotBlank() }
+        }
+    }.getOrNull()
+
     /** 懒初始化（线程安全）。 */
     suspend fun ensureReady(ctx: Context): Unit = withContext(Dispatchers.IO) {
         if (inited) return@withContext
@@ -36,7 +169,15 @@ object YtDlpRepo {
             if (inited) return@synchronized
             YoutubeDL.init(ctx.applicationContext)
             inited = true
-            Log.i(TAG, "yt-dlp runtime ready, version=${runCatching { YoutubeDL.version(ctx.applicationContext) }.getOrNull()}")
+            // 记录「已使用」+ 当前版本，供启动时的每日自动检查使用
+            val appCtx = ctx.applicationContext
+            val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+            appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE).edit()
+                .putBoolean("used", true)
+                .putString("current_version", currentVersion)
+                .apply()
+            _updateState.value = _updateState.value.copy(current = currentVersion)
+            Log.i(TAG, "yt-dlp runtime ready, version=$currentVersion")
         }
     }
 
@@ -123,10 +264,25 @@ object YtDlpRepo {
      */
     suspend fun updateRules(ctx: Context): String = withContext(Dispatchers.IO) {
         ensureReady(ctx)
-        when (YoutubeDL.updateYoutubeDL(ctx.applicationContext, YoutubeDL.UpdateChannel.STABLE)) {
+        val appCtx = ctx.applicationContext
+        val message = when (YoutubeDL.updateYoutubeDL(appCtx, YoutubeDL.UpdateChannel.STABLE)) {
             YoutubeDL.UpdateStatus.DONE -> "yt-dlp 解析规则已更新到最新版，可重试解析"
             YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp 解析规则已是最新版；失败可能是站点限制或网络问题"
         }
+        // 更新后刷新版本检测结论（清掉「有新版本」标记）
+        val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+        val latestKnown = _updateState.value.latest
+        appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE).edit()
+            .putString("current_version", currentVersion)
+            .putBoolean("has_update", false)
+            .apply()
+        _updateState.value = UpdateState(
+            current = currentVersion,
+            latest = latestKnown,
+            hasUpdate = false,
+            lastCheckMs = _updateState.value.lastCheckMs,
+        )
+        message
     }
 
     /** 解析结果：可直接交给播放器的媒体地址 + 必要的请求头。 */
