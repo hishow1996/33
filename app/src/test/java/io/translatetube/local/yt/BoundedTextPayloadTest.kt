@@ -30,4 +30,18 @@ class BoundedTextPayloadTest {
             BoundedTextPayload.readBytes(ByteArrayInputStream(ByteArray(0)), 1024L),
         )
     }
+
+    @Test
+    fun reportsWhichLocalResourceExceededItsMemoryBound() {
+        val result = runCatching {
+            BoundedTextPayload.readBytes(
+                ByteArrayInputStream(ByteArray(1025) { 65.toByte() }),
+                maxBytes = 1024L,
+                resourceLabel = "导入的字幕文件",
+            )
+        }
+
+        assertFalse(result.isSuccess)
+        assertEquals(true, result.exceptionOrNull()?.message.orEmpty().contains("导入的字幕文件"))
+    }
 }
