@@ -924,19 +924,25 @@ class PlaybackService : MediaSessionService() {
             .firstOrNull { it.id == activeId }
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         return when {
-            activeId == -1L || activeId == -2L -> "google-hybrid-v1"
+            activeId == EngineFactory.ID_GOOGLE || activeId == EngineFactory.ID_GOOGLE_ALT -> "google-hybrid-v1"
             activeId == EngineFactory.ID_FREE_GEMINI -> listOf(
-                "builtin-gemini-v2",
-                prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL).orEmpty().trim(),
+                "builtin-gemini-v3",
+                FreeModelDefaults.GEMINI_BASE_URL,
+                prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL)
+                    ?: FreeModelDefaults.GEMINI_MODEL,
                 // Free-model keys are encrypted in preferences. The raw value is passed only to the
                 // one-way cache fingerprint and is never written as part of the key.
-                prefs.getString("free_gemini_key", "").orEmpty(),
+                prefs.getString("free_gemini_key", "").orEmpty()
+                    .ifBlank { FreeModelDefaults.DEFAULT_GEMINI_KEY },
             ).joinToString("|")
             activeId == EngineFactory.ID_FREE_DEEPSEEK -> listOf(
-                "builtin-deepseek-v2",
-                prefs.getString("free_deepseek_base_url", FreeModelDefaults.DEEPSEEK_BASE_URL).orEmpty().trim(),
-                prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL).orEmpty().trim(),
-                prefs.getString("free_deepseek_key", "").orEmpty(),
+                "builtin-deepseek-v3",
+                prefs.getString("free_deepseek_base_url", FreeModelDefaults.DEEPSEEK_BASE_URL)
+                    ?: FreeModelDefaults.DEEPSEEK_BASE_URL,
+                prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL)
+                    ?: FreeModelDefaults.DEEPSEEK_MODEL,
+                prefs.getString("free_deepseek_key", "").orEmpty()
+                    .ifBlank { FreeModelDefaults.DEFAULT_DEEPSEEK_KEY },
             ).joinToString("|")
             enabledProfile != null -> listOf(
                 "api-profile-v1",
