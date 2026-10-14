@@ -140,6 +140,7 @@ object AudioExtract {
             val maxSourceSamples = rawMaxSourceSamples - rawMaxSourceSamples % sourceChannels
             var decodedSourceSamples = 0L
             var outputSamples = 0L
+            var outputBytes = 0L
             var resampler: Pcm16StreamingResampler? = null
             var resamplerRate = -1
             var resamplerChannels = -1
@@ -208,7 +209,13 @@ object AudioExtract {
                             // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
                             val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
                             val converted = activeResampler.process(monoChunk)
+                            if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
+                                throw IllegalStateException(
+                                    "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
+                                )
+                            }
                             writePcm16Le(output, converted)
+                            outputBytes += converted.size.toLong() * 2L
                             outputSamples += converted.size
                         }
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
@@ -240,7 +247,13 @@ object AudioExtract {
                 val activeResampler = resampler
                     ?: throw IllegalStateException("音频轨没有可解码的 PCM 数据")
                 val tail = activeResampler.finish()
+                if (!PcmTempFilePolicy.canAppendSamples(outputBytes, tail.size)) {
+                    throw IllegalStateException(
+                        "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
+                    )
+                }
                 writePcm16Le(output, tail)
+                outputBytes += tail.size.toLong() * 2L
                 outputSamples += tail.size
                 output.flush()
             }
