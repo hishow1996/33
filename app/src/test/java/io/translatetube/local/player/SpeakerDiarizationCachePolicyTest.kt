@@ -53,4 +53,24 @@ class SpeakerDiarizationCachePolicyTest {
         assertNull(SpeakerDiarizationCachePolicy.decodeSegments("bad", expectedSignature, expectedSignature))
         assertNull(SpeakerDiarizationCachePolicy.decodeSegments(invalidInterval, expectedSignature, expectedSignature))
     }
+    @Test
+    fun cacheEvictionKeepsTheNewestFiveAndNeverEvictsTheCurrentKey() {
+        val newestFirst = listOf(
+            "v6|speaker-diarization-v1", "v5|speaker-diarization-v1",
+            "v4|speaker-diarization-v1", "v3|speaker-diarization-v1",
+            "v2|speaker-diarization-v1", "v1|speaker-diarization-v1",
+        )
+        assertEquals(
+            listOf("v1|speaker-diarization-v1"),
+            SpeakerDiarizationCachePolicy.keysToEvict(newestFirst, "v6|speaker-diarization-v1"),
+        )
+    }
+
+    @Test
+    fun cacheEvictionPreservesCurrentKeyEvenIfTheQueryOrderIsUnexpected() {
+        val keys = listOf("old-a", "old-b", "current", "old-c", "old-d", "old-e")
+        assertFalse(SpeakerDiarizationCachePolicy.keysToEvict(keys, "current").contains("current"))
+        assertEquals(1, SpeakerDiarizationCachePolicy.keysToEvict(keys, "current").size)
+    }
+
 }

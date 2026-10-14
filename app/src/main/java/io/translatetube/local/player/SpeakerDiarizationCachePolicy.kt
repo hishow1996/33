@@ -88,4 +88,20 @@ internal object SpeakerDiarizationCachePolicy {
         }
         return decoded
     }
+
+    /** Keep recent speaker checkpoints bounded while always preserving the cache just written. */
+    fun keysToEvict(
+        newestFirstKeys: List<String>,
+        keepKey: String,
+        maxEntries: Int = 5,
+    ): List<String> {
+        if (maxEntries <= 0) return newestFirstKeys.filter { it != keepKey }
+        var retained = if (keepKey in newestFirstKeys) 1 else 0
+        val evicted = mutableListOf<String>()
+        newestFirstKeys.forEach { key ->
+            if (key == keepKey) return@forEach
+            if (retained < maxEntries) retained++ else evicted += key
+        }
+        return evicted
+    }
 }
