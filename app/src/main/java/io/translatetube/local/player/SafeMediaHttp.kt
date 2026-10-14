@@ -102,6 +102,22 @@ internal fun isHtmlOrJsonContentType(contentType: String?): Boolean {
         value.endsWith("+json")
 }
 
+/** Raised when a direct media URL actually responds with an HLS playlist. */
+internal class HlsManifestPayloadException(val manifestUrl: String) :
+    IllegalStateException("检测到 HLS 播放清单，将改用分段音轨下载。")
+
+/** Detect HLS from its body when a playlist URL has no .m3u8 path suffix. */
+internal fun isHlsManifestPayload(bytes: ByteArray, count: Int): Boolean {
+    if (count <= 0 || bytes.isEmpty()) return false
+    val sampleSize = minOf(count, bytes.size, 512)
+    val text = bytes.copyOfRange(0, sampleSize)
+        .toString(Charsets.UTF_8)
+        .removePrefix("\uFEFF")
+        .trimStart()
+    val firstLine = text.lineSequence().firstOrNull()?.trim()?.trimEnd('\r') ?: return false
+    return firstLine.equals("#EXTM3U", ignoreCase = true)
+}
+
 /**
  * Detect common login/error documents when servers mislabel them as generic binary data.
  * Only inspect a small prefix and require it to look like readable text so binary media
