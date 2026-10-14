@@ -95,7 +95,11 @@ fun WebVideoScreen(
         status = "正在用 yt-dlp 解析该网站视频（首次使用需解包运行时，请稍候）…"
         ytScope.launch(Dispatchers.IO) {
             try {
-                val media = io.translatetube.local.yt.YtDlpRepo.resolve(appCtx, target)
+                // 透传 WebView 里的站点 Cookie（登录态），提高需登录站点的解析成功率
+                val cookieHeader = runCatching {
+                    CookieManager.getInstance().getCookie(target)
+                }.getOrNull()
+                val media = io.translatetube.local.yt.YtDlpRepo.resolve(appCtx, target, cookieHeader)
                 mainHandler.post {
                     ytDlpBusy = false
                     status = "yt-dlp 解析成功：${media.title}"
@@ -308,7 +312,7 @@ fun WebVideoScreen(
                     }
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "支持B站、TikTok、Twitter 等上千个网站；YouTube 无需此步骤",
+                        "支持B站、TikTok、Twitter 等上千个网站；YouTube 风控期也可用此方式兜底",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

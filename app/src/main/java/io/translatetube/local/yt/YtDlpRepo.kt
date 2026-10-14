@@ -9,15 +9,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * yt-dlp 通用站点提取封装：B站 / TikTok / Twitter 等非 YouTube 网站的视频地址解析。
+ * yt-dlp 通用站点提取封装：B站 / TikTok / Twitter 等上千个网站的视频地址解析。
  *
  * 设计要点：
- * - YouTube 仍优先走 NewPipeExtractor（快、稳），本类只兜非 YouTube 站点；
+ * - 主入口 YouTube 优先走 NewPipeExtractor（快、稳）；本类兜所有网页源，
+ *   YouTube 风控期也可从「网页视频」入口经本类自救；
  * - 只做「解析出可播放的媒体直链」，后续音频提取/转写/配音完全复用现有管线；
  * - 只挑「音视频合一」的可播格式（combined mp4 / HLS m3u8），
  *   分离流（video-only）在播放器侧无法直接合流，故不采用；
  * - 解析出的 URL 带站点签名会过期，调用方必须立即播放，不做长期缓存；
- * - 首次调用会解包 yt-dlp 运行时（约 2~5 秒，仅一次）。
+ * - 首次调用会解包 yt-dlp 运行时（约 2~5 秒，仅一次）；
+ * - 解析请求带 --no-playlist（合集页取单视频）、--socket-timeout（防挂死），
+ *   并透传 WebView Cookie（登录态）提高需登录站点成功率。
  */
 object YtDlpRepo {
 
@@ -38,12 +41,12 @@ object YtDlpRepo {
 
     fun isReady(): Boolean = inited
 
-    /** 是否为适合 yt-dlp 处理的 URL（http/https 且非 YouTube——YouTube 走 NewPipe）。 */
+    /** 是否为适合 yt-dlp 处理的 URL（http/https 均可；主入口 YouTube 仍走 NewPipe，此处含 YouTube 作为风控兜底）。 */
     fun isEligible(url: String): Boolean {
         val u = url.trim()
         if (!u.startsWith("http://", ignoreCase = true) && !u.startsWith("https://", ignoreCase = true)) return false
         val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull() ?: return false
-        return !(host.contains("youtube.com") || host.contains("youtu.be"))
+        return host.isNotEmpty() && !host.endsWith(".local")
     }
 
     /** 解析结果：可直接交给播放器的媒体地址 + 必要的请求头。 */
@@ -60,11 +63,23 @@ object YtDlpRepo {
      * 1) combined（音视频合一，按 tbr 最高）
      * 2) HLS m3u8 master（播放器侧 exoplayer-hls 可播）
      * 3) 任何含音频的流（黑屏可听，保底）
+     *
+     * @param cookieHeader 站点 Cookie（如 WebView 已登录态），可显著提高需登录站点的成功率；
+     *                    格式为 "k=v; k2=v2"。
      */
-    suspend fun resolve(ctx: Context, pageUrl: String): ResolvedMedia {
+    suspend fun resolve(ctx: Context, pageUrl: String, cookieHeader: String? = null): ResolvedMedia {
         ensureReady(ctx)
         return withContext(Dispatchers.IO) {
-            val request = YoutubeDLRequest(pageUrl.trim())
+            val request = YoutubeDLRequest(pageUrl.trim()).apply {
+                // 合集/播放列表页只取单视频，避免多行 JSON 撞坏单视频解析
+                addOption("--no-playlist")
+                // 网络层超时：防慢站点/死链把解析进程挂死
+                addOption("--socket-timeout", "20")
+                addOption("--retries", "3")
+                if (!cookieHeader.isNullOrBlank()) {
+                    addOption("--add-headers", "Cookie:$cookieHeader")
+                }
+            }
             val info = YoutubeDL.getInfo(request)
             val formats = info.formats.orEmpty()
             val combined = formats.filter { f ->
@@ -86,27 +101,32 @@ object YtDlpRepo {
             if (url.isNullOrBlank()) {
                 throw IllegalStateException("yt-dlp 未返回可播放的媒体地址")
             }
+            // 透传给播放器的 Cookie 优先用请求头里的（保持与解析一致的登录态）
             val headers = info.httpHeaders.orEmpty()
+            val effectiveCookie = headers["Cookie"].orEmpty().ifBlank { cookieHeader.orEmpty() }
             ResolvedMedia(
                 title = info.title ?: info.fulltitle ?: "yt-dlp 视频",
                 durationSec = info.duration,
                 mediaUrl = url,
                 referrer = headers["Referer"].orEmpty(),
-                cookie = headers["Cookie"].orEmpty(),
+                cookie = effectiveCookie,
             )
         }
     }
 
     /** 用户可读的解析失败原因。 */
-    fun failureHint(e: Throwable): String = when {
-        e.message?.contains("Unsupported URL", ignoreCase = true) == true ->
-            "该网站暂不在 yt-dlp 支持列表内"
-        e.message?.contains("Sign in", ignoreCase = true) ||
-            e.message?.contains("login", ignoreCase = true) == true ->
-            "该视频需要登录/会员，暂不支持"
-        e.message?.contains("unavailable", ignoreCase = true) ||
-            e.message?.contains("removed", ignoreCase = true) == true ->
-            "视频不可用（可能已删除或地区限制）"
-        else -> "yt-dlp 解析失败：${e.message ?: "未知错误"}"
+    fun failureHint(e: Throwable): String {
+        val msg = e.message.orEmpty()
+        return when {
+            msg.contains("Unsupported URL", ignoreCase = true) ->
+                "该网站暂不在 yt-dlp 支持列表内"
+            msg.contains("Sign in", ignoreCase = true) || msg.contains("login", ignoreCase = true) ->
+                "该视频需要登录/会员，暂不支持"
+            msg.contains("unavailable", ignoreCase = true) || msg.contains("removed", ignoreCase = true) ->
+                "视频不可用（可能已删除或地区限制）"
+            msg.contains("timed out", ignoreCase = true) || msg.contains("timeout", ignoreCase = true) ->
+                "网络超时，请检查网络后重试"
+            else -> "yt-dlp 解析失败：${e.message ?: "未知错误"}"
+        }
     }
 }
