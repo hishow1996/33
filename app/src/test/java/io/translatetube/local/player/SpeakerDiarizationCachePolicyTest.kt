@@ -47,7 +47,7 @@ class SpeakerDiarizationCachePolicyTest {
             otherSignature,
             listOf(SpeakerDiarizationRecord(0f, 1f, 0, 0.9f)),
         )
-        val invalidInterval = "speaker-diarization-v1|expected\n0,1065353216,0,1063675494"
+        val invalidInterval = "speaker-diarization-v1|expected\n1065353216,1065353216,0,1063675494"
 
         assertNull(SpeakerDiarizationCachePolicy.decodeSegments(validOther, otherSignature, expectedSignature))
         assertNull(SpeakerDiarizationCachePolicy.decodeSegments("bad", expectedSignature, expectedSignature))
