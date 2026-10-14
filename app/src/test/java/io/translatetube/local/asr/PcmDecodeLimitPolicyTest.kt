@@ -6,6 +6,12 @@ import org.junit.Test
 
 class PcmDecodeLimitPolicyTest {
     @Test
+    fun zeroDurationDoesNotForceADecoderFrame() {
+        assertEquals(0L, PcmDecodeLimitPolicy.maxSourceSamples(48_000, 1, 0L))
+        assertEquals(0L, PcmDecodeLimitPolicy.maxSourceSamples(48_000, 2, 0L))
+    }
+
+    @Test
     fun recomputesThreeMinuteLimitFromActualDecoderFormat() {
         assertEquals(
             17_280_000L,
