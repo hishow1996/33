@@ -166,7 +166,7 @@ fun HomeScreen(
                     value = link,
                     onValueChange = { link = it; linkError = false },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("https://youtube.com/watch?v=…", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    placeholder = { Text("粘贴 YouTube 或网页视频链接", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = SubText) },
                     isError = linkError,
                     supportingText = if (linkError) {
@@ -187,14 +187,22 @@ fun HomeScreen(
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = {
-                        val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(link)
-                            ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(link.trim())) link.trim() else null
-                        if (id != null) {
-                            linkError = false
-                            onPlay(PlayRequest(videoId = id))
-                            link = ""
-                        } else {
-                            linkError = true
+                        val trimmed = link.trim()
+                        val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(trimmed)
+                            ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(trimmed)) trimmed else null
+                        val webUrl = io.translatetube.local.web.WebMediaCandidatePolicy.normalizePageUrl(trimmed)
+                        when {
+                            id != null -> {
+                                linkError = false
+                                onPlay(PlayRequest(videoId = id))
+                                link = ""
+                            }
+                            webUrl != null -> {
+                                linkError = false
+                                onPlay(PlayRequest(webPageUrl = webUrl))
+                                link = ""
+                            }
+                            else -> linkError = true
                         }
                     },
                     enabled = link.isNotBlank(),
@@ -336,7 +344,12 @@ private fun VideoRow(
             )
             Text(
                 (video.channel.ifEmpty {
-                    if (video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE) "YouTube" else "本地视频"
+                    when {
+                        video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE -> "YouTube"
+                        video.localUri?.startsWith("http://", true) == true ||
+                            video.localUri?.startsWith("https://", true) == true -> "网页媒体"
+                        else -> "本地视频"
+                    }
                 }) + " · 中文配音" +
                     if (video.durationSec > 0) " · " + SubtitleParsers.fmtTime(video.durationSec * 1000) else "",
                 color = SubText,
