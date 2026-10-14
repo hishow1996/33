@@ -32,6 +32,9 @@ internal class DubbingReadiness {
         silent.remove(index)
     }
 
+    /** Number of ready cues, including out-of-order cues prioritized after a seek. */
+    fun readyCount(): Int = prepared.size
+
     fun isReady(index: Int): Boolean = index >= 0 && index in prepared
 
     fun isPrepared(index: Int): Boolean = isReady(index) && index !in silent
