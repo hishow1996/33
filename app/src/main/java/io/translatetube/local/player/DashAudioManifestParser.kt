@@ -275,7 +275,8 @@ internal object DashAudioManifestParser {
         time: Long,
     ): String {
         val escapeMarker = "\u0001"
-        val dollar = '
+        val dollar = '$'.toString()
+        val protected = input.replace(dollar + dollar, escapeMarker)
         val pattern = Regex("""\$(RepresentationID|Bandwidth|Number|Time)(?:%0(\d+)d)?\$""")
         val expanded = pattern.replace(protected) { match ->
             val value = when (match.groupValues[1]) {
