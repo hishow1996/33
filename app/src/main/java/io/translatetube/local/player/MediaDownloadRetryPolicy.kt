@@ -28,7 +28,7 @@ internal object MediaDownloadRetryPolicy {
     }
 
     fun shouldRetry(error: Throwable): Boolean {
-        if (error is CancellationException) return false
+        if (hasCancellationCause(error)) return false
         if (error is IOException) return true
 
         val messages = generateSequence(error) { it.cause }
