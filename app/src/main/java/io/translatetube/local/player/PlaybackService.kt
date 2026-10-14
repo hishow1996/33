@@ -1901,20 +1901,27 @@ class PlaybackService : MediaSessionService() {
         val db = AppDatabase.get(this)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val activeId = prefs.getLong("active_api_id", -1L)
-        if (expectedTranslationId != null && activeId != expectedTranslationId) {
-            throw TranslationFailureException(
-                "翻译配置在任务准备期间发生了变化。为避免混用不同模型的译文，本次翻译已停止，请重试。",
-                IllegalStateException("Selected translation engine changed from $expectedTranslationId to $activeId"),
-            )
+        suspend fun ensureTranslationProfileUnchanged() {
+            ensureCurrentSession(key)
+            if (expectedTranslationId != null) {
+                val currentId = prefs.getLong("active_api_id", -1L)
+                if (currentId != expectedTranslationId) {
+                    throw TranslationFailureException(
+                        "翻译配置在任务执行期间发生了变化。为避免混用不同模型的译文，本次翻译已停止，请重试。",
+                        IllegalStateException("Selected translation engine changed from $expectedTranslationId to $currentId"),
+                    )
+                }
+                if (expectedProfileIdentity != null &&
+                    translationEngineCacheIdentity(currentId) != expectedProfileIdentity
+                ) {
+                    throw TranslationFailureException(
+                        "API 配置在任务执行期间发生了变化。为避免把新旧模型的结果写入同一缓存，本次翻译已停止，请重试。",
+                        IllegalStateException("Translation API profile changed while translating"),
+                    )
+                }
+            }
         }
-        if (expectedProfileIdentity != null &&
-            translationEngineCacheIdentity(activeId) != expectedProfileIdentity
-        ) {
-            throw TranslationFailureException(
-                "API 配置在任务准备期间发生了变化。为避免把新旧模型的结果写入同一缓存，本次翻译已停止，请重试。",
-                IllegalStateException("Translation API profile changed while preparing translation"),
-            )
-        }
+        ensureTranslationProfileUnchanged()
         val profiles = db.apiProfileDao().enabled()
         val tgt = "zh"
         val plain = lines.map { it.text }
@@ -1968,6 +1975,7 @@ class PlaybackService : MediaSessionService() {
             var attempt = 0
             while (unresolvedIndices.isNotEmpty() && attempt < 2) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                ensureTranslationProfileUnchanged()
                 val batch = unresolvedIndices.map { plain[it] }
                 val batchTranslations = try {
                     engine!!.translate(batch, src, tgt)
@@ -2022,6 +2030,9 @@ class PlaybackService : MediaSessionService() {
                     throw TranslationFailureException(message, e)
                 }
 
+                // The user's provider/model may change while a remote request is in flight.
+                // Reject its output before it can contaminate the current profile's checkpoint.
+                ensureTranslationProfileUnchanged()
                 val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
                     unresolvedIndices,
                     batchTranslations,
@@ -2045,6 +2056,7 @@ class PlaybackService : MediaSessionService() {
                 )
             }
 
+            ensureTranslationProfileUnchanged()
             updatedLines = updatedLines.mapIndexed { index, line ->
                 resolvedBatch[index]?.let { translation -> line.copy(zh = translation) } ?: line
             }
@@ -2067,6 +2079,7 @@ class PlaybackService : MediaSessionService() {
                     .put("zh", line.zh ?: "")
                     .put("sp", line.speakerId)
             )
+            ensureTranslationProfileUnchanged()
             db.subtitleCacheDao().put(
                 io.translatetube.local.data.SubtitleCacheEntity(
                     translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis()
