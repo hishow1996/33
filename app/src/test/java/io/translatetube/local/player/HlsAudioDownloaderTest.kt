@@ -8,7 +8,7 @@ class HlsAudioDownloaderTest {
     @Test
     fun choosesDefaultAudioRenditionAndResolvesRelativeAddress() {
         val master = """
-            #EXTM3U
+            ﻿#EXTM3U
             #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,AUTOSELECT=YES,URI="audio/en.m3u8"
             #EXT-X-STREAM-INF:BANDWIDTH=1200000,AUDIO="audio"
             video/720.m3u8
