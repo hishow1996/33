@@ -722,6 +722,7 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             try {
                 val text = withContext(Dispatchers.IO) {
+                    val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                     val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取字幕文件")
                     input.use {
@@ -730,6 +731,7 @@ class PlaybackService : MediaSessionService() {
                                 it,
                                 maxBytes = 8L * 1024L * 1024L,
                                 resourceLabel = "导入的已翻译字幕文件",
+                                checkActive = { ownerJob?.ensureActive() },
                             ),
                             Charsets.UTF_8,
                         )
@@ -871,6 +873,7 @@ class PlaybackService : MediaSessionService() {
                 // Subtitle files can be large. Keep file I/O and parsing off the main thread so
                 // importing a long SRT/VTT/ASS file cannot freeze player controls.
                 val parsedLines = withContext(Dispatchers.IO) {
+                    val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                     val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取字幕文件")
                     val text = input.use {
@@ -879,6 +882,7 @@ class PlaybackService : MediaSessionService() {
                                 it,
                                 maxBytes = 8L * 1024L * 1024L,
                                 resourceLabel = "导入的字幕文件",
+                                checkActive = { ownerJob?.ensureActive() },
                             ),
                             Charsets.UTF_8,
                         )
