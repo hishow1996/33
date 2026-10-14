@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import java.io.IOException
+import android.webkit.CookieManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -49,8 +50,14 @@ internal object SafeMediaHttp {
             val newOrigin = origin(nextUrl.scheme, nextUrl.host, nextUrl.port)
             val builder = current.newBuilder().url(nextUrl)
             if (oldOrigin != newOrigin) {
-                credentialHeaders.forEach { builder.removeHeader(it) }
+                credentialHeaders.forEach { name -> builder.removeHeader(name) }
             }
+            // Cookies are path-scoped as well as host-scoped; refresh for the exact redirect URL.
+            builder.removeHeader("Cookie")
+            runCatching { CookieManager.getInstance().getCookie(nextUrl.toString()) }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { builder.header("Cookie", it) }
             response.close()
             current = builder.build()
             redirects++
