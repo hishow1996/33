@@ -137,6 +137,9 @@ internal object DashAudioManifestParser {
                 if (count > 1L && duration > Long.MAX_VALUE / (count - 1L)) {
                     throw IllegalArgumentException("DASH 分段时间戳超出可处理范围")
                 }
+                if (count > 1L && startNumber > Long.MAX_VALUE - (count - 1L)) {
+                    throw IllegalArgumentException("DASH 分段编号超出可处理范围")
+                }
                 (0 until count.toInt()).map { index ->
                     val number = startNumber + index
                     val time = index.toLong() * duration
@@ -267,6 +270,11 @@ internal object DashAudioManifestParser {
                 nextTime > Long.MAX_VALUE - duration * copies
             ) {
                 throw IllegalArgumentException("DASH 分段时间戳超出可处理范围")
+            }
+            // number is incremented after each produced segment; keep even the final increment
+            // inside signed Long to avoid wraparound for deliberately malformed MPD templates.
+            if (number > Long.MAX_VALUE - copies) {
+                throw IllegalArgumentException("DASH 分段编号超出可处理范围")
             }
             val segmentDurationMs = durationUnitsToMillis(duration, timescale)
             if (segmentDurationMs > MAX_DURATION_MS ||
