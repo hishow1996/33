@@ -61,7 +61,13 @@ class PlayerManager(private val ctx: Context) {
         // 后台播放不休眠（WiFi/CPU）
         player.setWakeMode(androidx.media3.common.C.WAKE_MODE_LOCAL)
         player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { _isPlaying.value = isPlaying }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                _isPlaying.value = isPlaying
+                // The periodic ticker is intentionally silent while paused. Emit one immediate
+                // timeline update on both pause and resume so pending AudioTrack startup is
+                // invalidated before it can play detached from the video.
+                onTick?.invoke(player.currentPosition)
+            }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 // Push seek/speed synchronization now rather than waiting for the 100 ms ticker.
                 onTick?.invoke(player.currentPosition)
