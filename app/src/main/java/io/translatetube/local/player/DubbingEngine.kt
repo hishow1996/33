@@ -669,11 +669,10 @@ class DubbingEngine(
                 if (released) {
                     throw kotlinx.coroutines.CancellationException("配音引擎已释放，取消缓存写入")
                 }
-                if (target.exists() && !target.delete()) {
-                    throw java.io.IOException("无法替换 PCM 缓存")
-                }
+                // Same-directory rename is atomic on Android/Linux and replaces a regular
+                // destination file. Do not delete the previous good cache before the commit succeeds.
                 if (!temp.renameTo(target)) {
-                    throw java.io.IOException("无法安装 PCM 缓存")
+                    throw java.io.IOException("无法原子替换 PCM 缓存；旧缓存已保留")
                 }
             }
         } catch (error: Exception) {
