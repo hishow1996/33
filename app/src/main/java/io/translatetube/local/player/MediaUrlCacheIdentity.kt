@@ -48,7 +48,7 @@ internal object MediaUrlCacheIdentity {
         "hdnea", "hdnts", "wmsauthsign",
     )
     private val mediaFilePath = Regex(
-        """\\.(?:mp4|m4v|mov|webm|mkv|mp3|m4a|aac|ogg|wav|flac|m3u8|m4s|ts|mpd)$""",
+        """\.(?:mp4|m4v|mov|webm|mkv|mp3|m4a|aac|ogg|wav|flac|m3u8|m4s|ts|mpd)$""",
         RegexOption.IGNORE_CASE,
     )
 
