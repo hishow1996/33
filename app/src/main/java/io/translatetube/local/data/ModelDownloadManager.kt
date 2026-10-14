@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import io.translatetube.local.tts.KokoroRuntimeFilePolicy
+import io.translatetube.local.asr.AtomicFileInstaller
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.File
@@ -75,12 +76,7 @@ object ModelFiles {
                     if (!KokoroRuntimeFilePolicy.isValidRequiredFile(name, temp)) {
                         throw java.io.IOException("应用内 Kokoro 附属文件为空或不完整：$name")
                     }
-                    if (target.exists() && !target.delete()) {
-                        throw java.io.IOException("无法替换缺失的 Kokoro 附属文件：$name")
-                    }
-                    if (!temp.renameTo(target)) {
-                        throw java.io.IOException("无法安装 Kokoro 附属文件：$name")
-                    }
+                    AtomicFileInstaller.install(temp, target)
                 } catch (e: Exception) {
                     temp.delete()
                     throw e
@@ -427,8 +423,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             if (expectedSha256 != null && !sha256(temp).equals(expectedSha256, ignoreCase = true)) {
                 throw java.io.IOException("附属模型 SHA-256 校验失败")
             }
-            if (dest.exists() && !dest.delete()) throw java.io.IOException("无法替换旧模型文件")
-            if (!temp.renameTo(dest)) throw java.io.IOException("无法安装附属模型文件")
+            AtomicFileInstaller.install(temp, dest)
         } catch (e: Exception) {
             temp.delete()
             throw e
