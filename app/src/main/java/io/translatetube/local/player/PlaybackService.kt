@@ -1753,7 +1753,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
+    /** 使用已选翻译引擎；临时请求故障最多重试一次，不用原文冒充译文。 */
     /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
     private suspend fun translateLines(
         key: String,
@@ -1823,9 +1823,24 @@ class PlaybackService : MediaSessionService() {
                     engine!!.translate(batch, src, tgt)
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
+                    // A transient timeout or network reset should not force users to restart the
+                    // whole video pipeline. Retry this exact unresolved batch once with the same
+                    // selected engine; never switch engines behind the user's back.
+                    if (attempt == 0) {
+                        attempt = 1
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Retrying translation request after transient failure for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
+                            e,
+                        )
+                        kotlinx.coroutines.delay(450L)
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        ensureCurrentSession(key)
+                        continue
+                    }
                     android.util.Log.w(
                         "PlaybackService",
-                        "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
+                        "Translation batch failed after retry for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
                         e,
                     )
                     // Distinguish API provider failures from Google offline language-pack errors.
