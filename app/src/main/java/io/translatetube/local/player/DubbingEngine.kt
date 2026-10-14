@@ -655,6 +655,9 @@ class DubbingEngine(
                             }
                     }
                 } catch (e: Exception) {
+                    // play() can fail after this track has already been published. Clear the shared
+                    // reference before releasing it so volume/speed updates never target a dead track.
+                    if (created != null && track === created) track = null
                     try { created?.release() } catch (_: Exception) {}
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
                     // The service sees this marker and restores original video audio.
