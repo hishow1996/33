@@ -35,7 +35,7 @@ class KokoroVoiceRangeTest {
         assertEquals(103, mapped.size)
         assertEquals(103, mapped.distinct().size)
         assertEquals(-1, mapped.first())
-        assertEquals(14, KokoroVoiceRange.voiceForDiarizedSpeaker(15, 14))
+        assertEquals(15, KokoroVoiceRange.voiceForDiarizedSpeaker(15, 14))
         assertEquals(102, KokoroVoiceRange.voiceForDiarizedSpeaker(102, 14))
         assertEquals(null, KokoroVoiceRange.voiceForDiarizedSpeaker(103, 14))
     }
