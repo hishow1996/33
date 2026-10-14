@@ -351,19 +351,24 @@ object SubtitleParsers {
     ): List<SubLine> {
         // YouTube 自动字幕常见同一句重复多时间片：相同文本且首尾相接 → 合并
         val out = mutableListOf<SubLine>()
-        for ((index, l) in lines.withIndex()) {
+        var previousNormalizedText: String? = null
+        for ((index, line) in lines.withIndex()) {
             if ((index and 0x3ff) == 0) checkActive()
             val last = out.lastOrNull()
-            val sameText = last != null &&
-                last.text.replace(whitespaceRegex, " ").trim() ==
-                l.text.replace(whitespaceRegex, " ").trim()
-            val gap = if (last != null) l.startMs - last.endMs else Long.MIN_VALUE
-            val startDelta = if (last != null) l.startMs - last.startMs else Long.MAX_VALUE
+            // Normalize each cue once. Re-normalizing the previous cue for every next cue
+            // needlessly repeated regex/string allocations on subtitles with many short rows.
+            val normalizedText = line.text.replace(whitespaceRegex, " ").trim()
+            val sameText = last != null && previousNormalizedText == normalizedText
+            val gap = if (last != null) line.startMs - last.endMs else Long.MIN_VALUE
+            val startDelta = if (last != null) line.startMs - last.startMs else Long.MAX_VALUE
             // Duplicate cues may overlap (same start time) rather than being exactly adjacent.
             val duplicateTiming = gap in 0..400 || (gap < 0 && startDelta in 0..250)
             if (sameText && duplicateTiming && last != null) {
-                out[out.size - 1] = last.copy(endMs = maxOf(last.endMs, l.endMs))
-            } else out += l
+                out[out.size - 1] = last.copy(endMs = maxOf(last.endMs, line.endMs))
+            } else {
+                out += line
+                previousNormalizedText = normalizedText
+            }
         }
         return out
     }
