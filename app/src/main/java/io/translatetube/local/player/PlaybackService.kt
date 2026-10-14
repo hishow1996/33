@@ -692,7 +692,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     runCatching { tts.close() }
                     throw e
@@ -831,7 +831,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     runCatching { tts.close() }
                     throw e
@@ -1688,7 +1688,7 @@ class PlaybackService : MediaSessionService() {
                             throw e
                         }
                         val d = try {
-                            DubbingEngine(this, key, scope)
+                            DubbingEngine(this, stableDubbingCacheIdentity(key), scope)
                         } catch (e: Exception) {
                             runCatching { tts.close() }
                             throw e
@@ -2155,6 +2155,12 @@ class PlaybackService : MediaSessionService() {
         } finally {
             if (qualityRecoveryJob === thisJob) qualityRecoveryJob = null
         }
+    }
+
+    /** Keep disk-backed synthesized speech reusable when a CDN refreshes signed URL parameters. */
+    private fun stableDubbingCacheIdentity(sessionKey: String): String {
+        val currentVideoId = this.videoId.takeIf { this.videoKey == sessionKey }
+        return stableSourceCacheIdentity(sessionKey, currentVideoId)
     }
 
     /** Stable cache IDs avoid persisting signed webpage URLs in subtitle cache keys. */
@@ -2917,7 +2923,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     if (!ttsWasPreflighted) runCatching { tts.close() }
                     throw e
@@ -3070,7 +3076,7 @@ class PlaybackService : MediaSessionService() {
 
                 val tts = pendingTts ?: makeTts(selectedTts)
                 val engine = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     if (pendingTts == null) runCatching { tts.close() }
                     throw e
