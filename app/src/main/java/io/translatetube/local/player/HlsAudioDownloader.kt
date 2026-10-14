@@ -471,40 +471,7 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("HLS BYTERANGE 片段不完整：清单要求 ${byteRangeLength} 字节，实际收到 ${actualBytes} 字节。")
                     }
                 }
-                if (!part.renameTo(destination)) {
-                    val installing = File(destination.parentFile, destination.name + ".installing")
-                    try {
-                        installing.delete()
-                        // File.copyTo cannot observe coroutine cancellation while copying a large
-                        // segment. Copy in bounded blocks and leave any previous destination intact
-                        // if the temporary installation fails.
-                        java.io.FileInputStream(part).use { input ->
-                            FileOutputStream(installing, false).use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                while (true) {
-                                    ownerJob?.ensureActive()
-                                    val count = input.read(buffer)
-                                    if (count < 0) break
-                                    output.write(buffer, 0, count)
-                                }
-                                output.fd.sync()
-                            }
-                        }
-                        if (installing.length() != part.length() ||
-                            !AsrAudioCachePolicy.isCompleteDownload(-1L, installing.length())
-                        ) {
-                            throw IllegalStateException("HLS 片段暂存文件大小不匹配。")
-                        }
-                        ownerJob?.ensureActive()
-                        if (!installing.renameTo(destination)) {
-                            throw IllegalStateException("无法原子保存 HLS 音轨片段；旧文件已保留。")
-                        }
-                        part.delete()
-                    } catch (error: Exception) {
-                        installing.delete()
-                        throw error
-                    }
-                }
+                installCompletedSegment(part, destination, ownerJob)
                 destination.setLastModified(System.currentTimeMillis())
                 return destination
             } catch (error: Exception) {
@@ -519,6 +486,47 @@ internal object HlsAudioDownloader {
         throw IllegalStateException("HLS 音轨片段下载失败。", lastError)
     }
 
+
+    /**
+     * Atomically publish one completed segment. The fallback copy is chunked and cancellable.
+     * Failure must not delete an existing destination, which may still be the last good cache.
+     */
+    internal fun installCompletedSegment(
+        part: File,
+        destination: File,
+        ownerJob: Job? = null,
+    ) {
+        if (part.renameTo(destination)) return
+        val installing = File(destination.parentFile, destination.name + ".installing")
+        try {
+            installing.delete()
+            java.io.FileInputStream(part).use { input ->
+                FileOutputStream(installing, false).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        ownerJob?.ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                    output.fd.sync()
+                }
+            }
+            if (installing.length() != part.length() ||
+                !AsrAudioCachePolicy.isCompleteDownload(-1L, installing.length())
+            ) {
+                throw IllegalStateException("HLS 片段暂存文件大小不匹配。")
+            }
+            ownerJob?.ensureActive()
+            if (!installing.renameTo(destination)) {
+                throw IllegalStateException("无法原子保存 HLS 音轨片段；旧文件已保留。")
+            }
+            part.delete()
+        } catch (error: Exception) {
+            installing.delete()
+            throw error
+        }
+    }
 
     internal fun ensurePlaylistIsUnencrypted(body: String) {
         val lines = body.removePrefix("\uFEFF").lineSequence()
