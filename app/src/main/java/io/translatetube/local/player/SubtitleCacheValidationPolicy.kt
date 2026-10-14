@@ -1,0 +1,20 @@
+package io.translatetube.local.player
+
+/** Structural guards for persisted subtitle timelines before binary-search playback uses them. */
+internal object SubtitleCacheValidationPolicy {
+    /**
+     * Keep original cue times intact, but reject malformed or out-of-order rows. Equal start times
+     * are valid because captions may overlap; descending starts violate the playback index contract.
+     */
+    fun hasValidTimeline(rows: List<Triple<Long, Long, String>>): Boolean {
+        if (rows.isEmpty()) return false
+        var previousStart = -1L
+        for ((startMs, endMs, text) in rows) {
+            if (startMs < 0L || endMs <= startMs || text.isBlank() || startMs < previousStart) {
+                return false
+            }
+            previousStart = startMs
+        }
+        return true
+    }
+}
