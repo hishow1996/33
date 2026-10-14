@@ -853,6 +853,9 @@ class PlaybackService : MediaSessionService() {
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
                 }
+                scope.launch {
+                    d.preparedCount.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedCount = n) } }
+                }
 
                 // Store a cache only after import + translation produced useful subtitle rows.
                 val arr = org.json.JSONArray()
@@ -2843,7 +2846,7 @@ class PlaybackService : MediaSessionService() {
                             phase = Phase.SYNTHESIZING,
                             totalLines = updated.size,
                             preparedUntil = 0,
-                        preparedCount = 0,
+                            preparedCount = 0,
                             currentLine = -1,
                         )
                     } else state
@@ -3057,6 +3060,11 @@ class PlaybackService : MediaSessionService() {
                                 progress = if (count >= updated.size) "" else "正在准备多人物配音…",
                             )
                         }
+                    }
+                }
+                scope.launch {
+                    engine.preparedCount.collect { count ->
+                        updateUiForSession(sessionKey) { it.copy(preparedCount = count) }
                     }
                 }
 
