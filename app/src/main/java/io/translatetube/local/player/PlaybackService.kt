@@ -1311,7 +1311,11 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) {
-                    vadSegmentsFromFile(this@PlaybackService, pcmFile)
+                    vadSegmentsFromFile(
+                        this@PlaybackService,
+                        pcmFile,
+                        checkActive = { pcmOwnerJob?.ensureActive() },
+                    )
                 }
                 ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")

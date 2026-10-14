@@ -20,6 +20,7 @@ fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long,
             drainVad(vad, sr, segments)
             offset += window
         }
+        checkActive()
         vad.flush()
         drainVad(vad, sr, segments)
     } finally {
@@ -33,6 +34,7 @@ fun vadSegmentsFromFile(
     ctx: Context,
     pcmFile: AudioExtract.PcmFile,
     sr: Int = 16000,
+    checkActive: () -> Unit = {},
 ): List<Pair<Long, Long>> {
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
     val vad = newVad(ctx, sr)
@@ -43,6 +45,7 @@ fun vadSegmentsFromFile(
         BufferedInputStream(FileInputStream(pcmFile.file), 32 * 1024).use { input ->
             var remainingSamples = pcmFile.sampleCount
             while (remainingSamples >= window) {
+                checkActive()
                 readFully(input, windowBytes)
                 val floats = FloatArray(window)
                 var byteIndex = 0
