@@ -75,29 +75,16 @@ object SubtitleParsers {
     }
 
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
-    fun parseTimedTextXml(src: String): List<SubLine> {
-        if (!src.contains("<transcript", ignoreCase = true)) return emptyList()
-        val out = mutableListOf<SubLine>()
-        val cueRegex = Regex(
-            "<text\\b([^>]*)>(.*?)</text\\s*>",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-        )
-        val attributeRegex = Regex("([A-Za-z_:][\\w:.-]*)\\s*=\\s*[\"']([^\"']*)[\"']")
-        cueRegex.findAll(src).forEach { match ->
-            val attributes = attributeRegex.findAll(match.groupValues[1])
-                .associate { it.groupValues[1].lowercase(java.util.Locale.ROOT) to it.groupValues[2] }
-            val timing = TimedTextCueTimingPolicy.parse(attributes["start"], attributes["dur"])
-                ?: return@forEach
+    fun parseTimedTextXml(src: String): List<SubLine> =
+        TimedTextCueXmlParser.parse(src).mapNotNull { cue ->
             val text = android.text.Html.fromHtml(
-                match.groupValues[2],
+                cue.rawText,
                 android.text.Html.FROM_HTML_MODE_LEGACY,
             ).toString().replace('\u00a0', ' ').trim()
-            if (text.isNotEmpty()) {
-                out += SubLine(out.size, timing.startMs, timing.endMs, text)
+            text.takeIf { it.isNotEmpty() }?.let {
+                SubLine(0, cue.startMs, cue.endMs, it)
             }
-        }
-        return out
-    }
+        }.mapIndexed { index, line -> line.copy(index = index) }
 
     /** YouTube/NewPipe TTML：从 p 标签提取 begin/end/dur。 */
     fun parseTtml(src: String): List<SubLine> {
