@@ -36,12 +36,14 @@ class DubbingEngine(
         cacheRootDir,
         DubbingCachePath.directoryName(videoKey),
     ).apply { mkdirs() }
-    /** 内存缓存：行号 → (采样点, 采样率) */
-    private val mem = object : LinkedHashMap<Int, Pair<FloatArray, Int>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Pair<FloatArray, Int>>): Boolean {
-            return size > 48 // 内存最多 48 行，其余走文件
-        }
-    }
+    private val activityManager =
+        ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+    private val pcmMemoryBudgetBytes = DubbingPcmMemoryPolicy.maxBytes(
+        isLowRamDevice = activityManager?.isLowRamDevice == true,
+        memoryClassMb = activityManager?.memoryClass ?: 256,
+    )
+    /** 行号 → (PCM 样本, 采样率)：按真实字节数限额，低内存设备优先走磁盘缓存。 */
+    private val mem = DubbingPcmMemoryCache(maxBytes = pcmMemoryBudgetBytes, maxEntries = 48)
 
     @Volatile private var tts: TtsEngine? = null
     /** Called when the selected engine fails; the service reports this without switching engines. */
