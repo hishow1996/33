@@ -128,15 +128,22 @@ internal object DashAudioManifestParser {
                 if (duration <= 0L || periodDurationMs <= 0L) {
                     throw UnsupportedOperationException("DASH 分段时长或 Period 时长未知，无法安全生成分段列表")
                 }
-                val count = ceilDiv(periodDurationMs * timescale, duration * 1_000L)
+                val segmentDurationMs = durationUnitsToMillis(duration, timescale)
+                val count = ceilDiv(periodDurationMs, segmentDurationMs)
                 if (count !in 1L..MAX_SEGMENTS.toLong()) {
                     throw IllegalArgumentException("DASH 分段数量超过支持限制")
+                }
+                if (count > 1L && duration > Long.MAX_VALUE / (count - 1L)) {
+                    throw IllegalArgumentException("DASH 分段时间戳超出可处理范围")
                 }
                 (0 until count.toInt()).map { index ->
                     val number = startNumber + index
                     val time = index.toLong() * duration
+                    val segmentStartMs = index.toLong() * segmentDurationMs
+                    val remainingMs = (periodDurationMs - segmentStartMs).coerceAtLeast(1L)
+                    val segmentMs = minOf(segmentDurationMs, remainingMs)
                     val url = expandTemplate(mediaTemplate, representationId, bandwidth, number, time)
-                    Segment(index, resolveHttpUrl(representationBase, url), duration * 1_000L / timescale)
+                    Segment(index, resolveHttpUrl(representationBase, url), segmentMs)
                 }
             }
             if (segments.isEmpty()) throw IllegalArgumentException("DASH 音轨没有可用分段")
@@ -224,6 +231,7 @@ internal object DashAudioManifestParser {
         val result = ArrayList<Segment>()
         var nextTime = 0L
         var number = startNumber
+        var totalDurationMs = 0L
         for (entry in entries) {
             val duration = entry.getAttribute("d").toLongOrNull()
                 ?: throw IllegalArgumentException("DASH SegmentTimeline 缺少 d")
@@ -231,6 +239,7 @@ internal object DashAudioManifestParser {
             if (entry.hasAttribute("t")) {
                 nextTime = entry.getAttribute("t").toLongOrNull()
                     ?: throw IllegalArgumentException("DASH SegmentTimeline t 无效")
+                if (nextTime < 0L) throw IllegalArgumentException("DASH SegmentTimeline t 不能为负数")
             }
             val repeatCount = entry.getAttribute("r").takeIf { it.isNotBlank() }?.toIntOrNull()
                 ?: if (entry.getAttribute("r").isBlank()) 0 else {
@@ -239,16 +248,29 @@ internal object DashAudioManifestParser {
             if (repeatCount < 0) {
                 throw UnsupportedOperationException("DASH SegmentTimeline 使用负 r 重复值，当前版本暂不支持")
             }
-            if (result.size.toLong() + repeatCount + 1L > MAX_SEGMENTS) {
+            val copies = repeatCount.toLong() + 1L
+            if (result.size.toLong() + copies > MAX_SEGMENTS) {
                 throw IllegalArgumentException("DASH 分段数量超过支持限制")
             }
-            repeat(repeatCount + 1) {
+            if (duration > Long.MAX_VALUE / copies ||
+                nextTime > Long.MAX_VALUE - duration * copies
+            ) {
+                throw IllegalArgumentException("DASH 分段时间戳超出可处理范围")
+            }
+            val segmentDurationMs = durationUnitsToMillis(duration, timescale)
+            if (segmentDurationMs > MAX_DURATION_MS ||
+                totalDurationMs > MAX_DURATION_MS - segmentDurationMs * copies
+            ) {
+                throw IllegalArgumentException("DASH 音频超过 12 小时限制")
+            }
+            repeat(copies.toInt()) {
                 val expanded = expandTemplate(mediaTemplate, representationId, bandwidth, number, nextTime)
                 result += Segment(
                     index = result.size,
                     url = resolveHttpUrl(baseUrl, expanded),
-                    durationMs = duration * 1_000L / timescale,
+                    durationMs = segmentDurationMs,
                 )
+                totalDurationMs += segmentDurationMs
                 nextTime += duration
                 number++
             }
@@ -335,6 +357,17 @@ internal object DashAudioManifestParser {
             it.getAttribute("value").equals("main", ignoreCase = true) ||
                 it.getAttribute("value").equals("default", ignoreCase = true)
         }
+
+    private fun durationUnitsToMillis(units: Long, timescale: Long): Long {
+        if (units <= 0L || timescale <= 0L) {
+            throw IllegalArgumentException("DASH 分段时长或 timescale 无效")
+        }
+        val millis = units.toDouble() * 1_000.0 / timescale.toDouble()
+        if (!millis.isFinite() || millis < 1.0 || millis > MAX_DURATION_MS.toDouble()) {
+            throw IllegalArgumentException("DASH 分段时长超出支持范围")
+        }
+        return millis.toLong().coerceAtLeast(1L)
+    }
 
     private fun durationMs(value: String?): Long {
         if (value.isNullOrBlank()) return 0L
