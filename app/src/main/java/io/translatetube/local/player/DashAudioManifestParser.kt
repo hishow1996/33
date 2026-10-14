@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import java.io.StringReader
 import java.net.URI
+import java.math.BigInteger
 import java.time.Duration
 import java.util.Locale
 import javax.xml.parsers.DocumentBuilderFactory
@@ -130,10 +131,17 @@ internal object DashAudioManifestParser {
                     throw UnsupportedOperationException("DASH 分段时长或 Period 时长未知，无法安全生成分段列表")
                 }
                 val segmentDurationMs = durationUnitsToMillis(duration, timescale)
-                val count = ceilDiv(periodDurationMs, segmentDurationMs)
-                if (count !in 1L..MAX_SEGMENTS.toLong()) {
+                // Keep the segment count in the original DASH timescale. Rounding a 333.333 ms
+                // segment down to 333 ms before division can incorrectly add a segment; BigInteger
+                // also avoids overflow when a malformed MPD supplies an extreme timescale.
+                val numerator = BigInteger.valueOf(periodDurationMs)
+                    .multiply(BigInteger.valueOf(timescale))
+                val denominator = BigInteger.valueOf(duration).multiply(BigInteger.valueOf(1_000L))
+                val countBig = numerator.add(denominator.subtract(BigInteger.ONE)).divide(denominator)
+                if (countBig < BigInteger.ONE || countBig > BigInteger.valueOf(MAX_SEGMENTS.toLong())) {
                     throw IllegalArgumentException("DASH 分段数量超过支持限制")
                 }
+                val count = countBig.toLong()
                 if (count > 1L && duration > Long.MAX_VALUE / (count - 1L)) {
                     throw IllegalArgumentException("DASH 分段时间戳超出可处理范围")
                 }
@@ -153,7 +161,12 @@ internal object DashAudioManifestParser {
             if (segments.isEmpty()) throw IllegalArgumentException("DASH 音轨没有可用分段")
             val totalMs = segments.sumOf { it.durationMs }
             if (totalMs > MAX_DURATION_MS) throw IllegalArgumentException("DASH 音频超过 12 小时限制")
-            return AudioManifest(manifestUrl, initUrl, segments, null, totalMs)
+            // The MPD Period duration is authoritative. Individual segment durations may be rounded
+            // to integer milliseconds for display when the timescale is not a multiple of 1000.
+            return AudioManifest(
+                manifestUrl, initUrl, segments, null,
+                periodDurationMs.takeIf { it > 0L } ?: totalMs,
+            )
         }
 
         val directUrl = representationBase
