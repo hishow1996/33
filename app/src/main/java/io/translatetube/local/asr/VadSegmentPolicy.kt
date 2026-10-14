@@ -12,6 +12,7 @@ internal object VadSegmentPolicy {
     const val MIN_SEGMENT_MS = 300L
     const val MERGE_GAP_MS = 400L
     const val MAX_SEGMENT_DURATION_MS = 25_000L
+    const val MAX_SEGMENTS = 20_000
 
     fun merge(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
         if (segments.isEmpty()) return emptyList()
@@ -54,4 +55,5 @@ internal object VadSegmentPolicy {
             }
         }
         return bounded
-    }}
+    }
+}
