@@ -96,13 +96,15 @@ internal object HlsPlaylistParser {
 
         fun renditionOrder(
             renditions: List<Pair<Map<String, String>, String?>>
-        ): List<Pair<Map<String, String>, String?>> = renditions.sortedWith(
-            compareByDescending<Pair<Map<String, String>, String?>> {
-                it.first["DEFAULT"].equals("YES", true)
-            }.thenByDescending {
-                it.first["AUTOSELECT"].equals("YES", true)
-            },
-        )
+        ): List<Pair<Map<String, String>, String?>> = renditions.withIndex()
+            .sortedWith(
+                compareByDescending<IndexedValue<Pair<Map<String, String>, String?>>> {
+                    it.value.first["DEFAULT"].equals("YES", true)
+                }.thenByDescending {
+                    it.value.first["AUTOSELECT"].equals("YES", true)
+                }.thenBy { it.index },
+            )
+            .map { it.value }
 
         if (groupedVariant != null) {
             val matchingRenditions = audioRenditions.filter { (attributes, _) ->
