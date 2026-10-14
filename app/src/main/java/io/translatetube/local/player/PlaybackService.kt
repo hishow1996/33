@@ -21,6 +21,7 @@ import io.translatetube.local.data.SourceType
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.subs.TranslatedSubtitleImportPolicy
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.LangMap
