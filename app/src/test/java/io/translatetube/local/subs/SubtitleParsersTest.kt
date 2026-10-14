@@ -148,4 +148,26 @@ class SubtitleParsersTest {
         assertEquals(3_000L, parsed.single().endMs)
     }
 
+    @Test
+    fun skipsMalformedWebVttTimesButKeepsFollowingValidCues() {
+        val source = """
+            WEBVTT
+
+            00:99:99.000 --> 00:99:59.000
+            invalid minutes and seconds
+
+            00:00:01.000 --> 00:00:02.000
+            valid cue
+
+            01:00:00.000 --> 01:00:01.000
+            long video cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("valid cue", "long video cue"), parsed.map { it.text })
+        assertEquals(listOf(1_000L, 3_600_000L), parsed.map { it.startMs })
+        assertEquals(listOf(2_000L, 3_601_000L), parsed.map { it.endMs })
+    }
+
 }

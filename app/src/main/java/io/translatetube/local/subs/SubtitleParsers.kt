@@ -58,8 +58,8 @@ object SubtitleParsers {
             if (m != null) {
                 flush()
                 val parts = m.value.split("-->")
-                pendingStart = parseTs(parts[0].trim())
-                pendingEnd = parseTs(parts[1].trim())
+                pendingStart = parseVttTs(parts[0].trim()) ?: -1L
+                pendingEnd = parseVttTs(parts[1].trim()) ?: -1L
             } else if (line.isEmpty()) {
                 // 行结束标记交给下一条 cue 前统一 flush
             } else if (pendingStart >= 0 && !line.startsWith("NOTE") && !line.startsWith("WEBVTT") &&
@@ -327,6 +327,20 @@ object SubtitleParsers {
     }
 
     private fun stripTags(s: String) = s.replace(htmlTagRegex, "").replace("&nbsp;", " ").trim()
+
+    private fun parseVttTs(value: String): Long? {
+        val clean = value.trim().replace(",", ".")
+        val bits = clean.split(":")
+        if (bits.size !in 2..3) return null
+        val hours = if (bits.size == 3) bits[0].toLongOrNull()?.takeIf { it >= 0L } ?: return null else 0L
+        val minutes = bits[bits.lastIndex - 1].toLongOrNull()
+            ?.takeIf { it in 0L..59L } ?: return null
+        val seconds = bits.last().toDoubleOrNull()
+            ?.takeIf { it.isFinite() && it >= 0.0 && it < 60.0 } ?: return null
+        val millis = hours.toDouble() * 3_600_000.0 + minutes.toDouble() * 60_000.0 + seconds * 1_000.0
+        if (!millis.isFinite() || millis >= Long.MAX_VALUE.toDouble()) return null
+        return millis.toLong()
+    }
 
     private fun parseTs(s: String): Long {
         val clean = s.replace(",", ".")
