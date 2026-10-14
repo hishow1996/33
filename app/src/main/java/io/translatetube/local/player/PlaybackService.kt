@@ -1198,9 +1198,9 @@ class PlaybackService : MediaSessionService() {
                         SubLine(i, o.getLong("s"), o.getLong("e"), o.getString("t"))
                     }
                     restored.takeIf { rows ->
-                        rows.isNotEmpty() && rows.all { row ->
-                            row.startMs >= 0L && row.endMs > row.startMs && row.text.isNotBlank()
-                        }
+                        SubtitleCacheValidationPolicy.hasValidTimeline(
+                            rows.map { row -> Triple(row.startMs, row.endMs, row.text) }
+                        )
                     }
                 }.getOrNull()
             }
