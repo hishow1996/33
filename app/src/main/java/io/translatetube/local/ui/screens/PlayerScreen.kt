@@ -1400,7 +1400,8 @@ private fun androidx.compose.foundation.layout.BoxScope.LiveChineseSubtitleOverl
         }
     }
 
-    val liveSubtitle = SubtitleTimelinePolicy.lineAtPosition(state.lines, playbackPositionMs)
+    val subtitleTimeline = remember(state.key, state.lines) { SubtitleTimelinePolicy(state.lines) }
+    val liveSubtitle = subtitleTimeline.lineAtPosition(playbackPositionMs)
         ?.zh
         ?.let { SubtitleParsers.cleanTranslatedText(it) }
         ?.takeIf { it.isNotBlank() }
