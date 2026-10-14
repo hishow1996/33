@@ -2293,14 +2293,17 @@ class PlaybackService : MediaSessionService() {
     private fun reusableAsrAudioFile(videoId: String): File? {
         val file = asrAudioCacheFile(videoId)
         val now = System.currentTimeMillis()
+        // Protect the candidate before checking its metadata: a concurrent cache pruner must not
+        // delete it in the gap between validation and handing the file to its reader.
+        activeAsrAudioPaths.acquire(file.absolutePath)
         if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
             file.setLastModified(now)
-            // A cache hit transfers one reader lease to the caller before pruning or returning.
-            activeAsrAudioPaths.acquire(file.absolutePath)
             file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
             return file
         }
-        file.delete()
+        activeAsrAudioPaths.release(file.absolutePath)
+        // Do not remove a candidate another active reader still owns, even if this caller won't reuse it.
+        if (!activeAsrAudioPaths.contains(file.absolutePath)) file.delete()
         File(file.parentFile, file.name + ".part").delete()
         return null
     }
