@@ -27,6 +27,23 @@ class DubbingReadinessTest {
     }
 
     @Test
+    fun invalidatedCacheReturnsCueToPendingInsteadOfReportingPermanentSilence() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(2, hasAudio = false)
+
+        readiness.markPending(2)
+
+        assertFalse(readiness.isReady(2))
+        assertFalse(readiness.isPrepared(2))
+        assertFalse(readiness.isSilent(2))
+
+        readiness.markPrepared(2, hasAudio = true)
+        assertTrue(readiness.isPrepared(2))
+        readiness.markPending(2)
+        assertFalse(readiness.isReady(2))
+    }
+
+    @Test
     fun reattachClearsAllReadinessFromPreviousSubtitleSession() {
         val readiness = DubbingReadiness()
         readiness.markPrepared(0, hasAudio = true)
