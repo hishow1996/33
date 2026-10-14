@@ -10,6 +10,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteOrder
 
@@ -86,7 +87,9 @@ object AudioExtract {
         maxDurationMs: Long = Long.MAX_VALUE,
         checkActive: () -> Unit = {},
         headers: Map<String, String> = emptyMap(),
+        maxPcmBytes: Long = PcmTempFilePolicy.MAX_PCM_BYTES,
     ): PcmFile {
+        require(maxPcmBytes > 0L) { "PCM 临时文件大小上限必须大于 0" }
         PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
         val destination = File.createTempFile("translate-pcm-", ".s16le", ctx.cacheDir)
         val extractor = MediaExtractor()
@@ -153,6 +156,28 @@ object AudioExtract {
             val maxSourceSamples = rawMaxSourceSamples - rawMaxSourceSamples % sourceChannels
             var decodedSourceSamples = 0L
             var outputSamples = 0L
+            var outputBytesWritten = 0L
+            var nextStorageCheckAt = 0L
+            fun writeConvertedPcm(output: BufferedOutputStream, samples: ShortArray) {
+                val chunkBytes = samples.size.toLong() * 2L
+                if (!PcmTempFilePolicy.canAppendPcm(outputBytesWritten, chunkBytes, maxPcmBytes)) {
+                    throw IOException(
+                        "转写音频超过 ${maxPcmBytes / (1024L * 1024L)} MB 临时文件限制。" +
+                            "为避免占满手机存储，已停止处理；可以改用较短的视频或更短的片段。"
+                    )
+                }
+                if (outputBytesWritten >= nextStorageCheckAt) {
+                    val usable = runCatching { destination.parentFile?.usableSpace ?: -1L }.getOrDefault(-1L)
+                    if (!PcmTempFilePolicy.hasDiskHeadroom(usable, chunkBytes)) {
+                        throw IOException(
+                            "手机可用存储空间不足，无法继续生成转写音频；已保留原视频和已完成字幕。"
+                        )
+                    }
+                    nextStorageCheckAt = outputBytesWritten + PcmTempFilePolicy.SPACE_CHECK_INTERVAL_BYTES
+                }
+                writePcm16Le(output, samples)
+                outputBytesWritten += chunkBytes
+            }
             var resampler: Pcm16StreamingResampler? = null
             var resamplerRate = -1
             var resamplerChannels = -1
@@ -221,7 +246,7 @@ object AudioExtract {
                             // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
                             val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
                             val converted = activeResampler.process(monoChunk)
-                            writePcm16Le(output, converted)
+                            writeConvertedPcm(output, converted)
                             outputSamples += converted.size
                         }
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
@@ -253,7 +278,7 @@ object AudioExtract {
                 val activeResampler = resampler
                     ?: throw IllegalStateException("音频轨没有可解码的 PCM 数据")
                 val tail = activeResampler.finish()
-                writePcm16Le(output, tail)
+                writeConvertedPcm(output, tail)
                 outputSamples += tail.size
                 output.flush()
             }
