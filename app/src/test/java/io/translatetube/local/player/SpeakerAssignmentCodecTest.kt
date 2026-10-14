@@ -21,7 +21,7 @@ class SpeakerAssignmentCodecTest {
         assertEquals(SpeakerAssignmentSnapshot(), SpeakerAssignmentCodec.decode(null))
         assertEquals(SpeakerAssignmentSnapshot(), SpeakerAssignmentCodec.decode("old-format|s:1=8"))
         val decoded = SpeakerAssignmentCodec.decode(
-            "speaker-map-v1|s:999=2|s:2=99|v:100:0=2|m:0:100=-2|x:4=3|s:3=12"
+            "speaker-map-v1|s:999=2|s:2=999|v:100:0=2|m:0:100=-2|x:4=3|s:3=12"
         )
         assertEquals(mapOf(3 to 12), decoded.speakerVoices)
         assertTrue(decoded.lineVoices.isEmpty())
@@ -39,4 +39,15 @@ class SpeakerAssignmentCodecTest {
             ).lineOverrides.containsKey("1200:2400")
         )
     }
+    @Test
+    fun roundTripRetainsVoiceIdsAboveTheOld54VoiceLimit() {
+        val expected = SpeakerAssignmentSnapshot(
+            speakerVoices = mapOf(0 to -1, 3 to 102, 102 to 101),
+            lineVoices = mapOf("0:1000" to 102),
+            lineOverrides = mapOf("1000:2000" to 101),
+        )
+
+        assertEquals(expected, SpeakerAssignmentCodec.decode(SpeakerAssignmentCodec.encode(expected)))
+    }
+
 }

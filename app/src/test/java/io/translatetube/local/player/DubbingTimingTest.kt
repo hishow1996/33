@@ -28,7 +28,23 @@ class DubbingTimingTest {
     }
 
     @Test
-    fun overlongSpeechIsBoundedToCueWindowAndFaded() {
+    fun moderatelyOverlongSpeechUsesUpToThreeTimesCompressionBeforeTruncating() {
+        val samples = FloatArray(2_500) { 0.5f }
+        val plan = DubbingTiming.createPlan(
+            sampleCount = samples.size, sampleRate = 1_000,
+            lineStartMs = 0, lineEndMs = 1_000,
+            positionMs = 0, playerSpeed = 1.0f,
+        )
+        val playable = DubbingTiming.slice(samples, plan, 1_000)
+        assertEquals(2_500, plan.sampleCount)
+        assertEquals(2_500, playable.size)
+        assertEquals(2.5f, plan.syncRate, 0.001f)
+        assertEquals(2.5f, plan.playbackRate, 0.001f)
+        assertFalse(plan.truncated)
+    }
+
+    @Test
+    fun veryOverlongSpeechIsBoundedToThreeTimesAtNormalSpeedAndFaded() {
         val samples = FloatArray(5_000) { 1.0f }
         val plan = DubbingTiming.createPlan(
             sampleCount = samples.size, sampleRate = 1_000,
@@ -36,10 +52,23 @@ class DubbingTimingTest {
             positionMs = 0, playerSpeed = 1.0f,
         )
         val playable = DubbingTiming.slice(samples, plan, 1_000)
-        assertEquals(2_000, plan.sampleCount)
-        assertEquals(2_000, playable.size)
+        assertEquals(3_000, plan.sampleCount)
+        assertEquals(3_000, playable.size)
+        assertEquals(3.0f, plan.syncRate, 0.001f)
         assertTrue(plan.truncated)
         assertEquals(0.0f, playable.last(), 0.0001f)
+    }
+
+    @Test
+    fun combinedOutputRateNeverExceedsFourTimesAtDoubleVideoSpeed() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 2_500, sampleRate = 1_000,
+            lineStartMs = 0, lineEndMs = 1_000,
+            positionMs = 0, playerSpeed = 2.0f,
+        )
+        assertEquals(2.0f, plan.syncRate, 0.001f)
+        assertEquals(4.0f, plan.playbackRate, 0.001f)
+        assertTrue(plan.truncated)
     }
 
     @Test
@@ -85,4 +114,36 @@ class DubbingTimingTest {
         assertEquals(0, plan.sampleCount)
         assertEquals(1.0f, plan.syncRate, 0.001f)
     }
+    @Test
+    fun replanningAtHigherVideoSpeedUsesTheCurrentRemainingWindow() {
+        val samples = FloatArray(4_000) { 0.25f }
+        val normalSpeed = DubbingTiming.createPlan(
+            sampleCount = samples.size, sampleRate = 1_000,
+            lineStartMs = 0, lineEndMs = 2_000,
+            positionMs = 500, playerSpeed = 1.0f,
+        )
+        val fastPlayback = DubbingTiming.createPlan(
+            sampleCount = samples.size, sampleRate = 1_000,
+            lineStartMs = 0, lineEndMs = 2_000,
+            positionMs = 500, playerSpeed = 2.0f,
+        )
+
+        assertEquals(1_000, normalSpeed.startSample)
+        assertEquals(1_000, fastPlayback.startSample)
+        assertEquals(2.0f, normalSpeed.playbackRate, 0.001f)
+        assertEquals(4.0f, fastPlayback.playbackRate, 0.001f)
+        assertEquals(3_000, fastPlayback.sampleCount)
+    }
+
+    @Test
+    fun replanningDoesNotStartPastTheCueWhenOnlyTinyWindowRemainsAtHigherSpeed() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 16_000, sampleRate = 16_000,
+            lineStartMs = 0, lineEndMs = 1_000,
+            positionMs = 950, playerSpeed = 2.0f,
+        )
+        assertEquals(16_000, plan.startSample)
+        assertEquals(0, plan.sampleCount)
+    }
+
 }

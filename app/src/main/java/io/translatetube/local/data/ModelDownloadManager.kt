@@ -35,20 +35,11 @@ object ModelFiles {
     fun ttsDir(ctx: Context) = File(ctx.filesDir, "models/tts")
     fun asrDir(ctx: Context) = File(ctx.filesDir, "models/whisper")
 
-    // 模型文件只有存在且达到合理最小体积才视为就绪，避免截断文件触发 ONNX 原生层崩溃。
-    private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
-        file.isFile && file.length() >= minBytes
+    fun ttsReady(ctx: Context): Boolean = ModelAssetReadiness.isTtsReady(ttsDir(ctx))
 
-    fun ttsReady(ctx: Context) =
-        validModel(File(ttsDir(ctx), "model.int8.onnx")) &&
-            validModel(File(ttsDir(ctx), "voices.bin"))
+    fun asrCoreReady(ctx: Context): Boolean = ModelAssetReadiness.isAsrCoreReady(asrDir(ctx))
 
-    fun asrCoreReady(ctx: Context) =
-        validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
-            validModel(File(asrDir(ctx), "base-decoder.int8.onnx"))
-
-    fun asrReady(ctx: Context) =
-        asrCoreReady(ctx) && validModel(File(asrDir(ctx), "silero_vad.onnx"), 512L * 1024)
+    fun asrReady(ctx: Context): Boolean = ModelAssetReadiness.isAsrReady(asrDir(ctx))
 
     fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
 }
@@ -444,17 +435,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
 
             // 不完整或伪造的压缩包不能覆盖已经可用的模型。
-            val required = if (destDir.name == "tts") {
-                listOf("model.int8.onnx", "voices.bin")
+            val assetsReady = if (destDir.name == "tts") {
+                ModelAssetReadiness.isTtsReady(staging)
             } else {
-                listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx")
+                ModelAssetReadiness.isAsrCoreReady(staging)
             }
-            if (required.any { name ->
-                    val file = File(staging, name)
-                    // 这些模型文件正常体积均远大于 1 MB；过小通常意味着下载/解压不完整。
-                    !file.isFile || file.length() < 1L * 1024 * 1024
-                }) {
-                throw java.io.IOException("模型包缺少必要文件或文件体积异常，已取消安装")
+            if (!assetsReady) {
+                throw java.io.IOException(
+                    if (destDir.name == "tts")
+                        "Kokoro 模型包缺少必要的模型、tokens、词典或发音规则文件，已取消安装"
+                    else
+                        "Whisper 模型包缺少编码器、解码器或完整 tokens 文件，已取消安装"
+                )
             }
 
             val old = File(parent, destDir.name + ".old")

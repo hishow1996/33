@@ -50,4 +50,27 @@ class DubbingStartPositionPolicyTest {
             ),
         )
     }
+    @Test
+    fun doesNotRestartAFutureCueAfterBackwardSeekDuringPcmLoad() {
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 4, lineStartMs = 2_000L, lineEndMs = 2_800L,
+                requestedPositionMs = 2_050L,
+                // User sought back to an earlier caption while this cue was loading.
+                latestCursor = DubbingTimelineCursor(lineIndex = 1, positionMs = 650L),
+            ),
+        )
+    }
+
+    @Test
+    fun doesNotUseOriginalRequestWhenLiveCursorIsBeforeTheCueEvenIfIndexMatches() {
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 4, lineStartMs = 2_000L, lineEndMs = 2_800L,
+                requestedPositionMs = 2_050L,
+                latestCursor = DubbingTimelineCursor(lineIndex = 4, positionMs = 1_900L),
+            ),
+        )
+    }
+
 }

@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.floating.FloatingManager
+import io.translatetube.local.tts.KokoroVoiceRange
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
@@ -33,7 +34,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
-    var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
+    var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", KokoroVoiceRange.DEFAULT_SPEAKER_ID).coerceIn(0, KokoroVoiceRange.MAX_SPEAKER_ID).toFloat()) }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -118,7 +119,7 @@ Section("配音设置") {
                 Slider(
                     value = speaker, onValueChange = { speaker = it },
                     onValueChangeFinished = { prefs.edit().putInt("kokoro_speaker", speaker.toInt()).apply() },
-                    valueRange = 0f..53f,
+                    valueRange = 0f..KokoroVoiceRange.MAX_SPEAKER_ID.toFloat(),
                     colors = SliderDefaults.colors(thumbColor = BrandBright, activeTrackColor = Brand),
                 )
             }

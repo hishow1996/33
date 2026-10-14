@@ -28,4 +28,13 @@ class DubbingCachePolicyTest {
         )
         assertTrue(DubbingCachePolicy.filesToEvict(entries, 50L).isEmpty())
     }
+    @Test
+    fun emptyPcmIsNeverAcceptedAsAReusableDubbingCache() {
+        assertTrue(!DubbingCachePolicy.isReusablePcmSampleCount(0))
+        assertTrue(!DubbingCachePolicy.isReusablePcmSampleCount(-1))
+        assertTrue(DubbingCachePolicy.isReusablePcmSampleCount(1))
+        assertTrue(DubbingCachePolicy.isReusablePcmSampleCount(DubbingCachePolicy.MAX_PCM_SAMPLE_COUNT))
+        assertTrue(!DubbingCachePolicy.isReusablePcmSampleCount(DubbingCachePolicy.MAX_PCM_SAMPLE_COUNT + 1))
+    }
+
 }

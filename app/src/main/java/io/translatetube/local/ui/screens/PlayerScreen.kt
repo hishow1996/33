@@ -1,5 +1,7 @@
 package io.translatetube.local.ui.screens
 
+import io.translatetube.local.player.SpeakerVoiceOptionPolicy
+
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -32,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -654,7 +657,7 @@ private fun VideoParsingPage(
     val steps = listOf("获取视频信息", "解析视频资源", "下载或读取字幕", "翻译字幕", "生成配音")
     val fraction = when (state.phase) {
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
-            (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
@@ -1404,6 +1407,7 @@ private fun SubtitleList(
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
                 val active = i == state.currentLine
                 val activeDub = active && state.dubbingOn
+                var voiceMenuExpanded by remember(i) { mutableStateOf(false) }
                 val dubbingScale by rememberInfiniteTransition(label = "dubbingLinePulse").animateFloat(
                     initialValue = 1f,
                     targetValue = if (activeDub) 1.025f else 1f,
@@ -1465,24 +1469,47 @@ private fun SubtitleList(
                     }
                     if (active) {
                         Spacer(Modifier.height(7.dp))
-                        Surface(
-                            onClick = {
-                                val ids = listOf(-1, 0, 1, 2, 3)
-                                val index = ids.indexOf(line.speakerId).let { if (it < 0) 0 else it }
-                                svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
-                            },
-                            shape = RoundedCornerShape(50),
-                            color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
-                            contentColor = if (activeDub) Color(0xFF30343B) else SubText,
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        Box {
+                            Surface(
+                                onClick = { voiceMenuExpanded = true },
+                                shape = RoundedCornerShape(50),
+                                color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
+                                contentColor = if (activeDub) Color(0xFF30343B) else SubText,
                             ) {
-                                Icon(Icons.Filled.Face, contentDescription = "切换配音人物", modifier = Modifier.size(16.dp))
-                                Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
-                                Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(Icons.Filled.Face, contentDescription = "选择配音音色", modifier = Modifier.size(16.dp))
+                                    Text(
+                                        SpeakerVoiceOptionPolicy.labelFor(
+                                            line.speakerId,
+                                            isSystemTts = state.isSystemTtsSelected,
+                                            systemVoiceNames = state.systemTtsVoiceNames,
+                                        ),
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                    Icon(Icons.Filled.ExpandMore, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = voiceMenuExpanded,
+                                onDismissRequest = { voiceMenuExpanded = false },
+                                modifier = Modifier.heightIn(max = 420.dp),
+                            ) {
+                                SpeakerVoiceOptionPolicy.options(
+                                    isSystemTts = state.isSystemTtsSelected,
+                                    systemVoiceNames = state.systemTtsVoiceNames,
+                                ).forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        onClick = {
+                                            voiceMenuExpanded = false
+                                            svc?.setLineSpeaker(i, option.speakerId)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -1495,16 +1522,6 @@ private fun SubtitleList(
 
 private fun subtitleComparisonKey(text: String): String =
     text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
-
-private fun speakerLabel(id: Int): String = when (id) {
-    -1 -> "人物1·默认"
-    0 -> "人物2"
-    1 -> "人物3"
-    2 -> "人物4"
-    3 -> "人物5"
-    else -> "音色$id"
-}
-
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
@@ -1546,7 +1563,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             detail = state.progress.ifBlank { "按字幕顺序生成语音" }
             stageIndex = 4
             fraction = if (state.totalLines > 0) {
-                (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+                (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
             } else null
         }
         else -> {

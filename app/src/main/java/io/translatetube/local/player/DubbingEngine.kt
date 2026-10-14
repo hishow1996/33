@@ -80,8 +80,10 @@ class DubbingEngine(
     private var cacheInitJob: Job? = null
     private val cacheInitGeneration = AtomicInteger(0)
 
-    private val _preparedUntil = MutableStateFlow(0)   // 已合成到第几行（0-based 含义：前 N 行就绪）
+    private val _preparedUntil = MutableStateFlow(0)   // 连续就绪前缀长度，供需要有序处理的调用方使用
     val preparedUntil: StateFlow<Int> = _preparedUntil
+    private val _preparedCount = MutableStateFlow(0)      // 实际已就绪行数（允许快进优先合成）
+    val preparedCount: StateFlow<Int> = _preparedCount
     private val _totalLines = MutableStateFlow(0)
     val totalLines: StateFlow<Int> = _totalLines
     private val _currentLine = MutableStateFlow(-1)
@@ -96,6 +98,7 @@ class DubbingEngine(
         firstSynthesisReported.set(false)
         _totalLines.value = this.lines.size
         _preparedUntil.value = 0
+        _preparedCount.value = 0
         readiness.clear()
         pending.clear()
         priorityTarget = -1
@@ -247,8 +250,9 @@ class DubbingEngine(
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
+                    // Do not persist an empty PCM marker: on the next task retry the row may have
+                    // a completed translation, and the old marker would hide its newly available text.
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    writeCache(idx, 16000, FloatArray(0))
                     readiness.markPrepared(idx, hasAudio = false)
                     bumpPrepared()
                     continue
@@ -342,13 +346,11 @@ class DubbingEngine(
                     // After one retry, publish the failure and allow video playback to continue.
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
-                    try {
-                        writeCache(idx, 16000, FloatArray(0))
-                        readiness.markPrepared(idx, hasAudio = false)
-                        bumpPrepared()
-                    } catch (writeError: Exception) {
-                        android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
-                    }
+                    // Mark the cue silent only in this live engine to prevent a tight retry loop.
+                    // Never persist a failed synthesis as an empty cache hit: a later retry should
+                    // attempt this failed step again using the current selected TTS engine.
+                    readiness.markPrepared(idx, hasAudio = false)
+                    bumpPrepared()
                 }
             }
         }
@@ -361,10 +363,11 @@ class DubbingEngine(
     }
 
     private fun bumpPrepared() {
-        // The display remains a contiguous count, but playback readiness is tracked per line.
+        // Keep the contiguous prefix for ordered consumers, and separately publish actual work done.
         var n = _preparedUntil.value
         while (n < lines.size && readiness.isReady(n)) n++
         _preparedUntil.value = n
+        _preparedCount.value = readiness.preparedCount().coerceIn(0, lines.size)
     }
 
     /**
@@ -405,27 +408,25 @@ class DubbingEngine(
 
     private fun cacheFile(idx: Int): File {
         val line = lines.getOrNull(idx)
-        val voice = line?.speakerId ?: -1
-        fun fingerprint(value: String): String {
-            val bytes = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(value.toByteArray(Charsets.UTF_8))
-            return bytes.take(8).joinToString("") { "%02x".format(it) }
-        }
-        // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
-        val textHash = fingerprint(line?.zh ?: "")
-        // Adaptive synthesis depends on this cue's available time window. Include its duration
-        // and bump the cache identity so pre-adaptation PCM is never mistaken for the new policy.
         val cueDurationMs = ((line?.endMs ?: 0L) - (line?.startMs ?: 0L)).coerceAtLeast(0L)
-        val engineHash = fingerprint(
-            "${tts?.cacheKey ?: tts?.name ?: "unknown"}-v7-speed-${speed}-cue-ms-${cueDurationMs}-adaptive"
+        return File(
+            cacheDir,
+            DubbingCacheIdentity.fileName(
+                index = idx,
+                speakerId = line?.speakerId ?: -1,
+                translatedText = line?.zh.orEmpty(),
+                engineKey = tts?.cacheKey ?: tts?.name ?: "unknown",
+                speed = speed,
+                cueDurationMs = cueDurationMs,
+            ),
         )
-        return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
     /**
-     * Return true for a valid non-empty PCM cache, false for a valid empty marker,
-     * and null when the entry is missing/corrupt and should be synthesized again.
+     * Return true only for a valid audible PCM cache. Empty markers from older versions are
+     * deleted and treated as cache misses so an earlier transient TTS failure cannot permanently
+     * suppress synthesis on a later retry.
      */
     private fun inspectCache(file: File): Boolean? {
         if (!file.isFile) return null
@@ -437,10 +438,11 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
                 val sampleRate = input.readInt()
                 val sampleCount = input.readInt()
-                if (sampleRate !in 8_000..192_000 || sampleCount < 0 || sampleCount > 16_000_000 ||
+                if (sampleRate !in 8_000..192_000 ||
+                    !DubbingCachePolicy.isReusablePcmSampleCount(sampleCount) ||
                     file.length() != 8L + sampleCount.toLong() * 4L
                 ) {
-                    throw java.io.IOException("PCM 缓存头或长度无效")
+                    throw java.io.IOException("PCM 缓存头或长度无效（空音频不作为成功缓存）")
                 }
 
                 // A non-empty file can still contain only zeroes (or invalid floats). Do not
@@ -452,11 +454,8 @@ class DubbingEngine(
                     if (!sample.isFinite()) throw java.io.IOException("PCM 缓存包含无效采样值")
                     if (DubbingPcmValidation.isAudibleSample(sample)) hasAudibleSample = true
                 }
-                when {
-                    sampleCount == 0 -> false // Valid explicit empty marker.
-                    hasAudibleSample -> true
-                    else -> throw java.io.IOException("PCM 缓存只有静音采样")
-                }
+                if (hasAudibleSample) true
+                else throw java.io.IOException("PCM 缓存只有静音采样")
             }
         } catch (e: Exception) {
             file.delete()
@@ -464,7 +463,7 @@ class DubbingEngine(
         }
     }
 
-    /** true = valid audio, false = valid empty marker, null = missing or corrupt cache. */
+    /** true = valid audible audio, null = missing, silent, or corrupt cache. */
     private fun cached(idx: Int): Boolean? {
         if (synchronized(mem) { mem.containsKey(idx) }) return true
         return inspectCache(cacheFile(idx))
@@ -513,7 +512,8 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
                 val sr = d.readInt()
                 val n = d.readInt()
-                if (sr !in 8_000..192_000 || n < 0 || n > 16_000_000 ||
+                if (sr !in 8_000..192_000 ||
+                    !DubbingCachePolicy.isReusablePcmSampleCount(n) ||
                     f.length() != 8L + n.toLong() * 4L) {
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
@@ -521,12 +521,8 @@ class DubbingEngine(
                 if (n > 0 && !DubbingPcmValidation.isValidAudio(sr, samples)) {
                     throw java.io.IOException("PCM 缓存包含静音或无效音频")
                 }
-                if (n == 0) {
-                    readiness.markPrepared(idx, hasAudio = false)
-                } else {
-                    synchronized(mem) { mem[idx] = samples to sr }
-                    readiness.markPrepared(idx, hasAudio = true)
-                }
+                synchronized(mem) { mem[idx] = samples to sr }
+                readiness.markPrepared(idx, hasAudio = true)
                 f.setLastModified(System.currentTimeMillis())
                 samples to sr
             }
@@ -829,28 +825,34 @@ class DubbingEngine(
         }
     }
 
-    /** Update the active voice without changing the selected TTS engine or its cached PCM. */
+    /**
+     * Re-plan the active cue when video speed changes. Merely changing AudioTrack's playback rate
+     * is insufficient: at a new rate the remaining subtitle window also changes, so the old PCM
+     * slice could still be cut short or run into the next cue. Restart from the latest media cursor
+     * and reuse cached PCM; if track creation is still pending, update activePlayerSpeed in place.
+     */
     fun updatePlayerSpeed(speed: Float) {
         val normalized = DubbingTiming.normalizePlayerSpeed(speed)
         if (kotlin.math.abs(normalized - activePlayerSpeed) < 0.01f) return
-        activePlayerSpeed = normalized
-        val rate = (activeSyncRate * normalized).coerceIn(0.5f, 4.0f)
-        if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
-        activePlaybackRate = rate
-        val active = track ?: return
-        try {
-            audioExec.execute {
-                if (!released && track === active) {
-                    runCatching {
-                        active.setPlaybackParams(PlaybackParams().setSpeed(rate).setPitch(1.0f))
-                    }.onFailure {
-                        android.util.Log.w("DubbingEngine", "Could not update active voice playback speed", it)
-                    }
-                }
-            }
-        } catch (_: java.util.concurrent.RejectedExecutionException) {
-            // Service is shutting down.
+
+        val lineIndex = _currentLine.value
+        val cursor = latestTimelineCursor
+        val active = track
+        if (active != null && lineIndex >= 0 &&
+            cursor.lineIndex == lineIndex && cursor.positionMs >= 0L
+        ) {
+            playAt(
+                idx = lineIndex,
+                volume = activeVolume,
+                positionMs = cursor.positionMs,
+                playerSpeed = normalized,
+            )
+            return
         }
+
+        // Synthesis/PCM load may still be queued and have no AudioTrack yet. Its startup reads
+        // activePlayerSpeed after cache loading, so just publish the new value for that path.
+        activePlayerSpeed = normalized
     }
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
     fun isPrepared(idx: Int): Boolean = readiness.isPrepared(idx)

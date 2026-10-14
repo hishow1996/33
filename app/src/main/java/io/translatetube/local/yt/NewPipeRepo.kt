@@ -11,6 +11,8 @@ import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withLock
 
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -55,33 +57,91 @@ object NewPipeRepo {
     @Volatile private var inited = false
     @Volatile private var cachedInfo: StreamInfo? = null
     @Volatile private var cachedId: String? = null
+    @Volatile private var cachedAtMs = 0L
     private val infoLock = Any()
-    /** Every invalidation prevents any older in-flight fetch from repopulating the cache. */
+    /** Avoid duplicate StreamInfo extraction when resolve/subtitle/stream callers start together. */
+    private val infoFetchMutex = kotlinx.coroutines.sync.Mutex()
+    /** Invalidations and newer requests prevent older in-flight fetches from replacing fresh data. */
     private var infoCacheGeneration = 0L
+    private var infoRequestGeneration = 0L
 
-    /** StreamInfo 复用：缓存读写有锁；网络解析不占用锁，避免卡住主线程的 invalidation。 */
+    /** StreamInfo contains signed URLs; keep it for a short window and refresh before URLs grow stale. */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val cached = synchronized(infoLock) {
-                if (cachedId == videoId) cachedInfo else null
+            fun freshCached(): StreamInfo? = synchronized(infoLock) {
+                if (cachedId == videoId &&
+                    StreamInfoCachePolicy.isFresh(cachedAtMs, System.currentTimeMillis())
+                ) cachedInfo else null
             }
-            if (cached != null) return@withContext cached
+            freshCached()?.let { return@withContext it }
 
-            val requestGeneration = synchronized(infoLock) { infoCacheGeneration }
-            initOnce()
-            // This fetch is intentionally outside infoLock. Each caller returns its own result,
-            // and a generation check prevents a stale fetch from being installed after invalidate().
-            val fetched = StreamInfo.getInfo(
-                ServiceList.YouTube,
-                "https://www.youtube.com/watch?v=$videoId",
-            )
-            synchronized(infoLock) {
-                if (infoCacheGeneration == requestGeneration) {
-                    cachedInfo = fetched
-                    cachedId = videoId
+            // A second check after obtaining the mutex means simultaneous callers for the same
+            // video share one network extraction rather than receiving separate signed URL sets.
+            infoFetchMutex.withLock {
+                freshCached()?.let { return@withLock it }
+                var request = synchronized(infoLock) {
+                    infoRequestGeneration += 1L
+                    infoCacheGeneration to infoRequestGeneration
                 }
+                initOnce()
+                // Network work remains outside infoLock so invalidate() can run while it is in flight.
+                val videoUrl = "https://www.youtube.com/watch?v=$videoId"
+                suspend fun fetchInfoWithTransportRetry(): StreamInfo {
+                    return try {
+                        StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (!StreamInfoCachePolicy.isRetryableFailure(e)) throw e
+                        android.util.Log.w(
+                            "NewPipeRepo",
+                            "Transient YouTube metadata request failed; retrying once for video=$videoId",
+                            e,
+                        )
+                        kotlinx.coroutines.delay(400L)
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                    }
+                }
+
+                // A stream error can invalidate signed URLs while extraction is running. Never
+                // return the result of that invalidated request to a caller: throw it away and
+                // resolve again once under the latest generation, otherwise fail clearly.
+                for (refreshAttempt in 0..1) {
+                    val fetched = fetchInfoWithTransportRetry()
+                    val published = synchronized(infoLock) {
+                        if (StreamInfoCachePolicy.mayPublish(
+                                requestGeneration = request.second,
+                                currentRequestGeneration = infoRequestGeneration,
+                                invalidationGeneration = request.first,
+                                currentInvalidationGeneration = infoCacheGeneration,
+                            )
+                        ) {
+                            cachedInfo = fetched
+                            cachedId = videoId
+                            cachedAtMs = System.currentTimeMillis()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (published) return@withLock fetched
+                    if (refreshAttempt == 1) {
+                        throw java.io.IOException(
+                            "YouTube 视频流地址在解析期间连续失效，请重新尝试播放",
+                        )
+                    }
+                    request = synchronized(infoLock) {
+                        infoRequestGeneration += 1L
+                        infoCacheGeneration to infoRequestGeneration
+                    }
+                    android.util.Log.i(
+                        "NewPipeRepo",
+                        "Discarded invalidated stream metadata for video=$videoId; refreshing once",
+                    )
+                }
+                throw java.io.IOException("无法获取仍然有效的 YouTube 视频流地址")
             }
-            fetched
         }
 
     fun init(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) {
@@ -92,9 +152,11 @@ object NewPipeRepo {
     fun invalidate(videoId: String? = null) {
         synchronized(infoLock) {
             infoCacheGeneration += 1
+            infoRequestGeneration += 1L
             if (videoId == null || cachedId == videoId) {
                 cachedInfo = null
                 cachedId = null
+                cachedAtMs = 0L
             }
         }
     }

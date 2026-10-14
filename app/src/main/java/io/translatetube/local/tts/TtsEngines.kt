@@ -21,9 +21,33 @@ interface TtsEngine {
 }
 
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
-class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
+class KokoroTts(private val ctx: Context, private val speakerId: Int = KokoroVoiceRange.DEFAULT_SPEAKER_ID, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
-    override val cacheKey: String get() = "$name-default-${speakerId.coerceIn(0, 53)}"
+
+    // Model assets can be refreshed independently of the app version. Hash every file's
+    // metadata once (including nested eSpeak and dictionaries), then reuse only the compact digest
+    // while walking subtitle rows. This keeps cache-key construction cheap on older phones.
+    private val modelAssetsFingerprint: String by lazy {
+        val dir = io.translatetube.local.data.ModelFiles.ttsDir(ctx)
+        if (!dir.isDirectory) {
+            "missing-kokoro-assets"
+        } else {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            dir.walkTopDown()
+                .filter { it.isFile }
+                .sortedBy { it.relativeTo(dir).invariantSeparatorsPath }
+                .forEach { file ->
+                    val record = "${file.relativeTo(dir).invariantSeparatorsPath}:${file.length()}:${file.lastModified()}\n"
+                    digest.update(record.toByteArray(Charsets.UTF_8))
+                }
+            digest.digest().take(16)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+    }
+
+    override val cacheKey: String
+        get() = "$name-model-v2-${modelAssetsFingerprint}-default-${KokoroVoiceRange.clampSpeakerId(speakerId)}"
+
     private val tts: OfflineTts
 
     init {
@@ -52,7 +76,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
-        val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
+        val selectedSpeaker = KokoroVoiceRange.clampSpeakerId(if (speakerId >= 0) speakerId else this.speakerId)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
         val sampleRate = audio.sampleRate
@@ -81,6 +105,7 @@ class SystemTts(context: Context) : TtsEngine {
 
     val chineseVoiceCount: Int get() = chineseVoiceCatalog.size
     val supportsMultipleChineseVoices: Boolean get() = chineseVoiceCount > 1
+    val chineseVoiceNames: List<String> get() = chineseVoiceCatalog.map { it.name }
 
     // Keep this identity stable while synth() switches per-speaker voices. The selected default
     // voice and complete Chinese voice catalogue make PCM cache entries invalid when capabilities change.
@@ -88,10 +113,14 @@ class SystemTts(context: Context) : TtsEngine {
         get() {
             val engine = ttsRef.get()
             return listOf(
-                name,
+                "system-voice-v2",
                 engine?.defaultEngine.orEmpty(),
                 defaultChineseVoice?.name.orEmpty(),
-                chineseVoiceCatalog.joinToString(",") { "${it.name}@${it.locale}" },
+                chineseVoiceCatalog.joinToString(",") { voice ->
+                    "${voice.name}@${voice.locale}" +
+                        ":network=${voice.isNetworkConnectionRequired}" +
+                        ":quality=${voice.quality}:latency=${voice.latency}"
+                },
             ).joinToString("|")
         }
     private val ready = java.util.concurrent.CountDownLatch(1)

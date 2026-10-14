@@ -2,8 +2,9 @@ package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class TranslationCacheIdentityTest {
@@ -13,11 +14,14 @@ class TranslationCacheIdentityTest {
     )
 
     @Test
-    fun identicalImportedSubtitleContentProducesStableCacheKey() {
-        val first = TranslationCacheIdentity.importedKey("video-key", 42L, source)
-        val second = TranslationCacheIdentity.importedKey("video-key", 42L, source.map { it.copy() })
+    fun identicalImportedSubtitleContentAndProfileProduceStableCacheKey() {
+        val first = TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|https://api.test|model-a", "en-US")
+        val second = TranslationCacheIdentity.importedKey(
+            "video-key", 42L, source.map { it.copy() }, "OPENAI|https://api.test|model-a", "en_US"
+        )
         assertEquals(first, second)
-        assertTrue(first.startsWith("video-key|zh|42|imported-"))
+        assertTrue(first.startsWith("video-key|zh|42|profile-"))
+        assertTrue(first.contains("|imported-"))
     }
 
     @Test
@@ -28,15 +32,62 @@ class TranslationCacheIdentityTest {
         val changedTiming = source.mapIndexed { i, line ->
             if (i == 0) line.copy(endMs = 1_250L) else line
         }
-        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source)
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedText))
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedTiming))
+        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile")
+        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedText, "profile"))
+        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedTiming, "profile"))
     }
 
     @Test
     fun translationProfileAndVideoKeyArePartOfIdentity() {
-        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source)
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 43L, source))
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("another-video", 42L, source))
+        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|model-a")
+        assertNotEquals(
+            key,
+            TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|model-b"),
+        )
+        assertNotEquals(
+            key,
+            TranslationCacheIdentity.importedKey("video-key", 43L, source, "OPENAI|model-a"),
+        )
+        assertNotEquals(
+            key,
+            TranslationCacheIdentity.importedKey("another-video", 42L, source, "OPENAI|model-a"),
+        )
     }
+
+    @Test
+    fun profileTokenDoesNotExposeRawProfileConfiguration() {
+        val secret = "ciphertext-api-key-and-private-endpoint"
+        val token = TranslationCacheIdentity.profileToken(8L, secret)
+        assertTrue(token.isNotBlank())
+        assertTrue(!token.contains(secret))
+        assertNotEquals(token, TranslationCacheIdentity.profileToken(8L, "another-config"))
+    }
+    @Test
+    fun detectsWhetherAResumeKeyMatchesTheCurrentProfileAndVideo() {
+        val matching = TranslationCacheIdentity.videoKey("video-key", 42L, "provider-A")
+        val imported = TranslationCacheIdentity.importedKey("video-key", 42L, source, "provider-A")
+        assertTrue(TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-A"))
+        assertTrue(TranslationCacheIdentity.matchesProfile(imported, "video-key", 42L, "provider-A"))
+        assertFalse(TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-B"))
+        assertFalse(TranslationCacheIdentity.matchesProfile(matching, "another-video", 42L, "provider-A"))
+    }
+
+    @Test
+    fun sourceLanguageComparisonIgnoresCaseAndUnderscoresButSeparatesDifferentLocales() {
+        assertTrue(TranslationCacheIdentity.sameSourceLanguage("en-US", "EN_us"))
+        assertTrue(TranslationCacheIdentity.sameSourceLanguage("zh-Hans", "zh-hans"))
+        assertFalse(TranslationCacheIdentity.sameSourceLanguage("en", "ja"))
+        assertFalse(TranslationCacheIdentity.sameSourceLanguage("", "en"))
+        assertFalse(TranslationCacheIdentity.sameSourceLanguage("en-US", "en-GB"))
+    }
+
+    @Test
+    fun importedCacheKeySeparatesSourceLanguageButNormalizesEquivalentTags() {
+        val english = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile", "en-US")
+        val equivalentEnglish = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile", "en_US")
+        val japanese = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile", "ja")
+        assertEquals(english, equivalentEnglish)
+        assertNotEquals(english, japanese)
+    }
+
 }

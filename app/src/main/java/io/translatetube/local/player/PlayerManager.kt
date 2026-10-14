@@ -148,7 +148,9 @@ class PlayerManager(private val ctx: Context) {
                     .createMediaSource(MediaItem.Builder().setUri(v).setMediaMetadata(meta).build())
                 val asrc = ProgressiveMediaSource.Factory(httpFactory)
                     .createMediaSource(MediaItem.Builder().setUri(audioUrl).setMediaMetadata(meta).build())
-                player.setMediaSource(MergingMediaSource(vs, asrc))
+                // Adaptive tracks can have slightly different start timestamps and durations.
+                // Align their timelines and clip to the common playable window before preparing.
+                player.setMediaSource(MergingMediaSource(true, true, vs, asrc))
                 player.prepare()
                 return
             } catch (e: Exception) {
@@ -198,7 +200,9 @@ class PlayerManager(private val ctx: Context) {
                 .createMediaSource(
                     MediaItem.Builder().setUri(audioUrl).setMediaMetadata(meta).build()
                 )
-            player.setMediaSource(MergingMediaSource(videoSource, audioSource))
+            // Do not rely on the default merge policy: YouTube's separately fetched audio
+            // and video tracks need timestamp alignment and a shared end boundary.
+            player.setMediaSource(MergingMediaSource(true, true, videoSource, audioSource))
             player.prepare()
         } catch (e: Exception) {
             android.util.Log.e("PlayerManager", "YouTube quality setup failed", e)
