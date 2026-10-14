@@ -249,6 +249,11 @@ class DubbingEngine(
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
                 val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                fun checkSynthesisActive() {
+                    if (released || workerJob?.isActive == false) {
+                        throw kotlinx.coroutines.CancellationException("配音缓存写入已取消")
+                    }
+                }
                 val cachedAudioState = cached(idx) {
                     if (released || workerJob?.isActive == false) {
                         throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
@@ -294,7 +299,7 @@ class DubbingEngine(
                     // An empty translation is intentionally silent. Persisting its empty marker is
                     // only an optimization; a full cache must not terminate the whole TTS queue.
                     try {
-                        writeCache(idx, 16000, FloatArray(0))
+                        writeCache(idx, 16000, FloatArray(0), checkActive = ::checkSynthesisActive)
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -411,7 +416,7 @@ class DubbingEngine(
                     } else {
                         readyAudio.samples
                     }
-                    writeCache(idx, readyAudio.sampleRate, boundedSamples)
+                    writeCache(idx, readyAudio.sampleRate, boundedSamples, checkActive = ::checkSynthesisActive)
                     readiness.markPrepared(idx, hasAudio = true)
                     synchronized(mem) { mem[idx] = boundedSamples to readyAudio.sampleRate }
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
@@ -431,7 +436,7 @@ class DubbingEngine(
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
                     try {
-                        writeCache(idx, 16000, FloatArray(0))
+                        writeCache(idx, 16000, FloatArray(0), checkActive = ::checkSynthesisActive)
                     } catch (writeError: Exception) {
                         if (writeError is kotlinx.coroutines.CancellationException) throw writeError
                         // Session readiness is independent of persistence. Even when storage is
@@ -623,33 +628,47 @@ class DubbingEngine(
     }
 
     /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
-    private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
+    private fun writeCache(
+        idx: Int,
+        sampleRate: Int,
+        samples: FloatArray,
+        checkActive: () -> Unit = {},
+    ) {
         val target = cacheFile(idx)
         val temp = File(cacheDir, target.name + ".tmp")
         temp.delete()
-        java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
-            out.writeInt(sampleRate)
-            out.writeInt(samples.size)
-            samples.forEach { out.writeFloat(it) }
-            out.flush()
-        }
-        if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
-            temp.delete()
-            throw java.io.IOException("PCM 缓存写入不完整")
-        }
-        synchronized(cacheWriteLock) {
-            if (released) {
-                temp.delete()
-                throw kotlinx.coroutines.CancellationException("配音引擎已释放，取消缓存写入")
+        try {
+            checkActive()
+            java.io.DataOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(temp))).use { out ->
+                out.writeInt(sampleRate)
+                out.writeInt(samples.size)
+                for (index in samples.indices) {
+                    // Large subtitle cues can contain millions of samples. Do not keep writing
+                    // stale PCM after a seek or video switch cancels the synthesis worker.
+                    if ((index and 0x1fff) == 0) checkActive()
+                    out.writeFloat(samples[index])
+                }
+                out.flush()
             }
-            if (target.exists() && !target.delete()) {
-                temp.delete()
-                throw java.io.IOException("无法替换 PCM 缓存")
+            checkActive()
+            if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
+                throw java.io.IOException("PCM 缓存写入不完整")
             }
-            if (!temp.renameTo(target)) {
-                temp.delete()
-                throw java.io.IOException("无法安装 PCM 缓存")
+            synchronized(cacheWriteLock) {
+                if (released) {
+                    throw kotlinx.coroutines.CancellationException("配音引擎已释放，取消缓存写入")
+                }
+                if (target.exists() && !target.delete()) {
+                    throw java.io.IOException("无法替换 PCM 缓存")
+                }
+                if (!temp.renameTo(target)) {
+                    throw java.io.IOException("无法安装 PCM 缓存")
+                }
             }
+        } catch (error: Exception) {
+            // A cancelled or failed write must not leave a partial file in the active cache dir.
+            runCatching { temp.delete() }
+            throw error
         }
     }
 
