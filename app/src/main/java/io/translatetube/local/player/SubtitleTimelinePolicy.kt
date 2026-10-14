@@ -32,7 +32,12 @@ internal object SubtitleTimelinePolicy {
         }
         if (candidate < 0) return -1
 
-        val line = lines[candidate]
-        return if (positionMs >= line.startMs && positionMs < line.endMs) candidate else -1
+        // Cues can overlap. Prefer the latest-started active cue, but continue looking backwards
+        // when a shorter cue has ended while an earlier, longer cue is still active.
+        for (index in candidate downTo 0) {
+            val line = lines[index]
+            if (positionMs >= line.startMs && positionMs < line.endMs) return index
+        }
+        return -1
     }
 }
