@@ -115,6 +115,39 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         return out
     }
 
+
+    /** File-backed VAD transcription: materialize only the current speech segment. */
+    @Synchronized
+    fun transcribeBySegments(
+        pcmFile: AudioExtract.PcmFile,
+        segs: List<Pair<Long, Long>>,
+        checkActive: () -> Unit = {},
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): List<Triple<Long, Long, String>> {
+        check(!closed) { "Whisper 识别器已关闭" }
+        val sr = pcmFile.sampleRate
+        require(sr == 16_000) { "Whisper 只支持 16kHz PCM 输入" }
+        val durationMs = pcmFile.durationMs
+        val out = mutableListOf<Triple<Long, Long, String>>()
+        segs.forEachIndexed { index, (startMs, endMs) ->
+            checkActive()
+            val safeStartMs = startMs.coerceIn(0L, durationMs)
+            val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
+            val startSample = safeStartMs * sr / 1000L
+            val endSample = (safeEndMs * sr / 1000L).coerceAtMost(pcmFile.sampleCount)
+            if (endSample > startSample) {
+                val sampleCount = endSample - startSample
+                require(sampleCount <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
+                val samples = pcmFile.readFloatSamples(startSample, sampleCount.toInt())
+                val text = transcribe(samples).trim()
+                checkActive()
+                if (text.isNotEmpty()) out += Triple(safeStartMs, safeEndMs, text)
+            }
+            onProgress(index + 1, segs.size)
+        }
+        return out
+    }
+
     @Synchronized
     override fun close() {
         if (closed) return

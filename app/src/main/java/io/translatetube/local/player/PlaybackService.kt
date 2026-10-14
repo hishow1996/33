@@ -16,6 +16,7 @@ import io.translatetube.local.asr.AudioExtract
 import io.translatetube.local.asr.SpeakerDiarizer
 import io.translatetube.local.asr.WhisperEngine
 import io.translatetube.local.asr.vadSegments
+import io.translatetube.local.asr.vadSegmentsFromFile
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.SourceType
 import io.translatetube.local.data.VideoEntity
@@ -441,6 +442,20 @@ class PlaybackService : MediaSessionService() {
         playerReady = false
         if (instance === this) instance = null
         super.onDestroy()
+    }
+
+
+    private fun shouldReleaseWhisperForMemoryPressure(): Boolean {
+        val manager = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            ?: return false
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(memoryInfo)
+        return AsrMemoryPolicy.shouldReleaseRecognizer(
+            isLowRamDevice = manager.isLowRamDevice,
+            systemLowMemory = memoryInfo.lowMemory,
+            availableMemoryBytes = memoryInfo.availMem,
+            totalMemoryBytes = memoryInfo.totalMem,
+        )
     }
 
     private fun releaseWhisperOffMainThread() {
@@ -947,6 +962,7 @@ class PlaybackService : MediaSessionService() {
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
+        var transientPcmFile: AudioExtract.PcmFile? = null
         try {
             ensureCurrentSession(key)
             awaitRetiredDubbingEngines()
@@ -1198,20 +1214,31 @@ class PlaybackService : MediaSessionService() {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
-                val pcm = withContext(Dispatchers.IO) {
-                    if (audioFile is File) AudioExtract.decodeTo16kMono(this@PlaybackService, null, audioFile)
-                    else AudioExtract.decodeTo16kMono(this@PlaybackService, audioFile as Uri, null)
+                val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val pcmFile = withContext(Dispatchers.IO) {
+                    if (audioFile is File) {
+                        AudioExtract.decodeTo16kMonoFile(
+                            this@PlaybackService, null, audioFile,
+                            checkActive = { pcmOwnerJob?.ensureActive() },
+                        )
+                    } else {
+                        AudioExtract.decodeTo16kMonoFile(
+                            this@PlaybackService, audioFile as Uri, null,
+                            checkActive = { pcmOwnerJob?.ensureActive() },
+                        )
+                    }
                 }
+                transientPcmFile = pcmFile
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
-                val segs = withContext(Dispatchers.IO) { vadSegments(this@PlaybackService, pcm.samples) }
+                val segs = withContext(Dispatchers.IO) {
+                    vadSegmentsFromFile(this@PlaybackService, pcmFile)
+                }
                 ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
-                // A canceled coroutine cannot interrupt a blocking native decode immediately.
-                // Serialize access to the shared recognizer and stop the old transcript between
-                // VAD segments as soon as that native call returns.
+                // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
                 val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
-                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcm.samples, segs)
+                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs)
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
@@ -1292,7 +1319,7 @@ class PlaybackService : MediaSessionService() {
                             val chunkStart = processed
                             val chunkEnd = minOf(chunkStart + 3, segs.size)
                             val chunkRows = engine.transcribeBySegments(
-                                pcm.samples,
+                                pcmFile,
                                 segs.subList(chunkStart, chunkEnd),
                                 checkActive = { ownerJob?.ensureActive() },
                             ) { done, _ ->
@@ -1340,10 +1367,20 @@ class PlaybackService : MediaSessionService() {
                                 ?: restoredAsrLanguage.takeIf { it.isNotBlank() }
                                 ?: "en"
                         }
+                        if (shouldReleaseWhisperForMemoryPressure() && whisper === engine) {
+                            // The recognizer is native-memory heavy. Release only under reported
+                            // memory pressure; healthy phones can keep it warm for another ASR job.
+                            whisper = null
+                            runCatching { engine.close() }
+                                .onFailure { android.util.Log.w("PlaybackService", "Whisper release under memory pressure failed", it) }
+                            android.util.Log.i("PlaybackService", "Released Whisper recognizer after ASR because of memory pressure")
+                        }
                         rows to language
                     }
                 }
                 ensureCurrentSession(key)
+                transientPcmFile?.file?.delete()
+                transientPcmFile = null
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
                 // YouTube audio remains cached until its ASR subtitles have been saved successfully.
                 if (audioFile is File && videoId == null) {
@@ -1709,6 +1746,7 @@ class PlaybackService : MediaSessionService() {
                 )
             }
         } finally {
+            transientPcmFile?.file?.delete()
             transientAudio?.delete()
         }
     }

@@ -1,5 +1,8 @@
 package io.translatetube.local.player
 
+import java.io.File
+import java.io.FileOutputStream
+import io.translatetube.local.asr.AudioExtract
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -42,4 +45,37 @@ class AsrTranscriptCheckpointPolicyTest {
         assertFalse(AsrTranscriptCheckpointPolicy.canResume(signature, signature, 2, 2, 3))
         assertFalse(AsrTranscriptCheckpointPolicy.canResume("", signature, 2, 2, 1))
     }
+    @Test
+    fun fileBackedSignatureMatchesInMemorySignatureForSamePcm16Samples() {
+        val pcm16 = shortArrayOf(-32768, -12000, -1, 0, 1, 12000, 32767, 500, -500)
+        val segments = listOf(0L to 300L, 400L to 900L)
+        val file = File.createTempFile("pcm-signature-test", ".s16le")
+        try {
+            FileOutputStream(file).use { output ->
+                pcm16.forEach { sample ->
+                    output.write(sample.toInt() and 0xff)
+                    output.write((sample.toInt() shr 8) and 0xff)
+                }
+            }
+            val inMemory = FloatArray(pcm16.size) { pcm16[it] / 32768f }
+            val fromFile = AudioExtract.PcmFile(file, pcm16.size.toLong(), 16_000)
+            assertEquals(
+                AsrTranscriptCheckpointPolicy.signature(inMemory, segments),
+                AsrTranscriptCheckpointPolicy.signature(fromFile, segments),
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun lowMemoryPolicyReleasesRecognizerOnlyWhenNeeded() {
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(true, false, 2_000_000_000L, 4_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, true, 2_000_000_000L, 4_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 300_000_000L, 4_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 350_000_000L, 8_000_000_000L))
+        assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 1_000_000_000L, 4_000_000_000L))
+        assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 0L, 0L))
+    }
+
 }

@@ -2,6 +2,25 @@ package io.translatetube.local.asr
 
 /** Pure PCM16 channel mixer, kept separate so multichannel handling can be tested on the JVM. */
 internal object PcmChannelMixer {
+    fun downmixChunk(chunk: ShortArray, channels: Int): ShortArray {
+        require(channels in 1..8) { "Unsupported PCM channel count: $channels" }
+        require(chunk.size % channels == 0) { "PCM chunk splits a multichannel frame" }
+        if (channels == 1) return chunk.copyOf()
+
+        val mono = ShortArray(chunk.size / channels)
+        var outputIndex = 0
+        var offset = 0
+        while (offset < chunk.size) {
+            var sum = 0L
+            for (channel in 0 until channels) sum += chunk[offset + channel].toLong()
+            mono[outputIndex++] = (sum / channels)
+                .coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong())
+                .toShort()
+            offset += channels
+        }
+        return mono
+    }
+
     fun downmixToMono(chunks: Iterable<ShortArray>, channels: Int): ShortArray {
         require(channels in 1..8) { "Unsupported PCM channel count: $channels" }
         val totalSamples = chunks.sumOf { it.size.toLong() }
