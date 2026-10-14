@@ -46,6 +46,23 @@ class AsrAudioCacheIdentityTest {
     }
 
     @Test
+    fun opaqueTokenOnlyEndpointKeepsTokenToAvoidCrossMediaCacheCollisions() {
+        val first = "webmedia:https://cdn.example.test/play?token=media-one"
+        val second = "webmedia:https://cdn.example.test/play?token=media-two"
+
+        assertNotEquals(
+            AsrAudioCacheIdentity.hash(first),
+            AsrAudioCacheIdentity.hash(second),
+        )
+        assertEquals(
+            "webmedia:https://cdn.example.test/video/seg-1.m4s",
+            AsrAudioCacheIdentity.canonicalSource(
+                "webmedia:https://cdn.example.test/video/seg-1.m4s?token=old",
+            ),
+        )
+    }
+
+    @Test
     fun identityIsAHashRatherThanAPersistableSignedUrl() {
         val signed = "webmedia:https://cdn.example.test/audio.m4a?token=private-secret&videoId=abc"
         val identity = AsrAudioCacheIdentity.hash(signed)
