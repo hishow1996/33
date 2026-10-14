@@ -83,6 +83,9 @@ interface SubtitleCacheDao {
     @Query("SELECT cacheKey FROM subtitle_cache WHERE substr(cacheKey, -23) = '|speaker-diarization-v1' ORDER BY updatedAt DESC")
     suspend fun speakerDiarizationCacheKeys(): List<String>
 
+    @Query("UPDATE subtitle_cache SET updatedAt = :updatedAt WHERE cacheKey = :k")
+    suspend fun touch(k: String, updatedAt: Long)
+
     @Query("DELETE FROM subtitle_cache")
     suspend fun clear()
 }

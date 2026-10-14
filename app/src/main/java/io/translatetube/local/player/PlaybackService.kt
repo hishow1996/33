@@ -2786,6 +2786,9 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 val segments = if (!restoredSegments.isNullOrEmpty()) {
+                    // The eviction query is ordered by updatedAt, so a cache hit must refresh its
+                    // recency or frequently revisited videos would still be treated as old entries.
+                    subtitleCacheDao.touch(diarizationCacheKey, System.currentTimeMillis())
                     updateUiForSession(sessionKey) { state ->
                         if (state.key == sessionKey) state.copy(progress = "复用已缓存的人物识别结果…") else state
                     }
