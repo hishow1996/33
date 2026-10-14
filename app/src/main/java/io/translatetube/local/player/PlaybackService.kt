@@ -2160,20 +2160,18 @@ class PlaybackService : MediaSessionService() {
     /** Stable cache IDs avoid persisting signed webpage URLs in subtitle cache keys. */
     private fun stableSourceCacheIdentity(key: String, videoId: String?): String {
         if (videoId != null) return key
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(key.toByteArray(Charsets.UTF_8))
-        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        return "media:$safeId"
+        // Signed CDN tokens often rotate between retries. Hash the canonical URL identity so
+        // the same media keeps its source-subtitle, partial-ASR and translation checkpoints.
+        return "media:${AsrAudioCacheIdentity.hash(key)}"
     }
 
     private fun asrAudioCacheDirectory(): File =
         File(cacheDir, "asr_audio_retry").apply { mkdirs() }
 
     private fun asrAudioCacheFile(videoId: String): File {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(videoId.toByteArray(Charsets.UTF_8))
-        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        return File(asrAudioCacheDirectory(), "$safeId.bin")
+        // The parameter is a YouTube ID or a media key (such as "webmedia:<url>").
+        // Use the same canonical identity as cache metadata to recover downloads after URL signing rotates.
+        return File(asrAudioCacheDirectory(), "${AsrAudioCacheIdentity.hash(videoId)}.bin")
     }
 
     /**
