@@ -1429,7 +1429,10 @@ class PlaybackService : MediaSessionService() {
                 // Serialize access to the shared recognizer and stop the old transcript between
                 // VAD segments as soon as that native call returns.
                 val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
-                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcm.samples, segs)
+                // The full fingerprint touches every PCM sample; compute it off Main on long videos.
+                val asrSignature = withContext(Dispatchers.Default) {
+                    AsrTranscriptCheckpointPolicy.signature(pcm.samples, segs)
+                }
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
