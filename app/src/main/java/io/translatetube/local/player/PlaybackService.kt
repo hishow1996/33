@@ -138,9 +138,9 @@ class PlaybackService : MediaSessionService() {
         }
     }
     private var prepJob: Job? = null
-    private var videoKey = ""
-    private var videoId: String? = null
-    private var localUri: Uri? = null
+    @Volatile private var videoKey = ""
+    @Volatile private var videoId: String? = null
+    @Volatile private var localUri: Uri? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var qualityRecoveryAttempted = false
@@ -481,8 +481,6 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
-        // Clear any previous media item's error before parsing the newly requested video.
-        pm.errorSink.value = null
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
@@ -497,6 +495,9 @@ class PlaybackService : MediaSessionService() {
         qualityJob?.cancel()
         qualitySources = emptyList()
         qualityAudioUrl = ""
+        // Clear the prior item's error only after the new session identity and stream cache are
+        // reset, so delayed listeners cannot recover the old URL against the new video ID.
+        pm.errorSink.value = null
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
