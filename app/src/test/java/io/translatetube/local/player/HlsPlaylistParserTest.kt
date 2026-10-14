@@ -45,6 +45,25 @@ class HlsPlaylistParserTest {
     }
 
     @Test
+    fun doesNotMisclassifyVp8OpusMuxedVariantAsAudioOnly() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=60000,CODECS="vp8,opus"
+            muxed/vp8-opus.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=90000,CODECS="opus"
+            audio/opus.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/audio/opus.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
     fun selectsAudioRenditionFromTheChosenVariantGroupNotAnotherGroupsDefault() {
         val master = """
             #EXTM3U
