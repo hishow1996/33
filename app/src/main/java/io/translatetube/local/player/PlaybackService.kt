@@ -2206,7 +2206,9 @@ class PlaybackService : MediaSessionService() {
             downloadAudio(
                 url = url,
                 destination = asrAudioCacheFile(cacheKey),
-                sourceKey = cacheKey,
+                // Range sidecars persist across process death. Store the stable hash identity here,
+                // not a signed webpage URL that may contain session tokens or expiring credentials.
+                sourceKey = stableSourceCacheIdentity(cacheKey, videoId = null),
                 sessionKey = sessionKey,
                 headers = headers,
                 mimeType = mimeType,
