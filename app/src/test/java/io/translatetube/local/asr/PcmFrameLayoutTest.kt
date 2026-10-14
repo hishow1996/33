@@ -5,6 +5,25 @@ import org.junit.Test
 
 class PcmFrameLayoutTest {
     @Test
+    fun boundedChunkSizesNeverSplitChannelFrames() {
+        for (channels in 1..8) {
+            val remaining = 200_000 - (200_000 % channels)
+            var offset = 0
+            while (offset < remaining) {
+                val count = PcmFrameLayout.boundedChunkSampleCount(
+                    remainingSamples = remaining - offset,
+                    maxChunkSamples = 64 * 1024,
+                    channels = channels,
+                )
+                assertEquals(true, count in 1..(64 * 1024))
+                assertEquals(0, count % channels)
+                offset += count
+            }
+            assertEquals(remaining, offset)
+        }
+    }
+
+    @Test
     fun acceptsAlignedInterleavedPcmFrames() {
         assertEquals(true, PcmFrameLayout.isValidBuffer(0, 4096, 2, 2))
         assertEquals(true, PcmFrameLayout.isValidBuffer(16, 8192, 4, 2))
