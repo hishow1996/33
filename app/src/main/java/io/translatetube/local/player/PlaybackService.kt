@@ -1301,6 +1301,13 @@ class PlaybackService : MediaSessionService() {
                 } finally {
                     releaseActiveAsrAudio(leasedAudioPath)
                 }
+                // Keep HLS parts when decoding fails so the next attempt can reuse downloaded
+                // segments. Once MediaExtractor has accepted the merged file, discard the copies.
+                if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
+                    withContext(Dispatchers.IO) {
+                        HlsAudioDownloader.cleanupSegmentCache(audioFile)
+                    }
+                }
                 transientPcmFile = pcmFile
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }

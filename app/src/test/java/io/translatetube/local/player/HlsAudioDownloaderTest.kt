@@ -7,6 +7,30 @@ import org.junit.Test
 
 class HlsAudioDownloaderTest {
 
+
+    @Test
+    fun cleanupSegmentCacheRemovesOnlyTheMatchingMediaDirectory() {
+        val parent = createTempDir(prefix = "hls-cache-cleanup")
+        try {
+            val destination = java.io.File(parent, "remote-audio.bin")
+            val matching = java.io.File(parent, "remote-audio.segments").apply {
+                mkdirs()
+                java.io.File(this, "00000.seg").writeBytes(byteArrayOf(1, 2, 3))
+            }
+            val unrelated = java.io.File(parent, "another-audio.segments").apply {
+                mkdirs()
+                java.io.File(this, "00000.seg").writeBytes(byteArrayOf(4, 5, 6))
+            }
+
+            assertEquals(true, HlsAudioDownloader.cleanupSegmentCache(destination))
+            assertEquals(false, matching.exists())
+            assertEquals(true, unrelated.exists())
+            assertEquals(true, HlsAudioDownloader.cleanupSegmentCache(destination))
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
     @Test
     fun removesInheritedRangeHeadersWithoutDroppingSessionHeaders() {
         val headers = HlsAudioDownloader.headersWithoutInheritedRange(

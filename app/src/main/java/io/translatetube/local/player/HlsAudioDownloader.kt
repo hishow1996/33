@@ -55,6 +55,14 @@ internal object HlsAudioDownloader {
     internal fun headersWithoutInheritedRange(headers: Map<String, String>): Map<String, String> =
         headers.filterKeys { !it.equals("Range", ignoreCase = true) }
 
+    /** Remove the retry cache only after the assembled file has decoded successfully. */
+    internal fun cleanupSegmentCache(destination: File): Boolean {
+        val parent = destination.absoluteFile.parentFile ?: return false
+        val stem = destination.name.substringBeforeLast('.', destination.name)
+        val cacheDirectory = File(parent, "$stem.segments")
+        return !cacheDirectory.exists() || cacheDirectory.deleteRecursively()
+    }
+
     fun isManifestUrl(value: String): Boolean = runCatching {
         URI(value.trim()).rawPath.orEmpty().endsWith(".m3u8", ignoreCase = true)
     }.getOrDefault(false)
@@ -261,7 +269,9 @@ internal object HlsAudioDownloader {
                     throw IllegalStateException("音轨已合并，但无法原子保存缓存文件；重试时会复用已下载的分段。")
                 }
                 destination.setLastModified(System.currentTimeMillis())
-                cacheDirectory.deleteRecursively()
+                // Keep complete segments until MediaExtractor accepts the merged file. The caller
+                // clears this directory after successful decode; a decode failure can then retry
+                // assembly without downloading every network segment again.
                 onProgress("网页音轨缓存完成，准备解码")
             }
             return destination
