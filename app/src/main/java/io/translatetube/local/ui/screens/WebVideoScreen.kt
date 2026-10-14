@@ -59,6 +59,7 @@ private data class WebVideoCandidate(
     val title: String,
     val poster: String,
     val durationSeconds: Double,
+    val drmProtected: Boolean,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,6 +94,7 @@ fun WebVideoScreen(
                             title = item.optString("title"),
                             poster = item.optString("poster"),
                             durationSeconds = item.optDouble("duration", 0.0).takeIf { it.isFinite() } ?: 0.0,
+                            drmProtected = item.optBoolean("drm", false),
                         )
                     }.distinctBy { it.url }
                 }.getOrDefault(emptyList())
@@ -215,7 +217,10 @@ fun WebVideoScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(candidatesState.value, key = { it.url }) { candidate ->
-                        val reason = WebMediaUrlPolicy.unsupportedReason(candidate.url)
+                        val reason = when {
+                            candidate.drmProtected -> "检测到 EME/DRM 标记，不能提取或绕过受保护的媒体音轨。"
+                            else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
+                        }
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -274,7 +279,8 @@ private val PROBE_SCRIPT = """
             url: src,
             title: document.title || '',
             poster: v.poster || '',
-            duration: isFinite(v.duration) ? v.duration : 0
+            duration: isFinite(v.duration) ? v.duration : 0,
+            drm: !!v.mediaKeys
           };
         }).filter(function(row) { return !!row.url; });
         if (window.ElephantVideoBridge) {
