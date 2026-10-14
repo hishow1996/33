@@ -1,6 +1,8 @@
 package io.translatetube.local.asr
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PcmChannelMixerTest {
@@ -33,6 +35,20 @@ class PcmChannelMixerTest {
             shortArrayOf(100, 200),
             PcmChannelMixer.downmixToMono(listOf(samples), 6),
         )
+    }
+
+    @Test
+    fun largeDownmixChecksCancellationBetweenOutputChunks() {
+        var checks = 0
+        val error = runCatching {
+            PcmChannelMixer.downmixChunk(ShortArray(100_000), 2) {
+                checks++
+                if (checks == 3) throw java.util.concurrent.CancellationException("stale decode")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(3, checks)
     }
 
     @Test(expected = IllegalArgumentException::class)
