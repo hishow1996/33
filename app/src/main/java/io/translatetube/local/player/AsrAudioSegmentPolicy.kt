@@ -25,7 +25,7 @@ internal object AsrAudioSegmentPolicy {
         }
     }
 
-    /** Supports both "bytes 0-99/200" and the 416 form "bytes */200". */
+    /** Supports normal byte ranges and the unsatisfied range used in HTTP 416 responses. */
     fun parseContentRange(header: String?): ContentRange? {
         if (header.isNullOrBlank()) return null
         val value = header.trim()
