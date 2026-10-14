@@ -605,6 +605,8 @@ class PlaybackService : MediaSessionService() {
         val previousDubbing = dubbing
         previousDubbing?.release()
         dubbing = null
+        // Do not mute the source while imported lines are being parsed or TTS is initializing.
+        pm.originalVolume = 1f
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
             try {
@@ -629,7 +631,9 @@ class PlaybackService : MediaSessionService() {
                     )
                 })
                 ensureCurrentSession(sessionKey)
-                pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+                // The source remains audible until each translated cue's PCM is ready.
+                // tick() applies the normal/ducked/muted mix at the moment dubbing can play.
+                pm.originalVolume = 1f
                 updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.SYNTHESIZING,
@@ -697,7 +701,11 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (videoKey == sessionKey && ui.value.key == sessionKey) {
-                    runCatching { pm.originalVolume = 1f }
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == sessionKey && ui.value.key == sessionKey) {
+                            runCatching { pm.originalVolume = 1f }
+                        }
+                    }
                 }
                 updateUiForSession(sessionKey) {
                     it.copy(
@@ -721,7 +729,8 @@ class PlaybackService : MediaSessionService() {
         val previousDubbing = dubbing
         previousDubbing?.release()
         dubbing = null
-        pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+        // Keep original audio available until the imported cues have valid dubbing PCM.
+        pm.originalVolume = 1f
         lastLineIdx = Int.MIN_VALUE
 
         prepJob = scope.launch {
@@ -850,11 +859,19 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Subtitle import failed", e)
+                if (videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == sessionKey && ui.value.key == sessionKey) {
+                            runCatching { pm.originalVolume = 1f }
+                        }
+                    }
+                }
                 updateUiForSession(sessionKey) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
                         error = "字幕导入失败: ${e.message ?: e.javaClass.simpleName}",
+                        muteOriginal = false,
                     )
                 }
             }
