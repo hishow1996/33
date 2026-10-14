@@ -35,18 +35,11 @@ object ModelFiles {
     fun ttsDir(ctx: Context) = File(ctx.filesDir, "models/tts")
     fun asrDir(ctx: Context) = File(ctx.filesDir, "models/whisper")
 
-    // 模型文件只有存在且达到合理最小体积才视为就绪，避免截断文件触发 ONNX 原生层崩溃。
-    private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
-        file.isFile && file.length() >= minBytes
-
     fun ttsReady(ctx: Context): Boolean = ModelAssetReadiness.isTtsReady(ttsDir(ctx))
 
-    fun asrCoreReady(ctx: Context) =
-        validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
-            validModel(File(asrDir(ctx), "base-decoder.int8.onnx"))
+    fun asrCoreReady(ctx: Context): Boolean = ModelAssetReadiness.isAsrCoreReady(asrDir(ctx))
 
-    fun asrReady(ctx: Context) =
-        asrCoreReady(ctx) && validModel(File(asrDir(ctx), "silero_vad.onnx"), 512L * 1024)
+    fun asrReady(ctx: Context): Boolean = ModelAssetReadiness.isAsrReady(asrDir(ctx))
 
     fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
 }
@@ -445,17 +438,14 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             val assetsReady = if (destDir.name == "tts") {
                 ModelAssetReadiness.isTtsReady(staging)
             } else {
-                listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx").all { name ->
-                    val file = File(staging, name)
-                    file.isFile && file.length() >= 1L * 1024 * 1024
-                }
+                ModelAssetReadiness.isAsrCoreReady(staging)
             }
             if (!assetsReady) {
                 throw java.io.IOException(
                     if (destDir.name == "tts")
                         "Kokoro 模型包缺少必要的模型、tokens、词典或发音规则文件，已取消安装"
                     else
-                        "Whisper 模型包缺少必要文件或文件体积异常，已取消安装"
+                        "Whisper 模型包缺少编码器、解码器或完整 tokens 文件，已取消安装"
                 )
             }
 

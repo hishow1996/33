@@ -74,4 +74,41 @@ class ModelAssetReadinessTest {
         }
     }
 
+    @Test
+    fun whisperReadinessRequiresEncoderDecoderAndSubstantialTokensFile() {
+        val dir = createTempDir(prefix = "whisper-ready-")
+        try {
+            createFile(dir, "base-encoder.int8.onnx", 1_100_000)
+            createFile(dir, "base-decoder.int8.onnx", 1_100_000)
+
+            assertFalse(ModelAssetReadiness.isAsrCoreReady(dir))
+            assertFalse(ModelAssetReadiness.isAsrReady(dir))
+
+            createFile(dir, "base-tokens.txt", 2_048)
+            assertFalse(ModelAssetReadiness.isAsrCoreReady(dir))
+
+            createFile(dir, "base-tokens.txt", 96 * 1024)
+            assertTrue(ModelAssetReadiness.isAsrCoreReady(dir))
+            assertFalse(ModelAssetReadiness.isAsrReady(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun whisperIsReadyOnlyWhenVadIsAlsoInstalled() {
+        val dir = createTempDir(prefix = "whisper-vad-ready-")
+        try {
+            createFile(dir, "base-encoder.int8.onnx", 1_100_000)
+            createFile(dir, "base-decoder.int8.onnx", 1_100_000)
+            createFile(dir, "base-tokens.txt", 96 * 1024)
+            createFile(dir, "silero_vad.onnx", 600 * 1024)
+
+            assertTrue(ModelAssetReadiness.isAsrCoreReady(dir))
+            assertTrue(ModelAssetReadiness.isAsrReady(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
 }

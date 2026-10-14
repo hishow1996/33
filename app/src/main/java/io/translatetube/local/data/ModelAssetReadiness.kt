@@ -9,6 +9,8 @@ import java.io.File
  */
 internal object ModelAssetReadiness {
     private const val MIN_LARGE_MODEL_BYTES = 1L * 1024L * 1024L
+    // Sherpa Whisper base token vocabularies are hundreds of KB; a tiny file means truncation.
+    private const val MIN_ASR_TOKENS_BYTES = 64L * 1024L
 
     private val requiredFiles = listOf(
         "model.int8.onnx" to MIN_LARGE_MODEL_BYTES,
@@ -29,6 +31,23 @@ internal object ModelAssetReadiness {
         return isPopulatedDirectory(File(directory, "espeak-ng-data")) &&
             isPopulatedDirectory(File(directory, "dict"))
     }
+
+    /** Every file passed to OfflineWhisperModelConfig must exist before native initialization. */
+    fun isAsrCoreReady(directory: File): Boolean {
+        if (!directory.isDirectory) return false
+        val encoder = File(directory, "base-encoder.int8.onnx")
+        val decoder = File(directory, "base-decoder.int8.onnx")
+        val tokens = File(directory, "base-tokens.txt")
+        return encoder.isFile && encoder.length() >= MIN_LARGE_MODEL_BYTES &&
+            decoder.isFile && decoder.length() >= MIN_LARGE_MODEL_BYTES &&
+            tokens.isFile && tokens.length() >= MIN_ASR_TOKENS_BYTES
+    }
+
+    fun isAsrReady(directory: File): Boolean =
+        isAsrCoreReady(directory) &&
+            File(directory, "silero_vad.onnx").let {
+                it.isFile && it.length() >= 512L * 1024L
+            }
 
     private fun isPopulatedDirectory(directory: File): Boolean =
         directory.isDirectory && directory.walkTopDown().any { it.isFile && it.length() > 0L }
