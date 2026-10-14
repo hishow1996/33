@@ -88,6 +88,7 @@ object AudioExtract {
         checkActive: () -> Unit = {},
         headers: Map<String, String> = emptyMap(),
         maxPcmBytes: Long = PcmTempFilePolicy.MAX_PCM_BYTES,
+        onProgress: (processedSamples: Long, totalSamples: Long) -> Unit = { _, _ -> },
     ): PcmFile {
         require(maxPcmBytes > 0L) { "PCM 临时文件大小上限必须大于 0" }
         PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
@@ -162,6 +163,15 @@ object AudioExtract {
                 }
             }
             validateOutputFormat(sourceRate, sourceChannels)
+            val expectedDurationUs = runCatching {
+                format.getLong(MediaFormat.KEY_DURATION)
+            }.getOrDefault(-1L)
+            val expectedOutputSamples = if (expectedDurationUs > 0L) {
+                (expectedDurationUs.toDouble() * 16_000.0 / 1_000_000.0)
+                    .toLong()
+                    .coerceAtLeast(1L)
+            } else -1L
+            var lastProgressSamples = 0L
 
             val rawMaxSourceSamples = if (maxDurationMs == Long.MAX_VALUE) {
                 Int.MAX_VALUE.toLong()
@@ -264,6 +274,10 @@ object AudioExtract {
                             val converted = activeResampler.process(monoChunk)
                             writeConvertedPcm(output, converted)
                             outputSamples += converted.size
+                            if (outputSamples - lastProgressSamples >= 16_000L) {
+                                onProgress(outputSamples, expectedOutputSamples)
+                                lastProgressSamples = outputSamples
+                            }
                         }
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
                             decodedSourceSamples >= maxSourceSamples
@@ -296,6 +310,7 @@ object AudioExtract {
                 val tail = activeResampler.finish()
                 writeConvertedPcm(output, tail)
                 outputSamples += tail.size
+                onProgress(outputSamples, expectedOutputSamples)
                 output.flush()
             }
 
