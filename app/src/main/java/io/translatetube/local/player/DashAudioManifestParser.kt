@@ -40,10 +40,10 @@ internal object DashAudioManifestParser {
         if (root.getAttribute("type").equals("dynamic", ignoreCase = true)) {
             throw UnsupportedOperationException("当前版本只处理已完成的 DASH 点播清单，直播清单暂不支持")
         }
-        if (root.getElementsByTagName("ContentProtection").length > 0) {
+        if (hasDescendantNamed(root, "ContentProtection")) {
             throw UnsupportedOperationException("该 DASH 清单声明了加密或 DRM 保护，不能提取其音轨")
         }
-        if (root.getElementsByTagName("SegmentBase").length > 0) {
+        if (hasDescendantNamed(root, "SegmentBase")) {
             throw UnsupportedOperationException("该 DASH 清单使用 SegmentBase/字节范围，当前版本暂不支持安全重组")
         }
 
@@ -292,17 +292,32 @@ internal object DashAudioManifestParser {
     }
 
     private fun isAudioAdaptation(element: Element): Boolean {
+        if (hasAudioMimeOrCodec(element)) return true
+        // Some valid MPDs omit AdaptationSet's mimeType/contentType and declare it only on each
+        // Representation, so inspect children before incorrectly reporting "no audio track".
+        return directChildren(element, "Representation").any(::hasAudioMimeOrCodec)
+    }
+
+    private fun hasAudioMimeOrCodec(element: Element): Boolean {
         val mime = element.getAttribute("mimeType")
         val contentType = element.getAttribute("contentType")
         if (contentType.equals("audio", ignoreCase = true) ||
             mime.startsWith("audio/", ignoreCase = true)
         ) return true
         val codecs = element.getAttribute("codecs").lowercase(Locale.ROOT)
-        val hasAudio = listOf("mp4a", "ac-3", "ec-3", "opus", "vorbis", "flac", "alac")
-            .any(codecs::contains)
-        val hasVideo = listOf("avc", "hev", "hvc", "vp9", "vp09", "av01", "theora")
-            .any(codecs::contains)
-        return hasAudio && !hasVideo
+        val audioCodecs = listOf("mp4a", "ac-3", "ec-3", "opus", "vorbis", "flac", "alac")
+        val videoCodecs = listOf("avc", "hev", "hvc", "vp9", "vp09", "av01", "theora")
+        return audioCodecs.any(codecs::contains) && videoCodecs.none(codecs::contains)
+    }
+
+    private fun hasDescendantNamed(root: Element, expected: String): Boolean {
+        val nodes = root.getElementsByTagName("*")
+        for (index in 0 until nodes.length) {
+            val node = nodes.item(index)
+            val name = node.nodeName.substringAfter(':')
+            if (name.equals(expected, ignoreCase = true)) return true
+        }
+        return false
     }
 
     private fun chooseRepresentation(representations: List<Element>): Element {
