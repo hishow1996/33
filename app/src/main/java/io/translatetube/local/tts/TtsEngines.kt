@@ -55,9 +55,12 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+        if (text.isBlank()) return TtsAudio(FloatArray(0), 24000)
+        // Validate before regex normalization so a pathological input cannot allocate another
+        // giant string before reaching the safety bound.
+        TtsTextPolicy.validate(text)
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
-        TtsTextPolicy.validate(normalizedText)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
