@@ -298,9 +298,9 @@ internal object DashAudioManifestParser {
     ): String {
         val escapeMarker = "\u0001"
         val dollar = '$'.toString()
-        val protected = input.replace(dollar + dollar, escapeMarker)
+        val escapedInput = input.replace(dollar + dollar, escapeMarker)
         val pattern = Regex("""\$(RepresentationID|Bandwidth|Number|Time)(?:%0(\d+)d)?\$""")
-        val expanded = pattern.replace(protected) { match ->
+        val expanded = pattern.replace(escapedInput) { match ->
             val value = when (match.groupValues[1]) {
                 "RepresentationID" -> representationId
                 "Bandwidth" -> bandwidth.toString()
@@ -368,119 +368,6 @@ internal object DashAudioManifestParser {
         }
         return millis.toLong().coerceAtLeast(1L)
     }
-
-    private fun durationMs(value: String?): Long {
-        if (value.isNullOrBlank()) return 0L
-        return runCatching {
-            val parsed = Duration.parse(value)
-            parsed.seconds * 1_000L + parsed.nano / 1_000_000L
-        }.getOrDefault(0L)
-    }
-
-    private fun parseXml(text: String): Element {
-        require(text.isNotBlank()) { "DASH 清单为空" }
-        val factory = DocumentBuilderFactory.newInstance()
-        runCatching { factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-        runCatching { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) }
-        runCatching { factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
-        runCatching { factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "") }
-        runCatching { factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalSchema", "") }
-        factory.isXIncludeAware = false
-        factory.isExpandEntityReferences = false
-        val document = factory.newDocumentBuilder().parse(InputSource(StringReader(text)))
-        return document.documentElement
-    }
-
-    private fun child(parent: Element?, tag: String): Element? =
-        if (parent == null) null else directChildren(parent, tag).firstOrNull()
-
-    private fun childText(parent: Element, tag: String): String? =
-        child(parent, tag)?.textContent?.trim()?.takeIf { it.isNotBlank() }
-
-    private fun directChildren(parent: Element, tag: String): List<Element> {
-        val result = mutableListOf<Element>()
-        val children = parent.childNodes
-        for (index in 0 until children.length) {
-            val node = children.item(index)
-            if (node is Element && node.tagName.substringAfter(':').equals(tag, ignoreCase = true)) {
-                result += node
-            }
-        }
-        return result
-    }
-
-    private fun resolveHttpUrl(baseUrl: String, path: String): String {
-        val resolved = runCatching { URI(baseUrl).resolve(URI(path)).normalize() }
-            .getOrElse { throw IllegalArgumentException("DASH 媒体 URL 无效", it) }
-        validateHttpUrl(resolved.toASCIIString())
-        return resolved.toASCIIString()
-    }
-
-    private fun validateHttpUrl(value: String) {
-        val uri = runCatching { URI(value) }.getOrNull()
-        if (uri == null ||
-            (!uri.scheme.equals("http", true) && !uri.scheme.equals("https", true)) ||
-            uri.host.isNullOrBlank() || uri.userInfo != null
-        ) throw IllegalArgumentException("DASH 只允许可访问的 HTTP/HTTPS 媒体地址")
-    }
-
-    private fun looksLikeDirectAudioUrl(value: String): Boolean {
-        val path = runCatching { URI(value).path.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
-        return listOf(".m4a", ".mp3", ".aac", ".ogg", ".opus", ".flac", ".wav").any(path::endsWith)
-    }
-
-    private fun ceilDiv(numerator: Long, denominator: Long): Long {
-        if (numerator <= 0L || denominator <= 0L) return 0L
-        return numerator / denominator + if (numerator % denominator == 0L) 0L else 1L
-    }
-
-    private const val PREFERRED_MAX_AUDIO_BANDWIDTH = 320_000L
-}
-.toString()
-        val protected = input.replace(dollar + dollar, escapeMarker)
-        val pattern = Regex("""\$(RepresentationID|Bandwidth|Number|Time)(?:%0(\d+)d)?\$""")
-        val expanded = pattern.replace(protected) { match ->
-            val value = when (match.groupValues[1]) {
-                "RepresentationID" -> representationId
-                "Bandwidth" -> bandwidth.toString()
-                "Number" -> number.toString()
-                else -> time.toString()
-            }
-            val width = match.groupValues.getOrNull(2)?.toIntOrNull() ?: 0
-            if (width in 1..12 && value.length < width) value.padStart(width, '0') else value
-        }
-        return expanded.replace(escapeMarker, '$'.toString())
-    }
-
-    private fun isAudioAdaptation(element: Element): Boolean {
-        val mime = element.getAttribute("mimeType")
-        val contentType = element.getAttribute("contentType")
-        if (contentType.equals("audio", ignoreCase = true) ||
-            mime.startsWith("audio/", ignoreCase = true)
-        ) return true
-        val codecs = element.getAttribute("codecs").lowercase(Locale.ROOT)
-        val hasAudio = listOf("mp4a", "ac-3", "ec-3", "opus", "vorbis", "flac", "alac")
-            .any(codecs::contains)
-        val hasVideo = listOf("avc", "hev", "hvc", "vp9", "vp09", "av01", "theora")
-            .any(codecs::contains)
-        return hasAudio && !hasVideo
-    }
-
-    private fun chooseRepresentation(representations: List<Element>): Element {
-        val entries = representations.mapNotNull { element ->
-            val bandwidth = element.getAttribute("bandwidth").toLongOrNull()
-            if (bandwidth == null || bandwidth <= 0L) null else element to bandwidth
-        }
-        if (entries.isEmpty()) return representations.first()
-        val withinPreferredLimit = entries.filter { it.second <= PREFERRED_MAX_AUDIO_BANDWIDTH }
-        return (withinPreferredLimit.maxByOrNull { it.second } ?: entries.minByOrNull { it.second })!!.first
-    }
-
-    private fun isMainRole(adaptation: Element): Boolean =
-        directChildren(adaptation, "Role").any {
-            it.getAttribute("value").equals("main", ignoreCase = true) ||
-                it.getAttribute("value").equals("default", ignoreCase = true)
-        }
 
     private fun durationMs(value: String?): Long {
         if (value.isNullOrBlank()) return 0L
