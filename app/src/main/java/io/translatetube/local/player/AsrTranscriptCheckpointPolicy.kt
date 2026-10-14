@@ -20,7 +20,6 @@ internal object AsrTranscriptCheckpointPolicy {
         segments.forEach { (start, end) ->
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }
-        checkActive()
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
@@ -61,6 +60,7 @@ internal object AsrTranscriptCheckpointPolicy {
             if ((segmentIndex and 0x3ff) == 0) checkActive()
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }
+        checkActive()
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
