@@ -1439,10 +1439,12 @@ class PlaybackService : MediaSessionService() {
                 val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("asr_provider", "local") ?: "local"
                 val asrProvider = storedAsrProvider.takeIf {
-                    it == "local" || it == "elevenlabs" || it == "cartesia"
+                    it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa
                 } ?: "local"
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
+                val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
+                val cloudLanguage = if (asrProvider == "kawa") kawaLanguage else cartesiaLanguage
                 val missingLocalModel = asrProvider == "local" &&
                     !io.translatetube.local.data.ModelFiles.asrReady(this)
                 val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
@@ -1450,7 +1452,8 @@ class PlaybackService : MediaSessionService() {
                     val hint = when (asrProvider) {
                         "local" -> "该视频无字幕。请在设置 → 模型管理中下载本地 Whisper 转写模型。"
                         "elevenlabs" -> "已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎中填写 API Key。"
-                        else -> "已选择 Cartesia 云端转写，请先在设置 → 转写引擎中填写 API Key。"
+                        "cartesia" -> "已选择 Cartesia 云端转写，请先在设置 → 转写引擎中填写 API Key。"
+                        else -> "已选择 Kawa 云端转写，请先在设置 → 转写引擎中填写 API Key。"
                     }
                     updateUiForSession(key) { it.copy(noModelHint = hint) }
                 } else {
@@ -1707,7 +1710,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 }
                     localAsrResult
                 } else {
-                    val providerName = if (asrProvider == "elevenlabs") "ElevenLabs" else "Cartesia"
+                    val providerName = when (asrProvider) { "elevenlabs" -> "ElevenLabs"; "cartesia" -> "Cartesia"; else -> "Kawa" }
                     updateUiForSession(key) { it.copy(progress = "正在使用 " + providerName + " 云端转写…") }
                     val cloudWav = File.createTempFile("asr-cloud-", ".wav", cacheDir)
                     try {
@@ -1719,7 +1722,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             val result = io.translatetube.local.asr.CloudTranscription.transcribe(
                                 provider = asrProvider,
                                 apiKey = asrApiKey,
-                                language = cartesiaLanguage,
+                                language = cloudLanguage,
                                 wavFile = cloudWav,
                                 durationMs = pcmFile.durationMs,
                                 checkActive = { ownerJob?.ensureActive() },
