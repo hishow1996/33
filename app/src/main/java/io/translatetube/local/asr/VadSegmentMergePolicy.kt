@@ -24,7 +24,12 @@ internal object VadSegmentMergePolicy {
 
     fun merge(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
         val boundedSegments = mutableListOf<Pair<Long, Long>>()
-        for ((start, end) in segments) {
+        // Native VAD normally emits chronological windows, but normalize the contract here too:
+        // an out-of-order or malformed provider result must never make Whisper emit subtitles backwards.
+        val orderedValidSegments = segments.asSequence()
+            .filter { (start, end) -> start >= 0L && end > start }
+            .sortedBy { it.first }
+        for ((start, end) in orderedValidSegments) {
             if (end - start < MIN_SEGMENT_MS) continue
             var cursor = start
             while (end - cursor > MAX_MERGED_SEGMENT_MS) {
