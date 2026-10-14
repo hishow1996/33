@@ -36,6 +36,22 @@ class Pcm16StreamingResamplerTest {
     }
 
     @Test
+    fun largeUpsampledAudioCanBeProcessedAsBoundedSequentialChunks() {
+        val input = ShortArray(524_289) { (it % 101).toShort() }
+        val resampler = Pcm16StreamingResampler(1_000, 16_000)
+        var outputSamples = 0L
+        var offset = 0
+        while (offset < input.size) {
+            val count = minOf(64 * 1024, input.size - offset)
+            outputSamples += resampler.process(input.copyOfRange(offset, offset + count)).size
+            offset += count
+        }
+        outputSamples += resampler.finish().size
+
+        assertEquals((input.size / (1_000.0 / 16_000.0)).toInt().toLong(), outputSamples)
+    }
+
+    @Test
     fun rejectsSingleInputChunkWhoseUpsampledOutputExceedsTemporaryBudget() {
         val resampler = Pcm16StreamingResampler(1_000, 16_000)
         val error = runCatching {
