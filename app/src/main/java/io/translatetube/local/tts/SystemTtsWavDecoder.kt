@@ -8,8 +8,10 @@ import java.io.File
  */
 internal object SystemTtsWavDecoder {
     private const val MIN_WAV_BYTES = 44L
-    private const val MAX_WAV_BYTES = 32L * 1024L * 1024L
-    private const val MAX_FRAMES = 8_000_000
+    // decode(File) currently keeps both the encoded bytes and decoded FloatArray live during
+    // conversion. Bound both halves so one unusually long system-TTS result cannot spike memory.
+    private const val MAX_WAV_BYTES = 16L * 1024L * 1024L
+    private const val MAX_FRAMES = 4_000_000
 
     fun decode(file: File): TtsAudio {
         val size = file.length()
@@ -22,6 +24,9 @@ internal object SystemTtsWavDecoder {
     fun decode(bytes: ByteArray): TtsAudio {
         if (bytes.size < MIN_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件过短")
+        }
+        if (bytes.size.toLong() > MAX_WAV_BYTES) {
+            throw IllegalStateException("系统 TTS WAV 文件超过 16 MB 内存保护上限")
         }
         fun idAt(offset: Int): String = String(bytes, offset, 4, Charsets.US_ASCII)
         if (idAt(0) != "RIFF" || idAt(8) != "WAVE") {
