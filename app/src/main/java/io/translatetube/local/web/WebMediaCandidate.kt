@@ -92,8 +92,8 @@ internal object WebMediaCandidatePolicy {
                 "mkv" -> "video/x-matroska"
                 else -> null
             }
-            kind == WebMediaKind.MEDIA_ELEMENT && mediaElement.equals("video", true) -> "video/mp4"
-            kind == WebMediaKind.MEDIA_ELEMENT && mediaElement.equals("audio", true) -> "audio/mp4"
+            // Do not invent an audio/video MIME for opaque URLs; that can cause HLS/DASH
+            // manifests to be misrouted into MediaExtractor as ordinary MP4 files.
             else -> null
         }
 
