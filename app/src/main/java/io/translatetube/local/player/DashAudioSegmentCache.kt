@@ -70,7 +70,13 @@ internal class DashAudioSegmentCache(
         )
 
         if (!manifest.directAudioUrl.isNullOrBlank()) {
-            return downloader.download(
+            // A direct audio representation may be larger than a single segment; use the full
+            // source-audio limit rather than the per-segment limit in this case.
+            return AsrAudioSegmentDownloader(
+                client = client,
+                maxBytes = maxOutputBytes,
+                chunkBytes = SEGMENT_RANGE_CHUNK_BYTES,
+            ).download(
                 url = manifest.directAudioUrl,
                 destination = destination,
                 sourceKey = "$sourceKey:direct-audio",
