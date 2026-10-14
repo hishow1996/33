@@ -88,6 +88,14 @@ class SubtitleParsersTest {
         assertEquals(listOf(0, 1, 2), parsed.map { it.index })
     }
     @Test
+    fun rejectsMalformedExplicitTimedTextDurationInsteadOfInventingDefault() {
+        assertEquals(null, SubtitleParsers.parseTimedTextTiming("""start="1.0" dur="NaN""""))
+        assertEquals(null, SubtitleParsers.parseTimedTextTiming("""start="1.0" dur="-2""""))
+        assertEquals(null, SubtitleParsers.parseTimedTextTiming("""start="1.0" dur=""""))
+        assertEquals(1_000L to 4_000L, SubtitleParsers.parseTimedTextTiming("""start="1.0""""))
+    }
+
+    @Test
     fun timedTextXmlHonorsDurationRegardlessOfAttributeOrderOrQuoteStyle() {
         val source = """
             <transcript>
