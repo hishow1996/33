@@ -39,6 +39,7 @@ class SafeMediaHttpTest {
             }
         }
     }
+
     @Test
     fun recognizesCommonHtmlAndJsonErrorPayloads() {
         assertTrue(isHtmlOrJsonContentType("text/html; charset=utf-8"))
