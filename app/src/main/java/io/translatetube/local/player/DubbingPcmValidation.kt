@@ -5,7 +5,7 @@ import kotlin.math.abs
 /** Shared validation for newly synthesized and cached PCM so silent audio is never marked ready. */
 internal object DubbingPcmValidation {
     // Keep in sync with DubbingEngine's bounded PCM cache reader.
-    const val MAX_SAMPLE_COUNT = 16_000_000
+    const val MAX_SAMPLE_COUNT = 8_000_000
     private const val MIN_AUDIBLE_ABS_SAMPLE = 0.00001f
 
     fun isAudibleSample(sample: Float): Boolean =
