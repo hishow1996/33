@@ -304,7 +304,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
                 if (expectedArchiveSha256 != null) {
                     withContext(Dispatchers.IO) {
-                        val actual = sha256(pkg)
+                        val checksumJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        val actual = sha256(pkg) { checksumJob?.ensureActive() }
                         if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
                             throw java.io.IOException("模型压缩包 SHA-256 校验失败")
                         }
@@ -411,16 +412,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         state.value = ModelState(status = ModelStatus.FAILED, error = "补下载 VAD 模型失败：${lastError ?: "网络异常"}")
     }
 
-    private fun sha256(file: File): String {
+    private fun sha256(file: File, checkActive: () -> Unit = {}): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         FileInputStream(file).use { input ->
             val buffer = ByteArray(128 * 1024)
             while (true) {
+                checkActive()
                 val count = input.read(buffer)
                 if (count < 0) break
                 digest.update(buffer, 0, count)
             }
         }
+        checkActive()
         return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
@@ -459,7 +462,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
                 if (written == 0L) throw IllegalStateException("下载文件为空")
             }
-            if (expectedSha256 != null && !sha256(temp).equals(expectedSha256, ignoreCase = true)) {
+            val checksumJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            if (expectedSha256 != null &&
+                !sha256(temp) { checksumJob?.ensureActive() }.equals(expectedSha256, ignoreCase = true)
+            ) {
                 throw java.io.IOException("附属模型 SHA-256 校验失败")
             }
             AtomicFileInstaller.install(temp, dest)
