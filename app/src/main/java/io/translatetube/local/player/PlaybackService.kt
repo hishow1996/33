@@ -2569,6 +2569,9 @@ class PlaybackService : MediaSessionService() {
         val sessionKey = videoKey
         val sessionVideoId = videoId
         val sessionLocalUri = localUri
+        val sessionRemoteMediaUrl = remoteMediaUrl
+        val sessionRemoteMediaReferrer = remoteMediaReferrer
+        val sessionRemoteMediaCookie = remoteMediaCookie
         val sessionState = ui.value
         val translationCacheKey = sessionState.translationCacheKey.ifBlank {
             "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
@@ -2617,6 +2620,23 @@ class PlaybackService : MediaSessionService() {
                         updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
+                            } else state
+                        }
+                        sourceFile = audio
+                        sourceUri = null
+                    } else if (sessionRemoteMediaUrl != null) {
+                        // Web media uses the same bounded direct/HLS audio cache as ASR so
+                        // speaker analysis never falls back to a missing local URI or redownloads.
+                        val audio = obtainRemoteMediaAsrFile(
+                            sessionRemoteMediaUrl,
+                            sessionRemoteMediaReferrer,
+                            sessionRemoteMediaCookie,
+                            sessionKey,
+                            "复用网页视频音频，正在分析人物声音…",
+                        )
+                        updateUiForSession(sessionKey) { state ->
+                            if (state.key == sessionKey) {
+                                state.copy(phase = Phase.TRANSCRIBING, progress = "解码网页音频，准备分析人物声音…")
                             } else state
                         }
                         sourceFile = audio
