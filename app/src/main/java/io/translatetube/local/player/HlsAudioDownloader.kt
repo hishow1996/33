@@ -247,8 +247,8 @@ internal object HlsAudioDownloader {
         val surviving = parent.listFiles()
             ?.filter { it.isDirectory && it.name.endsWith(".segments") }
             .orEmpty()
-        var totalBytes = surviving.sumOf(::size)
-        for (directory in surviving.sortedBy(::lastActivity)) {
+        var totalBytes = surviving.sumOf { directory -> size(directory) }
+        for (directory in surviving.sortedBy { item -> lastActivity(item) }) {
             if (totalBytes <= MAX_BYTES) break
             if (directory.absolutePath == keep.absolutePath) continue
             val bytes = size(directory)
