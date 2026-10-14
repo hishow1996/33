@@ -26,4 +26,18 @@ class KokoroVoiceRangeTest {
         assertEquals(102, KokoroVoiceRange.clampSelectionId(102))
         assertEquals(102, KokoroVoiceRange.clampSelectionId(999))
     }
+    @Test
+    fun mapsAll103DiarizedPersonIdsToDistinctVoicesAroundPreferredDefault() {
+        val mapped = (0..KokoroVoiceRange.MAX_SPEAKER_ID).mapNotNull { personId ->
+            KokoroVoiceRange.voiceForDiarizedSpeaker(personId, preferredVoiceId = 14)
+        }
+
+        assertEquals(103, mapped.size)
+        assertEquals(103, mapped.distinct().size)
+        assertEquals(-1, mapped.first())
+        assertEquals(14, KokoroVoiceRange.voiceForDiarizedSpeaker(15, 14))
+        assertEquals(102, KokoroVoiceRange.voiceForDiarizedSpeaker(102, 14))
+        assertEquals(null, KokoroVoiceRange.voiceForDiarizedSpeaker(103, 14))
+    }
+
 }

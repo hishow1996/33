@@ -13,4 +13,17 @@ internal object KokoroVoiceRange {
 
     /** -1 means "use the default voice"; non-negative values select a concrete speaker ID. */
     fun clampSelectionId(id: Int): Int = id.coerceIn(-1, MAX_SPEAKER_ID)
+
+    /**
+     * Map diarizer speaker IDs (0..102) to distinct Kokoro voices. Speaker 0 uses the configured
+     * default; other detected speakers skip that reserved voice and map to the remaining IDs.
+     */
+    fun voiceForDiarizedSpeaker(personId: Int, preferredVoiceId: Int): Int? {
+        if (personId !in 0..MAX_SPEAKER_ID) return null
+        if (personId == 0) return -1
+        val candidate = personId - 1
+        val preferred = clampSpeakerId(preferredVoiceId)
+        return if (candidate >= preferred) candidate + 1 else candidate
+    }
+
 }

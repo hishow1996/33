@@ -2741,20 +2741,15 @@ class PlaybackService : MediaSessionService() {
                     val speaker = if (best != null && best.value >= minOf(0.25f, duration * 0.2f)) best.key else -1
                     // Assign each diarized person a stable voice for this video. Manual cue
                     // choices take precedence over the automatic speaker mapping.
-                    val suggestedVoice = when {
-                        speaker == 0 -> -1
-                        speaker in 1..53 -> {
-                            val candidate = speaker - 1
-                            if (candidate >= preferredVoice) candidate + 1 else candidate
-                        }
-                        else -> -1
-                    }
+                    val suggestedVoice =
+                        KokoroVoiceRange.voiceForDiarizedSpeaker(speaker, preferredVoice) ?: -1
                     val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
-                    val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..53) {
-                        speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
-                    } else {
-                        suggestedVoice
-                    }
+                    val voice = assignmentSnapshot.lineOverrides[keyForLine]
+                        ?: if (speaker in 0..KokoroVoiceRange.MAX_SPEAKER_ID) {
+                            speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
+                        } else {
+                            suggestedVoice
+                        }
                     lineVoiceAssignments[keyForLine] = voice
                     line.copy(speakerId = voice)
                 }

@@ -20,7 +20,7 @@ internal object SpeakerAssignmentCodec {
     fun encode(snapshot: SpeakerAssignmentSnapshot): String {
         val parts = mutableListOf(VERSION)
         snapshot.speakerVoices.toSortedMap().forEach { (speaker, voice) ->
-            if (speaker in 0..53 && voice in -1..KokoroVoiceRange.MAX_SPEAKER_ID) parts += "s:$speaker=$voice"
+            if (speaker in 0..KokoroVoiceRange.MAX_SPEAKER_ID && voice in -1..KokoroVoiceRange.MAX_SPEAKER_ID) parts += "s:$speaker=$voice"
         }
         snapshot.lineVoices.toSortedMap().forEach { (key, voice) ->
             if (isValidLineKey(key) && voice in -1..KokoroVoiceRange.MAX_SPEAKER_ID) parts += "v:$key=$voice"
@@ -47,7 +47,7 @@ internal object SpeakerAssignmentCodec {
             val kind = left.substringBefore(':')
             val key = left.substringAfter(':', "")
             when (kind) {
-                "s" -> key.toIntOrNull()?.takeIf { it in 0..53 }?.let { speakers[it] = voice }
+                "s" -> key.toIntOrNull()?.takeIf { it in 0..KokoroVoiceRange.MAX_SPEAKER_ID }?.let { speakers[it] = voice }
                 "v" -> if (isValidLineKey(key)) lines[key] = voice
                 "m" -> if (isValidLineKey(key)) overrides[key] = voice
             }

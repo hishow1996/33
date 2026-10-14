@@ -42,7 +42,7 @@ class SpeakerAssignmentCodecTest {
     @Test
     fun roundTripRetainsVoiceIdsAboveTheOld54VoiceLimit() {
         val expected = SpeakerAssignmentSnapshot(
-            speakerVoices = mapOf(0 to -1, 3 to 102),
+            speakerVoices = mapOf(0 to -1, 3 to 102, 102 to 101),
             lineVoices = mapOf("0:1000" to 102),
             lineOverrides = mapOf("1000:2000" to 101),
         )
