@@ -53,6 +53,24 @@ class WebMediaCandidatePolicyTest {
     }
 
     @Test
+    fun recognizesManifestFormatsDeclaredInQueryParameters() {
+        val hls = WebMediaCandidatePolicy.classify(
+            "https://cdn.example.test/play?id=1&format=m3u8",
+            mimeType = "video/mp4",
+            mediaElement = "video",
+        )
+        assertEquals(WebMediaKind.HLS, hls?.kind)
+        assertEquals("application/x-mpegURL", hls?.mimeType)
+
+        val dash = WebMediaCandidatePolicy.classify(
+            "https://cdn.example.test/play?id=1&format=mpd",
+            mediaElement = "video",
+        )
+        assertEquals(WebMediaKind.DASH, dash?.kind)
+        assertEquals("application/dash+xml", dash?.mimeType)
+    }
+
+    @Test
     fun rejectsNonHttpSchemesAndUnsafeUserInfoUrls() {
         assertNull(WebMediaCandidatePolicy.classify("blob:https://example.test/id"))
         assertNull(WebMediaCandidatePolicy.classify("file:///sdcard/video.mp4"))
