@@ -159,11 +159,14 @@ internal object DashAudioManifestParser {
         // audio-file extension.
         val explicitAdaptationBase = childText(adaptation, "BaseURL")
         val explicitAudioBase = explicitRepresentationBase != null || explicitAdaptationBase != null
+        val directPath = runCatching { URI(directUrl).path.orEmpty() }.getOrDefault("")
+        val explicitBaseLooksLikeFile = explicitAudioBase &&
+            directPath.isNotBlank() && !directPath.endsWith('/')
         val declaresAudioMime =
             representation.getAttribute("mimeType").startsWith("audio/", ignoreCase = true) ||
                 adaptation.getAttribute("mimeType").startsWith("audio/", ignoreCase = true) ||
                 adaptation.getAttribute("contentType").equals("audio", ignoreCase = true)
-        if (looksLikeDirectAudioUrl(directUrl) || (explicitAudioBase && declaresAudioMime)) {
+        if (looksLikeDirectAudioUrl(directUrl) || (explicitBaseLooksLikeFile && declaresAudioMime)) {
             return AudioManifest(
                 manifestUrl = manifestUrl,
                 initializationUrl = null,
