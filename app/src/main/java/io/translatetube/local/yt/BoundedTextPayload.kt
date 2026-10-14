@@ -12,12 +12,14 @@ internal object BoundedTextPayload {
         input: InputStream,
         maxBytes: Long = MAX_BYTES,
         resourceLabel: String = "字幕响应",
+        checkActive: () -> Unit = {},
     ): ByteArray {
         require(maxBytes in 1L..Int.MAX_VALUE.toLong()) { "文本响应大小上限无效" }
         val output = ByteArrayOutputStream(minOf(maxBytes, BUFFER_BYTES.toLong()).toInt())
         val buffer = ByteArray(BUFFER_BYTES)
         var totalBytes = 0L
         while (true) {
+            checkActive()
             val count = input.read(buffer)
             if (count < 0) break
             if (count == 0) continue
