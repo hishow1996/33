@@ -74,13 +74,33 @@ object SimpleDownloader : Downloader() {
             "HEAD" -> b.head()
             else -> b.get()
         }
+        val ownerJob = extractorOwnerJob.get()
         return executeCancellableHttpCall(
             call = newPipeHttpClient.newCall(b.build()),
-            ownerJob = extractorOwnerJob.get(),
+            ownerJob = ownerJob,
         ) { resp ->
+            val responseBody = resp.body
+            val responseText = if (responseBody == null) {
+                ""
+            } else {
+                // NewPipe needs a String body, but never trust a remote Content-Length or
+                // String() to bound memory on older phones. Apply a hard cap even for chunked
+                // responses whose length is unknown.
+                if (responseBody.contentLength() > BoundedTextPayload.MAX_BYTES) {
+                    throw IllegalStateException("YouTube 响应超过 16 MB 限制，已停止读取以保护设备内存。")
+                }
+                String(
+                    BoundedTextPayload.readBytes(
+                        responseBody.byteStream(),
+                        resourceLabel = "YouTube 响应",
+                        checkActive = { ownerJob?.ensureActive() },
+                    ),
+                    Charsets.UTF_8,
+                )
+            }
             Response(
                 resp.code, resp.message, resp.headers.toMultimap(),
-                resp.body?.string() ?: "", resp.request.url.toString()
+                responseText, resp.request.url.toString()
             )
         }
     }
