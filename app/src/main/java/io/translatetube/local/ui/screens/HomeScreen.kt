@@ -96,11 +96,25 @@ fun HomeScreen(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("大象翻译", color = OnBg, style = MaterialTheme.typography.headlineSmall)
             }
-            IconButton(
-                onClick = onSettings,
-                modifier = Modifier.size(44.dp),
-            ) {
-                Icon(Icons.Filled.Settings, contentDescription = "设置", tint = SubText)
+            Box {
+                IconButton(
+                    onClick = onSettings,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = "设置", tint = SubText)
+                }
+                // yt-dlp 检测到新版本解析规则时提示红点；在设置里更新后消失
+                val ytdlpHasUpdate by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsState()
+                if (ytdlpHasUpdate.hasUpdate) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 8.dp, end = 8.dp)
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFE5484D))
+                    )
+                }
             }
         }
 
