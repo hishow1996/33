@@ -559,7 +559,7 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
                 val sampleRate = input.readInt()
                 val sampleCount = input.readInt()
-                if (sampleRate !in 8_000..192_000 || sampleCount < 0 || sampleCount > 16_000_000 ||
+                if (sampleRate !in 8_000..192_000 || sampleCount < 0 || sampleCount > DubbingPcmValidation.MAX_SAMPLE_COUNT ||
                     file.length() != 8L + sampleCount.toLong() * 4L
                 ) {
                     throw java.io.IOException("PCM 缓存头或长度无效")
@@ -702,7 +702,7 @@ class DubbingEngine(
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(f))).use { d ->
                 val sr = d.readInt()
                 val n = d.readInt()
-                if (sr !in 8_000..192_000 || n < 0 || n > 16_000_000 ||
+                if (sr !in 8_000..192_000 || n < 0 || n > DubbingPcmValidation.MAX_SAMPLE_COUNT ||
                     f.length() != 8L + n.toLong() * 4L) {
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
