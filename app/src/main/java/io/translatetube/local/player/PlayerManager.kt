@@ -24,11 +24,27 @@ class PlayerManager(private val ctx: Context) {
         .setUserAgent(UA)
         .setAllowCrossProtocolRedirects(true)
 
+    private val bufferConfig: PlayerBufferConfig = run {
+        val activityManager = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        runCatching { activityManager?.getMemoryInfo(memoryInfo) }
+        PlayerBufferPolicy.select(
+            isLowRamDevice = activityManager?.isLowRamDevice == true,
+            memoryClassMb = activityManager?.memoryClass ?: 256,
+            availableMemoryBytes = memoryInfo.availMem,
+        )
+    }
+
     val player: ExoPlayer = ExoPlayer.Builder(ctx)
         .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(ctx, httpFactory)))
         .setLoadControl(
             DefaultLoadControl.Builder()
-                .setBufferDurationsMs(30_000, 150_000, 1_500, 3_000)
+                .setBufferDurationsMs(
+                    bufferConfig.minBufferMs,
+                    bufferConfig.maxBufferMs,
+                    bufferConfig.bufferForPlaybackMs,
+                    bufferConfig.bufferForPlaybackAfterRebufferMs,
+                )
                 .build()
         )
         .build()
