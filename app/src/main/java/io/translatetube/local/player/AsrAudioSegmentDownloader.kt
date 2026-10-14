@@ -132,172 +132,174 @@ internal class AsrAudioSegmentDownloader(
                     if (!validator.isNullOrBlank()) requestBuilder.header("If-Range", validator)
                 }
 
-                SafeMediaHttp.execute(client, requestBuilder.build()).use { response ->
-                    checkActive()
-                    when (response.code) {
-                        200 -> {
-                            // The server ignored Range or If-Range did not match. This response
-                            // contains a fresh full representation; never append it to old bytes.
-                            // Drop old partial bytes before validating the new response so a bad
-                            // URL cannot leave a misleading resumable cache behind.
-                            if (offset > 0L) {
-                                part.delete()
-                                metaFile.delete()
-                                metadata = null
-                            }
-                            val body = response.body ?: throw IOException("音频响应内容为空")
-                            val total = body.contentLength()
-                            validateDeclaredResponse(response, total)
-                            if (total > 0L) ensureDiskSpace(parent, total)
-                            metadata = metadataFor(
-                                sourceKey, currentUrlHash, response, total, rangeSupported = false
-                            )
-                            saveMetadata(metaFile, metadata!!)
-                            val received = writeBody(
-                                body.byteStream(), part, append = false, expectedBytes = total,
-                                checkActive = checkActive,
-                                onProgress = { count -> onProgress(count, total) },
-                            )
-                            if (!AsrAudioCachePolicy.isCompleteDownload(total, received)) {
-                                throw EOFException("音频响应不完整：预期 ${total} 字节，实际收到 ${received} 字节")
-                            }
-                            return publish(part, destination, metaFile, response.header("Content-Type"))
-                        }
-
-                        206 -> {
-                            val body = response.body ?: throw IOException("音频分段响应内容为空")
-                            validateDeclaredResponse(response, body.contentLength())
-                            val range = AsrAudioSegmentPolicy.parseContentRange(response.header("Content-Range"))
-                                ?: throw IOException("服务器返回了无效的 Content-Range")
-                            if (range.start == null || range.endInclusive == null || range.start != offset) {
-                                throw IOException("音频分段位置不匹配：缓存偏移 $offset，服务器返回 ${range.start}")
-                            }
-                            val countInRange = range.endInclusive - range.start + 1L
-                            if (countInRange <= 0L || countInRange > chunkBytes ||
-                                (body.contentLength() >= 0L && body.contentLength() != countInRange)
-                            ) {
-                                throw IOException("音频分段长度与 Content-Range 不一致")
-                            }
-                            if (range.totalBytes != null && range.totalBytes !in 1L..maxBytes) {
-                                discard(part, metaFile)
-                                throw IOException("音频文件超过 ${maxBytes / (1024L * 1024L)} MB 限制")
-                            }
-                            if (range.totalBytes != null) {
-                                ensureDiskSpace(parent, (range.totalBytes - offset).coerceAtLeast(0L))
-                            }
-                            val responseEtag = response.header("ETag")?.takeIf { it.isNotBlank() }
-                            val responseModified = response.header("Last-Modified")?.takeIf { it.isNotBlank() }
-                            val responseUrlHash = sha256(response.request.url.toString())
-                            val hasMatchingValidator = when {
-                                !metadata?.etag.isNullOrBlank() -> responseEtag == metadata?.etag
-                                !metadata?.lastModified.isNullOrBlank() -> responseModified == metadata?.lastModified
-                                else -> false
-                            }
-                            val savedEffectiveUrlHash = metadata?.effectiveUrlHash
-                            if (
-                                offset > 0L &&
-                                (savedEffectiveUrlHash.isNullOrBlank() || savedEffectiveUrlHash != responseUrlHash) &&
-                                !hasMatchingValidator
-                            ) {
-                                // A stable entry URL can redirect to a different object between retries.
-                                // Without a matching ETag/Last-Modified, never combine bytes from the two
-                                // redirect targets; start a fresh representation instead.
-                                discard(part, metaFile)
-                                metadata = null
-                                throw RestartFromZeroException(
-                                    "音频流重定向目标发生变化，缺少匹配的文件校验标记，已从头重新读取",
+                try {
+                    SafeMediaHttp.execute(client, requestBuilder.build()).use { response ->
+                        checkActive()
+                        when (response.code) {
+                            200 -> {
+                                // The server ignored Range or If-Range did not match. This response
+                                // contains a fresh full representation; never append it to old bytes.
+                                // Drop old partial bytes before validating the new response so a bad
+                                // URL cannot leave a misleading resumable cache behind.
+                                if (offset > 0L) {
+                                    part.delete()
+                                    metaFile.delete()
+                                    metadata = null
+                                }
+                                val body = response.body ?: throw IOException("音频响应内容为空")
+                                val total = body.contentLength()
+                                validateDeclaredResponse(response, total)
+                                if (total > 0L) ensureDiskSpace(parent, total)
+                                metadata = metadataFor(
+                                    sourceKey, currentUrlHash, response, total, rangeSupported = false
                                 )
-                            }
-                            val etagMismatch = offset > 0L &&
-                                !metadata?.etag.isNullOrBlank() &&
-                                !responseEtag.isNullOrBlank() &&
-                                metadata?.etag != responseEtag
-                            val modifiedMismatch = offset > 0L &&
-                                metadata?.etag.isNullOrBlank() &&
-                                !metadata?.lastModified.isNullOrBlank() &&
-                                !responseModified.isNullOrBlank() &&
-                                metadata?.lastModified != responseModified
-                            if (etagMismatch || modifiedMismatch) {
-                                discard(part, metaFile)
-                                metadata = null
-                                throw IOException("音频源已变化，已清理旧断点缓存；请重试")
-                            }
-
-                            metadata = Metadata(
-                                sourceKey = sourceKey,
-                                urlHash = currentUrlHash,
-                                effectiveUrlHash = responseUrlHash,
-                                etag = responseEtag ?: metadata?.etag,
-                                lastModified = responseModified ?: metadata?.lastModified,
-                                totalBytes = range.totalBytes ?: metadata?.totalBytes ?: -1L,
-                                rangeSupported = true,
-                            )
-                            saveMetadata(metaFile, metadata!!)
-                            val received = try {
-                                writeRange(
-                                    body.byteStream(), part, append = offset > 0L,
-                                    expectedBytes = countInRange,
+                                saveMetadata(metaFile, metadata!!)
+                                val received = writeBody(
+                                    body.byteStream(), part, append = false, expectedBytes = total,
                                     checkActive = checkActive,
-                                    onProgress = { count ->
-                                        val total = range.totalBytes ?: metadata?.totalBytes ?: -1L
-                                        onProgress(offset + count, total)
-                                    },
+                                    onProgress = { count -> onProgress(count, total) },
                                 )
-                            } catch (e: Exception) {
-                                // A range is committed only when its entire Content-Range body has
-                                // arrived. Roll back bytes from a truncated/failed range so the
-                                // next request retries this same range, instead of treating an
-                                // unvalidated prefix as a durable resume offset.
-                                try {
-                                    truncatePartial(part, offset)
-                                } catch (rollback: Exception) {
-                                    e.addSuppressed(rollback)
-                                    discard(part, metaFile)
-                                    metadata = null
+                                if (!AsrAudioCachePolicy.isCompleteDownload(total, received)) {
+                                    throw EOFException("音频响应不完整：预期 ${total} 字节，实际收到 ${received} 字节")
                                 }
-                                throw e
-                            }
-                            if (received != countInRange) {
-                                try {
-                                    truncatePartial(part, offset)
-                                } catch (rollback: Exception) {
-                                    discard(part, metaFile)
-                                    metadata = null
-                                    throw IOException(
-                                        "音频分段不完整，且无法回滚未验证字节；已清理断点缓存",
-                                        rollback,
-                                    )
-                                }
-                                throw EOFException("音频分段中断：本段预期 $countInRange 字节，实际收到 $received 字节")
-                            }
-                            val newSize = part.length()
-                            val total = metadata?.totalBytes ?: -1L
-                            if (total > 0L && newSize == total) {
                                 return publish(part, destination, metaFile, response.header("Content-Type"))
                             }
-                            if (total > 0L && newSize > total) {
+    
+                            206 -> {
+                                val body = response.body ?: throw IOException("音频分段响应内容为空")
+                                validateDeclaredResponse(response, body.contentLength())
+                                val range = AsrAudioSegmentPolicy.parseContentRange(response.header("Content-Range"))
+                                    ?: throw IOException("服务器返回了无效的 Content-Range")
+                                if (range.start == null || range.endInclusive == null || range.start != offset) {
+                                    throw IOException("音频分段位置不匹配：缓存偏移 $offset，服务器返回 ${range.start}")
+                                }
+                                val countInRange = range.endInclusive - range.start + 1L
+                                if (countInRange <= 0L || countInRange > chunkBytes ||
+                                    (body.contentLength() >= 0L && body.contentLength() != countInRange)
+                                ) {
+                                    throw IOException("音频分段长度与 Content-Range 不一致")
+                                }
+                                if (range.totalBytes != null && range.totalBytes !in 1L..maxBytes) {
+                                    discard(part, metaFile)
+                                    throw IOException("音频文件超过 ${maxBytes / (1024L * 1024L)} MB 限制")
+                                }
+                                if (range.totalBytes != null) {
+                                    ensureDiskSpace(parent, (range.totalBytes - offset).coerceAtLeast(0L))
+                                }
+                                val responseEtag = response.header("ETag")?.takeIf { it.isNotBlank() }
+                                val responseModified = response.header("Last-Modified")?.takeIf { it.isNotBlank() }
+                                val responseUrlHash = sha256(response.request.url.toString())
+                                val hasMatchingValidator = when {
+                                    !metadata?.etag.isNullOrBlank() -> responseEtag == metadata?.etag
+                                    !metadata?.lastModified.isNullOrBlank() -> responseModified == metadata?.lastModified
+                                    else -> false
+                                }
+                                val savedEffectiveUrlHash = metadata?.effectiveUrlHash
+                                if (
+                                    offset > 0L &&
+                                    (savedEffectiveUrlHash.isNullOrBlank() || savedEffectiveUrlHash != responseUrlHash) &&
+                                    !hasMatchingValidator
+                                ) {
+                                    // A stable entry URL can redirect to a different object between retries.
+                                    // Without a matching ETag/Last-Modified, never combine bytes from the two
+                                    // redirect targets; start a fresh representation instead.
+                                    discard(part, metaFile)
+                                    metadata = null
+                                    throw RestartFromZeroException(
+                                        "音频流重定向目标发生变化，缺少匹配的文件校验标记，已从头重新读取",
+                                    )
+                                }
+                                val etagMismatch = offset > 0L &&
+                                    !metadata?.etag.isNullOrBlank() &&
+                                    !responseEtag.isNullOrBlank() &&
+                                    metadata?.etag != responseEtag
+                                val modifiedMismatch = offset > 0L &&
+                                    metadata?.etag.isNullOrBlank() &&
+                                    !metadata?.lastModified.isNullOrBlank() &&
+                                    !responseModified.isNullOrBlank() &&
+                                    metadata?.lastModified != responseModified
+                                if (etagMismatch || modifiedMismatch) {
+                                    discard(part, metaFile)
+                                    metadata = null
+                                    throw IOException("音频源已变化，已清理旧断点缓存；请重试")
+                                }
+    
+                                metadata = Metadata(
+                                    sourceKey = sourceKey,
+                                    urlHash = currentUrlHash,
+                                    effectiveUrlHash = responseUrlHash,
+                                    etag = responseEtag ?: metadata?.etag,
+                                    lastModified = responseModified ?: metadata?.lastModified,
+                                    totalBytes = range.totalBytes ?: metadata?.totalBytes ?: -1L,
+                                    rangeSupported = true,
+                                )
+                                saveMetadata(metaFile, metadata!!)
+                                val received = try {
+                                    writeRange(
+                                        body.byteStream(), part, append = offset > 0L,
+                                        expectedBytes = countInRange,
+                                        checkActive = checkActive,
+                                        onProgress = { count ->
+                                            val total = range.totalBytes ?: metadata?.totalBytes ?: -1L
+                                            onProgress(offset + count, total)
+                                        },
+                                    )
+                                } catch (e: Exception) {
+                                    // A range is committed only when its entire Content-Range body has
+                                    // arrived. Roll back bytes from a truncated/failed range so the
+                                    // next request retries this same range, instead of treating an
+                                    // unvalidated prefix as a durable resume offset.
+                                    try {
+                                        truncatePartial(part, offset)
+                                    } catch (rollback: Exception) {
+                                        e.addSuppressed(rollback)
+                                        discard(part, metaFile)
+                                        metadata = null
+                                    }
+                                    throw e
+                                }
+                                if (received != countInRange) {
+                                    try {
+                                        truncatePartial(part, offset)
+                                    } catch (rollback: Exception) {
+                                        discard(part, metaFile)
+                                        metadata = null
+                                        throw IOException(
+                                            "音频分段不完整，且无法回滚未验证字节；已清理断点缓存",
+                                            rollback,
+                                        )
+                                    }
+                                    throw EOFException("音频分段中断：本段预期 $countInRange 字节，实际收到 $received 字节")
+                                }
+                                val newSize = part.length()
+                                val total = metadata?.totalBytes ?: -1L
+                                if (total > 0L && newSize == total) {
+                                    return publish(part, destination, metaFile, response.header("Content-Type"))
+                                }
+                                if (total > 0L && newSize > total) {
+                                    discard(part, metaFile)
+                                    throw IOException("音频缓存超出服务器声明的总长度")
+                                }
+                                if (total <= 0L && countInRange < chunkBytes) {
+                                    // A short final response with an unknown total will be confirmed
+                                    // by the server's next 416 response, not guessed as complete.
+                                }
+                            }
+    
+                            416 -> {
+                                val range = AsrAudioSegmentPolicy.parseContentRange(response.header("Content-Range"))
+                                val total = range?.totalBytes
+                                val current = part.takeIf { it.isFile }?.length() ?: 0L
+                                if (total != null && total == current && current > 0L) {
+                                    return publish(part, destination, metaFile, null)
+                                }
                                 discard(part, metaFile)
-                                throw IOException("音频缓存超出服务器声明的总长度")
+                                metadata = null
+                                throw IOException("服务器拒绝当前音频分段，已清理不一致的断点缓存")
                             }
-                            if (total <= 0L && countInRange < chunkBytes) {
-                                // A short final response with an unknown total will be confirmed
-                                // by the server's next 416 response, not guessed as complete.
-                            }
+    
+                            else -> throw IOException("音频读取失败：HTTP ${response.code}")
                         }
-
-                        416 -> {
-                            val range = AsrAudioSegmentPolicy.parseContentRange(response.header("Content-Range"))
-                            val total = range?.totalBytes
-                            val current = part.takeIf { it.isFile }?.length() ?: 0L
-                            if (total != null && total == current && current > 0L) {
-                                return publish(part, destination, metaFile, null)
-                            }
-                            discard(part, metaFile)
-                            metadata = null
-                            throw IOException("服务器拒绝当前音频分段，已清理不一致的断点缓存")
-                        }
-
-                        else -> throw IOException("音频读取失败：HTTP ${response.code}")
                     }
                 } catch (e: IOException) {
                     if (e is RestartFromZeroException) {
