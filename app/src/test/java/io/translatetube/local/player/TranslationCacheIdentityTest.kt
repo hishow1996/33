@@ -61,4 +61,14 @@ class TranslationCacheIdentityTest {
         assertTrue(!token.contains(secret))
         assertNotEquals(token, TranslationCacheIdentity.profileToken(8L, "another-config"))
     }
+    @Test
+    fun detectsWhetherAResumeKeyMatchesTheCurrentProfileAndVideo() {
+        val matching = TranslationCacheIdentity.videoKey("video-key", 42L, "provider-A")
+        val imported = TranslationCacheIdentity.importedKey("video-key", 42L, source, "provider-A")
+        assertTrue(TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-A"))
+        assertTrue(TranslationCacheIdentity.matchesProfile(imported, "video-key", 42L, "provider-A"))
+        assertNotEquals(true, TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-B"))
+        assertNotEquals(true, TranslationCacheIdentity.matchesProfile(matching, "another-video", 42L, "provider-A"))
+    }
+
 }

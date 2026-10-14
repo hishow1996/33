@@ -33,6 +33,16 @@ internal object TranslationCacheIdentity {
         return "${videoKey(key, activeId, profileIdentity)}|imported-$sourceSignature"
     }
 
+    fun matchesProfile(
+        cacheKey: String,
+        key: String,
+        activeId: Long,
+        profileIdentity: String,
+    ): Boolean {
+        val expected = videoKey(key, activeId, profileIdentity)
+        return cacheKey == expected || cacheKey.startsWith("$expected|imported-")
+    }
+
     private fun fingerprint(value: String, bytesToKeep: Int): String {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray(Charsets.UTF_8))
