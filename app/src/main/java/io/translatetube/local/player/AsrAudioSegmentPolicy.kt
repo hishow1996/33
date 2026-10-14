@@ -64,6 +64,19 @@ internal object AsrAudioSegmentPolicy {
         return !etag.isNullOrBlank() || !lastModified.isNullOrBlank()
     }
 
+    /** Distinguish a clear DASH MPD manifest from generic HTML/JSON error pages. */
+    fun isDashManifest(contentType: String?, prefix: ByteArray): Boolean {
+        val mime = contentType.orEmpty().substringBefore(';').trim().lowercase()
+        if (mime == "application/dash+xml" || mime == "application/vnd.mpeg.dash.mpd+xml") return true
+        if (prefix.isEmpty()) return false
+        val text = prefix.toString(Charsets.UTF_8)
+            .filter { it == '\u0000' || it.isLetterOrDigit() || it.isWhitespace() || it in "<>:;.=\"'/_-" }
+            .trimStart()
+            .lowercase()
+        return text.startsWith("<mpd") ||
+            (text.startsWith("<?xml") && text.contains("<mpd"))
+    }
+
     /** Detect obvious web/error bodies without rejecting valid audio/octet-stream responses. */
     fun isClearlyNotAudio(contentType: String?, prefix: ByteArray): Boolean {
         val mime = contentType.orEmpty().substringBefore(';').trim().lowercase()
