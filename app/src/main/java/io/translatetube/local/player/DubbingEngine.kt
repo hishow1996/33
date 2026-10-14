@@ -7,6 +7,7 @@ import android.media.AudioTrack
 import android.media.PlaybackParams
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.tts.TtsEngine
+import io.translatetube.local.tts.TtsInputLimitException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -352,7 +353,7 @@ class DubbingEngine(
                             lastFailure = e
                             // The same text/provider cannot benefit from another synthesis pass
                             // when its result already exceeds the hard per-cue PCM cap.
-                            if (e is DubbingPcmLimitException) break
+                            if (e is DubbingPcmLimitException || e is TtsInputLimitException) break
                             if (attempt == 0 && !released) {
                                 android.util.Log.w(
                                     "DubbingEngine",
