@@ -110,7 +110,21 @@ object AudioExtract {
                         ) && value.isNotBlank() &&
                             value.none { it == '\r' || it == '\n' || it == '\u0000' }
                     }
-                    extractor.setDataSource(src.toString(), safeHeaders)
+                    try {
+                        extractor.setDataSource(src.toString(), safeHeaders)
+                    } catch (e: Exception) {
+                        val needsSessionCredentials = headers.keys.any {
+                            it.trim().lowercase(java.util.Locale.ROOT) in setOf("cookie", "authorization")
+                        }
+                        if (needsSessionCredentials) {
+                            throw IllegalStateException(
+                                "无法安全读取这个网页的音轨。该媒体可能需要登录态 Cookie/Authorization；" +
+                                    "为避免在重定向时泄漏账号凭据，本地直读不会转发这些信息。请尝试公开可访问的音轨/清单，或导入字幕文件。",
+                                e,
+                            )
+                        }
+                        throw e
+                    }
                 }
                 src != null -> extractor.setDataSource(ctx, src, null)
                 else -> throw IllegalStateException("无音频源")
