@@ -103,6 +103,9 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
             checkActive()
             val startMs = a.coerceIn(0L, durationMs)
             val endMs = b.coerceIn(startMs, durationMs)
+            require(endMs - startMs <= VadSegmentMergePolicy.MAX_MERGED_SEGMENT_MS) {
+                "单条 Whisper 语音段超过 25 秒安全上限，请先重新分段"
+            }
             val s0 = (startMs * sr / 1000L).toInt()
             val s1 = (endMs * sr / 1000L).toInt()
             if (s1 > s0) {
@@ -133,6 +136,9 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
             checkActive()
             val safeStartMs = startMs.coerceIn(0L, durationMs)
             val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
+            require(safeEndMs - safeStartMs <= VadSegmentMergePolicy.MAX_MERGED_SEGMENT_MS) {
+                "单条 Whisper 语音段超过 25 秒安全上限，请先重新分段"
+            }
             val startSample = safeStartMs * sr / 1000L
             val endSample = (safeEndMs * sr / 1000L).coerceAtMost(pcmFile.sampleCount)
             if (endSample > startSample) {
