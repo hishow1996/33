@@ -10,6 +10,7 @@ import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
+import android.webkit.CookieManager
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -54,8 +55,13 @@ internal class DashAudioSegmentCache(
             throw IOException("无法创建当前视频的 DASH 分段目录")
         }
         pruneOldSegmentCaches(root, protected = sourceFolder)
+        val credentialOrigin = originOf(manifestUrl)
 
-        val manifestText = fetchManifest(manifestUrl, headers, checkActive)
+        val manifestText = fetchManifest(
+            manifestUrl,
+            headersForTarget(manifestUrl, headers, credentialOrigin),
+            checkActive,
+        )
         val manifest = try {
             DashAudioManifestParser.parse(manifestUrl, manifestText)
         } catch (e: UnsupportedOperationException) {
@@ -80,7 +86,7 @@ internal class DashAudioSegmentCache(
                 url = manifest.directAudioUrl,
                 destination = destination,
                 sourceKey = "$sourceKey:direct-audio",
-                headers = headers,
+                headers = headersForTarget(manifest.directAudioUrl, headers, credentialOrigin),
                 checkActive = checkActive,
             ).also { pruneOldSegmentCaches(root) }
         }
@@ -91,14 +97,18 @@ internal class DashAudioSegmentCache(
         manifest.initializationUrl?.let { url ->
             checkActive()
             val initFile = segmentFile(sourceFolder, "init", url)
-            ensureCachedSegment(downloader, url, initFile, "$sourceKey:init", headers, checkActive)
+            ensureCachedSegment(
+                downloader, url, initFile, "$sourceKey:init",
+                headersForTarget(url, headers, credentialOrigin), checkActive,
+            )
             orderedFiles += initFile
         }
         manifest.segments.forEach { segment ->
             checkActive()
             val file = segmentFile(sourceFolder, "seg-${segment.index}", segment.url)
             ensureCachedSegment(
-                downloader, segment.url, file, "$sourceKey:segment:${segment.index}", headers, checkActive
+                downloader, segment.url, file, "$sourceKey:segment:${segment.index}",
+                headersForTarget(segment.url, headers, credentialOrigin), checkActive,
             )
             orderedFiles += file
             onProgress(segment.index + 1, manifest.segments.size)
@@ -207,7 +217,7 @@ internal class DashAudioSegmentCache(
             .header("User-Agent", USER_AGENT)
             .header("Accept", "application/dash+xml, application/xml, text/xml, */*")
         applySafeHeaders(builder, headers)
-        client.newCall(builder.build()).execute().use { response ->
+        SafeMediaHttp.execute(client, builder.build()).use { response ->
             checkActive()
             if (!response.isSuccessful) throw IOException("DASH 清单读取失败：HTTP ${response.code}")
             val body = response.body ?: throw IOException("DASH 清单响应为空")
@@ -235,6 +245,40 @@ internal class DashAudioSegmentCache(
             return text
         }
     }
+
+    private fun headersForTarget(
+        url: String,
+        captured: Map<String, String>,
+        credentialOrigin: String,
+    ): Map<String, String> {
+        val sameOrigin = originOf(url) == credentialOrigin
+        val result = LinkedHashMap<String, String>()
+        captured.forEach { (name, value) ->
+            val normalized = name.trim().lowercase(Locale.ROOT)
+            val allowed = normalized in FORWARDABLE_HEADERS
+            val credential = normalized in setOf("cookie", "authorization", "origin")
+            val safe = value.isNotBlank() &&
+                value.none { it == '\r' || it == '\n' || it == '\u0000' }
+            if (allowed && safe && (!credential || sameOrigin)) {
+                result[name.trim()] = value
+            }
+        }
+        // Re-read cookies for this exact CDN/manifest URL instead of carrying another origin's
+        // Cookie header to a different host.
+        runCatching { CookieManager.getInstance().getCookie(url) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { result["Cookie"] = it }
+        return result
+    }
+
+    private fun originOf(value: String): String = runCatching {
+        val uri = URI(value)
+        val scheme = uri.scheme.orEmpty().lowercase(Locale.ROOT)
+        val host = uri.host.orEmpty().lowercase(Locale.ROOT)
+        val port = if (uri.port >= 0) uri.port else if (scheme == "https") 443 else 80
+        "$scheme://$host:$port"
+    }.getOrDefault("")
 
     private fun applySafeHeaders(builder: Request.Builder, headers: Map<String, String>) {
         headers.forEach { (name, value) ->
