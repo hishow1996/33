@@ -23,7 +23,28 @@ interface TtsEngine {
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
 class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
-    override val cacheKey: String get() = "$name-default-${speakerId.coerceIn(0, 53)}"
+
+    // Model assets can be refreshed independently of the app version. Include file metadata so
+    // cached PCM is not reused after the model, lexicon, tokens, or Chinese rule FSTs change.
+    private val modelAssetsFingerprint: String by lazy {
+        val dir = io.translatetube.local.data.ModelFiles.ttsDir(ctx)
+        listOf(
+            "model.int8.onnx",
+            "voices.bin",
+            "tokens.txt",
+            "lexicon-zh.txt",
+            "phone-zh.fst",
+            "date-zh.fst",
+            "number-zh.fst",
+        ).joinToString("|") { name ->
+            val file = java.io.File(dir, name)
+            if (file.isFile) "$name:${file.length()}:${file.lastModified()}" else "$name:missing"
+        }
+    }
+
+    override val cacheKey: String
+        get() = "$name-model-v2-${modelAssetsFingerprint}-default-${speakerId.coerceIn(0, 53)}"
+
     private val tts: OfflineTts
 
     init {
