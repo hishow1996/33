@@ -501,8 +501,9 @@ class PlaybackService : MediaSessionService() {
         retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         val safeSourceHeaders = WebMediaCandidatePolicy.safeHeaders(sourceHeaders)
+        val safeSourceMimeType = sourceMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
         this.sourceHeaders = safeSourceHeaders
-        this.sourceMimeType = sourceMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
+        this.sourceMimeType = safeSourceMimeType
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -541,7 +542,7 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, safeSourceHeaders, this.sourceMimeType)
+            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, safeSourceHeaders, safeSourceMimeType)
         }
     }
 
@@ -2275,6 +2276,12 @@ class PlaybackService : MediaSessionService() {
     ): File {
         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         val hlsCache = HlsAudioSegmentCache(cacheDir)
+        if (looksLikeDashUrl(url) || sourceMimeType?.contains("dash+xml", ignoreCase = true) == true) {
+            throw IllegalStateException(
+                "已识别为 MPEG-DASH 网页视频。原生播放器支持播放该格式，但自动音轨分段转写目前尚未接入 DASH 音频清单解析；" +
+                    "请优先使用网站提供的字幕，或选择可访问的独立音轨/HLS 点播流。"
+            )
+        }
         if (looksLikeHlsUrl(url)) {
             return downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
         }
@@ -2352,6 +2359,12 @@ class PlaybackService : MediaSessionService() {
             },
         )
     }
+
+    private fun looksLikeDashUrl(value: String): Boolean = runCatching {
+        val uri = Uri.parse(value)
+        uri.path.orEmpty().endsWith(".mpd", ignoreCase = true) ||
+            uri.getQueryParameter("type").equals("application/dash+xml", ignoreCase = true)
+    }.getOrDefault(false)
 
     private fun looksLikeHlsUrl(value: String): Boolean = runCatching {
         val uri = Uri.parse(value)
