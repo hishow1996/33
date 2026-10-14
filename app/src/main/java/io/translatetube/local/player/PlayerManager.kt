@@ -268,7 +268,7 @@ class PlayerManager(private val ctx: Context) {
                     val permitted = normalized in WEB_REQUEST_HEADER_ALLOWLIST
                     val sensitive = normalized in setOf("cookie", "authorization", "origin")
                     val safeValue = value.isNotBlank() &&
-                        value.none { it == '\\r' || it == '\\n' || it == '\\u0000' }
+                        value.none { it == '\r' || it == '\n' || it == '\u0000' }
                     if (permitted && safeValue && (!sensitive || sameOrigin)) {
                         resolvedHeaders[name.trim()] = value
                     }
