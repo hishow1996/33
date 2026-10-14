@@ -367,7 +367,7 @@ internal class AsrAudioSegmentDownloader(
 
     private fun ensureDiskSpace(parent: File, bytesToWrite: Long) {
         val usable = runCatching { parent.usableSpace }.getOrDefault(-1L)
-        if (usable <= 0L) return
+        if (usable < 0L) return
         if (usable < MIN_FREE_STORAGE_BYTES || bytesToWrite > usable - MIN_FREE_STORAGE_BYTES) {
             throw IOException(
                 "可用存储空间不足，音频缓存需要约 ${bytesToWrite / (1024L * 1024L)} MB，" +
