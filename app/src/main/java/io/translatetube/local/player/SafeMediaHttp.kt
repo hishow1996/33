@@ -9,12 +9,12 @@ import okhttp3.Response
 /**
  * Follows ordinary HTTP redirects while stripping origin-bound credentials on cross-origin hops.
  * Media manifests and segments often redirect to a CDN; captured Cookie/Authorization headers must
- * never be blindly replayed to a different host.
+ * never be blindly replayed to a different host. Proxy credentials are also origin-bound.
  */
 internal object SafeMediaHttp {
     private const val MAX_REDIRECTS = 8
     private val redirectCodes = setOf(301, 302, 303, 307, 308)
-    private val credentialHeaders = setOf("authorization", "cookie", "origin")
+    private val credentialHeaders = setOf("authorization", "cookie", "origin", "proxy-authorization")
 
     @Throws(IOException::class)
     fun execute(client: OkHttpClient, request: Request): Response {
