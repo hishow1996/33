@@ -317,6 +317,8 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
                     }
                     var actualBytes = 0L
+                    val payloadPrefix = ByteArray(512)
+                    var payloadPrefixSize = 0
                     body.byteStream().use { input ->
                         FileOutputStream(part, false).buffered().use { output ->
                             val buffer = ByteArray(64 * 1024)
@@ -324,6 +326,16 @@ internal object HlsAudioDownloader {
                                 ownerJob?.ensureActive()
                                 val count = input.read(buffer)
                                 if (count < 0) break
+                                if (payloadPrefixSize < payloadPrefix.size) {
+                                    val copyCount = minOf(count, payloadPrefix.size - payloadPrefixSize)
+                                    System.arraycopy(buffer, 0, payloadPrefix, payloadPrefixSize, copyCount)
+                                    payloadPrefixSize += copyCount
+                                    if (isLikelyTextErrorPayload(payloadPrefix, payloadPrefixSize)) {
+                                        throw IllegalStateException(
+                                            "HLS 片段返回了登录页、错误页或文本清单，而不是音频数据；链接可能过期或需要登录。"
+                                        )
+                                    }
+                                }
                                 actualBytes += count
                                 if (cachedBytes + actualBytes > MAX_BYTES) {
                                     throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
