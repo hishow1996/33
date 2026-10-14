@@ -165,16 +165,41 @@ object SubtitleParsers {
         return normalizeTimeline(out)
     }
 
-    private fun parseTtmlTime(value: String): Long? {
+    internal fun parseTtmlTime(value: String): Long? {
         val time = value.trim()
-        return when {
+        if (time.isEmpty()) return null
+
+        val milliseconds = when {
             time.endsWith("ms", ignoreCase = true) ->
-                time.dropLast(2).trim().toDoubleOrNull()?.toLong()
+                time.dropLast(2).trim().toDoubleOrNull() ?: return null
             time.endsWith("s", ignoreCase = true) ->
-                ((time.dropLast(1).trim().toDoubleOrNull() ?: return null) * 1000.0).toLong()
-            time.contains(":") -> runCatching { parseTs(time) }.getOrNull()
-            else -> ((time.toDoubleOrNull() ?: return null) * 1000.0).toLong()
+                (time.dropLast(1).trim().toDoubleOrNull() ?: return null) * 1000.0
+            time.contains(":") -> return parseTtmlClockTime(time)
+            else -> (time.toDoubleOrNull() ?: return null) * 1000.0
         }
+        if (!milliseconds.isFinite() || milliseconds < 0.0 ||
+            milliseconds >= Long.MAX_VALUE.toDouble()
+        ) return null
+        return milliseconds.toLong()
+    }
+
+    private fun parseTtmlClockTime(value: String): Long? {
+        val parts = value.split(":")
+        if (parts.size !in 2..3) return null
+        val seconds = parts.last().toDoubleOrNull()
+            ?.takeIf { it.isFinite() && it >= 0.0 && it < 60.0 } ?: return null
+        val minuteText = parts[parts.lastIndex - 1]
+        val minutes = minuteText.toLongOrNull()
+            ?.takeIf { it >= 0L && (parts.size == 2 || it <= 59L) } ?: return null
+        val hours = if (parts.size == 3) {
+            parts[0].toLongOrNull()?.takeIf { it >= 0L } ?: return null
+        } else {
+            0L
+        }
+        val milliseconds =
+            hours.toDouble() * 3_600_000.0 + minutes.toDouble() * 60_000.0 + seconds * 1000.0
+        if (!milliseconds.isFinite() || milliseconds >= Long.MAX_VALUE.toDouble()) return null
+        return milliseconds.toLong()
     }
 
     /** 自动识别格式解析（vtt/srt/xml），输出保证按 startMs 单调有序（lineAt 二分前提） */

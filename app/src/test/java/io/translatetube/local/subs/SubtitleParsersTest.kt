@@ -93,4 +93,18 @@ class SubtitleParsersTest {
         assertEquals(listOf(1_750L, 3_750L), parsed.map { it.endMs })
     }
 
+    @Test
+    fun rejectsInvalidAndOverflowingTtmlTimes() {
+        assertEquals(null, SubtitleParsers.parseTtmlTime("NaNs"))
+        assertEquals(null, SubtitleParsers.parseTtmlTime("Infinitys"))
+        assertEquals(null, SubtitleParsers.parseTtmlTime("-0.5s"))
+        assertEquals(null, SubtitleParsers.parseTtmlTime("1:60:00"))
+        assertEquals(null, SubtitleParsers.parseTtmlTime("1:02:60"))
+        assertEquals(null, SubtitleParsers.parseTtmlTime("1:2:3:4"))
+        assertEquals(null, SubtitleParsers.parseTtmlTime("9223372036854776s"))
+        assertEquals(1_250L, SubtitleParsers.parseTtmlTime("1.25s"))
+        assertEquals(1_250L, SubtitleParsers.parseTtmlTime("1250ms"))
+        assertEquals(3_723_500L, SubtitleParsers.parseTtmlTime("1:02:03.5"))
+    }
+
 }
