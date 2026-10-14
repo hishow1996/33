@@ -6,6 +6,7 @@ internal object PcmDecodeLimitPolicy {
         require(sampleRate in 1_000..384_000) { "不支持的输入采样率：${sampleRate}" }
         require(channels in 1..8) { "不支持的音频声道数：${channels}" }
         require(maxDurationMs >= 0L) { "音频解码时长上限不能为负数" }
+        if (maxDurationMs == 0L) return 0L
 
         val samplesPerSecond = sampleRate.toLong() * channels.toLong()
         // Keep the same representable hard bound for unlimited or extremely long requests.
