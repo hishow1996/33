@@ -7,11 +7,19 @@ internal object PcmDecodeLimitPolicy {
         require(channels in 1..8) { "不支持的音频声道数：${channels}" }
         require(maxDurationMs >= 0L) { "音频解码时长上限不能为负数" }
 
-        val rawLimit = if (maxDurationMs == Long.MAX_VALUE) {
+        val samplesPerSecond = sampleRate.toLong() * channels.toLong()
+        // Keep the same representable hard bound for unlimited or extremely long requests.
+        // Check before multiplying so a large finite duration cannot overflow Long and
+        // accidentally collapse the allowed decode length to a single channel frame.
+        val rawLimit = if (
+            maxDurationMs == Long.MAX_VALUE ||
+            maxDurationMs > Long.MAX_VALUE / samplesPerSecond
+        ) {
             Int.MAX_VALUE.toLong()
         } else {
-            (sampleRate.toLong() * channels.toLong() * maxDurationMs / 1_000L)
+            (samplesPerSecond * maxDurationMs / 1_000L)
                 .coerceAtLeast(channels.toLong())
+                .coerceAtMost(Int.MAX_VALUE.toLong())
         }
         return rawLimit - rawLimit % channels
     }
