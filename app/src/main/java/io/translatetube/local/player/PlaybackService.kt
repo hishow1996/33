@@ -2494,8 +2494,7 @@ class PlaybackService : MediaSessionService() {
             .lowercase()
         return message.contains("dash+xml") ||
             message.contains("mpeg-dash") ||
-            message.contains("dash mpd") ||
-            message.contains("不是可解码音频")
+            message.contains("dash mpd")
     }
 
     private fun looksLikePlaylistFailure(error: Throwable): Boolean {
