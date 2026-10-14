@@ -30,9 +30,9 @@ class VadSegmentPolicyTest {
         val result = VadSegmentPolicy.merge(listOf(1_000L to 62_000L))
 
         assertEquals(3, result.size)
-        assertEquals(1_000L to 26_000L, result[0])
-        assertEquals(26_000L to 51_000L, result[1])
-        assertEquals(51_000L to 62_000L, result[2])
+        assertEquals(1_000L to 21_334L, result[0])
+        assertEquals(21_334L to 41_667L, result[1])
+        assertEquals(41_667L to 62_000L, result[2])
         assertEquals(61_000L, result.sumOf { it.second - it.first })
         assertTrue(result.all {
             it.second - it.first <= VadSegmentPolicy.MAX_SEGMENT_DURATION_MS
