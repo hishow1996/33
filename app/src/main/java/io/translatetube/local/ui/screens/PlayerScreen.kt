@@ -470,32 +470,8 @@ fun PlayerScreen(
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
                     )
-                    val liveSubtitle = state.lines.getOrNull(state.currentLine)
-                        ?.zh
-                        ?.let { SubtitleParsers.cleanTranslatedText(it) }
-                        ?.takeIf { it.isNotBlank() }
-                    if (subtitlesVisible && !liveSubtitle.isNullOrBlank()) {
-                        Surface(
-                            modifier = Modifier
-                                .align(androidx.compose.ui.Alignment.BottomCenter)
-                                .fillMaxWidth(0.92f)
-                                .padding(bottom = 62.dp),
-                            color = Color(0xC9000000),
-                            shape = RoundedCornerShape(10.dp),
-                        ) {
-                            Text(
-                                liveSubtitle,
-                                color = Color.White,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                ),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            )
-                        }
+                    if (subtitlesVisible) {
+                        LiveChineseSubtitleOverlay(state = state)
                     }
                 }
                 // 阶段进度覆盖层
@@ -1400,6 +1376,75 @@ private fun PlayerToolTile(
             maxLines = 1,
         )
     }
+}
+
+/**
+ * Subtitle overlays follow the real media playhead, not the list's nearest-row highlight.
+ * The subtitle list deliberately keeps the preceding row selected in short gaps for easier reading;
+ * the on-video subtitle must disappear once that cue's own end timestamp has passed.
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.LiveChineseSubtitleOverlay(
+    state: PlayerUiState,
+) {
+    var playbackPositionMs by remember(state.key) {
+        mutableLongStateOf(PlaybackService.instance?.position() ?: 0L)
+    }
+
+    LaunchedEffect(state.key, state.phase) {
+        if (state.phase != Phase.READY && state.phase != Phase.SYNTHESIZING) return@LaunchedEffect
+        while (true) {
+            playbackPositionMs = PlaybackService.instance?.position() ?: playbackPositionMs
+            delay(120)
+        }
+    }
+
+    val liveSubtitle = subtitleAtPosition(state.lines, playbackPositionMs)
+        ?.zh
+        ?.let { SubtitleParsers.cleanTranslatedText(it) }
+        ?.takeIf { it.isNotBlank() }
+        ?: return
+
+    Surface(
+        modifier = Modifier
+            .align(androidx.compose.ui.Alignment.BottomCenter)
+            .fillMaxWidth(0.92f)
+            .padding(bottom = 62.dp),
+        color = Color(0xC9000000),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Text(
+            liveSubtitle,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+        )
+    }
+}
+
+private fun subtitleAtPosition(lines: List<SubLine>, positionMs: Long): SubLine? {
+    if (positionMs < 0L || lines.isEmpty()) return null
+    var low = 0
+    var high = lines.lastIndex
+    var candidate = -1
+    while (low <= high) {
+        val mid = low + (high - low) / 2
+        if (lines[mid].startMs <= positionMs) {
+            candidate = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    if (candidate < 0) return null
+    val line = lines[candidate]
+    return line.takeIf { positionMs >= it.startMs && positionMs < it.endMs }
 }
 
 @Composable
