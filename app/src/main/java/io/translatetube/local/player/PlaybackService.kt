@@ -339,7 +339,7 @@ class PlaybackService : MediaSessionService() {
                 "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> when {
-                dubbing?.isPreparing == true -> "正在准备配音" to if (state.totalLines > 0) {
+                dubbing?.isPreparing == true -> (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
                     "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
                 } else state.progress.ifBlank { "正在生成中文配音" }
                 state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
@@ -383,6 +383,7 @@ class PlaybackService : MediaSessionService() {
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(
                 state.isPlaying ||
+                    dubbing?.isPreparing == true ||
                     state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
             )
             .setOnlyAlertOnce(true)
