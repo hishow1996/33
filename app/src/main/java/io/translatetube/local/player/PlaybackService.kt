@@ -548,12 +548,13 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
-        val effectiveTranslationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
-            ?: if (!importedLines.isNullOrEmpty()) {
-                importedTranslationCacheKey(key, activeTranslationId, importedLines)
-            } else {
-                "$key|zh|$activeTranslationId"
-            }
+        val cacheKeyBase = remoteMediaUrl?.let(::remoteCacheIdentity) ?: key
+        val effectiveTranslationCacheKey = TranslationCacheIdentity.forProvider(
+            baseKey = cacheKeyBase,
+            activeId = activeTranslationId,
+            importedLines = importedLines,
+            previousKey = resumeState?.translationCacheKey,
+        )
         val configuredTtsName = when (configuredTts) {
             "system" -> "系统 TTS"
             "kokoro" -> "Kokoro"
@@ -586,6 +587,8 @@ class PlaybackService : MediaSessionService() {
         val sessionVideoId = videoId ?: return
         val source = qualitySources.firstOrNull { it.label == label } ?: return
         if (!::pm.isInitialized || sessionKey.isBlank() || source.label == ui.value.selectedQuality) return
+        val previousSource = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }
+        val previousAudioUrl = qualityAudioUrl
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
         qualityJob?.cancel()
@@ -602,7 +605,7 @@ class PlaybackService : MediaSessionService() {
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(sessionKey)
                     if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
-                    pm.setYouTubeQuality(
+                    val accepted = pm.setYouTubeQuality(
                         videoUrl = source.url,
                         audioUrl = qualityAudioUrl,
                         muxed = source.muxed,
@@ -610,6 +613,9 @@ class PlaybackService : MediaSessionService() {
                         artist = ui.value.channel,
                         artworkUrl = ui.value.thumbUrl,
                     )
+                    if (!accepted) {
+                        throw IllegalStateException(pm.errorSink.value ?: "播放器拒绝了所选清晰度")
+                    }
                     pm.seekTo(positionMs)
                     if (wasPlaying) pm.play() else pm.pause()
                     updateUiForSession(sessionKey) { it.copy(selectedQuality = source.label, progress = "") }
@@ -618,6 +624,35 @@ class PlaybackService : MediaSessionService() {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
+                // setYouTubeQuality can reject a stream without throwing. Restore the last known
+                // working stream and playback position rather than leaving a half-switched player.
+                if (previousSource != null) {
+                    runCatching {
+                        withContext(Dispatchers.Main) {
+                            if (ui.value.key == sessionKey && videoId == sessionVideoId) {
+                                val restored = pm.setYouTubeQuality(
+                                    videoUrl = previousSource.url,
+                                    audioUrl = previousAudioUrl,
+                                    muxed = previousSource.muxed,
+                                    title = ui.value.title,
+                                    artist = ui.value.channel,
+                                    artworkUrl = ui.value.thumbUrl,
+                                )
+                                if (restored) {
+                                    pm.seekTo(positionMs)
+                                    if (wasPlaying) pm.play() else pm.pause()
+                                } else {
+                                    android.util.Log.w(
+                                        "PlaybackService",
+                                        "Unable to restore previous YouTube quality: ${pm.errorSink.value}",
+                                    )
+                                }
+                            }
+                        }
+                    }.onFailure {
+                        android.util.Log.w("PlaybackService", "Quality-switch rollback failed", it)
+                    }
+                }
                 updateUiForSession(sessionKey) {
                     it.copy(
                         progress = "",
@@ -1125,12 +1160,13 @@ class PlaybackService : MediaSessionService() {
             // Keep signed media URLs out of subtitle-cache keys. The playback/history identity
             // remains unchanged so the original page can still be resumed from local history.
             val cacheKeyBase = remoteMediaUrl?.let(::remoteCacheIdentity) ?: key
-            val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
-                ?: if (!sourceImportedLines.isNullOrEmpty()) {
-                    importedTranslationCacheKey(cacheKeyBase, selectedTranslationId, sourceImportedLines)
-                } else {
-                    "$cacheKeyBase|zh|$selectedTranslationId"
-                }
+            val translationCacheKey = TranslationCacheIdentity.forProvider(
+                baseKey = cacheKeyBase,
+                activeId = selectedTranslationId,
+                importedLines = sourceImportedLines,
+                previousKey = resumeState?.translationCacheKey,
+            )
+            updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
                 videoId != null -> "$key|source|youtube"
                 remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
@@ -1645,14 +1681,14 @@ class PlaybackService : MediaSessionService() {
                             progress = "继续翻译缓存中尚未完成的字幕…",
                         )
                     }
-                    lines = translateLines(key, restored, srcLang, translationCacheKey)
+                    lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId)
                 }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
-                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey)
+                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId)
                 } else if (translatedLines.isNotEmpty()) {
                     // Already-Chinese source subtitles are the Chinese display track; publish immutable copies.
                     translatedLines = translatedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
@@ -1699,7 +1735,7 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key)
-                    pm.setYouTubeQuality(
+                    val accepted = pm.setYouTubeQuality(
                         videoUrl = defaultQuality.url,
                         audioUrl = audioUrl,
                         muxed = defaultQuality.muxed,
@@ -1707,6 +1743,9 @@ class PlaybackService : MediaSessionService() {
                         artist = meta.channel,
                         artworkUrl = meta.thumbUrl,
                     )
+                    if (!accepted) {
+                        throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
+                    }
                 }
             } else {
                 ensureCurrentSession(key)
@@ -1940,12 +1979,13 @@ class PlaybackService : MediaSessionService() {
         lines: List<SubLine>,
         srcLang: String,
         cacheKeyOverride: String? = null,
+        activeIdOverride: Long? = null,
     ): List<SubLine> {
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         var updatedLines: List<SubLine> = lines.toList()
         val db = AppDatabase.get(this)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val activeId = prefs.getLong("active_api_id", -1L)
+        val activeId = activeIdOverride ?: prefs.getLong("active_api_id", -1L)
         val profiles = db.apiProfileDao().enabled()
         val tgt = "zh"
         val plain = lines.map { it.text }
@@ -2196,7 +2236,7 @@ class PlaybackService : MediaSessionService() {
                         selectedQuality = fallback.label,
                     )
                 }
-                pm.setYouTubeQuality(
+                val accepted = pm.setYouTubeQuality(
                     videoUrl = fallback.url,
                     audioUrl = choices.audioUrl,
                     muxed = fallback.muxed,
@@ -2204,6 +2244,9 @@ class PlaybackService : MediaSessionService() {
                     artist = ui.value.channel,
                     artworkUrl = ui.value.thumbUrl,
                 )
+                if (!accepted) {
+                    throw IllegalStateException(pm.errorSink.value ?: "刷新后的视频流初始化失败")
+                }
                 pm.seekTo(position)
                 if (shouldResume) pm.play() else pm.pause()
             }
