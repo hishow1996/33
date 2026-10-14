@@ -11,8 +11,11 @@ internal object DubbingPcmValidation {
     fun isAudibleSample(sample: Float): Boolean =
         sample.isFinite() && abs(sample) > MIN_AUDIBLE_ABS_SAMPLE
 
+    fun isSampleCountAllowed(sampleCount: Int): Boolean =
+        sampleCount in 1..MAX_SAMPLE_COUNT
+
     fun isValidAudio(sampleRate: Int, samples: FloatArray): Boolean {
-        if (sampleRate !in 8_000..192_000 || samples.isEmpty() || samples.size > MAX_SAMPLE_COUNT) return false
+        if (sampleRate !in 8_000..192_000 || !isSampleCountAllowed(samples.size)) return false
         var audible = false
         for (sample in samples) {
             if (!sample.isFinite()) return false

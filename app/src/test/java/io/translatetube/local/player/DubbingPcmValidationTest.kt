@@ -28,12 +28,10 @@ class DubbingPcmValidationTest {
 
     @Test
     fun rejectsUnboundedPcmBeforeScanningEverySample() {
-        assertFalse(
-            DubbingPcmValidation.isValidAudio(
-                16_000,
-                FloatArray(DubbingPcmValidation.MAX_SAMPLE_COUNT + 1),
-            )
-        )
+        assertFalse(DubbingPcmValidation.isSampleCountAllowed(0))
+        assertTrue(DubbingPcmValidation.isSampleCountAllowed(1))
+        assertTrue(DubbingPcmValidation.isSampleCountAllowed(DubbingPcmValidation.MAX_SAMPLE_COUNT))
+        assertFalse(DubbingPcmValidation.isSampleCountAllowed(DubbingPcmValidation.MAX_SAMPLE_COUNT + 1))
     }
 
     @Test
