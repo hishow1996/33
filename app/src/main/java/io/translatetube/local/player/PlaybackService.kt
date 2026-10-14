@@ -2473,23 +2473,83 @@ class PlaybackService : MediaSessionService() {
                     return@launch
                 }
                 val pcm = withContext(Dispatchers.IO) {
-                    val sourceFile: File?
-                    val sourceUri: Uri?
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
-                        val audio = obtainAsrAudioFile(id, sessionKey, "复用已下载音频，正在分析人物声音…")
+                        var audioCacheHit = false
+                        val audio = obtainAsrAudioFile(
+                            id,
+                            sessionKey,
+                            "复用已下载音频，正在分析人物声音…",
+                            onCacheHit = { audioCacheHit = it },
+                        )
                         updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
                             } else state
                         }
-                        sourceFile = audio
-                        sourceUri = null
+                        try {
+                            AudioExtract.decodeTo16kMono(
+                                this@PlaybackService,
+                                null,
+                                audio,
+                                maxDurationMs = 3 * 60 * 1000L,
+                            )
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // ASR and speaker recognition share the same video audio cache. A
+                            // corrupt/stale non-empty file must not make every later diarization
+                            // attempt fail forever; refresh the extractor metadata and retry once.
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            ensureCurrentSession(sessionKey)
+                            android.util.Log.w(
+                                "PlaybackService",
+                                "${if (audioCacheHit) "Cached" else "Downloaded"} speaker-analysis audio could not be decoded; refreshing once",
+                                e,
+                            )
+                            audio.delete()
+                            File(audio.parentFile, audio.name + ".part").delete()
+                            NewPipeRepo.invalidate(id)
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(
+                                        phase = Phase.DOWNLOADING_AUDIO,
+                                        progress = "人物分析音频无效，正在刷新地址并重新获取…",
+                                    )
+                                } else state
+                            }
+                            val refreshedAudio = obtainAsrAudioFile(
+                                id,
+                                sessionKey,
+                                "已刷新人物分析音频，正在解码…",
+                            )
+                            ensureCurrentSession(sessionKey)
+                            try {
+                                AudioExtract.decodeTo16kMono(
+                                    this@PlaybackService,
+                                    null,
+                                    refreshedAudio,
+                                    maxDurationMs = 3 * 60 * 1000L,
+                                )
+                            } catch (retryError: Exception) {
+                                if (retryError is kotlinx.coroutines.CancellationException) throw retryError
+                                refreshedAudio.delete()
+                                File(refreshedAudio.parentFile, refreshedAudio.name + ".part").delete()
+                                throw IllegalStateException(
+                                    "人物分析音频刷新并重新下载后仍无法解码：${retryError.message ?: retryError.javaClass.simpleName}",
+                                    retryError,
+                                )
+                            }
+                        }
                     } else {
-                        sourceFile = null
-                        sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
+                        val sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
+                        AudioExtract.decodeTo16kMono(
+                            this@PlaybackService,
+                            sourceUri,
+                            null,
+                            maxDurationMs = 3 * 60 * 1000L,
+                        )
                     }
-                    AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
                 val diarizationSignature = SpeakerDiarizationCachePolicy.signature(pcm.samples)
                 val diarizationCacheKey = "${sessionKey}|speaker-diarization-v1"
