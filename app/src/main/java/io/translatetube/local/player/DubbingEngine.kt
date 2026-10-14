@@ -572,7 +572,9 @@ class DubbingEngine(
             // validated them. Do not permanently classify a translated cue as silent: enqueue
             // regeneration and keep the original video audio audible until it is ready again.
             f.delete()
-            readiness.markPrepared(idx, hasAudio = false)
+            // This is recoverable cache loss, not a permanent silent cue. Keep it pending so
+            // PlaybackService preserves source audio while fresh PCM is synthesized.
+            readiness.markPending(idx)
             queueSynthesisRetry(idx)
             return null
         }
