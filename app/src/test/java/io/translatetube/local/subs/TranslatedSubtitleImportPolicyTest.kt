@@ -45,7 +45,7 @@ class TranslatedSubtitleImportPolicyTest {
             listOf(
                 SubLine(0, 0, 1_000, "Hello, how are you?"),
                 SubLine(1, 1_000, 2_000, "This row has no translated Chinese text."),
-                SubLine(2, 2_000, 3_000, "Hello\\n你好"),
+                SubLine(2, 2_000, 3_000, "Hello\n你好"),
             )
         )
         assertEquals(1, result.size)
