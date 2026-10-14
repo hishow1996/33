@@ -183,7 +183,7 @@ internal class HlsAudioSegmentCache(
             // each cache entry and continues from the first missing or stale segment.
             throw e
         } finally {
-            pruneOldSegmentCaches(root, protected = sourceFolder)
+            pruneOldSegmentCaches(root, protectedDirectory = sourceFolder)
         }
     }
 
@@ -316,11 +316,11 @@ internal class HlsAudioSegmentCache(
         return File(folder, "${safeLabel}-${sha256(url).take(24)}.seg")
     }
 
-    private fun pruneOldSegmentCaches(root: File, protected: File? = null) {
+    private fun pruneOldSegmentCaches(root: File, protectedDirectory: File? = null) {
         val now = System.currentTimeMillis()
         val directories = root.listFiles()?.filter { it.isDirectory }.orEmpty()
         directories.filter { directory ->
-            directory.absolutePath != protected?.absolutePath &&
+            directory.absolutePath != protectedDirectory?.absolutePath &&
                 (directory.lastModified() <= 0L || now < directory.lastModified() ||
                     now - directory.lastModified() > SEGMENT_TTL_MS)
         }.forEach { it.deleteRecursively() }
@@ -333,7 +333,7 @@ internal class HlsAudioSegmentCache(
         val budget = minOf(SEGMENT_CACHE_BUDGET_BYTES, AsrAudioCachePolicy.CACHE_BUDGET_BYTES / 2)
         for (directory in currentDirs.sortedBy { it.lastModified() }) {
             if (total <= budget) break
-            if (directory.absolutePath == protected?.absolutePath) continue
+            if (directory.absolutePath == protectedDirectory?.absolutePath) continue
             val size = directory.walkTopDown().filter { it.isFile }.sumOf { it.length() }
             if (directory.deleteRecursively()) total = (total - size).coerceAtLeast(0L)
         }
