@@ -55,30 +55,44 @@ object NewPipeRepo {
     @Volatile private var inited = false
     @Volatile private var cachedInfo: StreamInfo? = null
     @Volatile private var cachedId: String? = null
+    @Volatile private var cachedAtMs = 0L
     private val infoLock = Any()
-    /** Every invalidation prevents any older in-flight fetch from repopulating the cache. */
+    /** Invalidations and newer requests prevent older in-flight fetches from replacing fresh data. */
     private var infoCacheGeneration = 0L
+    private var infoRequestGeneration = 0L
 
-    /** StreamInfo 复用：缓存读写有锁；网络解析不占用锁，避免卡住主线程的 invalidation。 */
+    /** StreamInfo contains signed URLs; keep it for a short window and refresh before URLs grow stale. */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val cached = synchronized(infoLock) {
-                if (cachedId == videoId) cachedInfo else null
+                if (cachedId == videoId &&
+                    StreamInfoCachePolicy.isFresh(cachedAtMs, System.currentTimeMillis())
+                ) cachedInfo else null
             }
             if (cached != null) return@withContext cached
 
-            val requestGeneration = synchronized(infoLock) { infoCacheGeneration }
+            val request = synchronized(infoLock) {
+                infoRequestGeneration += 1L
+                infoCacheGeneration to infoRequestGeneration
+            }
             initOnce()
-            // This fetch is intentionally outside infoLock. Each caller returns its own result,
-            // and a generation check prevents a stale fetch from being installed after invalidate().
+            // Resolve outside infoLock so invalidation stays responsive. Only the newest request
+            // for the current invalidation generation may publish into the one-video cache.
             val fetched = StreamInfo.getInfo(
                 ServiceList.YouTube,
                 "https://www.youtube.com/watch?v=$videoId",
             )
             synchronized(infoLock) {
-                if (infoCacheGeneration == requestGeneration) {
+                if (StreamInfoCachePolicy.mayPublish(
+                        requestGeneration = request.second,
+                        currentRequestGeneration = infoRequestGeneration,
+                        invalidationGeneration = request.first,
+                        currentInvalidationGeneration = infoCacheGeneration,
+                    )
+                ) {
                     cachedInfo = fetched
                     cachedId = videoId
+                    cachedAtMs = System.currentTimeMillis()
                 }
             }
             fetched
@@ -92,9 +106,11 @@ object NewPipeRepo {
     fun invalidate(videoId: String? = null) {
         synchronized(infoLock) {
             infoCacheGeneration += 1
+            infoRequestGeneration += 1L
             if (videoId == null || cachedId == videoId) {
                 cachedInfo = null
                 cachedId = null
+                cachedAtMs = 0L
             }
         }
     }
