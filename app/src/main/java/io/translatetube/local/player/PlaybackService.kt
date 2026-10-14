@@ -47,11 +47,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
 private data class PartialAsrTranscript(
@@ -2259,19 +2256,13 @@ class PlaybackService : MediaSessionService() {
             }
         }
         val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
-        val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
-        val requestBuilder = Request.Builder().url(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0")
-        requestHeaders.forEach { (name, value) ->
-            if (value.isNotBlank() && (name.equals("Referer", true) || name.equals("Cookie", true))) {
-                requestBuilder.header(name, value)
-            }
-        }
-        val req = requestBuilder.build()
         try {
             withContext(Dispatchers.IO) {
-                client.newCall(req).execute().use { resp ->
+                SafeMediaHttp.execute(
+                    url = url,
+                    requestHeaders = requestHeaders,
+                    userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+                ).use { resp ->
                     if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
                     val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
                     val total = body.contentLength()
