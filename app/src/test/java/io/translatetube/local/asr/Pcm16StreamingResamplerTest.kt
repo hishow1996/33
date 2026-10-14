@@ -33,6 +33,37 @@ class Pcm16StreamingResamplerTest {
         assertArrayEquals(shortArrayOf(1234), single.finish())
     }
 
+    @Test
+    fun largeStreamingResampleChecksCancellationBetweenOutputChunks() {
+        val resampler = Pcm16StreamingResampler(8_000, 16_000)
+        var checks = 0
+        val error = runCatching {
+            resampler.process(ShortArray(100_000) { (it % 100).toShort() }) {
+                checks++
+                if (checks == 3) throw java.util.concurrent.CancellationException("stale decode")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(3, checks)
+    }
+
+    @Test
+    fun resamplerFinishChecksCancellationBeforeWritingDeferredTail() {
+        val resampler = Pcm16StreamingResampler(16_000, 16_000)
+        resampler.process(shortArrayOf(1234))
+        var checks = 0
+        val error = runCatching {
+            resampler.finish {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("stale decode")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(2, checks)
+    }
+
     private fun referenceResample(input: ShortArray, fromRate: Int, toRate: Int): ShortArray {
         if (input.isEmpty() || fromRate == toRate) return input.copyOf()
         val ratio = fromRate.toDouble() / toRate
