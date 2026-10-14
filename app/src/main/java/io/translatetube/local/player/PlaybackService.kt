@@ -333,6 +333,16 @@ class PlaybackService : MediaSessionService() {
     }
 
 
+    /**
+     * A worker can remain active briefly after marking the final row ready. Use cue readiness as
+     * the user-visible completion condition so notifications don't stick at 100% while cleanup ends.
+     */
+    private fun isDubbingPreparationIncomplete(state: PlayerUiState): Boolean {
+        val engine = dubbing ?: return false
+        if (!engine.isPreparing) return false
+        return state.totalLines <= 0 || state.preparedCount < state.totalLines
+    }
+
     private fun updateProcessingNotification(state: PlayerUiState) {
         if (!playerReady && state.phase == Phase.IDLE) return
         val (title, detail) = when (state.phase) {
@@ -346,7 +356,7 @@ class PlaybackService : MediaSessionService() {
                 "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> when {
-                dubbing?.isPreparing == true -> (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
+                isDubbingPreparationIncomplete(state) -> (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
                     "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
                 } else state.progress.ifBlank { "正在生成中文配音" }
                 state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
@@ -371,7 +381,7 @@ class PlaybackService : MediaSessionService() {
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
                 (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else ratioPercentFromProgress(state.progress)
-            Phase.READY -> if (dubbing?.isPreparing == true && state.totalLines > 0) {
+            Phase.READY -> if (isDubbingPreparationIncomplete(state) && state.totalLines > 0) {
                 (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else null
             else -> null
@@ -390,7 +400,7 @@ class PlaybackService : MediaSessionService() {
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(
                 state.isPlaying ||
-                    dubbing?.isPreparing == true ||
+                    isDubbingPreparationIncomplete(state) ||
                     state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
             )
             .setOnlyAlertOnce(true)
@@ -3288,7 +3298,7 @@ class PlaybackService : MediaSessionService() {
             Phase.TRANSLATING,
             Phase.SYNTHESIZING,
         )
-        val isDubbingPreparing = dubbing?.isPreparing == true
+        val isDubbingPreparing = isDubbingPreparationIncomplete(ui.value)
         if (isProcessing || isDubbingPreparing) {
             // READY starts video playback after the first speech cues are warmed, while the rest
             // of the subtitles may still be synthesizing. Do not let recents removal kill that work.
