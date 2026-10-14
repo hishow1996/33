@@ -245,6 +245,7 @@ class PlayerManager(private val ctx: Context) {
     fun setExternalMediaSource(
         uri: Uri,
         headers: Map<String, String>,
+        mimeType: String? = null,
         title: String = "",
         artist: String = "",
         artworkUrl: String? = null,
@@ -284,10 +285,11 @@ class PlayerManager(private val ctx: Context) {
                 DefaultDataSource.Factory(ctx, httpFactory),
                 resolver,
             )
-            val item = MediaItem.Builder()
+            val itemBuilder = MediaItem.Builder()
                 .setUri(uri)
                 .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
-                .build()
+            mimeType?.takeIf { it.isNotBlank() }?.let { itemBuilder.setMimeType(it) }
+            val item = itemBuilder.build()
             val source = DefaultMediaSourceFactory(remoteDataSource).createMediaSource(item)
             player.setMediaSource(source)
             player.prepare()
