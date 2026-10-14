@@ -338,7 +338,13 @@ class PlaybackService : MediaSessionService() {
             Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
-            Phase.READY -> if (state.isPlaying) "正在播放" to state.title.ifBlank { "视频配音已准备完成" } else "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
+            Phase.READY -> when {
+                dubbing?.isPreparing == true -> "正在准备配音" to if (state.totalLines > 0) {
+                    "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                } else state.progress.ifBlank { "正在生成中文配音" }
+                state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
+                else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
+            }
             Phase.ERROR -> "处理遇到问题" to (state.error ?: "打开应用查看详情")
             else -> "大象翻译" to "等待开始"
         }
@@ -358,6 +364,9 @@ class PlaybackService : MediaSessionService() {
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
                 (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else ratioPercentFromProgress(state.progress)
+            Phase.READY -> if (dubbing?.isPreparing == true && state.totalLines > 0) {
+                (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+            } else null
             else -> null
         }
         val displayDetail = if (
@@ -3239,13 +3248,13 @@ class PlaybackService : MediaSessionService() {
             Phase.TRANSLATING,
             Phase.SYNTHESIZING,
         )
-        if (isProcessing) {
-            // The player is intentionally paused while subtitles, translation and TTS are prepared.
-            // The default recents-removal path can stop a paused service, so keep the current
-            // foreground processing task alive until it reaches READY or ERROR.
+        val isDubbingPreparing = dubbing?.isPreparing == true
+        if (isProcessing || isDubbingPreparing) {
+            // READY starts video playback after the first speech cues are warmed, while the rest
+            // of the subtitles may still be synthesizing. Do not let recents removal kill that work.
             android.util.Log.i(
                 "PlaybackService",
-                "Keeping processing service alive after task removal: $phase",
+                "Keeping background task alive after task removal: phase=$phase, dubbingPreparing=$isDubbingPreparing",
             )
             return
         }
