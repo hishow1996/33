@@ -271,7 +271,7 @@ object AudioExtract {
                             }
                             // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
                             val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
-                            val converted = activeResampler.process(monoChunk)
+                            val converted = activeResampler.process(monoChunk, checkActive)
                             if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
                                 throw IllegalStateException(
                                     "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
@@ -321,7 +321,7 @@ object AudioExtract {
 
                 val activeResampler = resampler
                     ?: throw IllegalStateException("音频轨没有可解码的 PCM 数据")
-                val tail = activeResampler.finish()
+                val tail = activeResampler.finish(checkActive)
                 if (!PcmTempFilePolicy.canAppendSamples(outputBytes, tail.size)) {
                     throw IllegalStateException(
                         "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
