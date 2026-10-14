@@ -85,6 +85,7 @@ object AudioExtract {
         file: File?,
         maxDurationMs: Long = Long.MAX_VALUE,
         checkActive: () -> Unit = {},
+        headers: Map<String, String> = emptyMap(),
     ): PcmFile {
         PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
         val destination = File.createTempFile("translate-pcm-", ".s16le", ctx.cacheDir)
@@ -94,6 +95,18 @@ object AudioExtract {
         try {
             when {
                 file != null -> extractor.setDataSource(file.absolutePath)
+                src != null && (src.scheme.equals("http", true) || src.scheme.equals("https", true)) -> {
+                    // Read accessible progressive web media directly through MediaExtractor instead
+                    // of downloading the full video first. Android 9 supports the URL + headers
+                    // overload, including servers that require Referer/Cookie/Authorization.
+                    val safeHeaders = headers.filter { (name, value) ->
+                        name.trim().lowercase(java.util.Locale.ROOT) in setOf(
+                            "user-agent", "referer", "origin", "cookie", "authorization", "accept-language"
+                        ) && value.isNotBlank() &&
+                            value.none { it == '\r' || it == '\n' || it == '\u0000' }
+                    }
+                    extractor.setDataSource(src.toString(), safeHeaders)
+                }
                 src != null -> extractor.setDataSource(ctx, src, null)
                 else -> throw IllegalStateException("无音频源")
             }
