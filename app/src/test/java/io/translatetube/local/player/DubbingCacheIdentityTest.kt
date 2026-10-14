@@ -21,6 +21,17 @@ class DubbingCacheIdentityTest {
     )
 
     @Test
+    fun stagingNamesAreUniqueAcrossEngineInstancesAndRetainCleanupSuffix() {
+        val target = key()
+        val first = DubbingCacheIdentity.tempFileName(target, 101)
+        val second = DubbingCacheIdentity.tempFileName(target, 102)
+
+        assertNotEquals(first, second)
+        org.junit.Assert.assertTrue(first.endsWith(".pcm.tmp"))
+        org.junit.Assert.assertTrue(second.endsWith(".pcm.tmp"))
+    }
+
+    @Test
     fun changingTheAssignedSpeakerVoiceInvalidatesPcmCache() {
         assertNotEquals(key(speakerId = 7), key(speakerId = 8))
         assertNotEquals(key(speakerId = -1), key(speakerId = 0))
