@@ -55,6 +55,8 @@ class DubbingEngine(
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
     private var speed = 1.0f
+    /** Latest player position; async PCM loading must not start speech at an old timestamp. */
+    @Volatile private var latestTimelineCursor = DubbingTimelineCursor()
     @Volatile private var track: AudioTrack? = null
     @Volatile private var activeSyncRate = 1.0f
     @Volatile private var activePlayerSpeed = 1.0f
@@ -97,6 +99,7 @@ class DubbingEngine(
         readiness.clear()
         pending.clear()
         priorityTarget = -1
+        latestTimelineCursor = DubbingTimelineCursor()
         cacheInitJob?.cancel()
         val generation = cacheInitGeneration.incrementAndGet()
         // 清内存缓存：防止旧会话同 idx 行的音频串台。
@@ -535,6 +538,11 @@ class DubbingEngine(
         }
     }
 
+    /** Publish a coherent line/position snapshot from the player ticker. */
+    fun updateTimelinePosition(lineIndex: Int, positionMs: Long) {
+        latestTimelineCursor = DubbingTimelineCursor(lineIndex, positionMs.coerceAtLeast(0L))
+    }
+
     /** 播放某一行（先停上一行）。
      *  AudioTrack 创建/写入/播放（含文件 load IO）全部在专用线程，不阻塞调用方（主线程 tick）。 */
     fun playAt(
@@ -559,14 +567,21 @@ class DubbingEngine(
                     val (samples, sr) = load(idx) ?: return@execute
                     if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
 
-                    val position = positionMs ?: line.startMs
+                    val position = DubbingStartPositionPolicy.choose(
+                        lineIndex = idx,
+                        lineStartMs = line.startMs,
+                        lineEndMs = line.endMs,
+                        requestedPositionMs = positionMs,
+                        latestCursor = latestTimelineCursor,
+                    ) ?: return@execute
+                    val currentSpeed = DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
                     val plan = DubbingTiming.createPlan(
                         sampleCount = samples.size,
                         sampleRate = sr,
                         lineStartMs = line.startMs,
                         lineEndMs = line.endMs,
                         positionMs = position,
-                        playerSpeed = playerSpeed,
+                        playerSpeed = currentSpeed,
                     )
                     val playbackSamples = DubbingTiming.slice(samples, plan, sr)
                     // Keep this line selected when its speech has naturally ended. Otherwise a
@@ -622,7 +637,7 @@ class DubbingEngine(
                     }
                     track = newTrack
                     activeSyncRate = plan.syncRate
-                    activePlayerSpeed = playerSpeed.coerceIn(0.5f, 2.0f)
+                    activePlayerSpeed = currentSpeed
                     activePlaybackRate = plan.playbackRate
                     if (released || playbackGeneration.get() != generation) {
                         if (track === newTrack) track = null
