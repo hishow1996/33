@@ -51,7 +51,7 @@ internal class SafeRedirectInterceptor(
             val crossOrigin = origin(request) != origin(nextUrl.scheme, nextUrl.host, nextUrl.port)
             val builder = request.newBuilder().url(nextUrl)
             if (crossOrigin) {
-                CREDENTIAL_HEADERS.forEach(builder::removeHeader)
+                CREDENTIAL_HEADERS.forEach { name -> builder.removeHeader(name) }
             }
             response.close()
             request = builder.build()
