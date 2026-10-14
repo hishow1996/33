@@ -31,11 +31,15 @@ internal class AsrAudioSegmentDownloader(
     private data class Metadata(
         val sourceKey: String,
         val urlHash: String,
+        val effectiveUrlHash: String?,
         val etag: String?,
         val lastModified: String?,
         val totalBytes: Long,
         val rangeSupported: Boolean?,
     )
+
+    /** Restart the whole representation after a redirect target changes without a matching validator. */
+    private class RestartFromZeroException(message: String) : IOException(message)
 
     fun download(
         url: String,
@@ -183,6 +187,27 @@ internal class AsrAudioSegmentDownloader(
                             }
                             val responseEtag = response.header("ETag")?.takeIf { it.isNotBlank() }
                             val responseModified = response.header("Last-Modified")?.takeIf { it.isNotBlank() }
+                            val responseUrlHash = sha256(response.request.url.toString())
+                            val hasMatchingValidator = when {
+                                !metadata?.etag.isNullOrBlank() -> responseEtag == metadata?.etag
+                                !metadata?.lastModified.isNullOrBlank() -> responseModified == metadata?.lastModified
+                                else -> false
+                            }
+                            val savedEffectiveUrlHash = metadata?.effectiveUrlHash
+                            if (
+                                offset > 0L &&
+                                (savedEffectiveUrlHash.isNullOrBlank() || savedEffectiveUrlHash != responseUrlHash) &&
+                                !hasMatchingValidator
+                            ) {
+                                // A stable entry URL can redirect to a different object between retries.
+                                // Without a matching ETag/Last-Modified, never combine bytes from the two
+                                // redirect targets; start a fresh representation instead.
+                                discard(part, metaFile)
+                                metadata = null
+                                throw RestartFromZeroException(
+                                    "音频流重定向目标发生变化，缺少匹配的文件校验标记，已从头重新读取",
+                                )
+                            }
                             val etagMismatch = offset > 0L &&
                                 !metadata?.etag.isNullOrBlank() &&
                                 !responseEtag.isNullOrBlank() &&
@@ -201,6 +226,7 @@ internal class AsrAudioSegmentDownloader(
                             metadata = Metadata(
                                 sourceKey = sourceKey,
                                 urlHash = currentUrlHash,
+                                effectiveUrlHash = responseUrlHash,
                                 etag = responseEtag ?: metadata?.etag,
                                 lastModified = responseModified ?: metadata?.lastModified,
                                 totalBytes = range.totalBytes ?: metadata?.totalBytes ?: -1L,
@@ -274,6 +300,11 @@ internal class AsrAudioSegmentDownloader(
                         else -> throw IOException("音频读取失败：HTTP ${response.code}")
                     }
                 } catch (e: IOException) {
+                    if (e is RestartFromZeroException) {
+                        retryOffset = -1L
+                        retriesAtOffset = 0
+                        continue
+                    }
                     // Retry the same range from the last fully confirmed offset. A partial
                     // response body is rolled back inside the 206 handler before this catch runs,
                     // so file length never advances past a range that failed Content-Range validation.
@@ -422,6 +453,7 @@ internal class AsrAudioSegmentDownloader(
     ) = Metadata(
         sourceKey = sourceKey,
         urlHash = urlHash,
+        effectiveUrlHash = sha256(response.request.url.toString()),
         etag = response.header("ETag")?.takeIf { it.isNotBlank() },
         lastModified = response.header("Last-Modified")?.takeIf { it.isNotBlank() },
         totalBytes = totalBytes,
@@ -435,6 +467,7 @@ internal class AsrAudioSegmentDownloader(
         Metadata(
             sourceKey = props.getProperty("sourceKey") ?: return@runCatching null,
             urlHash = props.getProperty("urlHash") ?: return@runCatching null,
+            effectiveUrlHash = props.getProperty("effectiveUrlHash")?.ifBlank { null },
             etag = props.getProperty("etag")?.ifBlank { null },
             lastModified = props.getProperty("lastModified")?.ifBlank { null },
             totalBytes = props.getProperty("totalBytes")?.toLongOrNull() ?: -1L,
@@ -447,6 +480,7 @@ internal class AsrAudioSegmentDownloader(
         val props = Properties().apply {
             setProperty("sourceKey", meta.sourceKey)
             setProperty("urlHash", meta.urlHash)
+            meta.effectiveUrlHash?.let { setProperty("effectiveUrlHash", it) }
             meta.etag?.let { setProperty("etag", it) }
             meta.lastModified?.let { setProperty("lastModified", it) }
             setProperty("totalBytes", meta.totalBytes.toString())
