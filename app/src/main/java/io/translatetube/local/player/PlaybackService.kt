@@ -2339,13 +2339,11 @@ class PlaybackService : MediaSessionService() {
     ): File {
         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         val hlsCache = HlsAudioSegmentCache(cacheDir)
+        val dashCache = DashAudioSegmentCache(cacheDir)
         if (looksLikeDashUrl(url) || mimeType?.contains("dash+xml", ignoreCase = true) == true) {
-            throw IllegalStateException(
-                "已识别为 MPEG-DASH 网页视频。原生播放器支持播放该格式，但自动音轨分段转写目前尚未接入 DASH 音频清单解析；" +
-                    "请优先使用网站提供的字幕，或选择可访问的独立音轨/HLS 点播流。"
-            )
+            return downloadDashAudio(dashCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
         }
-        if (looksLikeHlsUrl(url)) {
+        if (looksLikeHlsUrl(url) || mimeType?.contains("mpegurl", ignoreCase = true) == true) {
             return downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
         }
         var lastReportedPercent = -1
@@ -2390,6 +2388,37 @@ class PlaybackService : MediaSessionService() {
                 downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
             }
         }
+    }
+
+    private suspend fun downloadDashAudio(
+        cache: DashAudioSegmentCache,
+        url: String,
+        destination: File,
+        sourceKey: String,
+        sessionKey: String,
+        ownerJob: Job?,
+        headers: Map<String, String>,
+    ): File = withContext(Dispatchers.IO) {
+        var lastPercent = -1
+        cache.download(
+            manifestUrl = url,
+            destination = destination,
+            sourceKey = sourceKey,
+            headers = headers,
+            checkActive = { ownerJob?.ensureActive() },
+            onProgress = { completed, total ->
+                if (total <= 0) return@download
+                val percent = ((completed * 100L) / total).toInt().coerceIn(0, 100)
+                if (percent != lastPercent) {
+                    lastPercent = percent
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(progress = "读取 DASH 音轨分段 $completed/$total（$percent%）")
+                        } else state
+                    }
+                }
+            },
+        )
     }
 
     private suspend fun downloadHlsAudio(
