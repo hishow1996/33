@@ -39,7 +39,9 @@ object SubtitleParsers {
     }
 
     /** WebVTT → 行列表（YouTube timedtext 返回 vtt） */
-    fun parseVtt(src: String): List<SubLine> {
+    fun parseVtt(src: String): List<SubLine> = parseVtt(src) {}
+
+    internal fun parseVtt(src: String, checkActive: () -> Unit): List<SubLine> {
         val out = mutableListOf<SubLine>()
         var idx = 0
         var pendingStart = -1L
@@ -52,7 +54,8 @@ object SubtitleParsers {
             }
             buf.clear(); pendingStart = -1; pendingEnd = -1
         }
-        for (raw in src.lines()) {
+        for ((lineIndex, raw) in src.lineSequence().withIndex()) {
+            if ((lineIndex and 0xff) == 0) checkActive()
             val line = raw.trim()
             val m = webVttTimestampRegex.find(line)
             if (m != null) {
@@ -69,11 +72,14 @@ object SubtitleParsers {
             }
         }
         flush()
-        return normalizeTimeline(out)
+        return normalizeTimeline(out, checkActive)
     }
 
     /** SRT（1 行格式 00:00:01,000 --> 00:00:04,000） */
-    fun parseSrt(src: String): List<SubLine> = parseVtt(src)
+    fun parseSrt(src: String): List<SubLine> = parseSrt(src) {}
+
+    internal fun parseSrt(src: String, checkActive: () -> Unit): List<SubLine> =
+        parseVtt(src, checkActive)
 
     /** 将字幕行导出为标准 WebVTT，统一文件扩展名并保留时间轴。 */
     fun toVtt(lines: List<SubLine>): String = buildString {
@@ -96,12 +102,15 @@ object SubtitleParsers {
     }
 
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
-    fun parseTimedTextXml(src: String): List<SubLine> {
+    fun parseTimedTextXml(src: String): List<SubLine> = parseTimedTextXml(src) {}
+
+    internal fun parseTimedTextXml(src: String, checkActive: () -> Unit): List<SubLine> {
         if (!src.contains("<transcript", ignoreCase = true)) return emptyList()
         val out = mutableListOf<SubLine>()
         val re = timedTextCueRegex
-        re.findAll(src).forEach { match ->
-            val timing = parseTimedTextTiming(match.groupValues[1]) ?: return@forEach
+        for ((matchIndex, match) in re.findAll(src).withIndex()) {
+            if ((matchIndex and 0xff) == 0) checkActive()
+            val timing = parseTimedTextTiming(match.groupValues[1]) ?: continue
             val rawText = match.groupValues[2]
             // Plain text needs no Android Html conversion; escaped entities and markup still do.
             val decodedText = if (rawText.contains('&') || rawText.contains('<')) {
@@ -112,7 +121,7 @@ object SubtitleParsers {
             val text = decodedText.trim()
             if (text.isNotEmpty()) out += SubLine(out.size, timing.first, timing.second, text)
         }
-        return normalizeTimeline(out)
+        return normalizeTimeline(out, checkActive)
     }
 
     private val timedTextCueRegex = Regex("""<text\b([^>]*)>(.*?)</text\s*>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
@@ -146,24 +155,27 @@ object SubtitleParsers {
     }
 
     /** YouTube/NewPipe TTML：从 p 标签提取 begin/end/dur。 */
-    fun parseTtml(src: String): List<SubLine> {
+    fun parseTtml(src: String): List<SubLine> = parseTtml(src) {}
+
+    internal fun parseTtml(src: String, checkActive: () -> Unit): List<SubLine> {
         if (!src.contains("<tt", ignoreCase = true) && !src.contains("<p", ignoreCase = true)) {
             return emptyList()
         }
         val out = mutableListOf<SubLine>()
         val cueRegex = ttmlCueRegex
         val attributeRegex = ttmlAttributeRegex
-        cueRegex.findAll(src).forEach { match ->
+        for ((matchIndex, match) in cueRegex.findAll(src).withIndex()) {
+            if ((matchIndex and 0xff) == 0) checkActive()
             val attrs = attributeRegex.findAll(match.groupValues[1])
                 .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
             val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) }
-                ?.takeIf { it >= 0L } ?: return@forEach
+                ?.takeIf { it >= 0L } ?: continue
             val explicitEnd = attrs["end"]?.let { parseTtmlTime(it) }
             val end = explicitEnd ?: attrs["dur"]?.let { durationText ->
                 val duration = parseTtmlTime(durationText) ?: return@let null
                 if (duration <= 0L || start > Long.MAX_VALUE - duration) null else start + duration
-            } ?: return@forEach
-            if (end <= start) return@forEach
+            } ?: continue
+            if (end <= start) continue
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
             val text = android.text.Html.fromHtml(
                 body,
@@ -171,7 +183,7 @@ object SubtitleParsers {
             ).toString().replace('\u00a0', ' ').trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
-        return normalizeTimeline(out)
+        return normalizeTimeline(out, checkActive)
     }
 
     internal fun parseTtmlTime(value: String): Long? {
@@ -212,18 +224,26 @@ object SubtitleParsers {
     }
 
     /** 自动识别格式解析（vtt/srt/xml），输出保证按 startMs 单调有序（lineAt 二分前提） */
-    fun parseAuto(src: String): List<SubLine> {
+    fun parseAuto(src: String): List<SubLine> = parseAutoCancellable(src) {}
+
+    /**
+     * Cooperative parser variant for large imports and network captions. Format-specific parsers
+     * already normalize their output, so do not sort/merge the same long timeline twice.
+     */
+    internal fun parseAutoCancellable(src: String, checkActive: () -> Unit): List<SubLine> {
+        checkActive()
         val t = src.removePrefix("\uFEFF").trimStart()
         val parsed = when {
-            t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t)
-            t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t)
-            t.contains("Dialogue:") -> parseAss(t)
+            t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t, checkActive)
+            t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t, checkActive)
+            t.contains("Dialogue:") -> parseAss(t, checkActive)
             t.startsWith("<?xml") || t.startsWith("<tt", ignoreCase = true) ||
                 ttmlRootRegex.containsMatchIn(t) ->
-                parseTtml(t).ifEmpty { parseTimedTextXml(t) }
-            else -> parseSrt(t)
+                parseTtml(t, checkActive).ifEmpty { parseTimedTextXml(t, checkActive) }
+            else -> parseSrt(t, checkActive)
         }
-        return normalizeTimeline(parsed)
+        checkActive()
+        return parsed
     }
 
     /**
@@ -289,9 +309,12 @@ object SubtitleParsers {
     }
 
     /** ASS/SSA（Dialogue: 0:00:01.00,0:00:04.00,...） */
-    fun parseAss(src: String): List<SubLine> {
+    fun parseAss(src: String): List<SubLine> = parseAss(src) {}
+
+    internal fun parseAss(src: String, checkActive: () -> Unit): List<SubLine> {
         val out = mutableListOf<SubLine>()
-        for (raw in src.lines()) {
+        for ((lineIndex, raw) in src.lineSequence().withIndex()) {
+            if ((lineIndex and 0xff) == 0) checkActive()
             if (!raw.startsWith("Dialogue:")) continue
             val body = raw.removePrefix("Dialogue:").trim()
             val p = body.split(",").toMutableList()
@@ -304,19 +327,32 @@ object SubtitleParsers {
             val text = p.drop(9).joinToString(",").replace(assOverrideRegex, "").replace(assLinebreakRegex, "\n").trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
-        return normalizeTimeline(out)
+        return normalizeTimeline(out, checkActive)
     }
 
     /** Keep every public parser safe for the binary-search playback timeline, not only parseAuto. */
-    private fun normalizeTimeline(lines: List<SubLine>): List<SubLine> =
-        mergeDuplicate(lines.sortedBy { it.startMs }).mapIndexed { index, line ->
+    private fun normalizeTimeline(
+        lines: List<SubLine>,
+        checkActive: () -> Unit = {},
+    ): List<SubLine> {
+        checkActive()
+        val sorted = lines.sortedBy { it.startMs }
+        checkActive()
+        val merged = mergeDuplicate(sorted, checkActive)
+        return merged.mapIndexed { index, line ->
+            if ((index and 0x3ff) == 0) checkActive()
             line.copy(index = index)
         }
+    }
 
-    private fun mergeDuplicate(lines: List<SubLine>): List<SubLine> {
+    private fun mergeDuplicate(
+        lines: List<SubLine>,
+        checkActive: () -> Unit = {},
+    ): List<SubLine> {
         // YouTube 自动字幕常见同一句重复多时间片：相同文本且首尾相接 → 合并
         val out = mutableListOf<SubLine>()
-        for (l in lines) {
+        for ((index, l) in lines.withIndex()) {
+            if ((index and 0x3ff) == 0) checkActive()
             val last = out.lastOrNull()
             val sameText = last != null &&
                 last.text.replace(whitespaceRegex, " ").trim() ==
