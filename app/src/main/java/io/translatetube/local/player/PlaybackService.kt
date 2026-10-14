@@ -1473,7 +1473,9 @@ class PlaybackService : MediaSessionService() {
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
                 // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
                 val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
-                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs)
+                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs) {
+                    pcmOwnerJob?.ensureActive()
+                }
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
