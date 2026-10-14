@@ -24,6 +24,9 @@ object SubtitleParsers {
     private val translationProgressRegex = Regex("^(正在)?翻译中\\d*/\\d*行?$")
     private val translationChunkRegex = Regex("(?<=[。！？!?；;，,])")
     private val whitespaceRegex = Regex("\\s+")
+    private val placeholderNormalizationRegex = Regex("[\\s…。.！!·:：]+")
+    private val punctuationSymbolsWhitespaceRegex = Regex("[\\p{P}\\p{S}\\s]")
+    private val chineseCharRegex = Regex("[\\u4E00-\\u9FFF]")
     private val assOverrideRegex = Regex("""\{[^}]*\}""")
     private val assLinebreakRegex = Regex("""\\N|\\n""")
     private val htmlTagRegex = Regex("<[^>]+>")
@@ -224,7 +227,7 @@ object SubtitleParsers {
         val normalized = translated
             ?.trim()
             ?.lowercase()
-            ?.replace(Regex("[\\s…。.！!·:：]+"), "")
+            ?.replace(placeholderNormalizationRegex, "")
             ?: return false
         if (normalized in setOf(
                 "正在翻译", "正在翻译中", "翻译中", "译文暂不可用", "暂无译文",
@@ -241,7 +244,7 @@ object SubtitleParsers {
     fun cleanTranslatedText(translated: String?): String? {
         val value = translated
             ?.replace('\u00a0', ' ')
-            ?.replace(Regex("\\s+"), " ")
+            ?.replace(whitespaceRegex, " ")
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: return null
@@ -252,8 +255,8 @@ object SubtitleParsers {
         var previousKey = ""
         var removedDuplicate = false
         for (chunk in chunks) {
-            val key = chunk.lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
-            val hasChinese = Regex("[\\u4E00-\\u9FFF]").containsMatchIn(key)
+            val key = chunk.lowercase().replace(punctuationSymbolsWhitespaceRegex, "")
+            val hasChinese = chineseCharRegex.containsMatchIn(key)
             if (hasChinese && key.length >= 2 && key == previousKey) {
                 removedDuplicate = true
                 continue
@@ -266,12 +269,12 @@ object SubtitleParsers {
         // Some providers repeat a whole Chinese translation without punctuation: "你好你好".
         // Ignore trailing sentence punctuation for the duplicate check, then keep one copy of it.
         val trailingPunctuation = cleaned.takeLastWhile { it in "。！？!?；;，,、:：" }
-        val compact = cleaned.dropLast(trailingPunctuation.length).replace(Regex("\\s+"), "")
+        val compact = cleaned.dropLast(trailingPunctuation.length).replace(whitespaceRegex, "")
         if (compact.length >= 4 && compact.length % 2 == 0) {
             val half = compact.length / 2
             val first = compact.substring(0, half)
             val second = compact.substring(half)
-            if (first == second && Regex("[\\u4E00-\\u9FFF]").containsMatchIn(first) && first.length >= 2) {
+            if (first == second && chineseCharRegex.containsMatchIn(first) && first.length >= 2) {
                 cleaned = first + trailingPunctuation
             }
         }
