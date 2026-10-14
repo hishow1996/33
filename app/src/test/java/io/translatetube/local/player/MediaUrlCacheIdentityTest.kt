@@ -1,0 +1,94 @@
+package io.translatetube.local.player
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class MediaUrlCacheIdentityTest {
+    @Test
+    fun rotatingAuthTokensDoNotInvalidateTheMediaCacheIdentity() {
+        val first = "https://cdn.example/media/video.mp4?quality=360&token=old-token&expires=1000"
+        val refreshed = "https://CDN.example:443/media/video.mp4?expires=2000&token=new-token&quality=360#player"
+
+        assertEquals(
+            MediaUrlCacheIdentity.key(first),
+            MediaUrlCacheIdentity.key(refreshed),
+        )
+        assertFalse(MediaUrlCacheIdentity.canonicalUrl(first).contains("old-token"))
+        assertFalse(MediaUrlCacheIdentity.canonicalUrl(refreshed).contains("new-token"))
+    }
+
+    @Test
+    fun contentSelectingQueryParametersRemainPartOfTheIdentity() {
+        val low = "https://cdn.example/media/video.mp4?itag=18&token=a"
+        val high = "https://cdn.example/media/video.mp4?itag=22&token=b"
+
+        assertNotEquals(
+            MediaUrlCacheIdentity.key(low),
+            MediaUrlCacheIdentity.key(high),
+        )
+    }
+
+    @Test
+    fun cloudSignedParametersAreRemovedWithoutDroppingUnrelatedParameters() {
+        val url = "https://cdn.example/v.m4s?track=audio&X-Amz-Signature=secret&X-Amz-Credential=account&part=3"
+        val canonical = MediaUrlCacheIdentity.canonicalUrl(url)
+
+        assertTrue(canonical.contains("track=audio"))
+        assertTrue(canonical.contains("part=3"))
+        assertFalse(canonical.contains("secret"))
+        assertFalse(canonical.contains("Credential"))
+    }
+
+    @Test
+    fun queryOrderAndDefaultPortDoNotChangeIdentity() {
+        val first = "https://cdn.example:443/media.mp4?b=2&a=1"
+        val second = "https://cdn.example/media.mp4?a=1&b=2"
+
+        assertEquals(
+            MediaUrlCacheIdentity.canonicalUrl(first),
+            MediaUrlCacheIdentity.canonicalUrl(second),
+        )
+    }
+
+    @Test
+    fun audioCacheIsStableForRotatingSignaturesButScopedToCookieSessionAndPageOrigin() {
+        val urlA = "https://cdn.example/video.mp4?token=old"
+        val urlB = "https://cdn.example/video.mp4?token=new"
+
+        val first = MediaUrlCacheIdentity.audioKey(
+            urlA,
+            "https://site.example/watch?id=1",
+            "session=alpha",
+        )
+        assertEquals(
+            first,
+            MediaUrlCacheIdentity.audioKey(
+                urlB,
+                "https://site.example/other-page",
+                "session=alpha",
+            ),
+        )
+        assertNotEquals(
+            first,
+            MediaUrlCacheIdentity.audioKey(
+                urlB,
+                "https://site.example/other-page",
+                "session=beta",
+            ),
+        )
+        assertNotEquals(
+            first,
+            MediaUrlCacheIdentity.audioKey(
+                urlB,
+                "https://different.example/watch?id=1",
+                "session=alpha",
+            ),
+        )
+        assertFalse(first.contains("session=alpha"))
+        assertFalse(first.contains("old"))
+        assertFalse(first.contains("new"))
+    }
+}
