@@ -77,6 +77,7 @@ fun PlayerScreen(
     onBack: () -> Unit,
     onGoSettings: () -> Unit = {},
     remoteHeaders: Map<String, String> = emptyMap(),
+    remoteMimeType: String? = null,
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
@@ -101,14 +102,19 @@ fun PlayerScreen(
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current, sourceHeaders = remoteHeaders)
+            service.open(
+                key, videoId, localUri,
+                resumeState = current,
+                sourceHeaders = remoteHeaders,
+                sourceMimeType = remoteMimeType,
+            )
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, remoteHeaders, retryNonce) {
+    LaunchedEffect(videoId, localUri, remoteHeaders, remoteMimeType, retryNonce) {
         val key = playerRequestKey(videoId, localUri)
         val retryRequested = retryNonce != handledRetryNonce
         if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
@@ -152,7 +158,12 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, sourceHeaders = remoteHeaders)
+                    s.open(
+                        key, videoId, localUri,
+                        resumeState = resumeExistingWork,
+                        sourceHeaders = remoteHeaders,
+                        sourceMimeType = remoteMimeType,
+                    )
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
