@@ -31,5 +31,5 @@ internal object ModelAssetReadiness {
     }
 
     private fun isPopulatedDirectory(directory: File): Boolean =
-        directory.isDirectory && directory.listFiles().orEmpty().any { it.isFile && it.length() > 0L }
+        directory.isDirectory && directory.walkTopDown().any { it.isFile && it.length() > 0L }
 }

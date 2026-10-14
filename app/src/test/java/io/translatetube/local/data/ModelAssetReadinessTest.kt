@@ -57,4 +57,21 @@ class ModelAssetReadinessTest {
         if (!parent.exists()) parent.mkdirs()
         return File(parent, name).apply { writeBytes(ByteArray(bytes) { 1 }) }
     }
+    @Test
+    fun acceptsAssetsNestedInsideModelDataDirectories() {
+        val dir = createTempDir(prefix = "kokoro-ready-nested-")
+        try {
+            createFile(dir, "model.int8.onnx", 1_100_000)
+            createFile(dir, "voices.bin", 1_100_000)
+            listOf("tokens.txt", "lexicon-zh.txt", "phone-zh.fst", "date-zh.fst", "number-zh.fst")
+                .forEach { createFile(dir, it, 20) }
+            createFile(File(dir, "espeak-ng-data/voices/zh").apply { mkdirs() }, "zh", 20)
+            createFile(File(dir, "dict/zh").apply { mkdirs() }, "words.dict", 20)
+
+            assertTrue(ModelAssetReadiness.isTtsReady(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
 }
