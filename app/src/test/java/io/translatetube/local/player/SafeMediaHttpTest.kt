@@ -48,4 +48,13 @@ class SafeMediaHttpTest {
         assertEquals(false, isHtmlOrJsonContentType("application/octet-stream"))
         assertEquals(false, isHtmlOrJsonContentType("application/vnd.apple.mpegurl"))
     }
+
+    @Test
+    fun blocksHttpsDowngradeButAllowsSameSecurityLevelRedirects() {
+        assertEquals(false, isAllowedRedirect("https", "http"))
+        assertEquals(true, isAllowedRedirect("https", "https"))
+        assertEquals(true, isAllowedRedirect("http", "http"))
+        assertEquals(false, isAllowedRedirect("file", "https"))
+    }
+
 }
