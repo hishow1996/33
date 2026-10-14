@@ -47,4 +47,35 @@ class DubbingTimelineTest {
         assertEquals(1, timeline.lineAt(1_500))
         assertEquals(0, timeline.lineAt(2_500))
     }
+    @Test
+    fun findsCuesWhenInputRowsAreNotSortedAndReturnsOriginalIndices() {
+        val timeline = DubbingTimeline(
+            listOf(
+                SubLine(0, 5_000, 6_000, "later cue first"),
+                SubLine(1, 1_000, 3_000, "earlier cue second"),
+                SubLine(2, 3_500, 4_500, "middle cue third"),
+            )
+        )
+
+        assertEquals(1, timeline.lineAt(1_500))
+        assertEquals(-1, timeline.lineAt(3_200))
+        assertEquals(2, timeline.lineAt(4_000))
+        assertEquals(0, timeline.lineAt(5_500))
+    }
+
+    @Test
+    fun ignoresInvalidIntervalsButKeepsValidOverlappingCueAvailable() {
+        val timeline = DubbingTimeline(
+            listOf(
+                SubLine(0, 0, 5_000, "valid long cue"),
+                SubLine(1, 2_000, 2_000, "zero length"),
+                SubLine(2, 3_000, 2_500, "negative length"),
+            )
+        )
+
+        assertEquals(0, timeline.lineAt(2_000))
+        assertEquals(0, timeline.lineAt(4_000))
+        assertEquals(-1, timeline.lineAt(5_000))
+    }
+
 }

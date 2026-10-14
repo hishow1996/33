@@ -231,6 +231,21 @@ class PlaybackService : MediaSessionService() {
                         }
                     }
                 }
+
+                // MediaSession and hardware-controller seeks bypass PlaybackService.seek().
+                // Invalidate the old AudioTrack even when the seek remains inside the same cue;
+                // otherwise the old voice can continue from its previous offset after the video jumps.
+                override fun onPositionDiscontinuity(
+                    oldPosition: androidx.media3.common.Player.PositionInfo,
+                    newPosition: androidx.media3.common.Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason != androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK) return
+                    if (!ui.value.dubbingOn) return
+                    dubbing?.stop()
+                    lastLineIdx = Int.MIN_VALUE
+                    if (::pm.isInitialized) tick(newPosition.positionMs)
+                }
             })
 
             val pi = PendingIntent.getActivity(

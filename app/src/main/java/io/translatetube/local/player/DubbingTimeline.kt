@@ -3,23 +3,36 @@ package io.translatetube.local.player
 import io.translatetube.local.subs.SubLine
 
 /**
- * Fast media-timeline lookup for sorted subtitle cues, including overlapping captions.
- * Prefix maximum end-times let us stop scanning once no earlier cue can still be active.
+ * Fast media-timeline lookup for subtitle cues, including overlapping captions.
+ *
+ * The input list is not assumed to be sorted: restored captions, hand-edited subtitle files,
+ * and third-party transcript providers can supply cues in a different order. The timeline keeps
+ * a sorted index into the original list so returned cue IDs still address the caller's rows.
  */
 internal class DubbingTimeline(private val lines: List<SubLine>) {
-    private val prefixMaxEndMs = LongArray(lines.size).also { prefix ->
-        for (i in lines.indices) {
-            prefix[i] = if (i == 0) lines[i].endMs else maxOf(prefix[i - 1], lines[i].endMs)
+    private val sortedIndices = lines.indices
+        .filter { lines[it].endMs > lines[it].startMs }
+        .sortedWith(compareBy<Int> { lines[it].startMs }.thenBy { it })
+
+    private val prefixMaxEndMs = LongArray(sortedIndices.size).also { prefix ->
+        for (i in sortedIndices.indices) {
+            val end = lines[sortedIndices[i]].endMs
+            prefix[i] = if (i == 0) end else maxOf(prefix[i - 1], end)
         }
     }
 
+    /**
+     * Prefer the latest-started active cue, and fall back to an earlier overlapping cue when
+     * a newer, shorter overlay has already ended. Returns the original list index, or -1 in gaps.
+     */
     fun lineAt(positionMs: Long): Int {
         var low = 0
-        var high = lines.lastIndex
+        var high = sortedIndices.lastIndex
         var latestStarted = -1
         while (low <= high) {
             val middle = (low + high) ushr 1
-            if (lines[middle].startMs <= positionMs) {
+            val originalIndex = sortedIndices[middle]
+            if (lines[originalIndex].startMs <= positionMs) {
                 latestStarted = middle
                 low = middle + 1
             } else {
@@ -29,9 +42,8 @@ internal class DubbingTimeline(private val lines: List<SubLine>) {
 
         var index = latestStarted
         while (index >= 0) {
-            // Prefer the latest-started cue, but fall back to an earlier overlapping cue
-            // if this newer cue ended before the queried media time.
-            if (positionMs < lines[index].endMs) return index
+            val originalIndex = sortedIndices[index]
+            if (positionMs < lines[originalIndex].endMs) return originalIndex
             if (index == 0 || prefixMaxEndMs[index - 1] <= positionMs) break
             index--
         }
