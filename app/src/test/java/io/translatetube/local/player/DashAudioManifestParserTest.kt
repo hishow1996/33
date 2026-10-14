@@ -156,6 +156,23 @@ class DashAudioManifestParserTest {
     }
 
     @Test
+    fun refusesAudioRepresentationWithoutSegmentsOrExplicitMediaBaseUrl() {
+        val manifest = """
+            <MPD type="static" mediaPresentationDuration="PT4S">
+              <Period duration="PT4S">
+                <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                  <Representation id="audio" bandwidth="96000" mimeType="audio/mp4" />
+                </AdaptationSet>
+              </Period>
+            </MPD>
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            DashAudioManifestParser.parse("https://cdn.example.test/manifest.mpd", manifest)
+        }
+    }
+
+    @Test
     fun refusesOversizedAndUnsafeManifestUrls() {
         assertThrows(IllegalArgumentException::class.java) {
             DashAudioManifestParser.parse(
