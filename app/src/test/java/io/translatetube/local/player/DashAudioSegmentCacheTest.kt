@@ -103,6 +103,62 @@ class DashAudioSegmentCacheTest {
     }
 
     @Test
+    fun reusesCompletedSegmentsWhenOnlyTheirSigningTokensRotate() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "dash-signed-query-reuse-test")
+        server.start()
+        try {
+            fun manifest(token: String) = """
+                <MPD type="static" mediaPresentationDuration="PT8S">
+                  <Period duration="PT8S">
+                    <AdaptationSet contentType="audio" mimeType="audio/mp4">
+                      <SegmentTemplate timescale="1" duration="4"
+                        initialization="init.mp4?token=$token"
+                        media="seg-$Number$.m4s?token=$token" />
+                      <Representation id="audio" bandwidth="128000" />
+                    </AdaptationSet>
+                  </Period>
+                </MPD>
+            """.trimIndent()
+
+            server.enqueue(manifestResponse(manifest("old")))
+            server.enqueue(segmentResponse("INITDATA"))
+            server.enqueue(segmentResponse("SEGMENT-ONE"))
+            server.enqueue(segmentResponse("SEGMENT-TWO"))
+
+            val destination = File(directory, "audio.bin")
+            val incompleteAssembly = runCatching {
+                DashAudioSegmentCache(directory, maxOutputBytes = 8L, maxSegmentBytes = 100L)
+                    .download(
+                        server.url("/video/manifest.mpd").toString(),
+                        destination,
+                        "stable-dash-source",
+                    )
+            }.exceptionOrNull()
+            assertTrue(incompleteAssembly is java.io.IOException)
+            assertEquals(4, server.requestCount)
+
+            server.enqueue(manifestResponse(manifest("new")))
+            val result = DashAudioSegmentCache(directory, maxOutputBytes = 100L, maxSegmentBytes = 100L)
+                .download(
+                    server.url("/video/manifest.mpd").toString(),
+                    destination,
+                    "stable-dash-source",
+                )
+
+            assertEquals("INITDATASEGMENT-ONESEGMENT-TWO", result.readText())
+            assertEquals(
+                "refreshing only auth parameters should fetch a new MPD, not re-download segments",
+                5,
+                server.requestCount,
+            )
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun removesOrphanedFilesWhenSignedSegmentUrlsChangeBetweenRetries() {
         val server = MockWebServer()
         val directory = createTempDir(prefix = "dash-rotated-url-test")
