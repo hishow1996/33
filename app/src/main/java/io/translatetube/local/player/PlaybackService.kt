@@ -1279,7 +1279,16 @@ class PlaybackService : MediaSessionService() {
                     }
                     else -> throw IllegalStateException("无音频源")
                 }
-                updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
+                updateUiForSession(key) {
+                    it.copy(
+                        phase = Phase.TRANSCRIBING,
+                        progress = if (audioUri != null && isHttpMediaUri(audioUri)) {
+                            "正在直接读取网络音轨并转为 16 kHz PCM…"
+                        } else {
+                            "解码音频…"
+                        },
+                    )
+                }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcmFile = withContext(Dispatchers.IO) {
                     AudioExtract.decodeTo16kMonoFile(
@@ -1456,7 +1465,7 @@ class PlaybackService : MediaSessionService() {
                         SubLine(index, startMs, endMs, text)
                     }
                 if (transcribedLines.isEmpty()) {
-                    if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                    if (sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     }
                     throw IllegalStateException(
