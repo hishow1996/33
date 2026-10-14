@@ -222,13 +222,15 @@ object NewPipeRepo {
     /** 下载单条字幕轨，优先取 WebVTT；不同源格式统一解析后再导出为 VTT。 */
     suspend fun downloadSubtitleContent(track: SubtitleTrackOption): String =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val ownerJob = currentCoroutineContext()[Job]
             var lastError: Exception? = null
             val candidates = listOf(withSubtitleFormat(track.url, "vtt"), track.url).distinct()
             for (url in candidates) {
                 try {
                     val body = downloadText(url)
-                    val parsed = SubtitleParsers.parseAuto(body)
-                        .filter { it.startMs >= 0L && it.endMs > it.startMs }
+                    val parsed = SubtitleParsers.parseAutoCancellable(body) {
+                        ownerJob?.ensureActive()
+                    }.filter { it.startMs >= 0L && it.endMs > it.startMs }
                     if (parsed.isNotEmpty()) return@withContext SubtitleParsers.toVtt(parsed)
                     lastError = IllegalStateException("字幕内容无法识别")
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -245,6 +247,7 @@ object NewPipeRepo {
 
     /** 字幕轨优先请求 WebVTT；NewPipe 默认 URL 常为 TTML，需兼容两种格式。 */
     suspend fun subtitles(videoId: String): Pair<List<SubLine>, String>? {
+        val ownerJob = currentCoroutineContext()[Job]
         val streamInfo = info(videoId)
         val tracks: List<SubtitlesStream> = try {
             streamInfo.subtitles
@@ -276,7 +279,9 @@ object NewPipeRepo {
             for (candidateUrl in candidateUrls) {
                 try {
                     val body = downloadText(candidateUrl)
-                    val lines = SubtitleParsers.parseAuto(body)
+                    val lines = SubtitleParsers.parseAutoCancellable(body) {
+                        ownerJob?.ensureActive()
+                    }
                     if (lines.isNotEmpty()) {
                         android.util.Log.i(
                             "NewPipeRepo",
