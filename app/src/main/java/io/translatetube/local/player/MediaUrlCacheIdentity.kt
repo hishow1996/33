@@ -1,0 +1,121 @@
+package io.translatetube.local.player
+
+import java.net.URI
+import java.net.URLDecoder
+import java.security.MessageDigest
+import java.util.Locale
+
+/**
+ * Stable cache identity for signed media URLs.
+ *
+ * Authentication parameters are removed from the cache identity only, never from the URL used to
+ * perform a request. Meaningful query parameters (such as a rendition/format id) remain part of
+ * the identity, preventing different streams at the same path from being mixed.
+ */
+internal object MediaUrlCacheIdentity {
+    private val authParameterNames = setOf(
+        "access_token",
+        "auth",
+        "auth_key",
+        "authorization",
+        "expires",
+        "expiry",
+        "exp",
+        "token",
+        "signature",
+        "sig",
+        "policy",
+        "key-pair-id",
+        "hdnea",
+        "hdnts",
+        "jwt",
+        "wmsauthsign",
+        "__token__",
+    )
+
+    private val azureSasParameterNames = setOf(
+        "se", "sp", "sr", "st", "sip", "spr", "sv", "srt", "ss",
+        "skoid", "sktid", "skt", "ske", "sks", "skv",
+        "rscc", "rscd", "rsce", "rscl", "rsct",
+    )
+
+    fun canonicalUrl(value: String): String {
+        val uri = runCatching { URI(value.trim()) }.getOrNull()
+            ?: return value.trim()
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        val host = uri.host?.lowercase(Locale.ROOT)
+        if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.userInfo != null) {
+            return value.trim()
+        }
+
+        val port = when {
+            scheme == "http" && uri.port == 80 -> -1
+            scheme == "https" && uri.port == 443 -> -1
+            else -> uri.port
+        }
+        val hostForUrl = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+        val authority = hostForUrl + if (port >= 0) ":$port" else ""
+        val rawPath = uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/"
+        val params = uri.rawQuery?.split('&').orEmpty()
+        val decodedNames = params.map { part ->
+            runCatching {
+                URLDecoder.decode(part.substringBefore('='), Charsets.UTF_8.name())
+                    .lowercase(Locale.ROOT)
+            }.getOrDefault(part.substringBefore('=').lowercase(Locale.ROOT))
+        }
+        val hasAwsSignature = decodedNames.any { it == "x-amz-signature" }
+        val hasGoogleSignature = decodedNames.any { it == "x-goog-signature" }
+        val hasAzureSignature = decodedNames.any { it == "sig" } &&
+            decodedNames.any { it == "sv" || it == "se" || it == "sr" }
+
+        val stableQuery = params.filterIndexed { index, _ ->
+            val name = decodedNames[index]
+            when {
+                name in authParameterNames -> false
+                hasAwsSignature && name.startsWith("x-amz-") -> false
+                hasGoogleSignature && name.startsWith("x-goog-") -> false
+                hasAzureSignature && name in azureSasParameterNames -> false
+                else -> true
+            }
+        }.sorted()
+        val querySuffix = stableQuery.takeIf { it.isNotEmpty() }
+            ?.joinToString("&", prefix = "?")
+            .orEmpty()
+        return "$scheme://$authority$rawPath$querySuffix"
+    }
+
+    /** Identity for subtitle/translation caches; no credentials or URL fragments are retained. */
+    fun key(url: String): String = "remote-sha256:${sha256(canonicalUrl(url))}"
+
+    /**
+     * Identity for downloaded audio additionally scopes reuse to the current page origin and a
+     * one-way digest of its WebView cookie. Cookie bytes are never written into a cache key.
+     */
+    fun audioKey(url: String, referrer: String, cookie: String?): String {
+        val material = listOf(
+            canonicalUrl(url),
+            "referrer-origin=${origin(referrer)}",
+            "cookie-sha256=${sha256(cookie.orEmpty())}",
+        ).joinToString("\n")
+        return "remote-audio-sha256:${sha256(material)}"
+    }
+
+    private fun origin(value: String): String {
+        val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return ""
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        val host = uri.host?.lowercase(Locale.ROOT)
+        if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.userInfo != null) return ""
+        val port = when {
+            scheme == "http" && uri.port == 80 -> -1
+            scheme == "https" && uri.port == 443 -> -1
+            else -> uri.port
+        }
+        val hostForUrl = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+        return "$scheme://$hostForUrl" + if (port >= 0) ":$port" else ""
+    }
+
+    private fun sha256(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
+}
