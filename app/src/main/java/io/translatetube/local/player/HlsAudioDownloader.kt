@@ -66,9 +66,9 @@ internal object HlsAudioDownloader {
         if (variants.isEmpty()) return null
 
         val chosenVariant = variants.minByOrNull { it.bandwidth } ?: return null
-        val matchingAudio = audioRows.filter { row ->
-            chosenVariant.audioGroup == null || row["GROUP-ID"] == chosenVariant.audioGroup
-        }.minWithOrNull(
+        val matchingAudio = chosenVariant.audioGroup?.let { group ->
+            audioRows.filter { row -> row["GROUP-ID"] == group }
+        }?.minWithOrNull(
             compareBy<Map<String, String>>(
                 { if (it["DEFAULT"].equals("YES", ignoreCase = true)) 0 else 1 },
                 { if (it["AUTOSELECT"].equals("YES", ignoreCase = true)) 0 else 1 },
