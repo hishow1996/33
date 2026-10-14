@@ -89,6 +89,7 @@ internal object HlsAudioDownloader {
                 val rootUri = parseHttpUrl(playlistUrl)
                 val rootHost = URI(rootUri).host
                 var fetched = fetchText(rootUri, requestHeaders, rootHost, ownerJob)
+                ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
 
                 while (true) {
@@ -99,6 +100,7 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
                     fetched = fetchText(parseHttpUrl(next), requestHeaders, rootHost, ownerJob)
+                    ensurePlaylistIsUnencrypted(fetched.text)
                 }
 
                 val playlist = parseMediaPlaylist(fetched.finalUrl, fetched.text)
@@ -339,6 +341,23 @@ internal object HlsAudioDownloader {
     }
 
 
+    internal fun ensurePlaylistIsUnencrypted(body: String) {
+        val lines = body.removePrefix("\uFEFF").lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .toList()
+        if (lines.any { it.startsWith("#EXT-X-SESSION-KEY:", ignoreCase = true) }) {
+            throw IllegalStateException("该 HLS 声明了加密会话密钥；当前仅处理未加密媒体，不会尝试解密受保护内容。")
+        }
+        val encryptedKey = lines.firstOrNull { it.startsWith("#EXT-X-KEY:", ignoreCase = true) }
+        if (encryptedKey != null) {
+            val method = parseAttributes(encryptedKey.substringAfter(':'))["METHOD"]
+            if (!method.equals("NONE", ignoreCase = true)) {
+                throw IllegalStateException("该 HLS 媒体清单使用加密密钥；当前仅处理未加密媒体，不会尝试解密受保护内容。")
+            }
+        }
+    }
+
     private fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
         val lines = body.removePrefix("\uFEFF").lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         if (lines.none { it == "#EXTM3U" }) {
@@ -348,15 +367,7 @@ internal object HlsAudioDownloader {
         if (lines.any { it.startsWith("#EXT-X-BYTERANGE", ignoreCase = true) }) {
             throw IllegalStateException("该 HLS 使用 BYTERANGE 字节范围片段，当前版本暂不支持。")
         }
-        if (lines.any { it.startsWith("#EXT-X-SESSION-KEY:", ignoreCase = true) }) {
-            throw IllegalStateException("该 HLS 声明了加密会话密钥；为避免处理受保护音轨，暂不读取。")
-        }
-        val hasEncryptedKey = lines
-            .filter { it.startsWith("#EXT-X-KEY:", ignoreCase = true) }
-            .any { line -> !parseAttributes(line.substringAfter(':'))["METHOD"].equals("NONE", ignoreCase = true) }
-        if (hasEncryptedKey) {
-            throw IllegalStateException("该 HLS 音轨使用加密密钥；当前仅处理未加密清单，不会尝试解密受保护内容。")
-        }
+        ensurePlaylistIsUnencrypted(body)
         if (lines.any {
                 it.equals("#EXT-X-DISCONTINUITY", ignoreCase = true) ||
                     it.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:", ignoreCase = true)
