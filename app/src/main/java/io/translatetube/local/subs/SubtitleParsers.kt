@@ -13,7 +13,7 @@ data class SubLine(
 object SubtitleParsers {
 
     // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
-    private val webVttTimestampRegex = Regex("""(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}""")
+    private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{3}""")
     private val ttmlCueRegex = Regex(
         "<p\\b([^>]*)>(.*?)</p\\s*>",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),

@@ -170,4 +170,20 @@ class SubtitleParsersTest {
         assertEquals(listOf(2_000L, 3_601_000L), parsed.map { it.endMs })
     }
 
+    @Test
+    fun acceptsThreeDigitHoursInLongWebVttVideos() {
+        val source = """
+            WEBVTT
+
+            100:00:00.000 --> 100:00:01.000
+            long video cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals(360_000_000L, parsed.single().startMs)
+        assertEquals(360_001_000L, parsed.single().endMs)
+    }
+
 }
