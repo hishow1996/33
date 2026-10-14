@@ -7,7 +7,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class AsrAudioSegmentDownloaderTest {
@@ -62,13 +62,14 @@ class AsrAudioSegmentDownloaderTest {
             val urlHash = MessageDigest.getInstance("SHA-256")
                 .digest(url.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-            Properties().apply {
+            val metadata = Properties().apply {
                 setProperty("sourceKey", "video-2")
                 setProperty("urlHash", urlHash)
                 setProperty("etag", "\"audio-v1\"")
                 setProperty("totalBytes", "10")
                 setProperty("rangeSupported", "true")
-            }.store(metadataFile.outputStream(), "test sidecar")
+            }
+            metadataFile.outputStream().use { metadata.store(it, "test sidecar") }
 
             server.enqueue(rangeResponse(4, 7, 10, "efgh", "\"audio-v1\""))
             server.enqueue(rangeResponse(8, 9, 10, "ij", "\"audio-v1\""))
@@ -83,7 +84,7 @@ class AsrAudioSegmentDownloaderTest {
             val firstRequest = server.takeRequest()
             assertEquals("bytes=4-7", firstRequest.getHeader("Range"))
             assertEquals("\"audio-v1\"", firstRequest.getHeader("If-Range"))
-            assertNotNull(metadataFile)
+            assertFalse(metadataFile.exists())
             assertEquals("bytes=8-9", server.takeRequest().getHeader("Range"))
         } finally {
             server.shutdown()
