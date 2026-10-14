@@ -24,21 +24,20 @@ interface TtsEngine {
 class KokoroTts(private val ctx: Context, private val speakerId: Int = KokoroVoiceRange.DEFAULT_SPEAKER_ID, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
 
-    // Model assets can be refreshed independently of the app version. Include file metadata so
-    // cached PCM is not reused after the model, lexicon, tokens, or Chinese rule FSTs change.
+    // Model assets can be refreshed independently of the app version. Fingerprint every file,
+    // including nested eSpeak language data and dictionaries, so PCM cache never survives a
+    // pronunciation-resource update merely because the ONNX file itself stayed unchanged.
     private val modelAssetsFingerprint: String by lazy {
         val dir = io.translatetube.local.data.ModelFiles.ttsDir(ctx)
-        listOf(
-            "model.int8.onnx",
-            "voices.bin",
-            "tokens.txt",
-            "lexicon-zh.txt",
-            "phone-zh.fst",
-            "date-zh.fst",
-            "number-zh.fst",
-        ).joinToString("|") { name ->
-            val file = java.io.File(dir, name)
-            if (file.isFile) "$name:${file.length()}:${file.lastModified()}" else "$name:missing"
+        if (!dir.isDirectory) {
+            "missing-kokoro-assets"
+        } else {
+            dir.walkTopDown()
+                .filter { it.isFile }
+                .sortedBy { it.relativeTo(dir).invariantSeparatorsPath }
+                .joinToString("|") { file ->
+                    "${file.relativeTo(dir).invariantSeparatorsPath}:${file.length()}:${file.lastModified()}"
+                }
         }
     }
 
