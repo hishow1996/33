@@ -36,6 +36,18 @@ class Pcm16StreamingResamplerTest {
     }
 
     @Test
+    fun rejectsSingleInputChunkWhoseUpsampledOutputExceedsTemporaryBudget() {
+        val resampler = Pcm16StreamingResampler(1_000, 16_000)
+        val error = runCatching {
+            // This input is only about 1 MiB, but would require more than 16 MiB of PCM16 output.
+            resampler.process(ShortArray(524_289))
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message?.contains("拆分") == true)
+    }
+
+    @Test
     fun largeStreamingResampleChecksCancellationBetweenOutputChunks() {
         val resampler = Pcm16StreamingResampler(8_000, 16_000)
         var checks = 0
