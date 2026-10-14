@@ -1242,36 +1242,53 @@ class PlaybackService : MediaSessionService() {
                 } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
-                val audioFile = if (videoId != null) {
-                    obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
-                } else {
-                    val sourceUri = localUri ?: throw IllegalStateException("无音频源")
-                    if (isHttpMediaUri(sourceUri)) {
-                        obtainRemoteAsrAudioFile(
+                val audioFile: File?
+                val audioUri: Uri?
+                val sourceUri = localUri
+                when {
+                    videoId != null -> {
+                        audioFile = obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
+                        audioUri = null
+                    }
+                    sourceUri != null && isHttpMediaUri(sourceUri) &&
+                        !shouldStreamRemoteVideoForAsr(sourceUri, sourceMimeType) -> {
+                        // Small direct audio files and clear HLS VOD are cached/resumable on disk.
+                        audioFile = obtainRemoteAsrAudioFile(
                             url = sourceUri.toString(),
                             cacheKey = key,
                             sessionKey = key,
                             headers = sourceHeaders,
                             mimeType = sourceMimeType,
                         )
-                    } else {
-                        sourceUri
+                        audioUri = null
                     }
+                    sourceUri != null -> {
+                        // For progressive webpage video, stream the audio track through Android's
+                        // MediaExtractor with the original safe headers. Do not download the whole
+                        // MP4 just to extract speech. PCM itself is still spooled to disk.
+                        audioFile = null
+                        audioUri = sourceUri
+                        if (isHttpMediaUri(sourceUri)) {
+                            updateUiForSession(key) {
+                                it.copy(
+                                    phase = Phase.TRANSCRIBING,
+                                    progress = "正在直接读取网页音轨（不下载整部视频）…",
+                                )
+                            }
+                        }
+                    }
+                    else -> throw IllegalStateException("无音频源")
                 }
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcmFile = withContext(Dispatchers.IO) {
-                    if (audioFile is File) {
-                        AudioExtract.decodeTo16kMonoFile(
-                            this@PlaybackService, null, audioFile,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
-                        )
-                    } else {
-                        AudioExtract.decodeTo16kMonoFile(
-                            this@PlaybackService, audioFile as Uri, null,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
-                        )
-                    }
+                    AudioExtract.decodeTo16kMonoFile(
+                        ctx = this@PlaybackService,
+                        src = audioUri,
+                        file = audioFile,
+                        checkActive = { pcmOwnerJob?.ensureActive() },
+                        headers = if (audioUri != null && isHttpMediaUri(audioUri)) sourceHeaders else emptyMap(),
+                    )
                 }
                 transientPcmFile = pcmFile
                 ensureCurrentSession(key)
@@ -2188,6 +2205,21 @@ class PlaybackService : MediaSessionService() {
 
     private fun isHttpMediaUri(uri: Uri): Boolean =
         uri.scheme.equals("http", true) || uri.scheme.equals("https", true)
+
+    /**
+     * Direct progressive video files can be opened by MediaExtractor without materializing the
+     * whole video. Audio-only files and HLS manifests use the segmented disk cache; DASH is kept
+     * out of this path because Android's extractor does not itself resolve an MPD manifest.
+     */
+    private fun shouldStreamRemoteVideoForAsr(uri: Uri, mimeType: String?): Boolean {
+        val mime = mimeType.orEmpty().substringBefore(';').trim().lowercase(java.util.Locale.ROOT)
+        if (mime.contains("mpegurl") || mime.contains("dash+xml") ||
+            mime.startsWith("audio/")
+        ) return false
+        if (mime.startsWith("video/")) return true
+        val path = uri.path.orEmpty().lowercase(java.util.Locale.ROOT)
+        return listOf(".mp4", ".m4v", ".mov", ".mkv", ".webm", ".ogv").any(path::endsWith)
+    }
 
     private fun remoteMediaTitle(uri: Uri): String {
         val fileName = uri.lastPathSegment.orEmpty().substringBeforeLast('.')
