@@ -92,6 +92,9 @@ internal object SystemTtsWavDecoder {
             else -> throw IllegalStateException("系统 TTS WAV 格式不支持：format=$formatCode, bits=$bitsPerSample")
         }
         val frameSize = bytesPerSample * channels
+        if (dataLen % frameSize != 0) {
+            throw IllegalStateException("系统 TTS WAV 音频数据未按完整采样帧对齐")
+        }
         val frameCount = dataLen / frameSize
         if (frameCount <= 0 || frameCount > MAX_FRAMES) {
             throw IllegalStateException("系统 TTS WAV 音频帧数无效：$frameCount")

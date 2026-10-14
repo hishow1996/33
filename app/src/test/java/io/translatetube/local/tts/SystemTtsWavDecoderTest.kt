@@ -45,6 +45,33 @@ class SystemTtsWavDecoderTest {
         assertEquals(-0.5f, audio.samples[1], 0.001f)
     }
 
+    @Test
+    fun decodesPcm24AndFloat32Samples() {
+        val pcm24 = SystemTtsWavDecoder.decode(
+            wave(1, 1, 24_000, 24, byteArrayOf(0, 0, 0, 0, 0, 64))
+        )
+        assertEquals(2, pcm24.samples.size)
+        assertEquals(0.0f, pcm24.samples[0], 0.001f)
+        assertEquals(0.5f, pcm24.samples[1], 0.001f)
+
+        val floatData = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            .putFloat(0.0f)
+            .putFloat(-0.75f)
+            .array()
+        val floatPcm = SystemTtsWavDecoder.decode(
+            wave(3, 1, 24_000, 32, floatData)
+        )
+        assertEquals(2, floatPcm.samples.size)
+        assertEquals(-0.75f, floatPcm.samples[1], 0.001f)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun rejectsPcmDataThatEndsMidSampleFrame() {
+        SystemTtsWavDecoder.decode(
+            wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1))
+        )
+    }
+
     @Test(expected = IllegalStateException::class)
     fun rejectsNonWaveHeaders() {
         val bytes = wave(1, 1, 16_000, 16, byteArrayOf(0, 0, 1, 0))
