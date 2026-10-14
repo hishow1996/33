@@ -40,4 +40,15 @@ class PcmTempFilePolicyTest {
         assertFalse(PcmTempFilePolicy.isStale("translate-pcm-a.s16le", now + 1L, now))
         assertFalse(PcmTempFilePolicy.isStale("other-a.s16le", now - PcmTempFilePolicy.MAX_AGE_MS * 2, now))
     }
+
+    @Test
+    fun scratchPcmWritesAreBoundedByThe512MiBBudget() {
+        val budget = PcmTempFilePolicy.MAX_PCM_BYTES
+        assertTrue(PcmTempFilePolicy.canAppendSamples(0L, 1))
+        assertTrue(PcmTempFilePolicy.canAppendSamples(budget - 2L, 1))
+        assertFalse(PcmTempFilePolicy.canAppendSamples(budget, 1))
+        assertFalse(PcmTempFilePolicy.canAppendSamples(budget - 1L, 1))
+        assertFalse(PcmTempFilePolicy.canAppendSamples(-1L, 1))
+        assertFalse(PcmTempFilePolicy.canAppendSamples(0L, -1))
+    }
 }
