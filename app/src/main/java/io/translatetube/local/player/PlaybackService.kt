@@ -2245,72 +2245,101 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String, requestHeaders: Map<String, String> = emptyMap()): File {
+    private suspend fun downloadAudio(
+        url: String,
+        destination: File? = null,
+        sessionKey: String,
+        requestHeaders: Map<String, String> = emptyMap(),
+    ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
         val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
-        if (destination != null) {
-            writeTarget.delete()
-            if (target.exists() && !target.delete()) {
-                throw IllegalStateException("无法替换旧的音频缓存文件")
-            }
-        }
         val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
-        try {
-            withContext(Dispatchers.IO) {
-                SafeMediaHttp.execute(
-                    url = url,
-                    requestHeaders = requestHeaders,
-                    userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
-                ).use { resp ->
-                    if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
-                    val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
-                    if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
-                        throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
-                    }
-                    val total = body.contentLength()
-                    if (total > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                    body.byteStream().use { ins ->
-                        var got = 0L
-                        writeTarget.outputStream().buffered().use { out ->
-                            val buf = ByteArray(64 * 1024)
-                            while (true) {
-                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                val n = ins.read(buf)
-                                if (n < 0) break
-                                got += n
-                                if (got > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                                out.write(buf, 0, n)
-                                if (total > 0) {
-                                    val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))
-                                    updateUiForSession(sessionKey) { state ->
-                                        if (state.key == sessionKey) {
-                                            state.copy(progress = progress)
-                                        } else state
+        var lastError: Exception? = null
+
+        for (attempt in 1..3) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            writeTarget.delete()
+            try {
+                withContext(Dispatchers.IO) {
+                    SafeMediaHttp.execute(
+                        url = url,
+                        requestHeaders = requestHeaders,
+                        userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+                    ).use { resp ->
+                        if (!resp.isSuccessful) {
+                            throw IllegalStateException("音频下载失败 ${resp.code}")
+                        }
+                        val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
+                        if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                            throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
+                        }
+                        val total = body.contentLength()
+                        if (total > maxBytes) {
+                            throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
+                        }
+                        body.byteStream().use { ins ->
+                            var got = 0L
+                            writeTarget.outputStream().buffered().use { out ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                    val n = ins.read(buf)
+                                    if (n < 0) break
+                                    got += n
+                                    if (got > maxBytes) {
+                                        throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
+                                    }
+                                    out.write(buf, 0, n)
+                                    if (total > 0) {
+                                        val progress = "下载音频 %.0f%%".format(
+                                            (got * 100f / total).coerceIn(0f, 100f)
+                                        )
+                                        updateUiForSession(sessionKey) { state ->
+                                            if (state.key == sessionKey) state.copy(progress = progress) else state
+                                        }
                                     }
                                 }
+                                out.flush()
                             }
-                            out.flush()
+                            if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
+                                throw IllegalStateException(
+                                    "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
+                                )
+                            }
                         }
-                        if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
-                            throw IllegalStateException(
-                                "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
-                            )
-                        }
-                    }
-                    if (!writeTarget.isFile || writeTarget.length() == 0L) {
-                        throw IllegalStateException("音频下载结果为空")
                     }
                 }
+
+                if (!writeTarget.isFile || writeTarget.length() == 0L) {
+                    throw IllegalStateException("音频下载结果为空")
+                }
+                if (destination == null) {
+                    writeTarget.setLastModified(System.currentTimeMillis())
+                    return writeTarget
+                }
+                if (target.exists() && !target.delete()) {
+                    throw IllegalStateException("下载完成但无法替换旧的音频缓存")
+                }
+                if (!writeTarget.renameTo(target)) {
+                    throw IllegalStateException("下载完成但无法保存音频缓存")
+                }
+                target.setLastModified(System.currentTimeMillis())
+                return target
+            } catch (error: Exception) {
+                writeTarget.delete()
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                lastError = error
+                if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
+                updateUiForSession(sessionKey) { state ->
+                    if (state.key == sessionKey) {
+                        state.copy(progress = "网络不稳定，正在重试音频下载（第 ${attempt + 1} 次）")
+                    } else state
+                }
+                kotlinx.coroutines.delay(300L * attempt)
             }
-            if (destination == null) return writeTarget
-            if (!writeTarget.renameTo(target)) throw IllegalStateException("下载完成但无法保存音频缓存")
-            target.setLastModified(System.currentTimeMillis())
-            return target
-        } catch (e: Exception) {
-            writeTarget.delete()
-            throw e
         }
+        throw IllegalStateException("音频下载失败，已达到重试次数上限。", lastError)
     }
 
     private fun kokoroRuntimeReady(): Boolean = runCatching {
