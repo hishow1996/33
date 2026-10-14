@@ -1115,12 +1115,17 @@ class PlaybackService : MediaSessionService() {
                     var dur = 0L
                     try {
                         val mmr = android.media.MediaMetadataRetriever()
-                        mmr.setDataSource(this, u)
-                        title = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
-                            ?.takeIf { it.isNotBlank() } ?: title
-                        dur = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                            ?: "0").toLongOrNull() ?: 0L
-                        mmr.release()
+                        try {
+                            mmr.setDataSource(this, u)
+                            title = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
+                                ?.takeIf { it.isNotBlank() } ?: title
+                            dur = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                ?: "0").toLongOrNull() ?: 0L
+                        } finally {
+                            // A bad URI/unsupported container can throw before metadata is read.
+                            // Always release the native retriever on that error path as well.
+                            runCatching { mmr.release() }
+                        }
                     } catch (_: Exception) {}
                     meta = meta.copy(title = title, durationSec = dur / 1000)
                     updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
