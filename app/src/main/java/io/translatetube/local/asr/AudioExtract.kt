@@ -21,6 +21,7 @@ object AudioExtract {
     private const val MAX_FLOAT_ARRAY_BYTES = 32L * 1024L * 1024L
     // Splitting after downmix guarantees each 16 kHz resampler call stays bounded even for
     // unusual but valid low-rate audio formats accepted by the decoder.
+    private const val MAX_DECODED_SOURCE_CHUNK_SAMPLES = 64 * 1024
     private const val MAX_RESAMPLER_INPUT_CHUNK_SAMPLES = 64 * 1024
 
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
@@ -267,21 +268,6 @@ object AudioExtract {
                         val rawTake = minOf(availableSamples, remainingSamples)
                         val take = rawTake - rawTake % sourceChannels
                         if (take > 0) {
-                            val decodedChunk = when (pcmEncoding) {
-                                AudioFormat.ENCODING_PCM_16BIT -> ShortArray(take).also { samples ->
-                                    sampleBytes.asShortBuffer().get(samples, 0, take)
-                                }
-                                AudioFormat.ENCODING_PCM_FLOAT -> ShortArray(take).also { samples ->
-                                    val floats = sampleBytes.asFloatBuffer()
-                                    repeat(take) { index ->
-                                        if ((index and 0x1fff) == 0) checkActive()
-                                        samples[index] = Pcm16SampleConverter.floatToPcm16(floats.get())
-                                    }
-                                }
-                                else -> throw IllegalStateException("音频解码器返回了不支持的 PCM 编码：${pcmEncoding}")
-                            }
-                            decodedSourceSamples += take
-
                             val activeResampler = resampler ?: Pcm16StreamingResampler(sourceRate, 16_000).also {
                                 resampler = it
                                 resamplerRate = sourceRate
@@ -294,33 +280,65 @@ object AudioExtract {
                                 codec.releaseOutputBuffer(outBufferIndex, false)
                                 throw IllegalStateException("音频解码格式在处理中途改变，无法安全转换")
                             }
-                            // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
-                            val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels, checkActive)
-                            // MediaCodec output size is provider-dependent. Feed the resampler bounded
-                            // slices so a large valid codec buffer cannot trip its per-call safety cap.
-                            var monoOffset = 0
-                            while (monoOffset < monoChunk.size) {
+
+                            // Bound the first allocation too: decoder providers control BufferInfo.size,
+                            // so do not materialize one ShortArray for the entire output buffer.
+                            var sourceOffset = 0
+                            while (sourceOffset < take) {
                                 checkActive()
-                                val chunkCount = minOf(
-                                    MAX_RESAMPLER_INPUT_CHUNK_SAMPLES,
-                                    monoChunk.size - monoOffset,
+                                val sourceChunkCount = PcmFrameLayout.boundedChunkSampleCount(
+                                    remainingSamples = take - sourceOffset,
+                                    maxChunkSamples = MAX_DECODED_SOURCE_CHUNK_SAMPLES,
+                                    channels = sourceChannels,
                                 )
-                                val resampleInput = if (monoOffset == 0 && chunkCount == monoChunk.size) {
-                                    monoChunk
+                                val decodedChunk = when (pcmEncoding) {
+                                    AudioFormat.ENCODING_PCM_16BIT -> ShortArray(sourceChunkCount).also { samples ->
+                                        sampleBytes.asShortBuffer().apply { position(sourceOffset) }
+                                            .get(samples, 0, sourceChunkCount)
+                                    }
+                                    AudioFormat.ENCODING_PCM_FLOAT -> ShortArray(sourceChunkCount).also { samples ->
+                                        val floats = sampleBytes.asFloatBuffer().apply { position(sourceOffset) }
+                                        repeat(sourceChunkCount) { index ->
+                                            if ((index and 0x1fff) == 0) checkActive()
+                                            samples[index] = Pcm16SampleConverter.floatToPcm16(floats.get())
+                                        }
+                                    }
+                                    else -> throw IllegalStateException("音频解码器返回了不支持的 PCM 编码：${pcmEncoding}")
+                                }
+
+                                val monoChunk = if (sourceChannels == 1) {
+                                    decodedChunk
                                 } else {
-                                    monoChunk.copyOfRange(monoOffset, monoOffset + chunkCount)
+                                    PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels, checkActive)
                                 }
-                                val converted = activeResampler.process(resampleInput, checkActive)
-                                if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
-                                    throw IllegalStateException(
-                                        "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
+                                // Keep the resampler call bounded too; with supported decoder sample
+                                // rates the normal chunk already fits, but retain this guard if its size changes.
+                                var monoOffset = 0
+                                while (monoOffset < monoChunk.size) {
+                                    checkActive()
+                                    val chunkCount = minOf(
+                                        MAX_RESAMPLER_INPUT_CHUNK_SAMPLES,
+                                        monoChunk.size - monoOffset,
                                     )
+                                    val resampleInput = if (monoOffset == 0 && chunkCount == monoChunk.size) {
+                                        monoChunk
+                                    } else {
+                                        monoChunk.copyOfRange(monoOffset, monoOffset + chunkCount)
+                                    }
+                                    val converted = activeResampler.process(resampleInput, checkActive)
+                                    if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
+                                        throw IllegalStateException(
+                                            "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
+                                        )
+                                    }
+                                    writePcm16Le(output, converted, checkActive)
+                                    outputBytes += converted.size.toLong() * 2L
+                                    outputSamples += converted.size
+                                    monoOffset += chunkCount
                                 }
-                                writePcm16Le(output, converted, checkActive)
-                                outputBytes += converted.size.toLong() * 2L
-                                outputSamples += converted.size
-                                monoOffset += chunkCount
+                                sourceOffset += sourceChunkCount
                             }
+                            decodedSourceSamples += take
                         }
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
                             decodedSourceSamples >= maxSourceSamples
