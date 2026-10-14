@@ -355,8 +355,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             if (expectedSha256 != null && !sha256(temp).equals(expectedSha256, ignoreCase = true)) {
                 throw java.io.IOException("附属模型 SHA-256 校验失败")
             }
-            if (dest.exists() && !dest.delete()) throw java.io.IOException("无法替换旧模型文件")
-            if (!temp.renameTo(dest)) throw java.io.IOException("无法安装附属模型文件")
+            // Never delete the old valid asset until the verified download is safely staged.
+            ModelInstallAtomicity.replaceFile(temp, dest)
         } catch (e: Exception) {
             temp.delete()
             throw e
@@ -449,15 +449,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 )
             }
 
-            val old = File(parent, destDir.name + ".old")
-            old.deleteRecursively()
-            val hadOld = destDir.exists()
-            if (hadOld && !destDir.renameTo(old)) throw java.io.IOException("无法备份现有模型目录")
-            if (!staging.renameTo(destDir)) {
-                if (hadOld) old.renameTo(destDir)
-                throw java.io.IOException("无法安装新模型目录")
-            }
-            old.deleteRecursively()
+            // Swap only after the staged directory passes completeness checks. If the swap
+            // fails, restore the previous model and surface a clear error if restoration fails.
+            ModelInstallAtomicity.replaceDirectory(staging, destDir)
         } catch (e: Exception) {
             staging.deleteRecursively()
             throw e
