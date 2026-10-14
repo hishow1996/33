@@ -72,7 +72,7 @@ internal object AsrAudioCacheIdentity {
                 URLDecoder.decode(rawName, StandardCharsets.UTF_8.name())
             }.getOrDefault(rawName).lowercase(Locale.ROOT)
         }
-        val queryNames = queryItems.map(::decodedName).toSet()
+        val queryNames = queryItems.map { item -> decodedName(item) }.toSet()
         val extension = rawPath.substringAfterLast('/', "").substringAfterLast('.', "")
             .lowercase(Locale.ROOT)
         val hasStableMediaIdentity = extension in mediaFileExtensions ||
