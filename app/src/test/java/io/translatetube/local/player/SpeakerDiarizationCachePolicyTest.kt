@@ -73,4 +73,15 @@ class SpeakerDiarizationCachePolicyTest {
         assertEquals(1, SpeakerDiarizationCachePolicy.keysToEvict(keys, "current").size)
     }
 
+    @Test
+    fun signatureChangesWhenOnlyANonAnchorSampleChanges() {
+        val samples = FloatArray(8_194) { index -> (index % 43) / 43f }
+        val changed = samples.copyOf().also { it[4_103] = -0.9375f }
+
+        assertFalse(
+            SpeakerDiarizationCachePolicy.signature(samples) ==
+                SpeakerDiarizationCachePolicy.signature(changed)
+        )
+    }
+
 }

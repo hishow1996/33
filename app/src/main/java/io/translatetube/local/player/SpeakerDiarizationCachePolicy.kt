@@ -25,18 +25,17 @@ internal object SpeakerDiarizationCachePolicy {
     fun signature(samples: FloatArray): String {
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update("speaker-audio-v$VERSION|${samples.size}|".toByteArray(Charsets.UTF_8))
-        val stride = maxOf(1, samples.size / 1_024)
-        val sample = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
-        for (index in samples.indices step stride) {
-            sample.clear()
-            sample.putInt(samples[index].toRawBits())
-            digest.update(sample.array())
+        // Hash every decoded sample, not sparse anchors: sparse sampling can collide when an edit
+        // falls between anchors and would then restore a speaker timeline from different audio.
+        val block = ByteBuffer.allocate(16 * 1024).order(ByteOrder.LITTLE_ENDIAN)
+        for (value in samples) {
+            if (block.remaining() < Int.SIZE_BYTES) {
+                digest.update(block.array(), 0, block.position())
+                block.clear()
+            }
+            block.putInt(value.toRawBits())
         }
-        if (samples.isNotEmpty() && samples.lastIndex % stride != 0) {
-            sample.clear()
-            sample.putInt(samples.last().toRawBits())
-            digest.update(sample.array())
-        }
+        if (block.position() > 0) digest.update(block.array(), 0, block.position())
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
