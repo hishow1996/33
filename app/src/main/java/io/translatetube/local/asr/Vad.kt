@@ -9,13 +9,19 @@ import java.io.FileInputStream
 import java.io.InputStream
 
 /** silero VAD 语音分段：全片 PCM → [(startMs, endMs)] */
-fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long, Long>> {
+fun vadSegments(
+    ctx: Context,
+    pcm: FloatArray,
+    sr: Int = 16000,
+    checkActive: () -> Unit = {},
+): List<Pair<Long, Long>> {
     val vad = newVad(ctx, sr)
     val segments = mutableListOf<Pair<Long, Long>>()
     try {
         val window = 512
         var offset = 0
         while (offset + window <= pcm.size) {
+            checkActive()
             vad.acceptWaveform(pcm.copyOfRange(offset, offset + window))
             drainVad(vad, sr, segments)
             offset += window
@@ -33,6 +39,7 @@ fun vadSegmentsFromFile(
     ctx: Context,
     pcmFile: AudioExtract.PcmFile,
     sr: Int = 16000,
+    checkActive: () -> Unit = {},
 ): List<Pair<Long, Long>> {
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
     val vad = newVad(ctx, sr)
@@ -43,6 +50,7 @@ fun vadSegmentsFromFile(
         BufferedInputStream(FileInputStream(pcmFile.file), 32 * 1024).use { input ->
             var remainingSamples = pcmFile.sampleCount
             while (remainingSamples >= window) {
+                checkActive()
                 readFully(input, windowBytes)
                 val floats = FloatArray(window)
                 var byteIndex = 0
