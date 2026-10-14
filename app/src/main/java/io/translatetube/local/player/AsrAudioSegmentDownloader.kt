@@ -344,7 +344,12 @@ internal class AsrAudioSegmentDownloader(
             discard(part, metaFile)
             throw IOException("音频文件为空或超出大小限制")
         }
-        if (AsrAudioSegmentPolicy.isClearlyNotAudio(contentType, readPrefix(part))) {
+        val prefix = readPrefix(part)
+        if (AsrAudioSegmentPolicy.isDashManifest(contentType, prefix)) {
+            discard(part, metaFile)
+            throw IOException("检测到 DASH MPD 清单，需要按 DASH 音轨清单读取")
+        }
+        if (AsrAudioSegmentPolicy.isClearlyNotAudio(contentType, prefix)) {
             discard(part, metaFile)
             throw IOException("获取到的不是音频数据（可能是网页错误页、播放列表或登录页面）")
         }
