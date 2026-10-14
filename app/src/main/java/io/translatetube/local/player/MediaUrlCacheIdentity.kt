@@ -38,14 +38,10 @@ internal object MediaUrlCacheIdentity {
     private val genericCredentialParameterNames = setOf(
         "access_token", "auth", "auth_key", "authorization", "token", "jwt", "__token__",
     )
-    private val stableMediaSelectorNames = setOf(
-        "id", "video_id", "media_id", "asset_id", "track", "itag", "quality", "format",
-        "variant", "rendition", "stream", "type", "mime", "part", "segment", "audio",
-        "lang", "language",
-    )
-    private val signatureHintNames = setOf(
-        "expires", "expiry", "exp", "signature", "sig", "policy", "key-pair-id",
-        "hdnea", "hdnts", "wmsauthsign",
+    private val stableResourceIdNames = setOf("id", "video_id", "media_id", "asset_id")
+    private val expiryParameterNames = setOf("expires", "expiry", "exp")
+    private val explicitSignatureNames = setOf(
+        "signature", "sig", "policy", "key-pair-id", "hdnea", "hdnts", "wmsauthsign",
     )
     private val mediaFilePath = Regex(
         """\.(?:mp4|m4v|mov|webm|mkv|mp3|m4a|aac|ogg|wav|flac|m3u8|m4s|ts|mpd)$""",
@@ -86,12 +82,18 @@ internal object MediaUrlCacheIdentity {
         val hasGoogleSignature = decodedNames.any { it == "x-goog-signature" }
         val hasAzureSignature = decodedNames.any { it == "sig" } &&
             decodedNames.any { it == "sv" || it == "se" || it == "sr" }
-        val hasExplicitSignature = decodedNames.any { it in signatureHintNames } ||
+        val hasExplicitSignature = decodedNames.any { it in explicitSignatureNames } ||
             hasAwsSignature || hasGoogleSignature || hasAzureSignature
-        val hasStableSelector = decodedNames.any { it in stableMediaSelectorNames }
+        val hasExpiryWithCredential =
+            decodedNames.any { it in expiryParameterNames } &&
+                decodedNames.any { it in genericCredentialParameterNames || it in explicitSignatureNames }
+        // Rendition selectors such as quality/itag alone do not identify the underlying asset.
+        // Only a resource ID, recognizable media filename, or signature evidence allows us to
+        // ignore a generic token while preserving cache correctness for opaque endpoint URLs.
+        val hasStableResourceId = decodedNames.any { it in stableResourceIdNames }
         val hasMediaFilePath = mediaFilePath.containsMatchIn(rawPath)
         val canStripGenericCredentials =
-            hasExplicitSignature || hasStableSelector || hasMediaFilePath
+            hasExplicitSignature || hasExpiryWithCredential || hasStableResourceId || hasMediaFilePath
 
         // Keep generic tokens distinct on opaque endpoints that expose no other stable media
         // identity. Hash their values instead of retaining raw credentials in the canonical URL.
