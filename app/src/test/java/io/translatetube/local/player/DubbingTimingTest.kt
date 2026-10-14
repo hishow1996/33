@@ -85,4 +85,39 @@ class DubbingTimingTest {
         assertEquals(0, plan.sampleCount)
         assertEquals(1.0f, plan.syncRate, 0.001f)
     }
+
+    @Test
+    fun preservesAnEightyMillisecondWindowButSkipsAnythingShorter() {
+        val samples = FloatArray(16_000) { 0.25f }
+        val boundary = DubbingTiming.createPlan(
+            sampleCount = samples.size, sampleRate = 16_000,
+            lineStartMs = 0, lineEndMs = 1_000,
+            positionMs = 920, playerSpeed = 1.0f,
+        )
+        val tooLate = DubbingTiming.createPlan(
+            sampleCount = samples.size, sampleRate = 16_000,
+            lineStartMs = 0, lineEndMs = 1_000,
+            positionMs = 921, playerSpeed = 1.0f,
+        )
+
+        assertEquals(1_280, boundary.sampleCount)
+        assertEquals(1_280, DubbingTiming.slice(samples, boundary, 16_000).size)
+        assertEquals(0, tooLate.sampleCount)
+        assertTrue(DubbingTiming.slice(samples, tooLate, 16_000).isEmpty())
+    }
+
+    @Test
+    fun malformedPlanCannotReadPastAvailablePcm() {
+        val samples = floatArrayOf(0.1f, 0.2f, 0.3f)
+        val oversized = DubbingPlaybackPlan(
+            startSample = 1,
+            sampleCount = 100,
+            syncRate = 1.0f,
+            playbackRate = 1.0f,
+            truncated = true,
+        )
+
+        assertEquals(2, DubbingTiming.slice(samples, oversized, 16_000).size)
+    }
+
 }
