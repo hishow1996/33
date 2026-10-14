@@ -352,6 +352,15 @@ internal object HlsAudioDownloader {
         }
     }
 
+    internal fun validateNoMissingSegments(body: String) {
+        val hasGap = body.removePrefix("\uFEFF").lineSequence()
+            .map(String::trim)
+            .any { it.equals("#EXT-X-GAP", ignoreCase = true) }
+        if (hasGap) {
+            throw IllegalStateException("该 HLS 标记了缺失片段，可能导致字幕时间轴错位；当前版本暂不处理。")
+        }
+    }
+
     private fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
         val lines = body.removePrefix("\uFEFF").lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         if (lines.none { it == "#EXTM3U" }) {
@@ -368,9 +377,7 @@ internal object HlsAudioDownloader {
             }) {
             throw IllegalStateException("该 HLS 含有时间轴切换标记，当前版本不能安全地拼接这些片段。")
         }
-        if (lines.any { it.equals("#EXT-X-GAP", ignoreCase = true) }) {
-            throw IllegalStateException("该 HLS 标记了缺失片段；为避免字幕时间轴错位，当前版本暂不处理。")
-        }
+        validateNoMissingSegments(body)
 
         var initSegment: String? = null
         val segments = mutableListOf<String>()
