@@ -316,9 +316,14 @@ private fun VideoRow(
             .combinedClickable(
                 onClick = {
                     onPlay(
-                        if (video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE)
-                            PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
-                        else PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
+                        when {
+                            video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
+                                PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
+                            video.key.startsWith("remote:") ->
+                                PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
+                            else ->
+                                PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
+                        }
                     )
                 },
                 onLongClick = onFav,
@@ -345,7 +350,7 @@ private fun VideoRow(
             )
             Text(
                 (video.channel.ifEmpty {
-                    if (video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE) "YouTube" else "本地视频"
+                    when { video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE -> "YouTube"; video.key.startsWith("remote:") -> "网页视频"; else -> "本地视频" }
                 }) + " · 中文配音" +
                     if (video.durationSec > 0) " · " + SubtitleParsers.fmtTime(video.durationSec * 1000) else "",
                 color = SubText,
