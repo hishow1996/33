@@ -2433,7 +2433,9 @@ class PlaybackService : MediaSessionService() {
     ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
-        val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
+        // Always write to a sibling temporary file. A process killed mid-download must never
+        // leave a partial payload under the final .bin name where a later cache scan can reuse it.
+        val writeTarget = File(target.parentFile, target.name + ".part")
         val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
         var lastError: Exception? = null
 
@@ -2508,15 +2510,11 @@ class PlaybackService : MediaSessionService() {
                 if (!writeTarget.isFile || writeTarget.length() == 0L) {
                     throw IllegalStateException("音频下载结果为空")
                 }
-                if (destination == null) {
-                    writeTarget.setLastModified(System.currentTimeMillis())
-                    return writeTarget
-                }
-                if (target.exists() && !target.delete()) {
-                    throw IllegalStateException("下载完成但无法替换旧的音频缓存")
-                }
+                // Rename only after the complete response has been validated. On Android/Linux,
+                // same-directory rename replaces the previous regular file atomically; if it fails,
+                // leave the previous cache intact rather than deleting it first.
                 if (!writeTarget.renameTo(target)) {
-                    throw IllegalStateException("下载完成但无法保存音频缓存")
+                    throw IllegalStateException("下载完成但无法原子保存音频缓存")
                 }
                 target.setLastModified(System.currentTimeMillis())
                 return target
