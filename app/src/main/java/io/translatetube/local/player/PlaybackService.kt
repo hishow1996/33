@@ -1110,23 +1110,29 @@ class PlaybackService : MediaSessionService() {
                 updateUiForSession(key) { it.copy(title = title, durationMs = 0L) }
             } else if (resumeState == null) {
                 localUri?.let { u ->
-                    // 本地视频：取真实标题/时长
-                    var title = u.lastPathSegment ?: "本地视频"
-                    var dur = 0L
-                    try {
-                        val mmr = android.media.MediaMetadataRetriever()
+                    // MetadataRetriever can perform blocking container I/O. Keep it off the main
+                    // dispatcher so opening a large/slow local file cannot freeze playback UI.
+                    val (title, dur) = withContext(Dispatchers.IO) {
+                        var resolvedTitle = u.lastPathSegment ?: "本地视频"
+                        var durationMs = 0L
+                        var mmr: android.media.MediaMetadataRetriever? = null
                         try {
-                            mmr.setDataSource(this, u)
-                            title = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
-                                ?.takeIf { it.isNotBlank() } ?: title
-                            dur = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            mmr = android.media.MediaMetadataRetriever()
+                            mmr.setDataSource(this@PlaybackService, u)
+                            resolvedTitle = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
+                                ?.takeIf { it.isNotBlank() } ?: resolvedTitle
+                            durationMs = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                                 ?: "0").toLongOrNull() ?: 0L
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Some SAF providers do not expose retrievable metadata; keep the URI name.
                         } finally {
                             // A bad URI/unsupported container can throw before metadata is read.
-                            // Always release the native retriever on that error path as well.
-                            runCatching { mmr.release() }
+                            runCatching { mmr?.release() }
                         }
-                    } catch (_: Exception) {}
+                        resolvedTitle to durationMs
+                    }
                     meta = meta.copy(title = title, durationSec = dur / 1000)
                     updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
                 }
