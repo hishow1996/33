@@ -154,7 +154,7 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
-    private val asrAudioDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val asrAudioDownloadLocks = KeyedMutex<String>()
     // Do not evict downloaded audio while MediaExtractor is actively reading it.
     private val activeAsrAudioPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
@@ -2163,8 +2163,7 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         cacheHitProgress: String,
     ): File {
-        val mutex = asrAudioDownloadLocks.computeIfAbsent(videoId) { kotlinx.coroutines.sync.Mutex() }
-        return mutex.withLock {
+        return asrAudioDownloadLocks.withLock(videoId) {
             reusableAsrAudioFile(videoId)?.let { cached ->
                 updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
@@ -2214,8 +2213,7 @@ class PlaybackService : MediaSessionService() {
         // Reuse downloaded bytes across rotating signed URLs, but never across page origins or
         // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
         val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
-        val mutex = asrAudioDownloadLocks.computeIfAbsent(identity) { kotlinx.coroutines.sync.Mutex() }
-        return mutex.withLock {
+        return asrAudioDownloadLocks.withLock(identity) {
             reusableAsrAudioFile(identity)?.let { cached ->
                 updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
