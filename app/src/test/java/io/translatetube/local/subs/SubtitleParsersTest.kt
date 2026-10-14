@@ -207,12 +207,16 @@ class SubtitleParsersTest {
 
     @Test
     fun largeSubtitleParsingHonorsCancellationBetweenInputChunks() {
+        fun timestamp(totalSeconds: Int): String {
+            val minutes = totalSeconds / 60
+            val seconds = totalSeconds % 60
+            return "00:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.000"
+        }
         val source = buildString {
             appendLine("WEBVTT")
             appendLine()
             repeat(400) { index ->
-                val start = index.toString().padStart(2, '0')
-                appendLine("00:00:${(index % 60).toString().padStart(2, '0')}.000 --> 00:00:${((index + 1) % 60).toString().padStart(2, '0')}.000")
+                appendLine("${timestamp(index)} --> ${timestamp(index + 1)}")
                 appendLine("subtitle $index")
                 appendLine()
             }
