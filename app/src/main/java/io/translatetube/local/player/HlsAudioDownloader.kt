@@ -85,12 +85,12 @@ internal object HlsAudioDownloader {
         }
     }
 
-    /** Remove the retry cache only after the assembled file has decoded successfully. */
-    internal fun cleanupSegmentCache(destination: File): Boolean {
-        val parent = destination.absoluteFile.parentFile ?: return false
+    /** Remove the retry cache under the same lock used by downloads, avoiding races with reuse. */
+    internal suspend fun cleanupSegmentCache(destination: File): Boolean = downloadMutex.withLock {
+        val parent = destination.absoluteFile.parentFile ?: return@withLock false
         val stem = destination.name.substringBeforeLast('.', destination.name)
         val cacheDirectory = File(parent, "$stem.segments")
-        return !cacheDirectory.exists() || cacheDirectory.deleteRecursively()
+        !cacheDirectory.exists() || cacheDirectory.deleteRecursively()
     }
 
     fun isManifestUrl(value: String): Boolean = runCatching {
