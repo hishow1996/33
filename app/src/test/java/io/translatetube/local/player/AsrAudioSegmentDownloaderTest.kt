@@ -5,6 +5,7 @@ import java.security.MessageDigest
 import java.util.Properties
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,6 +42,45 @@ class AsrAudioSegmentDownloaderTest {
             assertEquals("bytes=4-7", server.takeRequest().getHeader("Range"))
             assertEquals("bytes=4-7", server.takeRequest().getHeader("Range"))
             assertEquals("bytes=8-9", server.takeRequest().getHeader("Range"))
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun rollsBackAnInterruptedRangeAndRetriesFromTheLastVerifiedOffset() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "asr-range-disconnect-test")
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(206)
+                    .setHeader("Content-Type", "audio/mp4")
+                    .setHeader("Content-Range", "bytes 0-3/8")
+                    .setHeader("ETag", "\"audio-v1\"")
+                    .setChunkedBody("ab", 1)
+                    .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+            )
+            server.enqueue(rangeResponse(0, 3, 8, "abcd"))
+            server.enqueue(rangeResponse(4, 7, 8, "efgh"))
+
+            val destination = File(directory, "audio.bin")
+            AsrAudioSegmentDownloader(
+                client = okhttp3.OkHttpClient(),
+                maxBytes = 100L,
+                chunkBytes = 4L,
+            ).download(
+                url = server.url("/audio").toString(),
+                destination = destination,
+                sourceKey = "video-interrupted-range",
+            )
+
+            assertArrayEquals("abcdefgh".toByteArray(), destination.readBytes())
+            assertEquals("bytes=0-3", server.takeRequest().getHeader("Range"))
+            assertEquals("bytes=0-3", server.takeRequest().getHeader("Range"))
+            assertEquals("bytes=4-7", server.takeRequest().getHeader("Range"))
         } finally {
             server.shutdown()
             directory.deleteRecursively()
