@@ -35,7 +35,7 @@ internal object HlsAudioDownloader {
      * A null result means this is already a media playlist rather than a master playlist.
      */
     internal fun selectMediaPlaylistUrl(playlistUrl: String, body: String): String? {
-        val lines = body.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
+        val lines = body.removePrefix("\uFEFF").lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         if (lines.none { it == "#EXTM3U" }) return null
 
         val audioRows = lines.filter { it.startsWith("#EXT-X-MEDIA:", ignoreCase = true) }
@@ -276,6 +276,9 @@ internal object HlsAudioDownloader {
                     throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
                 }
                 val body = response.body ?: throw IllegalStateException("HLS 片段响应为空。")
+                if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                    throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录。")
+                }
                 val expectedBytes = body.contentLength()
                 if (expectedBytes > MAX_BYTES || cachedBytes + expectedBytes.coerceAtLeast(0L) > MAX_BYTES) {
                     throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
@@ -315,7 +318,7 @@ internal object HlsAudioDownloader {
     }
 
     private fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
-        val lines = body.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
+        val lines = body.removePrefix("\uFEFF").lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         if (lines.none { it == "#EXTM3U" }) {
             throw IllegalStateException("服务器返回的内容不是有效 HLS 清单。")
         }
@@ -389,6 +392,9 @@ internal object HlsAudioDownloader {
                 throw IllegalStateException("读取 HLS 清单失败（HTTP ${response.code}）。")
             }
             val body = response.body ?: throw IllegalStateException("HLS 清单响应为空。")
+            if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 清单；链接可能过期或需要登录。")
+            }
             if (body.contentLength() > MAX_PLAYLIST_BYTES) {
                 throw IllegalStateException("HLS 清单超过 2 MB 限制，已停止解析。")
             }
