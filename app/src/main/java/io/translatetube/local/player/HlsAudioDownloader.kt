@@ -134,6 +134,7 @@ internal object HlsAudioDownloader {
                     } else {
                         segmentFile.delete()
                         File(segmentFile.parentFile, segmentFile.name + ".part").delete()
+                        File(segmentFile.parentFile, segmentFile.name + ".installing").delete()
                     }
                 }
 
@@ -242,7 +243,7 @@ internal object HlsAudioDownloader {
             }
         } else {
             directory.listFiles()
-                ?.filter { it.isFile && it.name.endsWith(".part") }
+                ?.filter { it.isFile && (it.name.endsWith(".part") || it.name.endsWith(".installing")) }
                 ?.forEach { it.delete() }
         }
     }
@@ -335,8 +336,22 @@ internal object HlsAudioDownloader {
                     }
                 }
                 if (!part.renameTo(destination)) {
-                    part.copyTo(destination, overwrite = true)
-                    part.delete()
+                    val installing = File(destination.parentFile, destination.name + ".installing")
+                    try {
+                        installing.delete()
+                        part.copyTo(installing, overwrite = true)
+                        if (installing.length() != part.length()) {
+                            throw IllegalStateException("HLS 片段暂存文件大小不匹配。")
+                        }
+                        if (!installing.renameTo(destination)) {
+                            throw IllegalStateException("无法原子保存 HLS 音轨片段。")
+                        }
+                        part.delete()
+                    } catch (error: Exception) {
+                        installing.delete()
+                        destination.delete()
+                        throw error
+                    }
                 }
                 destination.setLastModified(System.currentTimeMillis())
                 return destination
