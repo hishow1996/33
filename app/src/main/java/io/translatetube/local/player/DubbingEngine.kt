@@ -350,7 +350,10 @@ class DubbingEngine(
                             throw e
                         } catch (e: Exception) {
                             lastFailure = e
-                            if (attempt == 0 && !released && e !is DubbingPcmLimitException) {
+                            // The same text/provider cannot benefit from another synthesis pass
+                            // when its result already exceeds the hard per-cue PCM cap.
+                            if (e is DubbingPcmLimitException) break
+                            if (attempt == 0 && !released) {
                                 android.util.Log.w(
                                     "DubbingEngine",
                                     "TTS line ${idx + 1} failed once; retrying with the same selected engine",
