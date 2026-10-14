@@ -229,14 +229,30 @@ class PlayerManager(private val ctx: Context) {
             !uri.host.isNullOrBlank()
     }.getOrDefault(false)
 
-    /** 本地文件 / 直链 */
-    fun setUriSource(uri: Uri, title: String = "", artist: String = "", artworkUrl: String? = null) {
-        player.setMediaItem(
-            MediaItem.Builder()
-                .setUri(uri)
-                .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
-                .build()
-        )
+    /** 本地文件 / 直链；网页源可附带当前 WebView 会话的 Referer/Cookie。 */
+    fun setUriSource(
+        uri: Uri,
+        title: String = "",
+        artist: String = "",
+        artworkUrl: String? = null,
+        requestHeaders: Map<String, String> = emptyMap(),
+    ) {
+        val item = MediaItem.Builder()
+            .setUri(uri)
+            .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
+            .build()
+        if (requestHeaders.isEmpty()) {
+            player.setMediaItem(item)
+        } else {
+            val remoteHttpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent(UA)
+                .setAllowCrossProtocolRedirects(true)
+                .setDefaultRequestProperties(requestHeaders)
+            val remoteMediaSourceFactory = DefaultMediaSourceFactory(
+                DefaultDataSource.Factory(ctx, remoteHttpFactory)
+            )
+            player.setMediaSource(remoteMediaSourceFactory.createMediaSource(item))
+        }
         player.prepare()
     }
 
