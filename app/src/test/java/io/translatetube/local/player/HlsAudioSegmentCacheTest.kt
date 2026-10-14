@@ -42,6 +42,7 @@ class HlsAudioSegmentCacheTest {
             assertEquals(destination.absolutePath, result.absolutePath)
             assertArrayEquals("AUDIO-ONEAUDIO-TWO".toByteArray(), result.readBytes())
             assertEquals(3, server.requestCount)
+            assertEquals("/media/list.m3u8", server.takeRequest().requestUrl?.encodedPath)
             assertEquals("/media/seg-1.ts", server.takeRequest().requestUrl?.encodedPath)
             assertEquals("/media/seg-2.ts", server.takeRequest().requestUrl?.encodedPath)
             assertTrue(File(directory, "asr_hls_segments").listFiles().orEmpty().isEmpty())
