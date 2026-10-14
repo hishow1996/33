@@ -1298,6 +1298,17 @@ class PlaybackService : MediaSessionService() {
                         file = audioFile,
                         checkActive = { pcmOwnerJob?.ensureActive() },
                         headers = if (audioUri != null && isHttpMediaUri(audioUri)) sourceHeaders else emptyMap(),
+                        onProgress = { processedSamples, totalSamples ->
+                            val progress = if (totalSamples > 0L) {
+                                val percent = ((processedSamples * 100L) / totalSamples).toInt().coerceIn(0, 100)
+                                "解码音轨并转换 PCM $percent%"
+                            } else {
+                                "已转换 PCM " + (processedSamples / 16_000L) + " 秒"
+                            }
+                            updateUiForSession(key) { state ->
+                                if (state.key == key) state.copy(progress = progress) else state
+                            }
+                        },
                     )
                 }
                 transientPcmFile = pcmFile
