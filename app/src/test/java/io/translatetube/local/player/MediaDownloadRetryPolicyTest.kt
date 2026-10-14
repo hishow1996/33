@@ -13,6 +13,8 @@ class MediaDownloadRetryPolicyTest {
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 503")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("HLS 片段下载失败（HTTP 429）。")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载不完整：响应声明 1024 字节，实际收到 512 字节")))
+        // Unknown Content-Length can still be truncated relative to the HLS range declaration.
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("HLS BYTERANGE 片段不完整：清单要求 512 字节，实际收到 300 字节")))
     }
 
     @Test

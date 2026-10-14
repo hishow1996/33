@@ -26,7 +26,7 @@ object SubtitleParsers {
         val buf = StringBuilder()
         fun flush() {
             val txt = buf.toString().trim()
-            if (pendingStart >= 0 && txt.isNotEmpty()) {
+            if (pendingStart >= 0 && pendingEnd > pendingStart && txt.isNotEmpty()) {
                 out += SubLine(idx++, pendingStart, pendingEnd, txt)
             }
             buf.clear(); pendingStart = -1; pendingEnd = -1
@@ -80,10 +80,17 @@ object SubtitleParsers {
         val out = mutableListOf<SubLine>()
         val re = Regex("""<text[^>]*start="([\d.]+)"[^>]*(?:dur="([\d.]+)")?[^>]*>(.*?)</text>""", RegexOption.DOT_MATCHES_ALL)
         re.findAll(src).forEachIndexed { i, m ->
-            val start = ((m.groupValues[1].toDoubleOrNull() ?: 0.0) * 1000.0).toLong()
-            val dur = ((m.groupValues[2].toDoubleOrNull() ?: 3.0) * 1000.0).toLong()
+            val startSeconds = m.groupValues[1].toDoubleOrNull() ?: 0.0
+            val durationSeconds = m.groupValues[2].toDoubleOrNull() ?: 3.0
+            if (!startSeconds.isFinite() || !durationSeconds.isFinite() ||
+                startSeconds < 0.0 || durationSeconds <= 0.0
+            ) return@forEachIndexed
+            val start = (startSeconds * 1000.0).toLong()
+            val dur = (durationSeconds * 1000.0).toLong()
+            if (dur <= 0L || start > Long.MAX_VALUE - dur) return@forEachIndexed
+            val end = start + dur
             val text = android.text.Html.fromHtml(m.groupValues[3], android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
-            if (text.isNotEmpty()) out += SubLine(i, start, start + dur, text)
+            if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return out
     }
@@ -102,10 +109,13 @@ object SubtitleParsers {
         cueRegex.findAll(src).forEach { match ->
             val attrs = attributeRegex.findAll(match.groupValues[1])
                 .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
-            val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) } ?: return@forEach
-            val end = attrs["end"]?.let { parseTtmlTime(it) }
-                ?: attrs["dur"]?.let { parseTtmlTime(it)?.let(start::plus) }
-                ?: return@forEach
+            val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) }
+                ?.takeIf { it >= 0L } ?: return@forEach
+            val explicitEnd = attrs["end"]?.let { parseTtmlTime(it) }
+            val end = explicitEnd ?: attrs["dur"]?.let { durationText ->
+                val duration = parseTtmlTime(durationText) ?: return@let null
+                if (duration <= 0L || start > Long.MAX_VALUE - duration) null else start + duration
+            } ?: return@forEach
             if (end <= start) return@forEach
             val body = match.groupValues[2].replace(
                 Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n"
@@ -216,8 +226,11 @@ object SubtitleParsers {
             val body = raw.removePrefix("Dialogue:").trim()
             val p = body.split(",").toMutableList()
             if (p.size < 10) continue
-            val start = parseAssTs(p[1].trim())
-            val end = parseAssTs(p[2].trim())
+            val times = runCatching {
+                parseAssTs(p[1].trim()) to parseAssTs(p[2].trim())
+            }.getOrNull() ?: continue
+            val (start, end) = times
+            if (start < 0L || end <= start) continue
             val text = p.drop(9).joinToString(",").replace(Regex("\\{[^}]*\\}"), "").replace(Regex("\\\\N|\\\\n"), "\n").trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
@@ -255,10 +268,16 @@ object SubtitleParsers {
     }
 
     private fun parseAssTs(s: String): Long {
-        val bits = s.split(":")
-        val h = bits[0].toLong()
-        val m = bits[1].toLong()
-        val sec = bits[2].toDouble()
-        return ((h * 3600 + m * 60 + sec) * 1000).toLong()
+        val bits = s.trim().split(":")
+        require(bits.size == 3) { "ASS 时间戳格式错误" }
+        val h = bits[0].toLongOrNull()?.takeIf { it >= 0L }
+            ?: throw IllegalArgumentException("ASS 小时字段无效")
+        val m = bits[1].toLongOrNull()?.takeIf { it in 0L..59L }
+            ?: throw IllegalArgumentException("ASS 分钟字段无效")
+        val sec = bits[2].toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 && it < 60.0 }
+            ?: throw IllegalArgumentException("ASS 秒字段无效")
+        val totalMs = h.toDouble() * 3_600_000.0 + m.toDouble() * 60_000.0 + sec * 1_000.0
+        require(totalMs.isFinite() && totalMs <= Long.MAX_VALUE.toDouble()) { "ASS 时间戳超出范围" }
+        return totalMs.toLong()
     }
 }

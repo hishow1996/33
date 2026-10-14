@@ -21,6 +21,8 @@ internal object MediaDownloadRetryPolicy {
             ?.toIntOrNull()
 
         if (statusCode != null && statusCode in retryableHttpCodes) return true
-        return messages.contains("下载不完整") || messages.contains("响应不完整")
+        return messages.contains("下载不完整") ||
+            messages.contains("响应不完整") ||
+            messages.contains("片段不完整")
     }
 }
