@@ -15,6 +15,29 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun rejectsNegativeCueStartAndClampsExtremePlaybackPositions() {
+        val invalid = DubbingTiming.createPlan(
+            sampleCount = 1_000, sampleRate = 16_000,
+            lineStartMs = -1L, lineEndMs = 1_000L,
+            positionMs = 0L, playerSpeed = 1.0f,
+        )
+        val beforeStart = DubbingTiming.createPlan(
+            sampleCount = 16_000, sampleRate = 16_000,
+            lineStartMs = 500L, lineEndMs = 1_500L,
+            positionMs = Long.MIN_VALUE, playerSpeed = 1.0f,
+        )
+        val afterEnd = DubbingTiming.createPlan(
+            sampleCount = 16_000, sampleRate = 16_000,
+            lineStartMs = 500L, lineEndMs = 1_500L,
+            positionMs = Long.MAX_VALUE, playerSpeed = 1.0f,
+        )
+
+        assertEquals(0, invalid.sampleCount)
+        assertEquals(0, beforeStart.startSample)
+        assertEquals(0, afterEnd.sampleCount)
+    }
+
+    @Test
     fun lateStartSkipsAudioUsingSubtitleTimeline() {
         val plan = DubbingTiming.createPlan(
             sampleCount = 4_000, sampleRate = 1_000,
@@ -134,6 +157,30 @@ class DubbingTimingTest {
                 preparedAtMs = 400L,
                 currentPositionMs = 2_000L,
                 syncRate = 2.0f,
+                sampleRate = 16_000,
+                availableSampleCount = 32_000,
+            ),
+        )
+    }
+
+    @Test
+    fun lateStartSkipHandlesExtremeTimestampsWithoutWrapping() {
+        assertEquals(
+            0,
+            DubbingTiming.lateStartSkipSamples(
+                preparedAtMs = Long.MIN_VALUE,
+                currentPositionMs = 10L,
+                syncRate = 1.0f,
+                sampleRate = 16_000,
+                availableSampleCount = 32_000,
+            ),
+        )
+        assertEquals(
+            32_000,
+            DubbingTiming.lateStartSkipSamples(
+                preparedAtMs = 0L,
+                currentPositionMs = Long.MAX_VALUE,
+                syncRate = 1.0f,
                 sampleRate = 16_000,
                 availableSampleCount = 32_000,
             ),
