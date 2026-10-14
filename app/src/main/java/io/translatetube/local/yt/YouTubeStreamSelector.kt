@@ -67,6 +67,26 @@ internal object YouTubeStreamSelector {
             )
             .firstOrNull()
 
+    /**
+     * ASR does not need the highest fidelity stream. Preserve M4A compatibility preference,
+     * but choose the lowest known bitrate inside that tier to reduce download time and cache use.
+     * The returned index keeps the selected metadata tied to its original NewPipe AudioStream.
+     */
+    fun chooseAudioStreamForAsrIndex(input: List<YouTubeAudioCandidate>): Int {
+        val valid = input.indices.filter { isHttpUrl(input[it].url) }
+        if (valid.isEmpty()) return -1
+        val m4a = valid.filter {
+            input[it].formatSuffix?.equals("m4a", ignoreCase = true) == true
+        }
+        val candidates = m4a.ifEmpty { valid }
+        return candidates.minWithOrNull(
+            compareBy<Int> {
+                input[it].bitrate.takeIf { rate -> rate > 0 } ?: Int.MAX_VALUE
+            }.thenBy { input[it].url }
+        ) ?: -1
+    }
+
+
     private fun compatibilityRank(candidate: YouTubeVideoCandidate): Int {
         val mp4 = candidate.formatSuffix?.equals("mp4", ignoreCase = true) == true
         return when {

@@ -70,6 +70,36 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun asrPrefersLowestKnownBitrateM4aRegardlessOfListOrder() {
+        val audio = listOf(
+            YouTubeAudioCandidate("https://cdn.test/high.m4a", "m4a", 256_000),
+            YouTubeAudioCandidate("https://cdn.test/opus.webm", "webm", 48_000),
+            YouTubeAudioCandidate("https://cdn.test/low.m4a", "m4a", 64_000),
+        )
+        assertEquals(2, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio))
+    }
+
+    @Test
+    fun asrFallsBackToLowestKnownCompatibleStreamWhenM4aIsUnavailable() {
+        val audio = listOf(
+            YouTubeAudioCandidate("https://cdn.test/opus-high.webm", "webm", 256_000),
+            YouTubeAudioCandidate("https://cdn.test/opus-low.webm", "webm", 48_000),
+            YouTubeAudioCandidate("https://cdn.test/expired", "webm", -1),
+        )
+        assertEquals(1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio))
+    }
+
+    @Test
+    fun asrRejectsInvalidUrlsAndReturnsMinusOneWhenNoStreamCanBeUsed() {
+        assertEquals(
+            -1,
+            YouTubeStreamSelector.chooseAudioStreamForAsrIndex(
+                listOf(YouTubeAudioCandidate("file:///tmp/audio", "m4a", 32_000))
+            ),
+        )
+    }
+
+    @Test
     fun choosesM4aBeforeHigherBitrateWebmWhenAvailable() {
         val audio = YouTubeStreamSelector.chooseAudioStream(
             listOf(

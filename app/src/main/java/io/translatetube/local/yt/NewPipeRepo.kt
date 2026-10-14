@@ -248,15 +248,22 @@ object NewPipeRepo {
     /** 播放用：完整 StreamInfo（videoOnly/muxed/audio 由上层挑） */
     suspend fun streams(videoId: String): StreamInfo = info(videoId)
 
-    /** 转写用音频流（挑最小比特率） */
+    /** 转写用音频流：优先 M4A 的最低有效码率，减少下载时间与缓存占用。 */
     suspend fun audioForAsr(videoId: String): AudioStream? {
-        val info = info(videoId)
-        val streams = info.audioStreams
-        // 优先 m4a（MediaExtractor 解码最稳），退而求其次选任意最小码率流
-        return streams.firstOrNull { s ->
-            s.format == org.schabi.newpipe.extractor.MediaFormat.M4A ||
-                s.format?.suffix == "m4a"
-        } ?: streams.minByOrNull { it.averageBitrate }
+        val streams = info(videoId).audioStreams
+        val candidates = streams.map { stream ->
+            YouTubeAudioCandidate(
+                url = stream.content,
+                formatSuffix = if (stream.format == org.schabi.newpipe.extractor.MediaFormat.M4A) {
+                    "m4a"
+                } else {
+                    stream.format?.suffix
+                },
+                bitrate = stream.averageBitrate,
+            )
+        }
+        val selectedIndex = YouTubeStreamSelector.chooseAudioStreamForAsrIndex(candidates)
+        return streams.getOrNull(selectedIndex)
     }
 
     private fun downloadText(url: String): String {
