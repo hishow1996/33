@@ -326,7 +326,7 @@ internal class HlsAudioSegmentCache(
 
     private fun segmentFile(folder: File, label: String, url: String): File {
         val safeLabel = label.replace(Regex("[^A-Za-z0-9_-]"), "_")
-        return File(folder, "${safeLabel}-${sha256(url).take(24)}.seg")
+        return File(folder, "${safeLabel}-${AsrAudioCacheIdentity.hash(url).take(24)}.seg")
     }
 
     private fun pruneOrphanedSegmentFiles(folder: File, expectedNames: Set<String>) {
