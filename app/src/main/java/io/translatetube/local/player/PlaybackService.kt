@@ -1273,15 +1273,20 @@ class PlaybackService : MediaSessionService() {
                     // forever. Otherwise every user retry reuses the same unusable bytes and fails
                     // before ASR can start. Successful decodes still retain audio for ASR retries.
                     if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
-                        val removed = audioFile.delete()
+                        val removed = !audioFile.exists() || audioFile.delete()
                         File(audioFile.parentFile, audioFile.name + ".part").delete()
                         android.util.Log.w(
                             "PlaybackService",
                             "Discarded remote audio cache after decode failure (removed=$removed)",
                             error,
                         )
+                        val recoveryAdvice = if (removed) {
+                            "已清理无法解码的音频缓存；重试时会重新获取音轨。"
+                        } else {
+                            "音频解码失败，且缓存文件无法删除；重试可能再次遇到同一错误，请清理应用缓存后重试。"
+                        }
                         throw IllegalStateException(
-                            "已清理无法解码的音频缓存；重试时会重新获取音轨。原因：${error.message ?: error.javaClass.simpleName}",
+                            "$recoveryAdvice 原因：${error.message ?: error.javaClass.simpleName}",
                             error,
                         )
                     }
