@@ -107,6 +107,40 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun lateAudioTrackStartupSkipsElapsedSamplesWithoutExceedingBuffer() {
+        assertEquals(
+            1_600,
+            DubbingTiming.lateStartSkipSamples(
+                preparedAtMs = 400L,
+                currentPositionMs = 450L,
+                syncRate = 2.0f,
+                sampleRate = 16_000,
+                availableSampleCount = 32_000,
+            ),
+        )
+        assertEquals(
+            0,
+            DubbingTiming.lateStartSkipSamples(
+                preparedAtMs = 450L,
+                currentPositionMs = 400L,
+                syncRate = 2.0f,
+                sampleRate = 16_000,
+                availableSampleCount = 32_000,
+            ),
+        )
+        assertEquals(
+            32_000,
+            DubbingTiming.lateStartSkipSamples(
+                preparedAtMs = 400L,
+                currentPositionMs = 2_000L,
+                syncRate = 2.0f,
+                sampleRate = 16_000,
+                availableSampleCount = 32_000,
+            ),
+        )
+    }
+
+    @Test
     fun malformedPlanCannotReadPastAvailablePcm() {
         val samples = floatArrayOf(0.1f, 0.2f, 0.3f)
         val oversized = DubbingPlaybackPlan(

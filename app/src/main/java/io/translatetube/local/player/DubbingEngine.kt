@@ -678,9 +678,56 @@ class DubbingEngine(
                         return@execute
                     }
 
+                    // The player can advance while the static AudioTrack buffer is being filled.
+                    // Re-check the timeline and advance the static playback head to skip elapsed
+                    // samples, rather than speaking the old words late. The track is MODE_STATIC
+                    // and mono, so the head position is expressed in the same frames as PCM samples.
+                    var skippedSamples = 0
+                    fun alignToLatestTimelinePosition(): Boolean {
+                        val latestPosition = DubbingStartPositionPolicy.choose(
+                            lineIndex = idx,
+                            lineStartMs = line.startMs,
+                            lineEndMs = line.endMs,
+                            requestedPositionMs = position,
+                            latestCursor = latestTimelineCursor,
+                        ) ?: return false
+                        val targetSkip = DubbingTiming.lateStartSkipSamples(
+                            preparedAtMs = position,
+                            currentPositionMs = latestPosition,
+                            syncRate = plan.syncRate,
+                            sampleRate = sr,
+                            availableSampleCount = playbackSamples.size,
+                        )
+                        // No intelligible audio remains when the head would reach the end of
+                        // this bounded cue buffer; do not start a clipped syllable after the cue.
+                        if (targetSkip >= playbackSamples.size) return false
+                        if (targetSkip > skippedSamples) {
+                            val result = newTrack.setPlaybackHeadPosition(targetSkip)
+                            if (result != AudioTrack.SUCCESS) {
+                                throw IllegalStateException(
+                                    "无法按最新播放位置校准配音采样头：AudioTrack 状态 $result"
+                                )
+                            }
+                            skippedSamples = targetSkip
+                        }
+                        return true
+                    }
+
+                    if (!alignToLatestTimelinePosition()) {
+                        newTrack.release()
+                        created = null
+                        return@execute
+                    }
+
+                    // Playback speed may have changed while PCM was loading. Combine the cue's
+                    // synchronization rate with the newest player speed instead of overwriting it
+                    // with a stale value captured before AudioTrack creation.
+                    val playbackRate = (
+                        plan.syncRate * DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
+                    ).coerceIn(0.5f, 4.0f)
                     runCatching {
                         newTrack.setPlaybackParams(
-                            PlaybackParams().setSpeed(plan.playbackRate).setPitch(1.0f)
+                            PlaybackParams().setSpeed(playbackRate).setPitch(1.0f)
                         )
                     }.onFailure {
                         // If a provider rejects dynamic rates, keep the voice audible at native speed.
@@ -692,8 +739,7 @@ class DubbingEngine(
                     }
                     track = newTrack
                     activeSyncRate = plan.syncRate
-                    activePlayerSpeed = currentSpeed
-                    activePlaybackRate = plan.playbackRate
+                    activePlaybackRate = playbackRate
                     if (released || playbackGeneration.get() != generation) {
                         if (track === newTrack) track = null
                         newTrack.release()
@@ -701,6 +747,20 @@ class DubbingEngine(
                         return@execute
                     }
                     newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
+                    // Re-check once more immediately before play() in case another ticker
+                    // update arrived while parameters/volume were applied.
+                    if (!alignToLatestTimelinePosition()) {
+                        if (track === newTrack) track = null
+                        newTrack.release()
+                        created = null
+                        return@execute
+                    }
+                    if (released || playbackGeneration.get() != generation) {
+                        if (track === newTrack) track = null
+                        newTrack.release()
+                        created = null
+                        return@execute
+                    }
                     newTrack.play()
                     created = null
                     if (!released && playbackGeneration.get() == generation) {

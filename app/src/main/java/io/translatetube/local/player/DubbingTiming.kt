@@ -66,6 +66,27 @@ internal object DubbingTiming {
         return DubbingPlaybackPlan(offset, count, syncRate, outputRate, truncated)
     }
 
+    /**
+     * Samples to skip when static PCM has been prepared at [preparedAtMs] but the video
+     * playhead advances before AudioTrack starts. This preserves subtitle-time alignment
+     * without rebuilding the already-filled static track.
+     */
+    fun lateStartSkipSamples(
+        preparedAtMs: Long,
+        currentPositionMs: Long,
+        syncRate: Float,
+        sampleRate: Int,
+        availableSampleCount: Int,
+    ): Int {
+        if (availableSampleCount <= 0 || sampleRate <= 0) return 0
+        val safeSyncRate = syncRate.takeIf { it.isFinite() && it > 0.0f } ?: 1.0f
+        val elapsedMs = (currentPositionMs - preparedAtMs).coerceAtLeast(0L)
+        val samplesToSkip = floor(
+            elapsedMs.toDouble() * safeSyncRate.toDouble() * sampleRate.toDouble() / 1000.0
+        ).toInt()
+        return samplesToSkip.coerceIn(0, availableSampleCount)
+    }
+
     /** Copy the exact playable window; fade an overlong tail to avoid a hard cut. */
     fun slice(samples: FloatArray, plan: DubbingPlaybackPlan, sampleRate: Int): FloatArray {
         if (plan.sampleCount <= 0 || plan.startSample !in 0 until samples.size) return FloatArray(0)
