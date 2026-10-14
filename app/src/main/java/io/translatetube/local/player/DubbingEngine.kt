@@ -394,6 +394,13 @@ class DubbingEngine(
         }
     }
 
+    private fun markCuePending(idx: Int) {
+        readiness.markPending(idx)
+        // If a previously ready cue becomes invalid, progress must no longer claim that its
+        // contiguous prefix is complete. Later ready cues remain available independently.
+        if (idx >= 0 && idx < _preparedUntil.value) _preparedUntil.value = idx
+    }
+
     private fun bumpPrepared() {
         // The display remains a contiguous count, but playback readiness is tracked per line.
         var n = _preparedUntil.value
@@ -571,7 +578,7 @@ class DubbingEngine(
             // Cache files can disappear after attach() validates them. Treat this as recoverable
             // pending work, not a permanent silent cue; keep source audio audible while regenerating.
             f.delete()
-            readiness.markPending(idx)
+            markCuePending(idx)
             queueSynthesisRetry(idx)
             return null
         }
