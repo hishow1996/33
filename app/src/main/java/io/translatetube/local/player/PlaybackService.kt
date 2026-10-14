@@ -2517,17 +2517,25 @@ class PlaybackService : MediaSessionService() {
                         if (freshSegments.isNotEmpty()) {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             ensureCurrentSession(sessionKey)
-                            subtitleCacheDao.put(
-                                io.translatetube.local.data.SubtitleCacheEntity(
-                                    cacheKey = diarizationCacheKey,
-                                    srcLang = diarizationSignature,
-                                    linesJson = SpeakerDiarizationCachePolicy.encodeSegments(
-                                        diarizationSignature,
-                                        freshSegments,
-                                    ),
-                                    updatedAt = System.currentTimeMillis(),
+                            try {
+                                subtitleCacheDao.put(
+                                    io.translatetube.local.data.SubtitleCacheEntity(
+                                        cacheKey = diarizationCacheKey,
+                                        srcLang = diarizationSignature,
+                                        linesJson = SpeakerDiarizationCachePolicy.encodeSegments(
+                                            diarizationSignature,
+                                            freshSegments,
+                                        ),
+                                        updatedAt = System.currentTimeMillis(),
+                                    )
                                 )
-                            )
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                // Cache persistence is only an optimization; never discard valid
+                                // fresh diarization just because the cache/database write failed.
+                                android.util.Log.w("PlaybackService", "Could not save speaker diarization cache", e)
+                            }
                         }
                     }
                 }

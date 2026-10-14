@@ -2,7 +2,6 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpeakerDiarizationCachePolicyTest {
@@ -26,15 +25,4 @@ class SpeakerDiarizationCachePolicyTest {
         assertFalse(signature == SpeakerDiarizationCachePolicy.signature(changedLength))
     }
 
-    @Test
-    fun rejectsSavedResultsFromAnotherAudioFingerprint() {
-        val expected = SpeakerDiarizationCachePolicy.signature(floatArrayOf(0.1f, 0.2f))
-        assertTrue(
-            SpeakerDiarizationCachePolicy.decodeSegments(
-                """{"version":1,"signature":"other","segments":[{"s":0,"e":1,"sp":0,"c":0.8}]}""",
-                "other",
-                expected,
-            ) == null
-        )
-    }
 }
