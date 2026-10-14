@@ -512,11 +512,12 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+        val sourceIdentity = stableSourceCacheIdentity(key, videoId)
         val effectiveTranslationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
             ?: if (!importedLines.isNullOrEmpty()) {
                 importedTranslationCacheKey(key, activeTranslationId, importedLines)
             } else {
-                "$key|zh|$activeTranslationId"
+                "$sourceIdentity|zh|$activeTranslationId"
             }
         val configuredTtsName = when (configuredTts) {
             "system" -> "系统 TTS"
