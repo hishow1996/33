@@ -1216,7 +1216,17 @@ class PlaybackService : MediaSessionService() {
                 val audioFile = if (videoId != null) {
                     obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
                 } else {
-                    localUri ?: throw IllegalStateException("无音频源")
+                    val sourceUri = localUri ?: throw IllegalStateException("无音频源")
+                    if (isHttpMediaUri(sourceUri)) {
+                        obtainRemoteAsrAudioFile(
+                            url = sourceUri.toString(),
+                            cacheKey = key,
+                            sessionKey = key,
+                            headers = sourceHeaders,
+                        )
+                    } else {
+                        sourceUri
+                    }
                 }
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -2093,6 +2103,46 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /** Download an externally selected webpage media URL through the same bounded cache. */
+    private suspend fun obtainRemoteAsrAudioFile(
+        url: String,
+        cacheKey: String,
+        sessionKey: String,
+        headers: Map<String, String>,
+    ): File {
+        val mutex = asrAudioDownloadLocks.computeIfAbsent(cacheKey) { kotlinx.coroutines.sync.Mutex() }
+        return mutex.withLock {
+            reusableAsrAudioFile(cacheKey)?.let { cached ->
+                updateUiForSession(sessionKey) { state ->
+                    if (state.key == sessionKey) state.copy(progress = "复用已缓存音轨…") else state
+                }
+                return@withLock cached
+            }
+            updateUiForSession(sessionKey) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在读取网页媒体音轨…")
+                } else state
+            }
+            downloadAudio(
+                url = url,
+                destination = asrAudioCacheFile(cacheKey),
+                sourceKey = cacheKey,
+                sessionKey = sessionKey,
+                headers = headers,
+            ).also { pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it) }
+        }
+    }
+
+    private fun isHttpMediaUri(uri: Uri): Boolean =
+        uri.scheme.equals("http", true) || uri.scheme.equals("https", true)
+
+    private fun remoteMediaTitle(uri: Uri): String {
+        val fileName = uri.lastPathSegment.orEmpty().substringBeforeLast('.')
+            .replace(Regex("[_+-]+"), " ")
+            .trim()
+        return fileName.takeIf { it.isNotBlank() && it.length <= 80 } ?: uri.host.orEmpty().ifBlank { "网页视频" }
+    }
+
     /** Reuse only a completed file. Partial downloads are checked against range metadata later. */
     private fun reusableAsrAudioFile(videoId: String): File? {
         val file = asrAudioCacheFile(videoId)
@@ -2190,11 +2240,12 @@ class PlaybackService : MediaSessionService() {
         destination: File,
         sourceKey: String,
         sessionKey: String,
+        headers: Map<String, String> = emptyMap(),
     ): File {
         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         val hlsCache = HlsAudioSegmentCache(cacheDir)
         if (looksLikeHlsUrl(url)) {
-            return downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob)
+            return downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
         }
         var lastReportedPercent = -1
         var lastReportedBytes = 0L
@@ -2204,6 +2255,7 @@ class PlaybackService : MediaSessionService() {
                     url = url,
                     destination = destination,
                     sourceKey = sourceKey,
+                    headers = headers,
                     checkActive = { ownerJob?.ensureActive() },
                     onProgress = { receivedBytes, totalBytes ->
                         val percent = if (totalBytes > 0L) {
@@ -2234,7 +2286,7 @@ class PlaybackService : MediaSessionService() {
                 // ordinary timeouts and HTTP failures are propagated without an extra request.
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 if (!looksLikePlaylistFailure(e)) throw e
-                downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob)
+                downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
             }
         }
     }
@@ -2246,12 +2298,14 @@ class PlaybackService : MediaSessionService() {
         sourceKey: String,
         sessionKey: String,
         ownerJob: Job?,
+        headers: Map<String, String>,
     ): File = withContext(Dispatchers.IO) {
         var lastPercent = -1
         cache.download(
             playlistUrl = url,
             destination = destination,
             sourceKey = sourceKey,
+            headers = headers,
             checkActive = { ownerJob?.ensureActive() },
             onProgress = { completed, total ->
                 if (total <= 0) return@download
