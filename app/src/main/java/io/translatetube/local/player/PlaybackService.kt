@@ -973,6 +973,7 @@ class PlaybackService : MediaSessionService() {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
+        var extractedLocalAudioForAsr = false
         try {
             ensureCurrentSession(key)
             awaitRetiredDubbingEngines()
@@ -1302,6 +1303,7 @@ class PlaybackService : MediaSessionService() {
                                     )
                                 }
                             } else {
+                                extractedLocalAudioForAsr = true
                                 updateUiForSession(key) {
                                     it.copy(
                                         phase = Phase.DOWNLOADING_AUDIO,
@@ -1821,7 +1823,17 @@ class PlaybackService : MediaSessionService() {
             ensureCurrentSession(key)
             saveHistory(meta)
             ensureCurrentSession(key)
-            updateUiForSession(key) { it.copy(phase = Phase.READY, engineName = it.engineName.ifEmpty { "本地引擎" }) }
+            updateUiForSession(key) {
+                it.copy(
+                    phase = Phase.READY,
+                    engineName = it.engineName.ifEmpty { "本地引擎" },
+                    subtitleTrackStatus = if (extractedLocalAudioForAsr && finalLines.isNotEmpty()) {
+                        "本地音轨识别完成：已生成 ${finalLines.size} 条中文字幕，播放时会按时间轴同步显示。"
+                    } else {
+                        it.subtitleTrackStatus
+                    },
+                )
+            }
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
             val resumeSec = try {
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
