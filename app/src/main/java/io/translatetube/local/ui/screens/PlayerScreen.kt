@@ -61,6 +61,7 @@ import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
 import io.translatetube.local.subs.SubLine
+import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.yt.SubtitleTrackOption
 import io.translatetube.local.ui.theme.*
@@ -76,6 +77,10 @@ fun PlayerScreen(
     localUri: android.net.Uri?,
     onBack: () -> Unit,
     onGoSettings: () -> Unit = {},
+    mediaUrl: String? = null,
+    mediaTitle: String = "",
+    mediaReferrer: String = "",
+    mediaCookie: String? = null,
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
@@ -92,23 +97,29 @@ fun PlayerScreen(
     var retryNonce by remember { mutableStateOf(0) }
     var handledRetryNonce by remember { mutableStateOf(0) }
 
+    val requestKey = when {
+        videoId != null -> "youtube:$videoId"
+        !mediaUrl.isNullOrBlank() -> "remote:$mediaUrl"
+        else -> "local:${localUri ?: ""}"
+    }
+
     fun retryCurrentTask() {
-        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+        val key = requestKey
         val current = PlaybackService.ui.value
         val service = PlaybackService.instance
         val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current)
+            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie)
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, retryNonce) {
-        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, retryNonce) {
+        val key = requestKey
         val retryRequested = retryNonce != handledRetryNonce
         if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
             if (retryRequested) handledRetryNonce = retryNonce
@@ -151,7 +162,7 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork)
+                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
