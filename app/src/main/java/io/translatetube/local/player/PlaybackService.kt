@@ -1068,13 +1068,21 @@ class PlaybackService : MediaSessionService() {
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            // Keep non-YouTube media URLs and any signed query tokens out of Room cache keys.
+            // The same identity is reused for translated text, original ASR cues and ASR checkpoints.
+            val sourceIdentity = stableSourceCacheIdentity(key, videoId)
             val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
                 ?: if (!sourceImportedLines.isNullOrEmpty()) {
                     importedTranslationCacheKey(key, selectedTranslationId, sourceImportedLines)
                 } else {
-                    "$key|zh|$selectedTranslationId"
+                    "$sourceIdentity|zh|$selectedTranslationId"
                 }
-            val sourceSubtitleCacheKey = "$key|source|youtube"
+            // Preserve the established YouTube key so previous transcript caches remain usable.
+            val sourceSubtitleCacheKey = if (videoId != null) {
+                "$key|source|youtube"
+            } else {
+                "$sourceIdentity|source|media-v1"
+            }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
@@ -1125,7 +1133,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             val sourceCached = if (
-                resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
+                resumeState == null && sourceImportedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -1207,16 +1215,19 @@ class PlaybackService : MediaSessionService() {
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
-            if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
+            if (
+                resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
+                (videoId != null || restoredSourceLines != null)
+            ) {
                 if (restoredSourceLines != null) {
                     lines = restoredSourceLines
                     srcLang = restoredSourceLang
                         ?: detectLangFromText(restoredSourceLines.take(12).joinToString(" ") { it.text })
                     android.util.Log.i(
                         "PlaybackService",
-                        "Using cached/validated source subtitles for $videoId (${restoredSourceLines.size} cues)"
+                        "Using cached source subtitles for $sourceIdentity (${restoredSourceLines.size} cues)"
                     )
-                } else {
+                } else if (videoId != null) {
                     fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
                         lines = fetchedLines
                         srcLang = lang
@@ -1276,7 +1287,7 @@ class PlaybackService : MediaSessionService() {
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
-                val storedPartialAsr = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                val storedPartialAsr = if (sourceImportedLines.isNullOrEmpty()) {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
                 if (storedPartialAsr != null) {
@@ -1364,7 +1375,7 @@ class PlaybackService : MediaSessionService() {
                             rows.addAll(chunkRows)
                             processed = chunkEnd
 
-                            if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                            if (sourceImportedLines.isNullOrEmpty()) {
                                 ensureCurrentSession(key)
                                 val rowsJson = org.json.JSONArray()
                                 rows.forEach { (startMs, endMs, text) ->
@@ -1415,12 +1426,9 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
-                // Only disposable local temporary files may be removed before the transcript checkpoint.
-                // YouTube audio remains cached until its ASR subtitles have been saved successfully.
-                if (audioFile is File && videoId == null) {
-                    audioFile.delete()
-                    if (transientAudio == audioFile) transientAudio = null
-                }
+                // Network media extracted for ASR is stored in the bounded retry cache. Keep it
+                // through transcription/translation so retry and speaker analysis do not re-download
+                // the same web audio; cache pruning enforces the disk budget separately.
                 val transcribedLines = asrLines
                     .mapNotNull { (startMs, endMs, text) ->
                         val normalized = text.trim()
@@ -1435,10 +1443,13 @@ class PlaybackService : MediaSessionService() {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     }
                     throw IllegalStateException(
-                        if (videoId != null) {
-                            "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
-                        } else {
-                            "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
+                        when {
+                            videoId != null ->
+                                "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存。"
+                            localUri?.let(::isHttpMediaUri) == true ->
+                                "网页音轨已读取，但没有识别出有效语音字幕。请确认视频有人声、网页音轨可访问，或尝试更清晰的音源。"
+                            else ->
+                                "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
                         }
                     )
                 }
@@ -1449,7 +1460,7 @@ class PlaybackService : MediaSessionService() {
                 // source-audio cache is retained for retries and later speaker diarization, while
                 // this subtitle cache lets translation retry without running ASR again.
                 ensureCurrentSession(key)
-                if (videoId != null && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                if (sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for (line in transcribedLines) {
                         sourceArr.put(
@@ -1470,7 +1481,7 @@ class PlaybackService : MediaSessionService() {
                     db.subtitleCacheDao().delete(partialAsrCacheKey)
                     // Keep the bounded source-audio cache after ASR as well: user-triggered
                     // speaker diarization can reuse it without downloading the same media again.
-                    if (videoId != null && audioFile is File) {
+                    if (audioFile is File) {
                         audioFile.setLastModified(System.currentTimeMillis())
                         pruneAsrAudioCache(asrAudioCacheDirectory(), keep = audioFile)
                     }
@@ -2092,6 +2103,15 @@ class PlaybackService : MediaSessionService() {
         } finally {
             if (qualityRecoveryJob === thisJob) qualityRecoveryJob = null
         }
+    }
+
+    /** Stable cache IDs avoid persisting signed webpage URLs in subtitle cache keys. */
+    private fun stableSourceCacheIdentity(key: String, videoId: String?): String {
+        if (videoId != null) return key
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(key.toByteArray(Charsets.UTF_8))
+        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return "media:$safeId"
     }
 
     private fun asrAudioCacheDirectory(): File =
