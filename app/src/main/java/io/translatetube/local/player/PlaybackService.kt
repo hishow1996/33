@@ -2069,6 +2069,9 @@ class PlaybackService : MediaSessionService() {
         // 配音必须严格使用 lineAt 的时间区间结果；字幕高亮可以回退到最近一行，
         // 但不能把“字幕间隙中的上一行”当成当前配音行，否则会压低间隙里的原声。
         val dubLine = if (d != null) d.lineAt(ms) else -1
+        // AudioTrack startup is asynchronous; publish the newest media playhead even while PCM
+        // is loading so the audio executor can skip elapsed speech instead of starting late.
+        d?.updateTimelinePosition(dubLine, ms)
         var highlightLine = dubLine
         if (highlightLine < 0) {
             val ls = st.lines

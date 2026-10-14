@@ -547,6 +547,9 @@ class DubbingEngine(
         val line = lines.getOrNull(idx) ?: return
         stop()
         activeVolume = volume.coerceIn(0.0f, 1.0f)
+        // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
+        // override it while cache loading / AudioTrack creation is still in progress.
+        activePlayerSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
         _currentLine.value = idx
         val generation = playbackGeneration.incrementAndGet()
         try {
