@@ -109,6 +109,25 @@ internal class HlsAudioSegmentCache(
             onProgress(index + 1, playlist.segments.size)
         }
 
+        var expectedAssemblyBytes = 0L
+        orderedFiles.forEach { part ->
+            val length = part.length()
+            if (!part.isFile || length <= 0L || length > maxSegmentBytes) {
+                throw IOException("HLS 分段缓存缺失或无效：${part.name}")
+            }
+            if (length > maxOutputBytes - expectedAssemblyBytes) {
+                throw IOException("HLS 音轨超过 ${maxOutputBytes / MIB} MB 限制；已下载分段保留，可调整限制后重试")
+            }
+            expectedAssemblyBytes += length
+        }
+        val available = runCatching { parent.usableSpace }.getOrDefault(-1L)
+        if (available > 0L && available < expectedAssemblyBytes + MIN_FREE_STORAGE_BYTES) {
+            throw IOException(
+                "可用存储空间不足以组装 HLS 音轨（还需要约 ${expectedAssemblyBytes / MIB} MB），" +
+                    "已下载分段会保留，清理空间后重试"
+            )
+        }
+
         val temporary = File(parent, destination.name + ".hls.tmp")
         if (temporary.exists() && !temporary.delete()) throw IOException("无法清理旧的 HLS 组装临时文件")
         var written = 0L
@@ -300,6 +319,7 @@ internal class HlsAudioSegmentCache(
         private const val SEGMENT_CACHE_BUDGET_BYTES = 384L * MIB
         private const val MAX_MANIFEST_DEPTH = 5
         private const val IO_BUFFER_BYTES = 64 * 1024
+        private const val MIN_FREE_STORAGE_BYTES = 32L * MIB
         private const val MIB = 1024L * 1024L
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
