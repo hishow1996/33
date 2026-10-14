@@ -1251,18 +1251,41 @@ class PlaybackService : MediaSessionService() {
                 }
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                val pcmFile = withContext(Dispatchers.IO) {
-                    if (audioFile is File) {
-                        AudioExtract.decodeTo16kMonoFile(
-                            this@PlaybackService, null, audioFile,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
+                val pcmFile = try {
+                    withContext(Dispatchers.IO) {
+                        if (audioFile is File) {
+                            AudioExtract.decodeTo16kMonoFile(
+                                this@PlaybackService, null, audioFile,
+                                checkActive = { pcmOwnerJob?.ensureActive() },
+                            )
+                        } else {
+                            AudioExtract.decodeTo16kMonoFile(
+                                this@PlaybackService, audioFile as Uri, null,
+                                checkActive = { pcmOwnerJob?.ensureActive() },
+                            )
+                        }
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    // Cancellation is not evidence of a corrupt download; keep it for resumption.
+                    throw cancelled
+                } catch (error: Exception) {
+                    // A remote download that the platform cannot decode must not stay in the cache
+                    // forever. Otherwise every user retry reuses the same unusable bytes and fails
+                    // before ASR can start. Successful decodes still retain audio for ASR retries.
+                    if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
+                        val removed = audioFile.delete()
+                        File(audioFile.parentFile, audioFile.name + ".part").delete()
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Discarded remote audio cache after decode failure (removed=$removed)",
+                            error,
                         )
-                    } else {
-                        AudioExtract.decodeTo16kMonoFile(
-                            this@PlaybackService, audioFile as Uri, null,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
+                        throw IllegalStateException(
+                            "已清理无法解码的音频缓存；重试时会重新获取音轨。原因：${error.message ?: error.javaClass.simpleName}",
+                            error,
                         )
                     }
+                    throw error
                 }
                 transientPcmFile = pcmFile
                 ensureCurrentSession(key)
