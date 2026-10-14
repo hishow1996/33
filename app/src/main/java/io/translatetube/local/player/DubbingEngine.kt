@@ -493,6 +493,23 @@ class DubbingEngine(
         return inspectCache(cacheFile(idx))
     }
 
+    /**
+     * A cache can become unavailable after attach() has marked its row ready. Requeue it without
+     * starting a second synthesis worker. Joining the worker observed here closes the small race
+     * where it has polled an empty queue but has not yet completed its Job.
+     */
+    private fun queueSynthesisRetry(idx: Int) {
+        if (released || idx !in lines.indices) return
+        synchronized(pending) {
+            if (!pending.contains(idx)) pending.offerFirst(idx)
+        }
+        val workerAtSchedule = synthJob
+        scope.launch {
+            workerAtSchedule?.join()
+            if (!released && pending.isNotEmpty()) startSynthLoop()
+        }
+    }
+
     /** 原子写入缓存，防止进程中断留下半个 PCM 文件并被误判为已就绪。 */
     private fun writeCache(idx: Int, sampleRate: Int, samples: FloatArray) {
         val target = cacheFile(idx)
@@ -536,7 +553,12 @@ class DubbingEngine(
             return memoryAudio
         }
         if (!validCache(f)) {
+            // Cache files live under the app cache directory and can disappear after attach()
+            // validated them. Do not permanently classify a translated cue as silent: enqueue
+            // regeneration and keep the original video audio audible until it is ready again.
+            f.delete()
             readiness.markPrepared(idx, hasAudio = false)
+            queueSynthesisRetry(idx)
             return null
         }
         return try {
@@ -561,9 +583,11 @@ class DubbingEngine(
                 samples to sr
             }
         } catch (e: Exception) {
-            // 损坏缓存不能反复触发加载；将本行标记为无可用配音并回退原声。
+            // Corrupt cache data must not permanently disable dubbing for this translated cue.
+            // Remove it, keep the source audio as a safe fallback, and schedule fresh synthesis.
             f.delete()
             readiness.markPrepared(idx, hasAudio = false)
+            queueSynthesisRetry(idx)
             null
         }
     }
