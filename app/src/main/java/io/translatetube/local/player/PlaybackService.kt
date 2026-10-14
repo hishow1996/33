@@ -2386,8 +2386,13 @@ class PlaybackService : MediaSessionService() {
                 // Fall back only when the response clearly looks like a playlist/non-audio payload;
                 // ordinary timeouts and HTTP failures are propagated without an extra request.
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                if (!looksLikePlaylistFailure(e)) throw e
-                downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
+                when {
+                    looksLikeDashFailure(e) ->
+                        downloadDashAudio(dashCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
+                    looksLikePlaylistFailure(e) ->
+                        downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
+                    else -> throw e
+                }
             }
         }
     }
@@ -2481,6 +2486,17 @@ class PlaybackService : MediaSessionService() {
             type.equals("application/x-mpegURL", ignoreCase = true) ||
             type.equals("application/vnd.apple.mpegurl", ignoreCase = true)
     }.getOrDefault(false)
+
+    private fun looksLikeDashFailure(error: Throwable): Boolean {
+        val message = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase()
+        return message.contains("dash+xml") ||
+            message.contains("mpeg-dash") ||
+            message.contains("dash mpd") ||
+            message.contains("不是可解码音频")
+    }
 
     private fun looksLikePlaylistFailure(error: Throwable): Boolean {
         val message = generateSequence(error) { it.cause }
