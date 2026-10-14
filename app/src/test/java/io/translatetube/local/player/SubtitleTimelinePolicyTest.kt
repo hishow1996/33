@@ -13,14 +13,15 @@ class SubtitleTimelinePolicyTest {
             line(1, 2_500L, 3_500L, "第二句", "Second"),
         )
 
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(lines, -1L))
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(lines, 999L))
-        assertEquals("第一句", SubtitleTimelinePolicy.lineAtPosition(lines, 1_000L)?.zh)
-        assertEquals("第一句", SubtitleTimelinePolicy.lineAtPosition(lines, 1_999L)?.zh)
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(lines, 2_000L))
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(lines, 2_499L))
-        assertEquals("第二句", SubtitleTimelinePolicy.lineAtPosition(lines, 2_500L)?.zh)
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(lines, 3_500L))
+        val timeline = SubtitleTimelinePolicy(lines)
+        assertNull(timeline.lineAtPosition(-1L))
+        assertNull(timeline.lineAtPosition(999L))
+        assertEquals("第一句", timeline.lineAtPosition(1_000L)?.zh)
+        assertEquals("第一句", timeline.lineAtPosition(1_999L)?.zh)
+        assertNull(timeline.lineAtPosition(2_000L))
+        assertNull(timeline.lineAtPosition(2_499L))
+        assertEquals("第二句", timeline.lineAtPosition(2_500L)?.zh)
+        assertNull(timeline.lineAtPosition(3_500L))
     }
 
     @Test
@@ -30,23 +31,22 @@ class SubtitleTimelinePolicyTest {
             line(1, 1_000L, 2_000L, "短句", "Short"),
         )
 
-        assertEquals("Short", SubtitleTimelinePolicy.lineAtPosition(lines, 1_500L)?.zh)
-        assertEquals(
-            "Long",
-            SubtitleTimelinePolicy.lineAtPosition(lines, 2_500L)?.zh,
-        )
-        assertEquals("Long", SubtitleTimelinePolicy.lineAtPosition(lines, 3_999L)?.zh)
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(lines, 4_000L))
+        val timeline = SubtitleTimelinePolicy(lines)
+        assertEquals("Short", timeline.lineAtPosition(1_500L)?.zh)
+        assertEquals("Long", timeline.lineAtPosition(2_500L)?.zh)
+        assertEquals("Long", timeline.lineAtPosition(3_999L)?.zh)
+        assertNull(timeline.lineAtPosition(4_000L))
     }
 
     @Test
     fun emptyLinesAndEndBeforeStartCuesNeverDisplay() {
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(emptyList(), 100L))
+        assertNull(SubtitleTimelinePolicy(emptyList()).lineAtPosition(100L))
         val invalid = listOf(
             line(0, 2_000L, 1_000L, "无效", "Invalid"),
         )
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(invalid, 1_500L))
-        assertNull(SubtitleTimelinePolicy.lineAtPosition(invalid, 2_000L))
+        val timeline = SubtitleTimelinePolicy(invalid)
+        assertNull(timeline.lineAtPosition(1_500L))
+        assertNull(timeline.lineAtPosition(2_000L))
     }
 
     private fun line(index: Int, startMs: Long, endMs: Long, source: String, zh: String) =
