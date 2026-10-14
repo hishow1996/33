@@ -1440,7 +1440,8 @@ class PlaybackService : MediaSessionService() {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
                 if (storedPartialAsr != null) {
-                    val restored = runCatching {
+                    val restored = withContext(Dispatchers.Default) {
+                        runCatching {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
                         if (checkpoint.optInt("version", -1) != 1) {
                             throw IllegalStateException("ASR 检查点版本不兼容")
@@ -1463,15 +1464,14 @@ class PlaybackService : MediaSessionService() {
                         if (savedRows.length() > processed) {
                             throw IllegalStateException("ASR 检查点字幕数量超出已完成分段")
                         }
+                        val completedSegmentKeys = segs.take(processed).toHashSet()
                         (0 until savedRows.length()).map { index ->
                             val row = savedRows.optJSONObject(index)
                                 ?: throw IllegalStateException("ASR 检查点第 ${index + 1} 行格式无效")
                             val rowStart = row.optLong("s", Long.MIN_VALUE)
                             val rowEnd = row.optLong("e", Long.MIN_VALUE)
                             val rowText = row.optString("t").trim()
-                            val belongsToProcessedSegment = segs.take(processed).any { segment ->
-                                segment.first == rowStart && segment.second == rowEnd
-                            }
+                            val belongsToProcessedSegment = (rowStart to rowEnd) in completedSegmentKeys
                             if (rowStart < 0L || rowEnd <= rowStart || rowText.isBlank() ||
                                 !belongsToProcessedSegment
                             ) {
@@ -1481,7 +1481,8 @@ class PlaybackService : MediaSessionService() {
                         }.let { rows ->
                             PartialAsrTranscript(processed, rows, storedPartialAsr.srcLang)
                         }
-                    }.getOrNull()
+                        }.getOrNull()
+                    }
                     if (restored == null) {
                         android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $videoId")
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
@@ -1600,20 +1601,24 @@ class PlaybackService : MediaSessionService() {
                 // this subtitle cache lets translation retry without running ASR again.
                 ensureCurrentSession(key)
                 if (videoId != null && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
-                    val sourceArr = org.json.JSONArray()
-                    for (line in transcribedLines) {
-                        sourceArr.put(
-                            org.json.JSONObject()
-                                .put("s", line.startMs)
-                                .put("e", line.endMs)
-                                .put("t", line.text)
-                        )
+                    val sourceJson = withContext(Dispatchers.Default) {
+                        val sourceArr = org.json.JSONArray()
+                        for (line in transcribedLines) {
+                            sourceArr.put(
+                                org.json.JSONObject()
+                                    .put("s", line.startMs)
+                                    .put("e", line.endMs)
+                                    .put("t", line.text)
+                            )
+                        }
+                        sourceArr.toString()
                     }
+                    ensureCurrentSession(key)
                     db.subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             sourceSubtitleCacheKey,
                             srcLang,
-                            sourceArr.toString(),
+                            sourceJson,
                             System.currentTimeMillis(),
                         )
                     )
@@ -1640,18 +1645,23 @@ class PlaybackService : MediaSessionService() {
 
             if (cached != null) {
                 // 缓存命中：直接还原双语行
-                val arr = org.json.JSONArray(cached.linesJson)
-                val restored = mutableListOf<SubLine>()
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    val originalText = o.getString("t")
-                    val cachedTranslation = o.optString("zh")
-                        .takeIf { it.isNotBlank() }
-                        ?.let { SubtitleParsers.cleanTranslatedText(it) }
-                    restored += SubLine(
-                        i, o.getLong("s"), o.getLong("e"),
-                        originalText, cachedTranslation, o.optInt("sp", -1),
-                    )
+                val restored = withContext(Dispatchers.Default) {
+                    val arr = org.json.JSONArray(cached.linesJson)
+                    buildList(arr.length()) {
+                        for (i in 0 until arr.length()) {
+                            val o = arr.getJSONObject(i)
+                            val originalText = o.getString("t")
+                            val cachedTranslation = o.optString("zh")
+                                .takeIf { it.isNotBlank() }
+                                ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                            add(
+                                SubLine(
+                                    i, o.getLong("s"), o.getLong("e"),
+                                    originalText, cachedTranslation, o.optInt("sp", -1),
+                                )
+                            )
+                        }
+                    }
                 }
                 lines = restored
                 srcLang = cached.srcLang
