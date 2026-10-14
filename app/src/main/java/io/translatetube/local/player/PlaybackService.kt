@@ -1800,7 +1800,8 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
             } else {
-            // A TTS constructor can fail before the subtitle list is published to UI.
+            // Keep source parsing/ASR errors distinct from actual TTS initialization failures.
+            // The dedicated selected-TTS initialization catch already supplies a TTS-specific hint.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
                 runCatching { pm.originalVolume = 1f }
@@ -1810,7 +1811,7 @@ class PlaybackService : MediaSessionService() {
                         progress = "",
                         error = e.message ?: "视频解析或配音初始化失败",
                         muteOriginal = false,
-                        noModelHint = "配音初始化失败，已恢复视频原声。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro 请检查模型文件是否完整。"
+                        noModelHint = null,
                     )
                 }
             } else {
