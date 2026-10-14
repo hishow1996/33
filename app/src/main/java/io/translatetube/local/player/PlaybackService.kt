@@ -142,7 +142,6 @@ class PlaybackService : MediaSessionService() {
     private var videoId: String? = null
     private var localUri: Uri? = null
     @Volatile private var sourceHeaders: Map<String, String> = emptyMap()
-    @Volatile private var sourceMimeType: String? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var qualityRecoveryAttempted = false
@@ -503,7 +502,6 @@ class PlaybackService : MediaSessionService() {
         val safeSourceHeaders = WebMediaCandidatePolicy.safeHeaders(sourceHeaders)
         val safeSourceMimeType = sourceMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
         this.sourceHeaders = safeSourceHeaders
-        this.sourceMimeType = safeSourceMimeType
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -1243,6 +1241,7 @@ class PlaybackService : MediaSessionService() {
                             cacheKey = key,
                             sessionKey = key,
                             headers = sourceHeaders,
+                            mimeType = sourceMimeType,
                         )
                     } else {
                         sourceUri
@@ -2141,6 +2140,7 @@ class PlaybackService : MediaSessionService() {
         cacheKey: String,
         sessionKey: String,
         headers: Map<String, String>,
+        mimeType: String?,
     ): File {
         val mutex = asrAudioDownloadLocks.computeIfAbsent(cacheKey) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
@@ -2161,6 +2161,7 @@ class PlaybackService : MediaSessionService() {
                 sourceKey = cacheKey,
                 sessionKey = sessionKey,
                 headers = headers,
+                mimeType = mimeType,
             ).also { pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it) }
         }
     }
@@ -2273,10 +2274,11 @@ class PlaybackService : MediaSessionService() {
         sourceKey: String,
         sessionKey: String,
         headers: Map<String, String> = emptyMap(),
+        mimeType: String? = null,
     ): File {
         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         val hlsCache = HlsAudioSegmentCache(cacheDir)
-        if (looksLikeDashUrl(url) || sourceMimeType?.contains("dash+xml", ignoreCase = true) == true) {
+        if (looksLikeDashUrl(url) || mimeType?.contains("dash+xml", ignoreCase = true) == true) {
             throw IllegalStateException(
                 "已识别为 MPEG-DASH 网页视频。原生播放器支持播放该格式，但自动音轨分段转写目前尚未接入 DASH 音频清单解析；" +
                     "请优先使用网站提供的字幕，或选择可访问的独立音轨/HLS 点播流。"
