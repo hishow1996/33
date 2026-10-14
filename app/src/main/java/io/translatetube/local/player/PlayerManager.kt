@@ -116,7 +116,9 @@ class PlayerManager(private val ctx: Context) {
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 // Push seek/speed synchronization now rather than waiting for the 100 ms ticker.
-                onTick?.invoke(player.currentPosition)
+                // Use the same guarded path as normal polling so one callback failure cannot escape
+                // through Media3's listener dispatch.
+                notifyTick(player.currentPosition)
             }
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) onEnded?.invoke()
