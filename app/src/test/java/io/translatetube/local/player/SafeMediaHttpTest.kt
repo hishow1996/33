@@ -2,6 +2,15 @@ package io.translatetube.local.player
 
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CancellationException
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -163,6 +172,44 @@ class SafeMediaHttpTest {
 
                 assertEquals("session=private", source.takeRequest().getHeader("Cookie"))
                 assertNull(redirected.takeRequest().getHeader("Cookie"))
+            }
+        }
+    }
+
+    
+    @Test
+    fun cancellingOwnerJobInterruptsABlockedResponseBodyRead() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(
+                MockResponse()
+                    .setBody("audio payload")
+                    .setBodyDelay(10, TimeUnit.SECONDS)
+            )
+            server.start()
+            val ownerJob = SupervisorJob()
+            try {
+                val startedAt = System.nanoTime()
+                val read = async(Dispatchers.IO) {
+                    SafeMediaHttp.execute(
+                        url = server.url("/slow-audio").toString(),
+                        ownerJob = ownerJob,
+                    ).use { response ->
+                        response.body!!.byteStream().use { input -> input.read() }
+                    }
+                }
+
+                // Headers arrive immediately, but the server deliberately stalls the response body.
+                delay(200)
+                ownerJob.cancel()
+                val error = withTimeout(2_000) {
+                    runCatching { read.await() }.exceptionOrNull()
+                }
+
+                assertTrue("A cancelled blocked read should surface cancellation", error is CancellationException)
+                val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L
+                assertTrue("Cancellation should interrupt the socket, not wait for the 10-second body delay", elapsedMs < 2_000L)
+            } finally {
+                ownerJob.cancel()
             }
         }
     }
