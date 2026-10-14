@@ -25,6 +25,13 @@ internal class DubbingReadiness {
         prepared.add(index)
     }
 
+    /** Reopen a cue after a previously valid cache entry disappears or fails validation. */
+    fun markPending(index: Int) {
+        if (index < 0) return
+        prepared.remove(index)
+        silent.remove(index)
+    }
+
     fun isReady(index: Int): Boolean = index >= 0 && index in prepared
 
     fun isPrepared(index: Int): Boolean = isReady(index) && index !in silent
