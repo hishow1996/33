@@ -57,6 +57,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
+        TtsTextPolicy.validate(normalizedText)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
@@ -203,6 +204,7 @@ class SystemTts(context: Context) : TtsEngine {
     @Synchronized
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
         if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
+        TtsTextPolicy.validate(text)
 
         // Create the temporary file before publishing a request. If close() races with this
         // allocation, the closed check below prevents a request from waiting on an unobserved latch.
