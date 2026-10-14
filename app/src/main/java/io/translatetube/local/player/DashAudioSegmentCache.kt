@@ -93,6 +93,16 @@ internal class DashAudioSegmentCache(
         if (manifest.segments.size > DashAudioManifestParser.MAX_SEGMENTS) {
             throw IOException("DASH 分段数量超过限制")
         }
+        // Signed MPDs may rotate segment URLs between retries. Prune orphaned cache entries
+        // within this source folder, but keep byte-range resume sidecars for current URLs.
+        val expectedSegmentNames = buildSet {
+            manifest.initializationUrl?.let { add(segmentFile(sourceFolder, "init", it).name) }
+            manifest.segments.forEach { segment ->
+                add(segmentFile(sourceFolder, "seg-${segment.index}", segment.url).name)
+            }
+        }
+        pruneOrphanedSegmentFiles(sourceFolder, expectedSegmentNames)
+
         val orderedFiles = ArrayList<File>(manifest.segments.size + 1)
         manifest.initializationUrl?.let { url ->
             checkActive()
@@ -290,6 +300,22 @@ internal class DashAudioSegmentCache(
     private fun segmentFile(folder: File, label: String, url: String): File {
         val safeLabel = label.replace(Regex("[^A-Za-z0-9_-]"), "_")
         return File(folder, "${safeLabel}-${sha256(url).take(24)}.seg")
+    }
+
+    private fun pruneOrphanedSegmentFiles(folder: File, expectedNames: Set<String>) {
+        val keep = buildSet {
+            expectedNames.forEach { name ->
+                add(name)
+                add("$name.part")
+                add("$name.part.meta")
+                add("$name.part.meta.tmp")
+            }
+        }
+        folder.listFiles().orEmpty().filter { it.isFile && it.name !in keep }.forEach { file ->
+            if (!file.delete()) {
+                throw IOException("无法清理已过期的 DASH 分段缓存：${file.name}")
+            }
+        }
     }
 
     private fun pruneOldSegmentCaches(root: File, protectedDirectory: File? = null) {
