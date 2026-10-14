@@ -18,7 +18,7 @@ internal object MediaDownloadRetryPolicy {
             ?.groupValues
             ?.getOrNull(1)
             ?.toIntOrNull()
-        if (statusCode in setOf(401, 403, 404, 410)) return true
+        if (statusCode != null && statusCode in setOf(401, 403, 404, 410)) return true
         val normalized = messages.lowercase()
         return messages.contains("过期") ||
             messages.contains("签名无效") ||
