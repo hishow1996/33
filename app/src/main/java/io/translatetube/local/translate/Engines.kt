@@ -26,6 +26,27 @@ private val http: OkHttpClient = OkHttpClient.Builder()
     .readTimeout(120, TimeUnit.SECONDS)
     .build()
 
+/** 批间衔接时携带的上批尾部行数（原文+译文对照）。 */
+private const val CONTEXT_LINES = 3
+
+/**
+ * 组装带上一批上下文的用户提示词。上下文仅供模型保持译名/指代连贯，
+ * 明确要求不要翻译或输出这些行；无上下文时返回 null 由调用方退回纯编号列表。
+ */
+private fun buildContextUserPrompt(
+    context: Pair<List<String>, List<String>>?,
+    numbered: String,
+): String? {
+    val (srcCtx, tgtCtx) = context ?: return null
+    if (srcCtx.isEmpty()) return null
+    val ctxText = srcCtx.mapIndexed { j, l ->
+        val t = tgtCtx.getOrNull(j).orEmpty()
+        "$l => $t"
+    }.joinToString("\n")
+    return "Previous cues for continuity (context only — do not translate or output these):\n" +
+        "$ctxText\n\nNow translate:\n$numbered"
+}
+
 private val JSON = "application/json; charset=utf-8".toMediaType()
 
 /**
@@ -223,36 +244,54 @@ class OpenAiCompatEngine(
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        // 分批：每批 30 行，避免长输出截断/超时
+        // 分批：每批 30 行，避免长输出截断/超时。
+        // 批间携带上一批的原文/译文尾部作为上下文，保证人名术语与指代全篇一致。
         val out = mutableListOf<String>()
+        var context: Pair<List<String>, List<String>>? = null
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
-            out += translateBatch(batch, srcLang, tgtLang)
+            val translated = translateBatch(batch, srcLang, tgtLang, context)
+            out += translated
+            val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
+            context = batch.subList(from, batch.size) to translated.subList(from, translated.size)
             i += 30
         }
         return out
     }
 
-    private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+    private suspend fun translateBatch(
+        lines: List<String>,
+        srcLang: String,
+        tgtLang: String,
+        context: Pair<List<String>, List<String>>? = null,
+    ): List<String> {
         if (apiKey.isBlank()) {
             throw IllegalStateException("API Key 为空，请在 API 管理中配置私有密钥")
         }
         val src = LangMap.display(srcLang)
         val tgt = LangMap.display(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
-        val sys = "You are a professional subtitle translator. Translate each numbered line from $src to $tgt. " +
-            "Reply with the exact same `index|translation` format, one per line, nothing else. " +
-            "Include every input index exactly once; never return progress/status text. If unsure, keep the original line after the separator. " +
-            "Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged."
+        val sys = buildString {
+            append("You are a professional subtitle translator. These numbered lines are consecutive subtitle cues from one video. ")
+            append("Translate each numbered line from $src to $tgt. ")
+            append("Reply with the exact same `index|translation` format, one per line, nothing else. ")
+            append("Include every input index exactly once; never return progress/status text. If unsure, keep the original line after the separator. ")
+            append("Translate as coherent dialogue: keep pronouns, references and tone consistent across lines. ")
+            append("Render the same person, place or recurring term identically every time it appears. ")
+            append("Prefer natural spoken $tgt that fits a subtitle's length; avoid stiff word-for-word translation. ")
+            append("Preserve meaning, tone and speaker style. Keep empty or already-$tgt lines unchanged.")
+        }
+        val user = buildContextUserPrompt(context, numbered)
+            ?: numbered
         val payload = JSONObject()
             .put("model", model)
             .put("temperature", 0.2)
-            .put("max_tokens", 1024)
+            .put("max_tokens", 2048)
             .put(
                 "messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content", sys))
-                    .put(JSONObject().put("role", "user").put("content", numbered))
+                    .put(JSONObject().put("role", "user").put("content", user))
             )
         val body = post(
             endpoint("/chat/completions"),
@@ -297,29 +336,45 @@ class GeminiEngine(
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        // 分批：每批 30 行
+        // 分批：每批 30 行；批间携带上批尾部上下文保证译名一致。
         val out = mutableListOf<String>()
+        var context: Pair<List<String>, List<String>>? = null
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
-            out += translateBatch(batch, srcLang, tgtLang)
+            val translated = translateBatch(batch, srcLang, tgtLang, context)
+            out += translated
+            val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
+            context = batch.subList(from, batch.size) to translated.subList(from, translated.size)
             i += 30
         }
         return out
     }
 
-    private suspend fun translateBatch(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+    private suspend fun translateBatch(
+        lines: List<String>,
+        srcLang: String,
+        tgtLang: String,
+        context: Pair<List<String>, List<String>>? = null,
+    ): List<String> {
         if (normalizedApiKey.isBlank()) {
             throw IllegalStateException("Gemini API Key 为空，请在卡片右侧「•••」填入您的 API Key（可前往 Google AI Studio 免费获取）")
         }
         val src = LangMap.display(srcLang)
         val tgt = LangMap.display(tgtLang)
         val numbered = lines.mapIndexed { i, l -> "$i|$l" }.joinToString("\n")
-        val sys = "Translate each numbered subtitle line from $src to $tgt. " +
-            "Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. Preserve tone."
+        val sys = buildString {
+            append("Translate each numbered subtitle line from $src to $tgt. ")
+            append("Reply with exactly `index|translation` per line, nothing else. Include every input index exactly once; never return progress/status text. ")
+            append("These cues are consecutive dialogue from one video: keep pronouns, references and tone coherent across lines, ")
+            append("and render the same person, place or recurring term identically every time it appears. ")
+            append("Prefer natural spoken $tgt that fits a subtitle's length. Preserve tone.")
+        }
+        val user = buildContextUserPrompt(context, numbered)
+            ?: numbered
         val payload = JSONObject().put(
             "contents",
-            JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$numbered"))))
+            JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$user"))))
         )
         val body = post(
             "$endpointBase/v1beta/models/$model:generateContent",
