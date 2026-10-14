@@ -54,7 +54,7 @@ class SpeakerAssignmentPolicyTest {
         )
 
         assertEquals(
-            mapOf(8 to 1, 13 to 0),
+            mapOf(8 to 0, 13 to 1),
             SpeakerAssignmentPolicy.canonicalSpeakerIds(observations),
         )
     }

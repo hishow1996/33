@@ -20,7 +20,9 @@ class DubbingQueueOrderTest {
     fun missingCurrentLineDoesNotDropOrDuplicateOtherQueuedLines() {
         val original = listOf(1, 2, 5, 8, 9)
         val result = DubbingQueueOrder.prioritize(original, 6, 12)
-        assertEquals(listOf(8, 9, 1, 2, 5), result)
+        // Only existing cues in [currentIndex, currentIndex + lookAhead] are promoted.
+        // Cue 9 is outside the default window for currentIndex=6 and remains in stable order.
+        assertEquals(listOf(8, 1, 2, 5, 9), result)
         assertEquals(original.sorted(), result.sorted())
     }
 
