@@ -22,9 +22,9 @@ internal object DubbingCacheIdentity {
         }
 
         val textHash = fingerprint(text)
-        // Bump v8 when cached PCM content semantics change; include the bounded cue window.
+        // Bump v9 when cached PCM acceptance limits change; include the bounded cue window.
         val engineHash = fingerprint(
-            "$engineKey-v8-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-adaptive"
+            "$engineKey-v9-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-adaptive"
         )
         return "$lineIndex-v$speakerId-e$engineHash-t$textHash.pcm"
     }
