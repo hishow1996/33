@@ -3,6 +3,10 @@ package io.translatetube.local.asr
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,13 +34,19 @@ object SpeakerDiarizer {
         .readTimeout(180, TimeUnit.SECONDS)
         .callTimeout(10, TimeUnit.MINUTES)
         .build()
+    // Model download/extraction writes shared files; serialize it with native diarizer instances.
+    private val diarizeMutex = kotlinx.coroutines.sync.Mutex()
 
     suspend fun diarize(
         context: Context,
         samples: FloatArray,
         onProgress: (String) -> Unit = {},
-    ): List<Segment> = withContext(Dispatchers.IO) {
-        require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
+    ): List<Segment> = diarizeMutex.withLock {
+        val ownerJob = currentCoroutineContext()[Job]
+        val checkActive: () -> Unit = { ownerJob?.ensureActive() }
+        withContext(Dispatchers.IO) {
+            checkActive()
+            require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
         // Check the bundled AAR before downloading ~45 MB of models.
         try {
             Class.forName("com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization", true, javaClass.classLoader)
@@ -52,8 +62,11 @@ object SpeakerDiarizer {
         if (!segmentation.isFile || segmentation.length() < 1_000_000L) {
             val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
             try {
-                download(SEGMENTATION_URL, archive, 32L * 1024 * 1024)
-                extractSegmentation(archive, segmentation)
+                checkActive()
+                download(SEGMENTATION_URL, archive, 32L * 1024 * 1024, checkActive)
+                checkActive()
+                extractSegmentation(archive, segmentation, checkActive)
+                checkActive()
             } finally {
                 archive.delete()
             }
@@ -61,7 +74,9 @@ object SpeakerDiarizer {
         if (!embedding.isFile || embedding.length() < 5_000_000L) {
             val temp = File(dir, "embedding.onnx.download")
             try {
-                download(EMBEDDING_URL, temp, 100L * 1024 * 1024)
+                checkActive()
+                download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive)
+                checkActive()
                 if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
                 if (embedding.exists() && !embedding.delete()) throw java.io.IOException("无法替换旧声纹模型")
                 if (!temp.renameTo(embedding)) throw java.io.IOException("无法安装声纹模型")
@@ -70,6 +85,7 @@ object SpeakerDiarizer {
             }
         }
 
+        checkActive()
         onProgress("识别人物说话片段…")
         try {
             val loader = javaClass.classLoader!!
@@ -98,12 +114,15 @@ object SpeakerDiarizer {
             try {
                 val sampleRate = diarizerClass.getMethod("sampleRate").invoke(instance) as Int
                 require(sampleRate == 16000) { "人物识别模型要求 16kHz 音频，当前为 ${sampleRate}Hz" }
-                // AudioExtract caps analysis at 8 minutes on low-memory devices.
+                checkActive()
+                // AudioExtract caps analysis at 3 minutes on low-memory devices.
                 // Avoid copyOf(): duplicating a multi-minute FloatArray can cause OOM on older phones.
                 val raw = diarizerClass.getMethod("process", FloatArray::class.java).invoke(instance, samples)
+                checkActive()
                 val count = java.lang.reflect.Array.getLength(raw)
                 val out = ArrayList<Segment>(count)
                 for (i in 0 until count) {
+                    checkActive()
                     val item = java.lang.reflect.Array.get(raw, i)
                     val cls = item.javaClass
                     val start = (cls.getMethod("getStart").invoke(item) as Number).toFloat()
@@ -126,9 +145,16 @@ object SpeakerDiarizer {
         } catch (e: LinkageError) {
             throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
         }
+        }
     }
 
-    private fun download(url: String, destination: File, maxBytes: Long) {
+    private fun download(
+        url: String,
+        destination: File,
+        maxBytes: Long,
+        checkActive: () -> Unit,
+    ) {
+        checkActive()
         val temp = File(destination.parentFile, destination.name + ".part")
         temp.delete()
         try {
@@ -142,6 +168,7 @@ object SpeakerDiarizer {
                     FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
+                            checkActive()
                             val n = input.read(buffer)
                             if (n < 0) break
                             total += n
@@ -161,13 +188,19 @@ object SpeakerDiarizer {
         }
     }
 
-    private fun extractSegmentation(archive: File, destination: File) {
+    private fun extractSegmentation(
+        archive: File,
+        destination: File,
+        checkActive: () -> Unit,
+    ) {
+        checkActive()
         val temp = File(destination.parentFile, destination.name + ".part")
         temp.delete()
         var found = false
         try {
             TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(archive))).use { tar ->
                 while (true) {
+                    checkActive()
                     val entry = tar.nextTarEntry ?: break
                     if (entry.isSymbolicLink || entry.isLink) throw java.io.IOException("模型包包含不安全的链接")
                     if (entry.isDirectory || !entry.name.replace("\\", "/").endsWith("/model.onnx") &&
@@ -177,6 +210,7 @@ object SpeakerDiarizer {
                     FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
+                            checkActive()
                             val n = tar.read(buffer)
                             if (n < 0) break
                             total += n
