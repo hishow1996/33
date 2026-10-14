@@ -452,6 +452,7 @@ class PlaybackService : MediaSessionService() {
         manager.getMemoryInfo(memoryInfo)
         return AsrMemoryPolicy.shouldReleaseRecognizer(
             isLowRamDevice = manager.isLowRamDevice,
+            memoryClassMb = manager.memoryClass,
             systemLowMemory = memoryInfo.lowMemory,
             availableMemoryBytes = memoryInfo.availMem,
             totalMemoryBytes = memoryInfo.totalMem,

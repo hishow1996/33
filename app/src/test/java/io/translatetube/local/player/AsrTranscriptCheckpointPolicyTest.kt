@@ -70,12 +70,13 @@ class AsrTranscriptCheckpointPolicyTest {
 
     @Test
     fun lowMemoryPolicyReleasesRecognizerOnlyWhenNeeded() {
-        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(true, false, 2_000_000_000L, 4_000_000_000L))
-        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, true, 2_000_000_000L, 4_000_000_000L))
-        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 300_000_000L, 4_000_000_000L))
-        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 350_000_000L, 8_000_000_000L))
-        assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 1_000_000_000L, 4_000_000_000L))
-        assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, false, 0L, 0L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(true, 512, false, 2_000_000_000L, 4_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, 512, true, 2_000_000_000L, 4_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, 512, false, 300_000_000L, 4_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, 512, false, 350_000_000L, 8_000_000_000L))
+        assertTrue(AsrMemoryPolicy.shouldReleaseRecognizer(false, 256, false, 1_000_000_000L, 4_000_000_000L))
+        assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, 384, false, 1_000_000_000L, 4_000_000_000L))
+        assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, 384, false, 0L, 0L))
     }
 
 }

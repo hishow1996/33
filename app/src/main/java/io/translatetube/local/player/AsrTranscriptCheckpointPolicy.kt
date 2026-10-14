@@ -63,14 +63,16 @@ internal object AsrTranscriptCheckpointPolicy {
 internal object AsrMemoryPolicy {
     private const val ABSOLUTE_AVAILABLE_THRESHOLD_BYTES = 384L * 1024L * 1024L
     private const val AVAILABLE_MEMORY_RATIO_THRESHOLD = 0.10
+    private const val LOW_MEMORY_CLASS_MB = 256
 
     fun shouldReleaseRecognizer(
         isLowRamDevice: Boolean,
+        memoryClassMb: Int,
         systemLowMemory: Boolean,
         availableMemoryBytes: Long,
         totalMemoryBytes: Long,
     ): Boolean {
-        if (isLowRamDevice || systemLowMemory) return true
+        if (isLowRamDevice || systemLowMemory || memoryClassMb in 1..LOW_MEMORY_CLASS_MB) return true
         if (availableMemoryBytes <= 0L || totalMemoryBytes <= 0L) return false
         return availableMemoryBytes < ABSOLUTE_AVAILABLE_THRESHOLD_BYTES ||
             availableMemoryBytes.toDouble() / totalMemoryBytes.toDouble() < AVAILABLE_MEMORY_RATIO_THRESHOLD
