@@ -1453,9 +1453,9 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
-                // Network media extracted for ASR is stored in the bounded retry cache. Keep it
-                // through transcription/translation so retry and speaker analysis do not re-download
-                // the same web audio; cache pruning enforces the disk budget separately.
+                // Audio files downloaded for ASR stay in the bounded retry cache for reuse.
+                // Progressive webpage video is streamed directly instead; its timestamped source
+                // transcript is persisted below so translation retries do not repeat Whisper work.
                 val transcribedLines = asrLines
                     .mapNotNull { (startMs, endMs, text) ->
                         val normalized = text.trim()
