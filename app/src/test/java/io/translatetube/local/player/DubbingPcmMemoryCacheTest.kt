@@ -25,7 +25,7 @@ class DubbingPcmMemoryCacheTest {
 
     @Test
     fun touchingAnEntryUpdatesLruOrder() {
-        val cache = DubbingPcmMemoryCache(maxBytes = 24L, maxEntries = 8)
+        val cache = DubbingPcmMemoryCache(maxBytes = 40L, maxEntries = 8)
         val first = FloatArray(4) { 0.1f } to 24_000
         val second = FloatArray(4) { 0.2f } to 24_000
 
