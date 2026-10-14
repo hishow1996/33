@@ -54,6 +54,11 @@ class AsrAudioCacheIdentityTest {
             AsrAudioCacheIdentity.hash(first),
             AsrAudioCacheIdentity.hash(second),
         )
+        // A format parameter identifies the representation, not the underlying video.
+        assertNotEquals(
+            AsrAudioCacheIdentity.hash("webmedia:https://cdn.example.test/play?format=m3u8&token=media-one"),
+            AsrAudioCacheIdentity.hash("webmedia:https://cdn.example.test/play?format=m3u8&token=media-two"),
+        )
         assertEquals(
             "webmedia:https://cdn.example.test/video/seg-1.m4s",
             AsrAudioCacheIdentity.canonicalSource(
