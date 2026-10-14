@@ -50,6 +50,36 @@ class SafeMediaHttpTest {
     }
 
     @Test
+    fun detectsTextErrorDocumentsMislabeledAsBinaryMedia() {
+        assertTrue(
+            isLikelyTextErrorPayload(
+                "<!doctype html><html><body>Sign in</body></html>".toByteArray(Charsets.UTF_8),
+                51,
+            )
+        )
+        assertTrue(
+            isLikelyTextErrorPayload(
+                """{"error":"signature expired"}""".toByteArray(Charsets.UTF_8),
+                29,
+            )
+        )
+        assertTrue(
+            isLikelyTextErrorPayload(
+                "#EXTM3U\n#EXT-X-VERSION:3".toByteArray(Charsets.UTF_8),
+                24,
+            )
+        )
+        assertEquals(
+            false,
+            isLikelyTextErrorPayload(byteArrayOf(0, 0, 0, 24, 'f'.code.toByte(), 't'.code.toByte(), 'y'.code.toByte(), 'p'.code.toByte()), 8),
+        )
+        assertEquals(
+            false,
+            isLikelyTextErrorPayload(byteArrayOf(0x47, 0x40, 0x11, 0x10, 0x00), 5),
+        )
+    }
+
+    @Test
     fun blocksHttpsDowngradeButAllowsSameSecurityLevelRedirects() {
         assertEquals(false, isAllowedRedirect("https", "http"))
         assertEquals(true, isAllowedRedirect("https", "https"))
