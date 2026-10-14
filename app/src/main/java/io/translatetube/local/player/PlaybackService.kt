@@ -760,7 +760,13 @@ class PlaybackService : MediaSessionService() {
                 val srcLang = detectLangFromText(parsedLines.take(12).joinToString(" ") { it.text })
                 val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
                     .getLong("active_api_id", -1L)
-                val importedCacheKey = importedTranslationCacheKey(sessionKey, activeTranslationId, parsedLines)
+                val translationProfileIdentity = translationEngineCacheIdentity(activeTranslationId)
+                val importedCacheKey = importedTranslationCacheKey(
+                    sessionKey,
+                    activeTranslationId,
+                    parsedLines,
+                    translationProfileIdentity,
+                )
                 ensureCurrentSession(sessionKey)
                 // Preserve the imported source identity if this translation is later retried.
                 updateUiForSession(sessionKey) { state ->
@@ -870,9 +876,36 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Imported subtitles get their own translation cache key so they cannot overwrite YouTube source captions. */
-    private fun importedTranslationCacheKey(key: String, activeId: Long, lines: List<SubLine>): String =
-        TranslationCacheIdentity.importedKey(key, activeId, lines)
+    /** Imported subtitles get their own cache key, separated by both source and engine profile. */
+    private fun importedTranslationCacheKey(
+        key: String,
+        activeId: Long,
+        lines: List<SubLine>,
+        profileIdentity: String = "",
+    ): String = TranslationCacheIdentity.importedKey(key, activeId, lines, profileIdentity)
+
+    /**
+     * Identify the engine configuration that would actually be selected by translateLines().
+     * API keys are included only as input to a one-way fingerprint; raw values never enter cache keys.
+     */
+    private suspend fun translationEngineCacheIdentity(activeId: Long): String {
+        val enabledProfile = AppDatabase.get(this).apiProfileDao().enabled()
+            .firstOrNull { it.id == activeId }
+        return when {
+            activeId == -1L || activeId == -2L -> "google-hybrid-v1"
+            activeId == EngineFactory.ID_FREE_GEMINI -> "builtin-gemini-v1"
+            activeId == EngineFactory.ID_FREE_DEEPSEEK -> "builtin-deepseek-v1"
+            enabledProfile != null -> listOf(
+                "api-profile-v1",
+                enabledProfile.type,
+                enabledProfile.baseUrl.trim(),
+                enabledProfile.model.trim(),
+                enabledProfile.region.trim(),
+                enabledProfile.apiKey,
+            ).joinToString("|")
+            else -> "mlkit-offline-v1"
+        }
+    }
 
     /** Compare source text and timing before trusting a legacy video-level translation cache. */
     private fun translationCacheMatchesSource(linesJson: String, sourceLines: List<SubLine>): Boolean = try {
@@ -1019,12 +1052,21 @@ class PlaybackService : MediaSessionService() {
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            val translationProfileIdentity = translationEngineCacheIdentity(selectedTranslationId)
             val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
                 ?: if (!sourceImportedLines.isNullOrEmpty()) {
-                    importedTranslationCacheKey(key, selectedTranslationId, sourceImportedLines)
+                    importedTranslationCacheKey(
+                        key,
+                        selectedTranslationId,
+                        sourceImportedLines,
+                        translationProfileIdentity,
+                    )
                 } else {
-                    "$key|zh|$selectedTranslationId"
+                    TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
                 }
+            updateUiForSession(key) { state ->
+                if (state.key == key) state.copy(translationCacheKey = translationCacheKey) else state
+            }
             val sourceSubtitleCacheKey = "$key|source|youtube"
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
@@ -1818,7 +1860,9 @@ class PlaybackService : MediaSessionService() {
 
         val src = if (srcLang == "auto") "" else srcLang
         val batchSize = 10
-        val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
+        val profileIdentity = translationEngineCacheIdentity(activeId)
+        val translationCacheKey = cacheKeyOverride
+            ?: TranslationCacheIdentity.videoKey(key, activeId, profileIdentity)
         for (batchIndices in pendingIndices.chunked(batchSize)) {
             // A model may return fewer rows than requested, or put UI/status text in a translation
             // slot. Retry only missing rows once; never let a successful pipeline retain blanks.

@@ -13,11 +13,14 @@ class TranslationCacheIdentityTest {
     )
 
     @Test
-    fun identicalImportedSubtitleContentProducesStableCacheKey() {
-        val first = TranslationCacheIdentity.importedKey("video-key", 42L, source)
-        val second = TranslationCacheIdentity.importedKey("video-key", 42L, source.map { it.copy() })
+    fun identicalImportedSubtitleContentAndProfileProduceStableCacheKey() {
+        val first = TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|https://api.test|model-a")
+        val second = TranslationCacheIdentity.importedKey(
+            "video-key", 42L, source.map { it.copy() }, "OPENAI|https://api.test|model-a"
+        )
         assertEquals(first, second)
-        assertTrue(first.startsWith("video-key|zh|42|imported-"))
+        assertTrue(first.startsWith("video-key|zh|42|profile-"))
+        assertTrue(first.contains("|imported-"))
     }
 
     @Test
@@ -28,15 +31,34 @@ class TranslationCacheIdentityTest {
         val changedTiming = source.mapIndexed { i, line ->
             if (i == 0) line.copy(endMs = 1_250L) else line
         }
-        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source)
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedText))
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedTiming))
+        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source, "profile")
+        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedText, "profile"))
+        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 42L, changedTiming, "profile"))
     }
 
     @Test
     fun translationProfileAndVideoKeyArePartOfIdentity() {
-        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source)
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 43L, source))
-        assertNotEquals(key, TranslationCacheIdentity.importedKey("another-video", 42L, source))
+        val key = TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|model-a")
+        assertNotEquals(
+            key,
+            TranslationCacheIdentity.importedKey("video-key", 42L, source, "OPENAI|model-b"),
+        )
+        assertNotEquals(
+            key,
+            TranslationCacheIdentity.importedKey("video-key", 43L, source, "OPENAI|model-a"),
+        )
+        assertNotEquals(
+            key,
+            TranslationCacheIdentity.importedKey("another-video", 42L, source, "OPENAI|model-a"),
+        )
+    }
+
+    @Test
+    fun profileTokenDoesNotExposeRawProfileConfiguration() {
+        val secret = "ciphertext-api-key-and-private-endpoint"
+        val token = TranslationCacheIdentity.profileToken(8L, secret)
+        assertTrue(token.isNotBlank())
+        assertTrue(!token.contains(secret))
+        assertNotEquals(token, TranslationCacheIdentity.profileToken(8L, "another-config"))
     }
 }
