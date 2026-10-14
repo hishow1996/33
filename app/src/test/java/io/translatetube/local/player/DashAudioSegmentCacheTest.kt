@@ -47,6 +47,43 @@ class DashAudioSegmentCacheTest {
     }
 
     @Test
+    fun resolvesRelativeSegmentsAgainstFinalMpDUrlAfterRedirect() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "dash-redirect-base-test")
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(302)
+                    .setHeader("Location", "/actual/manifest.mpd"),
+            )
+            server.enqueue(manifestResponse(manifestXml()))
+            server.enqueue(segmentResponse("INIT"))
+            server.enqueue(segmentResponse("SEGMENT-ONE"))
+            server.enqueue(segmentResponse("SEGMENT-TWO"))
+
+            val destination = File(directory, "redirected-audio.bin")
+            val result = DashAudioSegmentCache(directory, maxOutputBytes = 100L, maxSegmentBytes = 100L)
+                .download(
+                    server.url("/redirect/manifest.mpd").toString(),
+                    destination,
+                    "redirected-dash-source",
+                )
+
+            assertEquals("INITSEGMENT-ONESEGMENT-TWO", result.readText())
+            assertEquals(5, server.requestCount)
+            assertEquals("/redirect/manifest.mpd", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/manifest.mpd", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/init.mp4", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/seg-1.m4s", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/seg-2.m4s", server.takeRequest().requestUrl?.encodedPath)
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun reusesDownloadedSegmentsAfterAssemblyLimitFailure() {
         val server = MockWebServer()
         val directory = createTempDir(prefix = "dash-audio-retry-test")
