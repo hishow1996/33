@@ -125,7 +125,7 @@ internal class DashAudioSegmentCache(
             expectedBytes += file.length()
         }
         val available = runCatching { parent.usableSpace }.getOrDefault(-1L)
-        if (available > 0L && available < expectedBytes + MIN_FREE_STORAGE_BYTES) {
+        if (available >= 0L && available < expectedBytes + MIN_FREE_STORAGE_BYTES) {
             throw IOException(
                 "可用存储空间不足以组装 DASH 音轨（需要约 ${expectedBytes / MIB} MB），" +
                     "已下载分段会保留，清理空间后重试"
