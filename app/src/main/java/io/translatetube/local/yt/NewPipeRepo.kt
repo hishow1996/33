@@ -78,10 +78,22 @@ object NewPipeRepo {
             initOnce()
             // Resolve outside infoLock so invalidation stays responsive. Only the newest request
             // for the current invalidation generation may publish into the one-video cache.
-            val fetched = StreamInfo.getInfo(
-                ServiceList.YouTube,
-                "https://www.youtube.com/watch?v=$videoId",
-            )
+            val videoUrl = "https://www.youtube.com/watch?v=$videoId"
+            val fetched = try {
+                StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!StreamInfoCachePolicy.isRetryableFailure(e)) throw e
+                android.util.Log.w(
+                    "NewPipeRepo",
+                    "Transient YouTube metadata request failed; retrying once for video=$videoId",
+                    e,
+                )
+                kotlinx.coroutines.delay(400L)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+            }
             synchronized(infoLock) {
                 if (StreamInfoCachePolicy.mayPublish(
                         requestGeneration = request.second,

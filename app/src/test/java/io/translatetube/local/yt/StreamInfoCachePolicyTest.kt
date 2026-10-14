@@ -27,4 +27,16 @@ class StreamInfoCachePolicyTest {
         assertFalse(StreamInfoCachePolicy.mayPublish(6, 7, 2, 2))
         assertFalse(StreamInfoCachePolicy.mayPublish(7, 7, 1, 2))
     }
+    @Test
+    fun retriesOnlyTransportErrorsAndWrappedTransportCauses() {
+        assertTrue(StreamInfoCachePolicy.isRetryableFailure(java.io.IOException("timeout")))
+        assertTrue(
+            StreamInfoCachePolicy.isRetryableFailure(
+                IllegalStateException("extractor failed", java.net.SocketTimeoutException("read timeout"))
+            )
+        )
+        assertFalse(StreamInfoCachePolicy.isRetryableFailure(IllegalArgumentException("invalid video URL")))
+        assertFalse(StreamInfoCachePolicy.isRetryableFailure(java.util.concurrent.CancellationException("cancelled")))
+    }
+
 }
