@@ -475,17 +475,33 @@ internal object HlsAudioDownloader {
                     val installing = File(destination.parentFile, destination.name + ".installing")
                     try {
                         installing.delete()
-                        part.copyTo(installing, overwrite = true)
-                        if (installing.length() != part.length()) {
+                        // File.copyTo cannot observe coroutine cancellation while copying a large
+                        // segment. Copy in bounded blocks and leave any previous destination intact
+                        // if the temporary installation fails.
+                        java.io.FileInputStream(part).use { input ->
+                            FileOutputStream(installing, false).use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    ownerJob?.ensureActive()
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    output.write(buffer, 0, count)
+                                }
+                                output.fd.sync()
+                            }
+                        }
+                        if (installing.length() != part.length() ||
+                            !AsrAudioCachePolicy.isCompleteDownload(-1L, installing.length())
+                        ) {
                             throw IllegalStateException("HLS 片段暂存文件大小不匹配。")
                         }
+                        ownerJob?.ensureActive()
                         if (!installing.renameTo(destination)) {
-                            throw IllegalStateException("无法原子保存 HLS 音轨片段。")
+                            throw IllegalStateException("无法原子保存 HLS 音轨片段；旧文件已保留。")
                         }
                         part.delete()
                     } catch (error: Exception) {
                         installing.delete()
-                        destination.delete()
                         throw error
                     }
                 }
