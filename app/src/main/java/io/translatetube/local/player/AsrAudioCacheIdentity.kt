@@ -15,17 +15,31 @@ import java.util.Locale
  */
 internal object AsrAudioCacheIdentity {
     private val sourcePrefixes = setOf("webmedia", "webpage", "local")
-    private val volatileQueryParameters = setOf(
-        "token", "access_token", "access-token", "auth", "auth_token", "x-auth-token",
-        "authorization", "auth_key", "session", "sessionid", "session_token", "jwt",
+    // Explicit signatures and expiry fields are safe to ignore when identifying the resource.
+    private val signedQueryParameters = setOf(
         "signature", "sig", "lsig", "policy", "key-pair-id",
         "expires", "expiry", "expire", "exp", "expires_at", "hdnea", "hdnts", "__gda__",
-        "__token", "hmac", "nonce", "si",
+        "hmac", "si",
         "x-amz-signature", "x-amz-credential", "x-amz-date", "x-amz-expires",
         "x-amz-security-token", "x-goog-signature", "x-goog-credential",
         "x-goog-date", "x-goog-expires", "x-goog-security-token",
         "se", "sp", "sv", "st", "sr", "spr", "sip", "skoid", "sktid",
         "skt", "ske", "sks", "skv",
+    )
+    // Generic names like "token" can also be actual resource IDs on opaque endpoints. Remove
+    // them only when the URL path or another query parameter independently identifies the media.
+    private val genericCredentialParameters = setOf(
+        "token", "access_token", "access-token", "auth", "auth_token", "x-auth-token",
+        "authorization", "auth_key", "session", "sessionid", "session_token", "jwt", "__token",
+        "nonce",
+    )
+    private val stableContentSelectors = setOf(
+        "id", "videoid", "v", "file", "asset", "media", "stream", "contentid",
+        "manifest", "format", "type", "lang", "language", "quality", "itag",
+    )
+    private val mediaFileExtensions = setOf(
+        "m3u8", "mpd", "ts", "m4s", "mp4", "m4a", "m4v", "mp3", "aac", "webm",
+        "mov", "mkv", "ogg", "oga", "opus", "flac", "wav", "vtt", "srt",
     )
 
     fun canonicalSource(value: String): String {
@@ -49,15 +63,23 @@ internal object AsrAudioCacheIdentity {
         }
         val authority = if (port < 0) host else "$host:$port"
         val rawPath = uri.rawPath.orEmpty().ifBlank { "/" }
-        val retainedQuery = uri.rawQuery.orEmpty()
-            .split('&')
-            .filter { it.isNotBlank() }
+        val queryItems = uri.rawQuery.orEmpty().split('&').filter { it.isNotBlank() }
+        fun decodedName(item: String): String {
+            val rawName = item.substringBefore('=')
+            return runCatching {
+                URLDecoder.decode(rawName, StandardCharsets.UTF_8.name())
+            }.getOrDefault(rawName).lowercase(Locale.ROOT)
+        }
+        val queryNames = queryItems.map(::decodedName).toSet()
+        val extension = rawPath.substringAfterLast('/', "").substringAfterLast('.', "")
+            .lowercase(Locale.ROOT)
+        val hasStableMediaIdentity = extension in mediaFileExtensions ||
+            queryNames.any { it in stableContentSelectors }
+        val retainedQuery = queryItems
             .filterNot { item ->
-                val rawName = item.substringBefore('=')
-                val decodedName = runCatching {
-                    URLDecoder.decode(rawName, StandardCharsets.UTF_8.name())
-                }.getOrDefault(rawName).lowercase(Locale.ROOT)
-                decodedName in volatileQueryParameters
+                val name = decodedName(item)
+                name in signedQueryParameters ||
+                    (hasStableMediaIdentity && name in genericCredentialParameters)
             }
             .sorted()
         val query = retainedQuery.takeIf { it.isNotEmpty() }
