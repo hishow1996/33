@@ -52,4 +52,14 @@ class AsrTranscriptCheckpointPolicyTest {
         assertFalse(original == AsrTranscriptCheckpointPolicy.signature(changedTail, segments))
     }
 
+    @Test
+    fun signatureChangesWhenOnlyANonAnchorPcmSampleChanges() {
+        val pcm = FloatArray(8_194) { index -> ((index % 41) - 20) / 41f }
+        val segments = listOf(0L to 1_200L, 1_600L to 2_900L)
+        val original = AsrTranscriptCheckpointPolicy.signature(pcm, segments)
+        val changed = pcm.copyOf().also { it[4_103] = -0.9375f }
+
+        assertFalse(original == AsrTranscriptCheckpointPolicy.signature(changed, segments))
+    }
+
 }

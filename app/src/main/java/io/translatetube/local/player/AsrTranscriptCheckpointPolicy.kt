@@ -8,21 +8,19 @@ internal object AsrTranscriptCheckpointPolicy {
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update("${pcmSamples.size}|${segments.size}|".toByteArray(Charsets.UTF_8))
 
-        // Sparse, evenly spaced PCM anchors distinguish same-length tracks without hashing every
-        // sample on older devices. The VAD boundaries below add another inexpensive identity check.
-        val stride = maxOf(1, pcmSamples.size / 1_024)
-        val sampleBuffer = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        for (index in pcmSamples.indices step stride) {
-            sampleBuffer.clear()
-            sampleBuffer.putInt(pcmSamples[index].toRawBits())
-            digest.update(sampleBuffer.array())
+        // Checkpoints can skip an expensive native ASR pass only when the decoded PCM matches.
+        // Hash all samples in bounded blocks: sparse anchors can collide when audio changes between
+        // sampled positions, reusing text/timestamps from a different same-length recording.
+        val sampleBuffer = java.nio.ByteBuffer.allocate(16 * 1024).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (sample in pcmSamples) {
+            if (sampleBuffer.remaining() < Int.SIZE_BYTES) {
+                digest.update(sampleBuffer.array(), 0, sampleBuffer.position())
+                sampleBuffer.clear()
+            }
+            sampleBuffer.putInt(sample.toRawBits())
         }
-        // The stride may not land on the final frame. Include it explicitly so a changed tail
-        // cannot incorrectly reuse ASR progress from a different same-length audio stream.
-        if (pcmSamples.isNotEmpty() && pcmSamples.lastIndex % stride != 0) {
-            sampleBuffer.clear()
-            sampleBuffer.putInt(pcmSamples.last().toRawBits())
-            digest.update(sampleBuffer.array())
+        if (sampleBuffer.position() > 0) {
+            digest.update(sampleBuffer.array(), 0, sampleBuffer.position())
         }
         segments.forEach { (start, end) ->
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
