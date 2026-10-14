@@ -34,8 +34,10 @@ internal object AsrAudioCacheIdentity {
         "nonce",
     )
     private val stableContentSelectors = setOf(
-        "id", "videoid", "v", "file", "asset", "media", "stream", "contentid",
-        "manifest", "format", "type", "lang", "language", "quality", "itag",
+        "id", "videoid", "video_id", "video", "v", "file", "asset", "assetid",
+        "mediaid", "media_id", "contentid", "content_id", "manifestid",
+        "manifest", "streamid", "stream_id", "uuid", "objectid", "object_id",
+        "resource_id", "documentid",
     )
     private val mediaFileExtensions = setOf(
         "m3u8", "mpd", "ts", "m4s", "mp4", "m4a", "m4v", "mp3", "aac", "webm",
