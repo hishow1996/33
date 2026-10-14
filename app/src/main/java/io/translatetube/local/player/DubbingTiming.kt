@@ -19,7 +19,7 @@ internal data class DubbingPlaybackPlan(
 )
 
 internal object DubbingTiming {
-    const val MAX_SYNC_RATE = 2.0f
+    const val MAX_SYNC_RATE = 3.0f
     private const val MAX_OUTPUT_RATE = 4.0f
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L
@@ -51,7 +51,11 @@ internal object DubbingTiming {
         }
 
         val audioDurationMs = sampleCount.toDouble() * 1000.0 / sampleRate
-        val safeMaxRate = maxSyncRate.takeIf { it.isFinite() && it >= 1.0f } ?: MAX_SYNC_RATE
+        val requestedMaxRate = maxSyncRate.takeIf { it.isFinite() && it >= 1.0f } ?: MAX_SYNC_RATE
+        // Keep the dubbing track within the AudioTrack output-rate ceiling after applying the
+        // video's own speed. At 1x playback we can compress up to 3x; at 2x playback the
+        // available sync compression drops to 2x so the combined rate never exceeds 4x.
+        val safeMaxRate = min(requestedMaxRate, MAX_OUTPUT_RATE / safePlayerSpeed)
         val syncRate = maxOf(1.0, audioDurationMs / lineDurationMs.toDouble())
             .coerceAtMost(safeMaxRate.toDouble()).toFloat()
 
