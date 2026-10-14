@@ -20,11 +20,22 @@ internal object AsrTranscriptCheckpointPolicy {
         segments.forEach { (start, end) ->
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }
+        checkActive()
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
 
-    fun signature(pcmFile: io.translatetube.local.asr.AudioExtract.PcmFile, segments: List<Pair<Long, Long>>): String {
+    fun signature(
+        pcmFile: io.translatetube.local.asr.AudioExtract.PcmFile,
+        segments: List<Pair<Long, Long>>,
+    ): String = signature(pcmFile, segments) {}
+
+    internal fun signature(
+        pcmFile: io.translatetube.local.asr.AudioExtract.PcmFile,
+        segments: List<Pair<Long, Long>>,
+        checkActive: () -> Unit,
+    ): String {
+        checkActive()
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update("${pcmFile.sampleCount}|${segments.size}|".toByteArray(Charsets.UTF_8))
         // Use the same sparse, evenly spaced normalized PCM anchors as the in-memory signature.
@@ -32,7 +43,9 @@ internal object AsrTranscriptCheckpointPolicy {
         val sampleBuffer = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         java.io.RandomAccessFile(pcmFile.file, "r").use { input ->
             var index = 0L
+            var sampledAnchors = 0
             while (index < pcmFile.sampleCount) {
+                if ((sampledAnchors and 0x3f) == 0) checkActive()
                 input.seek(index * 2L)
                 val raw = input.readUnsignedByte() or (input.readUnsignedByte() shl 8)
                 val normalizedSample = raw.toShort() / 32768f
@@ -40,9 +53,12 @@ internal object AsrTranscriptCheckpointPolicy {
                 sampleBuffer.putInt(normalizedSample.toRawBits())
                 digest.update(sampleBuffer.array())
                 index += stride
+                sampledAnchors++
             }
         }
-        segments.forEach { (start, end) ->
+        checkActive()
+        segments.forEachIndexed { segmentIndex, (start, end) ->
+            if ((segmentIndex and 0x3ff) == 0) checkActive()
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
