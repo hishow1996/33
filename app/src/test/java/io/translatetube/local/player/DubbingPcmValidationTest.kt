@@ -28,6 +28,7 @@ class DubbingPcmValidationTest {
 
     @Test
     fun rejectsUnboundedPcmBeforeScanningEverySample() {
+        assertTrue(DubbingPcmValidation.MAX_SAMPLE_COUNT == 8_000_000)
         assertFalse(DubbingPcmValidation.isSampleCountAllowed(0))
         assertTrue(DubbingPcmValidation.isSampleCountAllowed(1))
         assertTrue(DubbingPcmValidation.isSampleCountAllowed(DubbingPcmValidation.MAX_SAMPLE_COUNT))
