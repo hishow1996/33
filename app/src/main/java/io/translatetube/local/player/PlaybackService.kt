@@ -2193,20 +2193,41 @@ class PlaybackService : MediaSessionService() {
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
             val destination = asrAudioCacheFile(videoId)
+            suspend fun downloadStream(url: String): File = try {
+                downloadAudio(url, destination, sessionKey)
+            } catch (manifest: HlsManifestPayloadException) {
+                HlsAudioDownloader.download(url, destination) { detail ->
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                        } else state
+                    }
+                }
+            }
+
             // Lease the destination before publishing a completed cache file, preventing a
             // concurrent cache prune from deleting it before the caller starts decoding.
             activeAsrAudioPaths.acquire(destination.absolutePath)
             var leaseTransferred = false
             try {
                 val downloaded = try {
-                    downloadAudio(stream.content, destination, sessionKey)
-                } catch (manifest: HlsManifestPayloadException) {
-                    HlsAudioDownloader.download(stream.content, destination) { detail ->
-                        updateUiForSession(sessionKey) { state ->
-                            if (state.key == sessionKey) {
-                                state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
-                            } else state
-                        }
+                    downloadStream(stream.content)
+                } catch (firstError: Exception) {
+                    if (!MediaDownloadRetryPolicy.shouldRefreshSignedStream(firstError)) throw firstError
+                    // StreamInfo caches expiring signed URLs. Invalidate and extract once before
+                    // asking the user to retry the same stale URL again.
+                    NewPipeRepo.invalidate(videoId)
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "音频链接已失效，正在刷新视频流…")
+                        } else state
+                    }
+                    val refreshed = NewPipeRepo.audioForAsr(videoId) ?: throw firstError
+                    try {
+                        downloadStream(refreshed.content)
+                    } catch (refreshError: Exception) {
+                        refreshError.addSuppressed(firstError)
+                        throw refreshError
                     }
                 }
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = downloaded)

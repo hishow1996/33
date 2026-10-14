@@ -18,6 +18,16 @@ class MediaDownloadRetryPolicyTest {
     }
 
     @Test
+    fun refreshesStaleSignedStreamsButNotTransientServerFailures() {
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("音频下载失败 403")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("HLS 清单读取失败（HTTP 410）。")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("链接可能过期或需要登录")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("音频下载失败 503")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("本地音频格式不受支持")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(CancellationException("task cancelled")))
+    }
+
+    @Test
     fun doesNotRetryPermanentErrorsOrCancellation() {
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 403")))
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 404")))

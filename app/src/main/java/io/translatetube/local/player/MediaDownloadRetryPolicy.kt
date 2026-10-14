@@ -7,6 +7,26 @@ import kotlinx.coroutines.CancellationException
 internal object MediaDownloadRetryPolicy {
     private val retryableHttpCodes = setOf(408, 425, 429, 500, 502, 503, 504)
 
+    /** Refresh a cached YouTube StreamInfo once when its signed media URL is stale. */
+    fun shouldRefreshSignedStream(error: Throwable): Boolean {
+        if (error is CancellationException) return false
+        val messages = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+        val statusCode = Regex("(?:HTTP\\s*|失败\\s*)[（(]?(\\d{3})")
+            .find(messages)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        if (statusCode in setOf(401, 403, 404, 410)) return true
+        val normalized = messages.lowercase()
+        return messages.contains("过期") ||
+            messages.contains("签名无效") ||
+            normalized.contains("signature has expired") ||
+            normalized.contains("request has expired") ||
+            normalized.contains("invalid signature")
+    }
+
     fun shouldRetry(error: Throwable): Boolean {
         if (error is CancellationException) return false
         if (error is IOException) return true
