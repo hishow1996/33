@@ -45,6 +45,44 @@ class HlsPlaylistParserTest {
     }
 
     @Test
+    fun selectsAudioRenditionFromTheChosenVariantGroupNotAnotherGroupsDefault() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="japanese",NAME="Japanese",LANGUAGE="ja",DEFAULT=YES,AUTOSELECT=YES,URI="audio/ja.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="english",NAME="English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,URI="audio/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=640000,CODECS="avc1.42e01e,mp4a.40.2",AUDIO="english"
+            video/low.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/audio/en.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
+    fun keepsVariantWhenItsPreferredAudioIsInBandAndOtherGroupsHaveExternalUris() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="embedded",NAME="Main",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="external",NAME="Commentary",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="audio/commentary.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=480000,CODECS="avc1.42e01e,mp4a.40.2",AUDIO="embedded"
+            video/main.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/video/main.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
     fun parsesVodSegmentsAndFmp4InitMapWithRelativeUris() {
         val playlist = """
             #EXTM3U
