@@ -33,6 +33,7 @@ internal object HlsPlaylistParser {
         val bandwidth: Long,
         val audioOnly: Boolean,
         val codecs: String?,
+        val audioGroupId: String? = null,
     )
 
     /** Returns the most appropriate next playlist from a master playlist, or null for media playlists. */
@@ -76,30 +77,56 @@ internal object HlsPlaylistParser {
                             ?: attrs["BANDWIDTH"]?.toLongOrNull() ?: Long.MAX_VALUE,
                         audioOnly = isClearlyAudioOnly(codecs),
                         codecs = codecs,
+                        audioGroupId = attrs["AUDIO"]?.takeIf { it.isNotBlank() },
                     )
                     pendingAttributes = null
                 }
             }
         }
 
-        val chosenAudio = audioRenditions.sortedWith(
-            compareByDescending<Pair<Map<String, String>, String>> {
-                it.first["DEFAULT"].equals("YES", true)
-            }.thenByDescending {
-                it.first["AUTOSELECT"].equals("YES", true)
-            }.thenBy { it.first["LANGUAGE"].orEmpty() }
-        ).firstOrNull()?.second
-        if (chosenAudio != null) return chosenAudio
-
         val audioVariants = variants.filter { it.audioOnly }
         if (audioVariants.isNotEmpty()) {
             return audioVariants.minWithOrNull(compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url })?.url
         }
 
-        // A master playlist without a declared audio rendition or an explicit audio-only variant
-        // cannot be safely treated as audio-only; return the lowest-bandwidth variant and let the
-        // caller decide whether muxed VOD segment processing is permitted.
-        return variants.minWithOrNull(compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url })?.url
+        // AUDIO renditions belong to a specific GROUP-ID. Choose the rendition associated with
+        // the selected muxed variant, not an arbitrary DEFAULT audio track elsewhere in the master
+        // playlist (which might be Japanese while the selected video variant uses an English group).
+        val selectedVariant = variants.minWithOrNull(
+            compareBy<MasterVariant> { it.bandwidth }.thenBy { it.url }
+        )
+        val matchingRenditions = selectedVariant?.audioGroupId?.let { groupId ->
+            audioRenditions.filter { (attributes, _) ->
+                attributes["GROUP-ID"].equals(groupId, ignoreCase = false)
+            }
+        }.orEmpty()
+        fun preferredRendition(
+            renditions: List<Pair<Map<String, String>, String>>
+        ): String? = renditions.sortedWith(
+            compareByDescending<Pair<Map<String, String>, String>> {
+                it.first["DEFAULT"].equals("YES", true)
+            }.thenByDescending {
+                it.first["AUTOSELECT"].equals("YES", true)
+            }.thenBy {
+                // For a speech-transcription source, prefer English when no rendition is marked
+                // default, then stable language/name ordering for deterministic results.
+                if (it.first["LANGUAGE"].equals("en", true)) 0 else 1
+            }.thenBy { it.first["LANGUAGE"].orEmpty() }
+                .thenBy { it.first["NAME"].orEmpty() }
+        ).firstOrNull()?.second
+
+        preferredRendition(matchingRenditions)?.let { return it }
+        if (selectedVariant != null) return selectedVariant.url
+
+        // A malformed master containing only audio media declarations has no variant-to-group
+        // association. Permit a sole group, but avoid guessing when several unrelated groups exist.
+        val declaredGroups = audioRenditions.mapNotNull { it.first["GROUP-ID"] }.distinct()
+        if (declaredGroups.size == 1) {
+            preferredRendition(audioRenditions)?.let { return it }
+        }
+
+        // No usable external audio rendition exists; process the selected variant's muxed audio.
+        return null
     }
 
     fun parseMediaPlaylist(playlistUrl: String, text: String): MediaPlaylist {
