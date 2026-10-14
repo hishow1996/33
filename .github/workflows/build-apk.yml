@@ -1,16 +1,7 @@
 name: Build Android APK
 
+# Manual only: ordinary code commits must not start APK builds.
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/build-apk.yml"
-      - "app/**"
-      - "gradle/**"
-      - "*.gradle.kts"
-      - "gradle.properties"
-      - "gradlew"
-      - "scripts/**"
   workflow_dispatch:
 
 permissions:
