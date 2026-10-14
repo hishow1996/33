@@ -61,7 +61,11 @@ internal object SafeMediaHttp {
                     }
                     name.equals("Range", ignoreCase = true) -> {
                         val range = value.trim()
-                        if (!Regex("""(?i)^bytes=\d+-\d+$""").matches(range)) {
+                        val match = Regex("""(?i)^bytes=(\d+)-(\d+)$""").matchEntire(range)
+                            ?: throw IllegalArgumentException("媒体 Range 请求头无效。")
+                        val start = match.groupValues[1].toLongOrNull()
+                        val end = match.groupValues[2].toLongOrNull()
+                        if (start == null || end == null || start > end) {
                             throw IllegalArgumentException("媒体 Range 请求头无效。")
                         }
                         builder.header("Range", range)

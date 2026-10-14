@@ -64,6 +64,17 @@ class SafeMediaHttpTest {
     }
 
     @Test
+    fun rejectsInvertedAndOverflowingRangeHeadersBeforeMakingARequest() {
+        val invalidRanges = listOf("bytes=8-4", "bytes=9223372036854775808-9223372036854775809")
+        invalidRanges.forEach { range ->
+            val error = runCatching {
+                SafeMediaHttp.execute("http://127.0.0.1:1/media", mapOf("Range" to range))
+            }.exceptionOrNull()
+            assertTrue(error is IllegalArgumentException)
+        }
+    }
+
+    @Test
     fun rejectsPartialSuccessForRequestsThatNeedACompleteFile() {
         SafeMediaHttp.validateCompleteGetResponse(200, "音频文件")
         val error = runCatching {
