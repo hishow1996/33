@@ -411,21 +411,18 @@ class DubbingEngine(
 
     private fun cacheFile(idx: Int): File {
         val line = lines.getOrNull(idx)
-        val voice = line?.speakerId ?: -1
-        fun fingerprint(value: String): String {
-            val bytes = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(value.toByteArray(Charsets.UTF_8))
-            return bytes.take(8).joinToString("") { "%02x".format(it) }
-        }
-        // Full text + engine fingerprint prevents cache collisions and invalidates old WAV PCM.
-        val textHash = fingerprint(line?.zh ?: "")
-        // Adaptive synthesis depends on this cue's available time window. Include its duration
-        // and bump the cache identity so pre-adaptation PCM is never mistaken for the new policy.
         val cueDurationMs = ((line?.endMs ?: 0L) - (line?.startMs ?: 0L)).coerceAtLeast(0L)
-        val engineHash = fingerprint(
-            "${tts?.cacheKey ?: tts?.name ?: "unknown"}-v7-speed-${speed}-cue-ms-${cueDurationMs}-adaptive"
+        return File(
+            cacheDir,
+            DubbingCacheIdentity.fileName(
+                lineIndex = idx,
+                speakerId = line?.speakerId ?: -1,
+                engineKey = tts?.cacheKey ?: tts?.name ?: "unknown",
+                text = line?.zh ?: "",
+                speed = speed,
+                cueDurationMs = cueDurationMs,
+            ),
         )
-        return File(cacheDir, "${idx}-v${voice}-e${engineHash}-t${textHash}.pcm")
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 

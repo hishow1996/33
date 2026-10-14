@@ -1,0 +1,42 @@
+package io.translatetube.local.player
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Test
+
+class DubbingCacheIdentityTest {
+    private fun key(
+        speakerId: Int = 7,
+        engineKey: String = "SystemTTS|engine-a|voice-a",
+        text: String = "你好",
+        speed: Float = 1.0f,
+        cueDurationMs: Long = 1_400L,
+    ): String = DubbingCacheIdentity.fileName(
+        lineIndex = 3,
+        speakerId = speakerId,
+        engineKey = engineKey,
+        text = text,
+        speed = speed,
+        cueDurationMs = cueDurationMs,
+    )
+
+    @Test
+    fun changingTheAssignedSpeakerVoiceInvalidatesPcmCache() {
+        assertNotEquals(key(speakerId = 7), key(speakerId = 8))
+        assertNotEquals(key(speakerId = -1), key(speakerId = 0))
+    }
+
+    @Test
+    fun engineTextSpeedAndCueWindowArePartOfCacheIdentity() {
+        val baseline = key()
+        assertNotEquals(baseline, key(engineKey = "SystemTTS|engine-b|voice-a"))
+        assertNotEquals(baseline, key(text = "你好！"))
+        assertNotEquals(baseline, key(speed = 1.25f))
+        assertNotEquals(baseline, key(cueDurationMs = 900L))
+    }
+
+    @Test
+    fun identicalSynthesisInputsHaveDeterministicCacheNames() {
+        assertEquals(key(), key())
+    }
+}
