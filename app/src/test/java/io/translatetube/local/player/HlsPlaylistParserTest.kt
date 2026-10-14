@@ -72,6 +72,26 @@ class HlsPlaylistParserTest {
     }
 
     @Test
+    fun refusesChangingInitializationMapInsideOnePlaylist() {
+        val playlist = """
+            #EXTM3U
+            #EXT-X-VERSION:7
+            #EXT-X-TARGETDURATION:4
+            #EXT-X-MAP:URI="init-a.mp4"
+            #EXTINF:4,
+            seg-1.m4s
+            #EXT-X-MAP:URI="init-b.mp4"
+            #EXTINF:4,
+            seg-2.m4s
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        assertThrows(UnsupportedOperationException::class.java) {
+            HlsPlaylistParser.parseMediaPlaylist("https://example.test/video/index.m3u8", playlist)
+        }
+    }
+
+    @Test
     fun refusesEncryptedLiveByteRangeAndDiscontinuousPlaylists() {
         val encrypted = """
             #EXTM3U
