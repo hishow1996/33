@@ -627,10 +627,10 @@ class DubbingEngine(
                 samples to sr
             }
         } catch (e: Exception) {
-            // A corrupt cache is recoverable too. Leave the cue pending so PlaybackService does not
-            // mistake this temporary read failure for a confirmed silent-TTS result.
+            // A corrupt cache is recoverable too. Roll back displayed progress and leave the cue
+            // pending so it can be synthesized again instead of being treated as permanently silent.
             f.delete()
-            readiness.markPending(idx)
+            markCuePending(idx)
             queueSynthesisRetry(idx)
             null
         }
