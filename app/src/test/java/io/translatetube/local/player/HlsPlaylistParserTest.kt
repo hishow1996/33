@@ -26,6 +26,25 @@ class HlsPlaylistParserTest {
     }
 
     @Test
+    fun preservesDeclaredAudioOrderWhenNoLanguageIsMarkedDefault() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Japanese",LANGUAGE="ja",DEFAULT=NO,AUTOSELECT=YES,URI="audio/ja.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,URI="audio/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=640000,CODECS="avc1.42e01e,mp4a.40.2",AUDIO="audio"
+            video/low.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/audio/ja.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
     fun choosesLowestBitrateDeclaredAudioOnlyVariantWhenNoAudioRenditionExists() {
         val master = """
             #EXTM3U
