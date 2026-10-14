@@ -2174,7 +2174,11 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Download bounded HTTP ranges to disk; progress is reported from real received bytes. */
+    /**
+     * Download direct media as validated byte ranges, or materialize clear HLS VOD into a
+     * disk-backed segment cache. HLS manifests must never be passed to MediaExtractor as if they
+     * were an audio file; the playlist is resolved and its media segments are assembled first.
+     */
     private suspend fun downloadAudio(
         url: String,
         destination: File,
@@ -2182,38 +2186,99 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
     ): File {
         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        val hlsCache = HlsAudioSegmentCache(cacheDir)
+        if (looksLikeHlsUrl(url)) {
+            return downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob)
+        }
         var lastReportedPercent = -1
         var lastReportedBytes = 0L
         return withContext(Dispatchers.IO) {
-            asrAudioSegmentDownloader.download(
-                url = url,
-                destination = destination,
-                sourceKey = sourceKey,
-                checkActive = { ownerJob?.ensureActive() },
-                onProgress = { receivedBytes, totalBytes ->
-                    val percent = if (totalBytes > 0L) {
-                        ((receivedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                    } else -1
-                    val shouldPublish = if (percent >= 0) {
-                        percent != lastReportedPercent
-                    } else {
-                        receivedBytes - lastReportedBytes >= 512L * 1024L
-                    }
-                    if (shouldPublish) {
-                        lastReportedPercent = percent
-                        lastReportedBytes = receivedBytes
-                        val progress = if (percent >= 0) {
-                            "分段读取音频 $percent%"
+            try {
+                asrAudioSegmentDownloader.download(
+                    url = url,
+                    destination = destination,
+                    sourceKey = sourceKey,
+                    checkActive = { ownerJob?.ensureActive() },
+                    onProgress = { receivedBytes, totalBytes ->
+                        val percent = if (totalBytes > 0L) {
+                            ((receivedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                        } else -1
+                        val shouldPublish = if (percent >= 0) {
+                            percent != lastReportedPercent
                         } else {
-                            "已读取音频 %.1f MB".format(receivedBytes / (1024f * 1024f))
+                            receivedBytes - lastReportedBytes >= 512L * 1024L
                         }
-                        updateUiForSession(sessionKey) { state ->
-                            if (state.key == sessionKey) state.copy(progress = progress) else state
+                        if (shouldPublish) {
+                            lastReportedPercent = percent
+                            lastReportedBytes = receivedBytes
+                            val progress = if (percent >= 0) {
+                                "分段读取音频 $percent%"
+                            } else {
+                                "已读取音频 %.1f MB".format(receivedBytes / (1024f * 1024f))
+                            }
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) state.copy(progress = progress) else state
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            } catch (e: Exception) {
+                // Some servers expose an HLS manifest without a .m3u8 suffix or use an opaque URL.
+                // Fall back only when the response clearly looks like a playlist/non-audio payload;
+                // ordinary timeouts and HTTP failures are propagated without an extra request.
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (!looksLikePlaylistFailure(e)) throw e
+                downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob)
+            }
         }
+    }
+
+    private suspend fun downloadHlsAudio(
+        cache: HlsAudioSegmentCache,
+        url: String,
+        destination: File,
+        sourceKey: String,
+        sessionKey: String,
+        ownerJob: Job?,
+    ): File = withContext(Dispatchers.IO) {
+        var lastPercent = -1
+        cache.download(
+            playlistUrl = url,
+            destination = destination,
+            sourceKey = sourceKey,
+            checkActive = { ownerJob?.ensureActive() },
+            onProgress = { completed, total ->
+                if (total <= 0) return@download
+                val percent = ((completed * 100L) / total).toInt().coerceIn(0, 100)
+                if (percent != lastPercent) {
+                    lastPercent = percent
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(progress = "读取 HLS 音轨分段 $completed/$total（$percent%）")
+                        } else state
+                    }
+                }
+            },
+        )
+    }
+
+    private fun looksLikeHlsUrl(value: String): Boolean = runCatching {
+        val uri = Uri.parse(value)
+        val path = uri.path.orEmpty()
+        path.endsWith(".m3u8", ignoreCase = true) ||
+            uri.getQueryParameter("format").equals("m3u8", ignoreCase = true) ||
+            uri.getQueryParameter("type").equals("application/vnd.apple.mpegurl", ignoreCase = true)
+    }.getOrDefault(false)
+
+    private fun looksLikePlaylistFailure(error: Throwable): Boolean {
+        val message = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase()
+        return message.contains("mpegurl") ||
+            message.contains("播放清单") ||
+            message.contains("播放列表") ||
+            message.contains("不是音频数据")
     }
 
     private fun kokoroRuntimeReady(): Boolean = runCatching {
