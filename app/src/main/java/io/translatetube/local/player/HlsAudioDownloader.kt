@@ -142,6 +142,9 @@ internal object HlsAudioDownloader {
                             rootHost = rootHost,
                             cachedBytes = cachedBytes,
                             ownerJob = ownerJob,
+                            onRetry = { attempt ->
+                                onProgress("网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）")
+                            },
                         )
                     }
                     cachedBytes += segment.length()
@@ -265,58 +268,82 @@ internal object HlsAudioDownloader {
         rootHost: String,
         cachedBytes: Long,
         ownerJob: Job?,
+        onRetry: (attemptNumber: Int) -> Unit,
     ): File {
         val part = File(destination.parentFile, destination.name + ".part")
-        part.delete()
-        try {
-            SafeMediaHttp.execute(
-                url = url,
-                requestHeaders = headers,
-                allowedCookieHost = rootHost,
-            ).use { response ->
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
-                }
-                val body = response.body ?: throw IllegalStateException("HLS 片段响应为空。")
-                if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
-                    throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录。")
-                }
-                val expectedBytes = body.contentLength()
-                if (expectedBytes > MAX_BYTES || cachedBytes + expectedBytes.coerceAtLeast(0L) > MAX_BYTES) {
-                    throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
-                }
-                var actualBytes = 0L
-                body.byteStream().use { input ->
-                    FileOutputStream(part, false).buffered().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            ownerJob?.ensureActive()
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            actualBytes += count
-                            if (cachedBytes + actualBytes > MAX_BYTES) {
-                                throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
+        var lastError: Exception? = null
+        for (attempt in 1..3) {
+            ownerJob?.ensureActive()
+            part.delete()
+            try {
+                SafeMediaHttp.execute(
+                    url = url,
+                    requestHeaders = headers,
+                    allowedCookieHost = rootHost,
+                ).use { response ->
+                    if (!response.isSuccessful) {
+                        throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
+                    }
+                    val body = response.body ?: throw IllegalStateException("HLS 片段响应为空。")
+                    if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                        throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录。")
+                    }
+                    val expectedBytes = body.contentLength()
+                    if (expectedBytes > MAX_BYTES || cachedBytes + expectedBytes.coerceAtLeast(0L) > MAX_BYTES) {
+                        throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
+                    }
+                    var actualBytes = 0L
+                    body.byteStream().use { input ->
+                        FileOutputStream(part, false).buffered().use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                ownerJob?.ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                actualBytes += count
+                                if (cachedBytes + actualBytes > MAX_BYTES) {
+                                    throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
+                                }
+                                output.write(buffer, 0, count)
                             }
-                            output.write(buffer, 0, count)
+                            output.flush()
                         }
-                        output.flush()
+                    }
+                    if (!AsrAudioCachePolicy.isCompleteDownload(expectedBytes, actualBytes)) {
+                        throw IllegalStateException("HLS 片段下载不完整：预期 ${expectedBytes} 字节，实际收到 ${actualBytes} 字节。")
                     }
                 }
-                if (!AsrAudioCachePolicy.isCompleteDownload(expectedBytes, actualBytes)) {
-                    throw IllegalStateException("HLS 片段下载不完整：预期 ${expectedBytes} 字节，实际收到 ${actualBytes} 字节。")
+                if (!part.renameTo(destination)) {
+                    part.copyTo(destination, overwrite = true)
+                    part.delete()
+                }
+                destination.setLastModified(System.currentTimeMillis())
+                return destination
+            } catch (error: Exception) {
+                part.delete()
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                lastError = error
+                if (attempt == 3 || !shouldRetrySegment(error)) throw error
+                onRetry(attempt + 1)
+                try {
+                    Thread.sleep(250L * attempt)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw kotlinx.coroutines.CancellationException("等待音轨片段重试时被中断").apply {
+                        initCause(interrupted)
+                    }
                 }
             }
-            if (!part.renameTo(destination)) {
-                part.copyTo(destination, overwrite = true)
-                part.delete()
-            }
-            destination.setLastModified(System.currentTimeMillis())
-            return destination
-        } catch (error: Throwable) {
-            part.delete()
-            if (error is kotlinx.coroutines.CancellationException) throw error
-            throw error
         }
+        throw IllegalStateException("HLS 音轨片段下载失败。", lastError)
+    }
+
+    private fun shouldRetrySegment(error: Exception): Boolean {
+        if (error is java.io.IOException) return true
+        val message = error.message.orEmpty()
+        val statusCode = Regex("HTTP (\\d{3})").find(message)?.groupValues?.get(1)?.toIntOrNull()
+        if (statusCode != null && statusCode in setOf(408, 425, 429, 500, 502, 503, 504)) return true
+        return message.contains("下载不完整")
     }
 
     private fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
