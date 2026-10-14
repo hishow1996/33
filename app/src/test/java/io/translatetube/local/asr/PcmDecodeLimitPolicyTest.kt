@@ -24,7 +24,7 @@ class PcmDecodeLimitPolicyTest {
     @Test
     fun durationLimitAlwaysEndsOnACompleteChannelFrame() {
         val samples = PcmDecodeLimitPolicy.maxSourceSamples(48_000, 6, 1L)
-        assertEquals(6L, samples)
+        assertEquals(288L, samples) // 48 frames per millisecond, six channels per frame.
         assertEquals(0L, samples % 6L)
     }
 
