@@ -50,4 +50,27 @@ class HlsAudioDownloaderTest {
 
         assertNull(HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/index.m3u8", media))
     }
+ 
+    @Test
+    fun choosesAudioTrackFromTheSelectedVariantGroupNotAnotherDefaultGroup() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="commentary",NAME="Commentary",DEFAULT=YES,URI="audio/commentary.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="main",NAME="Main",DEFAULT=NO,AUTOSELECT=YES,URI="audio/main.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,AUDIO="main"
+            video/low.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://cdn.example/path/audio/main.m3u8",
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master),
+        )
+    }
+
+    @Test
+    fun detectsSignedHlsManifestUrlByItsPath() {
+        assertEquals(true, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8?token=private"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example/video.mp4?token=private"))
+    }
+
 }
