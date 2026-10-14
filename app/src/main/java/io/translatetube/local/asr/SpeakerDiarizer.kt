@@ -47,104 +47,104 @@ object SpeakerDiarizer {
         withContext(Dispatchers.IO) {
             checkActive()
             require(samples.isNotEmpty()) { "没有可用于人物识别的音频" }
-        // Check the bundled AAR before downloading ~45 MB of models.
-        try {
-            Class.forName("com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization", true, javaClass.classLoader)
-        } catch (e: ClassNotFoundException) {
-            throw IllegalStateException("当前内置 sherpa-onnx.aar 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色", e)
-        } catch (e: LinkageError) {
-            throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
-        }
-        onProgress("下载人物识别模型…")
-        val dir = File(context.filesDir, "models/speaker").apply { mkdirs() }
-        val segmentation = File(dir, "segmentation.onnx")
-        val embedding = File(dir, "embedding.onnx")
-        if (!segmentation.isFile || segmentation.length() < 1_000_000L) {
-            val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
+            // Check the bundled AAR before downloading ~45 MB of models.
             try {
-                checkActive()
-                download(SEGMENTATION_URL, archive, 32L * 1024 * 1024, checkActive)
-                checkActive()
-                extractSegmentation(archive, segmentation, checkActive)
-                checkActive()
-            } finally {
-                archive.delete()
+                Class.forName("com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization", true, javaClass.classLoader)
+            } catch (e: ClassNotFoundException) {
+                throw IllegalStateException("当前内置 sherpa-onnx.aar 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色", e)
+            } catch (e: LinkageError) {
+                throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
             }
-        }
-        if (!embedding.isFile || embedding.length() < 5_000_000L) {
-            val temp = File(dir, "embedding.onnx.download")
-            try {
-                checkActive()
-                download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive)
-                checkActive()
-                if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
-                if (embedding.exists() && !embedding.delete()) throw java.io.IOException("无法替换旧声纹模型")
-                if (!temp.renameTo(embedding)) throw java.io.IOException("无法安装声纹模型")
-            } finally {
-                temp.delete()
-            }
-        }
-
-        checkActive()
-        onProgress("识别人物说话片段…")
-        try {
-            val loader = javaClass.classLoader!!
-            fun type(name: String) = Class.forName("com.k2fsa.sherpa.onnx.$name", true, loader)
-            val pyannoteClass = type("OfflineSpeakerSegmentationPyannoteModelConfig")
-            val segmentationClass = type("OfflineSpeakerSegmentationModelConfig")
-            val embeddingClass = type("SpeakerEmbeddingExtractorConfig")
-            val clusteringClass = type("FastClusteringConfig")
-            val configClass = type("OfflineSpeakerDiarizationConfig")
-            val diarizerClass = type("OfflineSpeakerDiarization")
-
-            val pyannote = pyannoteClass.constructors.first { it.parameterCount == 2 }
-                .newInstance(segmentation.absolutePath, 0.1f)
-            val segmentationConfig = segmentationClass.constructors.first { it.parameterCount == 4 }
-                .newInstance(pyannote, 1, false, "cpu")
-            val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
-                .newInstance(embedding.absolutePath, 1, false, "cpu")
-            val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
-                ?.newInstance(-1, 0.5f, true)
-                ?: clusteringClass.constructors.first { it.parameterCount == 2 }
-                    .newInstance(-1, 0.5f)
-            val config = configClass.constructors.first { it.parameterCount == 5 }
-                .newInstance(segmentationConfig, embeddingConfig, clustering, 0.2f, 0.5f)
-            val instance = diarizerClass.constructors.first { it.parameterCount == 2 }
-                .newInstance(null, config)
-            try {
-                val sampleRate = diarizerClass.getMethod("sampleRate").invoke(instance) as Int
-                require(sampleRate == 16000) { "人物识别模型要求 16kHz 音频，当前为 ${sampleRate}Hz" }
-                checkActive()
-                // AudioExtract caps analysis at 3 minutes on low-memory devices.
-                // Avoid copyOf(): duplicating a multi-minute FloatArray can cause OOM on older phones.
-                val raw = diarizerClass.getMethod("process", FloatArray::class.java).invoke(instance, samples)
-                checkActive()
-                val count = java.lang.reflect.Array.getLength(raw)
-                val out = ArrayList<Segment>(count)
-                for (i in 0 until count) {
+            onProgress("下载人物识别模型…")
+            val dir = File(context.filesDir, "models/speaker").apply { mkdirs() }
+            val segmentation = File(dir, "segmentation.onnx")
+            val embedding = File(dir, "embedding.onnx")
+            if (!segmentation.isFile || segmentation.length() < 1_000_000L) {
+                val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
+                try {
                     checkActive()
-                    val item = java.lang.reflect.Array.get(raw, i)
-                    val cls = item.javaClass
-                    val start = (cls.getMethod("getStart").invoke(item) as Number).toFloat()
-                    val end = (cls.getMethod("getEnd").invoke(item) as Number).toFloat()
-                    val speaker = (cls.getMethod("getSpeaker").invoke(item) as Number).toInt()
-                    val confidence = (runCatching { cls.getMethod("getConfidence").invoke(item) as Number }.getOrNull()?.toFloat() ?: -2f)
-                    if (end > start && speaker >= 0) out += Segment(start, end, speaker, confidence)
+                    download(SEGMENTATION_URL, archive, 32L * 1024 * 1024, checkActive)
+                    checkActive()
+                    extractSegmentation(archive, segmentation, checkActive)
+                    checkActive()
+                } finally {
+                    archive.delete()
                 }
-                out
-            } finally {
-                runCatching { diarizerClass.getMethod("release").invoke(instance) }
             }
-        } catch (e: ClassNotFoundException) {
-            throw IllegalStateException(
-                "当前内置 sherpa-onnx AAR 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色",
-                e,
-            )
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            throw IllegalStateException("说话人分离模型初始化或推理失败：${e.targetException.message}", e.targetException)
-        } catch (e: LinkageError) {
-            throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
-        }
+            if (!embedding.isFile || embedding.length() < 5_000_000L) {
+                val temp = File(dir, "embedding.onnx.download")
+                try {
+                    checkActive()
+                    download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive)
+                    checkActive()
+                    if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
+                    if (embedding.exists() && !embedding.delete()) throw java.io.IOException("无法替换旧声纹模型")
+                    if (!temp.renameTo(embedding)) throw java.io.IOException("无法安装声纹模型")
+                } finally {
+                    temp.delete()
+                }
+            }
+
+            checkActive()
+            onProgress("识别人物说话片段…")
+            try {
+                val loader = javaClass.classLoader!!
+                fun type(name: String) = Class.forName("com.k2fsa.sherpa.onnx.$name", true, loader)
+                val pyannoteClass = type("OfflineSpeakerSegmentationPyannoteModelConfig")
+                val segmentationClass = type("OfflineSpeakerSegmentationModelConfig")
+                val embeddingClass = type("SpeakerEmbeddingExtractorConfig")
+                val clusteringClass = type("FastClusteringConfig")
+                val configClass = type("OfflineSpeakerDiarizationConfig")
+                val diarizerClass = type("OfflineSpeakerDiarization")
+
+                val pyannote = pyannoteClass.constructors.first { it.parameterCount == 2 }
+                    .newInstance(segmentation.absolutePath, 0.1f)
+                val segmentationConfig = segmentationClass.constructors.first { it.parameterCount == 4 }
+                    .newInstance(pyannote, 1, false, "cpu")
+                val embeddingConfig = embeddingClass.constructors.first { it.parameterCount == 4 }
+                    .newInstance(embedding.absolutePath, 1, false, "cpu")
+                val clustering = clusteringClass.constructors.firstOrNull { it.parameterCount == 3 }
+                    ?.newInstance(-1, 0.5f, true)
+                    ?: clusteringClass.constructors.first { it.parameterCount == 2 }
+                        .newInstance(-1, 0.5f)
+                val config = configClass.constructors.first { it.parameterCount == 5 }
+                    .newInstance(segmentationConfig, embeddingConfig, clustering, 0.2f, 0.5f)
+                val instance = diarizerClass.constructors.first { it.parameterCount == 2 }
+                    .newInstance(null, config)
+                try {
+                    val sampleRate = diarizerClass.getMethod("sampleRate").invoke(instance) as Int
+                    require(sampleRate == 16000) { "人物识别模型要求 16kHz 音频，当前为 ${sampleRate}Hz" }
+                    checkActive()
+                    // AudioExtract caps analysis at 3 minutes on low-memory devices.
+                    // Avoid copyOf(): duplicating a multi-minute FloatArray can cause OOM on older phones.
+                    val raw = diarizerClass.getMethod("process", FloatArray::class.java).invoke(instance, samples)
+                    checkActive()
+                    val count = java.lang.reflect.Array.getLength(raw)
+                    val out = ArrayList<Segment>(count)
+                    for (i in 0 until count) {
+                        checkActive()
+                        val item = java.lang.reflect.Array.get(raw, i)
+                        val cls = item.javaClass
+                        val start = (cls.getMethod("getStart").invoke(item) as Number).toFloat()
+                        val end = (cls.getMethod("getEnd").invoke(item) as Number).toFloat()
+                        val speaker = (cls.getMethod("getSpeaker").invoke(item) as Number).toInt()
+                        val confidence = (runCatching { cls.getMethod("getConfidence").invoke(item) as Number }.getOrNull()?.toFloat() ?: -2f)
+                        if (end > start && speaker >= 0) out += Segment(start, end, speaker, confidence)
+                    }
+                    out
+                } finally {
+                    runCatching { diarizerClass.getMethod("release").invoke(instance) }
+                }
+            } catch (e: ClassNotFoundException) {
+                throw IllegalStateException(
+                    "当前内置 sherpa-onnx AAR 不包含说话人分离模块，需要更新 sherpa-onnx.aar 后才能自动识别；可先手动切换字幕音色",
+                    e,
+                )
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw IllegalStateException("说话人分离模型初始化或推理失败：${e.targetException.message}", e.targetException)
+            } catch (e: LinkageError) {
+                throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
+            }
         }
     }
 
