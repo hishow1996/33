@@ -1180,6 +1180,9 @@ class PlaybackService : MediaSessionService() {
                 if (storedPartialAsr != null) {
                     val restored = runCatching {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
+                        if (checkpoint.optInt("version", -1) != 1) {
+                            throw IllegalStateException("ASR 检查点版本不兼容")
+                        }
                         val processed = checkpoint.optInt("processedSegments", -1)
                         val total = checkpoint.optInt("totalSegments", -1)
                         val savedSignature = checkpoint.optString("signature")
