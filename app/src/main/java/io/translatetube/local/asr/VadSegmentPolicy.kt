@@ -22,10 +22,23 @@ internal object VadSegmentPolicy {
 
         val bounded = ArrayList<Pair<Long, Long>>(ordered.size)
         for ((start, end) in ordered) {
-            if (end - start < MIN_SEGMENT_MS) continue
+            val duration = end - start
+            if (duration < MIN_SEGMENT_MS) continue
+
+            // Split unexpected long VAD results into balanced windows. Taking a fixed 25-second
+            // first window could leave a 100-ms tail which would then be discarded as too short.
+            val partCountLong = duration / MAX_SEGMENT_DURATION_MS +
+                if (duration % MAX_SEGMENT_DURATION_MS == 0L) 0L else 1L
+            if (partCountLong > MAX_SEGMENTS.toLong()) {
+                throw IllegalArgumentException("VAD 音频分段数量超过限制")
+            }
+            val partCount = partCountLong.toInt()
+            val baseDuration = duration / partCountLong
+            val extraMillis = duration % partCountLong
             var partStart = start
-            while (partStart < end) {
-                val partEnd = minOf(end, partStart + MAX_SEGMENT_DURATION_MS)
+            repeat(partCount) { partIndex ->
+                val partDuration = baseDuration + if (partIndex.toLong() < extraMillis) 1L else 0L
+                val partEnd = partStart + partDuration
                 if (partEnd - partStart >= MIN_SEGMENT_MS) {
                     val last = bounded.lastOrNull()
                     val sameWindow = last != null &&
@@ -41,5 +54,4 @@ internal object VadSegmentPolicy {
             }
         }
         return bounded
-    }
-}
+    }}
