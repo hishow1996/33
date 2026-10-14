@@ -76,6 +76,7 @@ fun PlayerScreen(
     localUri: android.net.Uri?,
     onBack: () -> Unit,
     onGoSettings: () -> Unit = {},
+    remoteHeaders: Map<String, String> = emptyMap(),
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
@@ -93,22 +94,22 @@ fun PlayerScreen(
     var handledRetryNonce by remember { mutableStateOf(0) }
 
     fun retryCurrentTask() {
-        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+        val key = playerRequestKey(videoId, localUri)
         val current = PlaybackService.ui.value
         val service = PlaybackService.instance
         val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current)
+            service.open(key, videoId, localUri, resumeState = current, sourceHeaders = remoteHeaders)
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, retryNonce) {
-        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+    LaunchedEffect(videoId, localUri, remoteHeaders, retryNonce) {
+        val key = playerRequestKey(videoId, localUri)
         val retryRequested = retryNonce != handledRetryNonce
         if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
             if (retryRequested) handledRetryNonce = retryNonce
@@ -151,7 +152,7 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork)
+                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, sourceHeaders = remoteHeaders)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
@@ -1669,4 +1670,12 @@ private fun LangLabel(code: String) = when (code) {
     "zh" -> "中"; "en" -> "英"; "ja" -> "日"; "ko" -> "韩"; "fr" -> "法"; "de" -> "德"
     "es" -> "西"; "pt" -> "葡"; "ru" -> "俄"; "it" -> "意"; "auto" -> "自动"
     else -> code
+}
+
+
+private fun playerRequestKey(videoId: String?, uri: android.net.Uri?): String = when {
+    videoId != null -> "youtube:$videoId"
+    uri?.scheme.equals("http", ignoreCase = true) ||
+        uri?.scheme.equals("https", ignoreCase = true) -> "webmedia:$uri"
+    else -> "local:${uri ?: ""}"
 }
