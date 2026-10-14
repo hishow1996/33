@@ -2491,9 +2491,44 @@ class PlaybackService : MediaSessionService() {
                     }
                     AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
                 }
-                val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
+                val diarizationSignature = SpeakerDiarizationCachePolicy.signature(pcm.samples)
+                val diarizationCacheKey = "${sessionKey}|speaker-diarization-v1"
+                val subtitleCacheDao = AppDatabase.get(this@PlaybackService).subtitleCacheDao()
+                val cachedDiarization = subtitleCacheDao.get(diarizationCacheKey)
+                val restoredSegments = cachedDiarization?.let { cached ->
+                    SpeakerDiarizationCachePolicy.decodeSegments(cached.linesJson, cached.srcLang, diarizationSignature)
+                }
+                val segments = if (!restoredSegments.isNullOrEmpty()) {
                     updateUiForSession(sessionKey) { state ->
-                        if (state.key == sessionKey) state.copy(progress = message) else state
+                        if (state.key == sessionKey) state.copy(progress = "复用已缓存的人物识别结果…") else state
+                    }
+                    restoredSegments
+                } else {
+                    if (cachedDiarization != null) {
+                        // The source audio changed or the saved JSON is malformed. Do not reuse
+                        // speaker identities from another audio version.
+                        subtitleCacheDao.delete(diarizationCacheKey)
+                    }
+                    SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
+                        updateUiForSession(sessionKey) { state ->
+                            if (state.key == sessionKey) state.copy(progress = message) else state
+                        }
+                    }.also { freshSegments ->
+                        if (freshSegments.isNotEmpty()) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            ensureCurrentSession(sessionKey)
+                            subtitleCacheDao.put(
+                                io.translatetube.local.data.SubtitleCacheEntity(
+                                    cacheKey = diarizationCacheKey,
+                                    srcLang = diarizationSignature,
+                                    linesJson = SpeakerDiarizationCachePolicy.encodeSegments(
+                                        diarizationSignature,
+                                        freshSegments,
+                                    ),
+                                    updatedAt = System.currentTimeMillis(),
+                                )
+                            )
+                        }
                     }
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
