@@ -142,7 +142,7 @@ private fun drainVad(
     }
 }
 
-private fun readFully(input: InputStream, target: ByteArray, length: Int = target.size) {
+internal fun readFully(input: InputStream, target: ByteArray, length: Int = target.size) {
     require(length in 0..target.size)
     var offset = 0
     while (offset < length) {
