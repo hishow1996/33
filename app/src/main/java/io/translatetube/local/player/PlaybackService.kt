@@ -2764,21 +2764,26 @@ class PlaybackService : MediaSessionService() {
                         )
                     }
                 }
-                val diarizationSignature = SpeakerDiarizationCachePolicy.signature(pcm.samples)
+                // Hashing multi-minute 16 kHz PCM is CPU-heavy on older devices; keep it off Main.
+                val diarizationSignature = withContext(Dispatchers.Default) {
+                    SpeakerDiarizationCachePolicy.signature(pcm.samples)
+                }
                 val diarizationCacheKey = "${sessionKey}|speaker-diarization-v1"
                 val subtitleCacheDao = AppDatabase.get(this@PlaybackService).subtitleCacheDao()
                 val cachedDiarization = subtitleCacheDao.get(diarizationCacheKey)
                 val restoredSegments = cachedDiarization?.let { cached ->
-                    SpeakerDiarizationCachePolicy
-                        .decodeSegments(cached.linesJson, cached.srcLang, diarizationSignature)
-                        ?.map { record ->
-                            SpeakerDiarizer.Segment(
-                                startSec = record.startSec,
-                                endSec = record.endSec,
-                                speaker = record.speaker,
-                                confidence = record.confidence,
-                            )
-                        }
+                    withContext(Dispatchers.Default) {
+                        SpeakerDiarizationCachePolicy
+                            .decodeSegments(cached.linesJson, cached.srcLang, diarizationSignature)
+                            ?.map { record ->
+                                SpeakerDiarizer.Segment(
+                                    startSec = record.startSec,
+                                    endSec = record.endSec,
+                                    speaker = record.speaker,
+                                    confidence = record.confidence,
+                                )
+                            }
+                    }
                 }
                 val segments = if (!restoredSegments.isNullOrEmpty()) {
                     updateUiForSession(sessionKey) { state ->
@@ -2800,21 +2805,26 @@ class PlaybackService : MediaSessionService() {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             ensureCurrentSession(sessionKey)
                             try {
+                                val encodedSegments = withContext(Dispatchers.Default) {
+                                    SpeakerDiarizationCachePolicy.encodeSegments(
+                                        diarizationSignature,
+                                        freshSegments.map { segment ->
+                                            SpeakerDiarizationRecord(
+                                                startSec = segment.startSec,
+                                                endSec = segment.endSec,
+                                                speaker = segment.speaker,
+                                                confidence = segment.confidence,
+                                            )
+                                        },
+                                    )
+                                }
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                ensureCurrentSession(sessionKey)
                                 subtitleCacheDao.put(
                                     io.translatetube.local.data.SubtitleCacheEntity(
                                         cacheKey = diarizationCacheKey,
                                         srcLang = diarizationSignature,
-                                        linesJson = SpeakerDiarizationCachePolicy.encodeSegments(
-                                            diarizationSignature,
-                                            freshSegments.map { segment ->
-                                                SpeakerDiarizationRecord(
-                                                    startSec = segment.startSec,
-                                                    endSec = segment.endSec,
-                                                    speaker = segment.speaker,
-                                                    confidence = segment.confidence,
-                                                )
-                                            },
-                                        ),
+                                        linesJson = encodedSegments,
                                         updatedAt = System.currentTimeMillis(),
                                     )
                                 )
