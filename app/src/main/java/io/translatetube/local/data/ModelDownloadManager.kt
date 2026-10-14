@@ -287,12 +287,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 )
                 withContext(Dispatchers.IO) {
                     destDir.mkdirs()
-                    extractTarBz2(pkg, destDir) { extractedBytes ->
-                        val handledMB = extractedBytes / (1024L * 1024L)
-                        state.value = state.value.copy(
-                            stageMessage = "正在解压并安装模型（已处理 ${handledMB} MB）",
-                        )
-                    }
+                    val extractionJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    extractTarBz2(
+                        pkg = pkg,
+                        destDir = destDir,
+                        checkActive = { extractionJob?.ensureActive() },
+                        onProgress = { extractedBytes ->
+                            val handledMB = extractedBytes / (1024L * 1024L)
+                            state.value = state.value.copy(
+                                stageMessage = "正在解压并安装模型（已处理 ${handledMB} MB）",
+                            )
+                        },
+                    )
                 }
                 if (kind == ModelKind.ASR) {
                     // ASR 包附带 VAD 小模型（0.6MB，双源）
@@ -433,8 +439,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     private fun extractTarBz2(
         pkg: File,
         destDir: File,
+        checkActive: () -> Unit = {},
         onProgress: ((Long) -> Unit)? = null,
     ) {
+        checkActive()
         val parent = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型父目录")
         val old = File(parent, destDir.name + ".old")
@@ -460,6 +468,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         try {
             TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
                 while (true) {
+                    checkActive()
                     val entry = tar.nextTarEntry ?: break
                     if (entry.isSymbolicLink || entry.isLink) {
                         throw java.io.IOException("模型压缩包包含链接条目")
@@ -494,6 +503,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         val buffer = ByteArray(64 * 1024)
                         var fileBytes = 0L
                         while (true) {
+                            checkActive()
                             val count = tar.read(buffer)
                             if (count < 0) break
                             fileBytes += count
@@ -512,6 +522,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
             }
 
+            checkActive()
             // 不完整或伪造的压缩包不能覆盖已经可用的模型。
             val required = if (destDir.name == "tts") {
                 listOf("model.int8.onnx", "voices.bin")
@@ -536,6 +547,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
             }
 
+            checkActive()
             val hadOld = destDir.exists()
             if (hadOld && !destDir.renameTo(old)) throw java.io.IOException("无法备份现有模型目录")
             if (!staging.renameTo(destDir)) {
