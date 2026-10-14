@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import java.io.IOException
 import java.util.Locale
+import android.webkit.CookieManager
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
@@ -53,6 +54,13 @@ internal class SafeRedirectInterceptor(
             if (crossOrigin) {
                 CREDENTIAL_HEADERS.forEach { name -> builder.removeHeader(name) }
             }
+            // Cookie scope also includes path, so never replay the previous URL's Cookie header.
+            // Re-read the cookie jar for the exact redirected URL instead.
+            builder.removeHeader("Cookie")
+            runCatching { CookieManager.getInstance().getCookie(nextUrl.toString()) }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { builder.header("Cookie", it) }
             response.close()
             request = builder.build()
             redirects++
