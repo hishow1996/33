@@ -442,7 +442,7 @@ internal class AsrAudioSegmentDownloader(
     private fun isForwardableHeader(name: String, value: String): Boolean {
         val normalizedName = name.trim().lowercase()
         if (normalizedName !in FORWARDABLE_HEADER_NAMES) return false
-        if (value.isBlank() || value.any { it == '\\r' || it == '\\n' || it == '\\u0000' }) return false
+        if (value.isBlank() || value.any { it == '\r' || it == '\n' || it == '\u0000' }) return false
         return true
     }
 
