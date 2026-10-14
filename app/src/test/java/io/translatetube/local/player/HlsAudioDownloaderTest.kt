@@ -6,6 +6,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HlsAudioDownloaderTest {
+
+    @Test
+    fun removesInheritedRangeHeadersWithoutDroppingSessionHeaders() {
+        val headers = HlsAudioDownloader.headersWithoutInheritedRange(
+            mapOf(
+                "rAnGe" to "bytes=100-200",
+                "Cookie" to "session=private",
+                "Referer" to "https://page.example/watch",
+            )
+        )
+
+        assertEquals(false, headers.keys.any { it.equals("Range", ignoreCase = true) })
+        assertEquals("session=private", headers["Cookie"])
+        assertEquals("https://page.example/watch", headers["Referer"])
+    }
+
     @Test
     fun choosesDefaultAudioRenditionAndResolvesRelativeAddress() {
         val master = """

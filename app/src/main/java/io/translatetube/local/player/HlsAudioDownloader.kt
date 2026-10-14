@@ -52,6 +52,9 @@ internal object HlsAudioDownloader {
 
     private data class ByteRangeSpec(val length: Long, val offset: Long?)
 
+    internal fun headersWithoutInheritedRange(headers: Map<String, String>): Map<String, String> =
+        headers.filterKeys { !it.equals("Range", ignoreCase = true) }
+
     fun isManifestUrl(value: String): Boolean = runCatching {
         URI(value.trim()).rawPath.orEmpty().endsWith(".m3u8", ignoreCase = true)
     }.getOrDefault(false)
@@ -112,6 +115,9 @@ internal object HlsAudioDownloader {
         onProgress: (String) -> Unit,
     ): File {
         val ownerJob = currentCoroutineContext()[Job]
+        // A captured WebView Range belongs to its original request. Do not reuse it for a
+        // playlist or a different segment; byte ranges below are derived from the HLS manifest.
+        val mediaHeaders = headersWithoutInheritedRange(requestHeaders)
         val assemblyPart = File(destination.parentFile, destination.name + ".part")
         val cacheParent = destination.absoluteFile.parentFile
             ?: throw IllegalStateException("无法确定网页音轨缓存目录。")
@@ -123,7 +129,7 @@ internal object HlsAudioDownloader {
             withContext(Dispatchers.IO) {
                 val rootUri = parseHttpUrl(playlistUrl)
                 val rootOrigin = rootUri
-                var fetched = fetchText(rootUri, requestHeaders, rootOrigin, ownerJob)
+                var fetched = fetchText(rootUri, mediaHeaders, rootOrigin, ownerJob)
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
 
@@ -134,7 +140,7 @@ internal object HlsAudioDownloader {
                     if (masterDepth > MAX_MASTER_DEPTH) {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
-                    fetched = fetchText(parseHttpUrl(next), requestHeaders, rootOrigin, ownerJob)
+                    fetched = fetchText(parseHttpUrl(next), mediaHeaders, rootOrigin, ownerJob)
                     ensurePlaylistIsUnencrypted(fetched.text)
                 }
 
@@ -159,7 +165,7 @@ internal object HlsAudioDownloader {
                 var cachedBytes = 0L
                 segmentFiles.forEachIndexed { index, segmentFile ->
                     val age = System.currentTimeMillis() - segmentFile.lastModified()
-                        val expectedRangeLength = sources[index].byteRangeLength
+                    val expectedRangeLength = sources[index].byteRangeLength
                     val hasValidLength = if (expectedRangeLength != null) {
                         segmentFile.length() == expectedRangeLength
                     } else {
@@ -203,7 +209,7 @@ internal object HlsAudioDownloader {
                             byteRangeStart = source.byteRangeStart,
                             byteRangeLength = source.byteRangeLength,
                             destination = segmentFile,
-                            headers = requestHeaders,
+                            headers = mediaHeaders,
                             rootOrigin = rootOrigin,
                             cachedBytes = totalCachedBytes,
                             ownerJob = ownerJob,
