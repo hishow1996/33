@@ -99,7 +99,7 @@ class SystemTts(context: Context) : TtsEngine {
     @Volatile private var closed = false
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeLatch: java.util.concurrent.CountDownLatch? = null
-    @Volatile private var activeError = false
+    @Volatile private var activeFailure: String? = null
 
     init {
         val tts = TextToSpeech(appCtx) { status ->
@@ -160,14 +160,25 @@ class SystemTts(context: Context) : TtsEngine {
 
             override fun onError(utteranceId: String?) {
                 if (utteranceId == activeUtteranceId) {
-                    activeError = true
+                    activeFailure = "系统 TTS 合成回调返回错误"
                     activeLatch?.countDown()
                 }
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
                 if (utteranceId == activeUtteranceId) {
-                    activeError = true
+                    activeFailure = "系统 TTS 合成失败（错误码 $errorCode）"
+                    activeLatch?.countDown()
+                }
+            }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                if (utteranceId == activeUtteranceId) {
+                    activeFailure = if (interrupted) {
+                        "系统 TTS 合成过程中被中断"
+                    } else {
+                        "系统 TTS 合成在开始前被取消或从队列中移除"
+                    }
                     activeLatch?.countDown()
                 }
             }
@@ -187,7 +198,7 @@ class SystemTts(context: Context) : TtsEngine {
         val completed = java.util.concurrent.CountDownLatch(1)
         activeUtteranceId = utteranceId
         activeLatch = completed
-        activeError = false
+        activeFailure = null
         try {
             val defaultVoice = defaultChineseVoice
                 ?: throw IllegalStateException("系统 TTS 没有可用的中文音色")
@@ -214,8 +225,8 @@ class SystemTts(context: Context) : TtsEngine {
             }
             // close() also releases this latch; never decode a file after that early wake-up.
             if (closed) throw IllegalStateException("系统 TTS 已关闭，本次合成已取消")
-            if (activeError) {
-                throw IllegalStateException("系统 TTS 合成回调返回错误")
+            activeFailure?.let { failure ->
+                throw IllegalStateException(failure)
             }
             val audio = readWav(tmp)
             if (audio.samples.isEmpty()) {

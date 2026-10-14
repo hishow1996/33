@@ -2255,7 +2255,7 @@ class PlaybackService : MediaSessionService() {
                     ui.update {
                         it.copy(
                             muteOriginal = false,
-                            noModelHint = "部分字幕没有可播放的中文配音（译文为空或合成失败），已自动恢复原声，避免出现无声片段。请检查译文完整性、系统文字转语音引擎/语音数据，或重新下载 Kokoro 配音模型。"
+                            noModelHint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName)
                         )
                     }
                 }
