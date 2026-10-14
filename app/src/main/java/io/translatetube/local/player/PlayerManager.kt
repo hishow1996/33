@@ -62,10 +62,26 @@ class PlayerManager(private val ctx: Context) {
     var onVideoAspect: ((ratio: Float) -> Unit)? = null
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var tickFailureLogged = false
+
+    /** A faulty consumer must not permanently kill the playback timeline ticker. */
+    private fun notifyTick(positionMs: Long = player.currentPosition) {
+        val callback = onTick ?: return
+        try {
+            callback(positionMs)
+            tickFailureLogged = false
+        } catch (error: Exception) {
+            if (!tickFailureLogged) {
+                android.util.Log.w("PlayerManager", "Timeline callback failed; polling will continue", error)
+                tickFailureLogged = true
+            }
+        }
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             if (onTick == null || !player.isPlaying) return
-            onTick?.invoke(player.currentPosition)
+            notifyTick()
             if (onTick != null && player.isPlaying) {
                 mainHandler.postDelayed(this, 100)
             }
@@ -95,7 +111,7 @@ class PlayerManager(private val ctx: Context) {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
                 // Emit an immediate update on pause/resume to invalidate detached AudioTrack work.
-                onTick?.invoke(player.currentPosition)
+                notifyTick()
                 syncTicker()
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
@@ -274,7 +290,7 @@ class PlayerManager(private val ctx: Context) {
     fun pause() { player.pause() }
     fun seekTo(ms: Long) {
         player.seekTo(ms)
-        onTick?.invoke(ms)
+        notifyTick(ms)
     }
     fun speed(s: Float) {
         player.playbackParameters = PlaybackParameters(DubbingTiming.normalizePlayerSpeed(s))
