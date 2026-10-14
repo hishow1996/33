@@ -35,6 +35,13 @@ class PcmDecodeLimitPolicyTest {
         assertTrue(samples > 0L)
     }
 
+    @Test
+    fun veryLargeFiniteDurationDoesNotOverflowTheSampleLimit() {
+        val samples = PcmDecodeLimitPolicy.maxSourceSamples(48_000, 2, Long.MAX_VALUE - 1L)
+        assertEquals(2_147_483_646L, samples)
+        assertEquals(0L, samples % 2L)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsInvalidChannelCount() {
         PcmDecodeLimitPolicy.maxSourceSamples(48_000, 0, 180_000L)
