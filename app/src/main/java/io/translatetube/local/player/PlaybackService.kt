@@ -156,7 +156,7 @@ class PlaybackService : MediaSessionService() {
     private var speakerJob: Job? = null
     private val asrAudioDownloadLocks = KeyedMutex<String>()
     // Do not evict downloaded audio while MediaExtractor is actively reading it.
-    private val activeAsrAudioPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val activeAsrAudioPaths = ActiveFileLeaseRegistry()
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -1255,7 +1255,7 @@ class PlaybackService : MediaSessionService() {
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
-                leasedAudioPath?.let(activeAsrAudioPaths::add)
+                activeAsrAudioPaths.acquire(leasedAudioPath)
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcmFile = try {
@@ -2277,7 +2277,7 @@ class PlaybackService : MediaSessionService() {
     /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
     private fun releaseActiveAsrAudio(path: String?) {
         if (path.isNullOrBlank()) return
-        activeAsrAudioPaths.remove(path)
+        activeAsrAudioPaths.release(path)
         val file = File(path)
         file.parentFile?.let { parent ->
             pruneAsrAudioCache(parent, keep = file.takeIf { it.isFile })
@@ -2712,7 +2712,7 @@ class PlaybackService : MediaSessionService() {
                         sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
                     val leasedPath = sourceFile?.absolutePath
-                    leasedPath?.let(activeAsrAudioPaths::add)
+                    activeAsrAudioPaths.acquire(leasedPath)
                     try {
                         AudioExtract.decodeTo16kMono(
                             this@PlaybackService,
