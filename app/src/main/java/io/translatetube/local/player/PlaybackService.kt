@@ -1052,7 +1052,7 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     "$key|zh|$selectedTranslationId"
                 }
-            val sourceSubtitleCacheKey = "$key|source|youtube"
+            val sourceSubtitleCacheKey = if (videoId != null) "$key|source|youtube" else "$key|source|local-asr-v1"
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
@@ -1103,7 +1103,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             val sourceCached = if (
-                resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
+                resumeState == null && (videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -1185,14 +1185,15 @@ class PlaybackService : MediaSessionService() {
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
-            if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
+            if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
+                (videoId != null || localUri != null)) {
                 if (restoredSourceLines != null) {
                     lines = restoredSourceLines
                     srcLang = restoredSourceLang
                         ?: detectLangFromText(restoredSourceLines.take(12).joinToString(" ") { it.text })
                     android.util.Log.i(
                         "PlaybackService",
-                        "Using cached/validated source subtitles for $videoId (${restoredSourceLines.size} cues)"
+                        "Using cached/validated source subtitles for $key (${restoredSourceLines.size} cues)"
                     )
                 } else {
                     fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
@@ -1243,7 +1244,7 @@ class PlaybackService : MediaSessionService() {
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
-                val storedPartialAsr = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                val storedPartialAsr = if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()) {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
                 if (storedPartialAsr != null) {
@@ -1290,7 +1291,7 @@ class PlaybackService : MediaSessionService() {
                         }
                     }.getOrNull()
                     if (restored == null) {
-                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $videoId")
+                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     } else {
                         restoredProcessedSegments = restored.processedSegments
@@ -1298,7 +1299,7 @@ class PlaybackService : MediaSessionService() {
                         restoredAsrLanguage = restored.sourceLang
                         android.util.Log.i(
                             "PlaybackService",
-                            "Resuming ASR for $videoId at segment ${restoredProcessedSegments}/${segs.size}",
+                            "Resuming ASR for $key at segment ${restoredProcessedSegments}/${segs.size}",
                         )
                     }
                 }
@@ -1331,7 +1332,7 @@ class PlaybackService : MediaSessionService() {
                             rows.addAll(chunkRows)
                             processed = chunkEnd
 
-                            if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                            if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()) {
                                 ensureCurrentSession(key)
                                 val rowsJson = org.json.JSONArray()
                                 rows.forEach { (startMs, endMs, text) ->
@@ -1398,7 +1399,7 @@ class PlaybackService : MediaSessionService() {
                         SubLine(index, startMs, endMs, text)
                     }
                 if (transcribedLines.isEmpty()) {
-                    if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                    if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     }
                     throw IllegalStateException(
@@ -1416,7 +1417,7 @@ class PlaybackService : MediaSessionService() {
                 // source-audio cache is retained for retries and later speaker diarization, while
                 // this subtitle cache lets translation retry without running ASR again.
                 ensureCurrentSession(key)
-                if (videoId != null && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                if ((videoId != null || localUri != null) && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for (line in transcribedLines) {
                         sourceArr.put(
