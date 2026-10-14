@@ -32,6 +32,17 @@ class MediaUrlCacheIdentityTest {
     }
 
     @Test
+    fun opaqueEndpointTokenIsHashedAndKeepsDifferentMediaIdentitiesSeparate() {
+        val first = "https://api.example/stream?token=asset-secret-one"
+        val second = "https://api.example/stream?token=asset-secret-two"
+        val firstCanonical = MediaUrlCacheIdentity.canonicalUrl(first)
+
+        assertNotEquals(MediaUrlCacheIdentity.key(first), MediaUrlCacheIdentity.key(second))
+        assertFalse(firstCanonical.contains("asset-secret-one"))
+        assertFalse(firstCanonical.contains("asset-secret-two"))
+    }
+
+    @Test
     fun cloudSignedParametersAreRemovedWithoutDroppingUnrelatedParameters() {
         val url = "https://cdn.example/v.m4s?track=audio&X-Amz-Signature=secret&X-Amz-Credential=account&part=3"
         val canonical = MediaUrlCacheIdentity.canonicalUrl(url)
