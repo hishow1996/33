@@ -1866,6 +1866,9 @@ class PlaybackService : MediaSessionService() {
                         error = e.message ?: "API 翻译失败",
                         muteOriginal = false,
                         noModelHint = null,
+                        subtitleTrackStatus = if (extractedLocalAudioForAsr) {
+                            "本地音轨已提取并识别字幕，但中文字幕翻译失败；请检查翻译引擎后点击重试。"
+                        } else it.subtitleTrackStatus,
                     )
                 }
             } else {
@@ -1881,6 +1884,13 @@ class PlaybackService : MediaSessionService() {
                         error = e.message ?: "视频解析或配音初始化失败",
                         muteOriginal = false,
                         noModelHint = null,
+                        subtitleTrackStatus = if (extractedLocalAudioForAsr) {
+                            if (ui.value.lines.isNotEmpty()) {
+                                "本地音轨识别已完成，但后续处理失败；已保留字幕结果，点击重试可继续。"
+                            } else {
+                                "本地视频音轨提取或语音识别失败；请确认文件包含可读取的音轨。"
+                            }
+                        } else it.subtitleTrackStatus,
                     )
                 }
             } else {
