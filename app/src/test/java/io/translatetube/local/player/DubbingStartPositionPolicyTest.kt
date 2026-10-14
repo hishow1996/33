@@ -40,6 +40,28 @@ class DubbingStartPositionPolicyTest {
     }
 
     @Test
+    fun refusesRequestedCueWhenLatestSeekMovedBeforeItsStart() {
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 4, lineStartMs = 400L, lineEndMs = 900L,
+                requestedPositionMs = 430L,
+                latestCursor = DubbingTimelineCursor(lineIndex = -1, positionMs = 250L),
+            ),
+        )
+    }
+
+    @Test
+    fun positionZeroIsAValidSnapshotAndDoesNotUseStaleRequestedPosition() {
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 4, lineStartMs = 400L, lineEndMs = 900L,
+                requestedPositionMs = 430L,
+                latestCursor = DubbingTimelineCursor(lineIndex = -1, positionMs = 0L),
+            ),
+        )
+    }
+
+    @Test
     fun fallsBackToRequestedPositionBeforeFirstTickerSnapshot() {
         assertEquals(
             430L,

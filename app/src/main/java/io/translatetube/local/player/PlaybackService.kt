@@ -222,6 +222,19 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
 
+                override fun onPositionDiscontinuity(
+                    oldPosition: androidx.media3.common.Player.PositionInfo,
+                    newPosition: androidx.media3.common.Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    // A seek can land inside the same subtitle cue, so comparing line indexes
+                    // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
+                    // Media3's new playhead immediately; this also covers seeks from media controls.
+                    dubbing?.stop()
+                    lastLineIdx = Int.MIN_VALUE
+                    if (::pm.isInitialized) tick(newPosition.positionMs)
+                }
+
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == androidx.media3.common.Player.STATE_READY) {
                         ui.update { state ->
