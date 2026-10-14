@@ -1199,23 +1199,24 @@ class PlaybackService : MediaSessionService() {
                 } catch (e: Exception) {
                     val failedCachedFile = audioFile as? File
                     val failedVideoId = videoId
-                    // A non-empty cache can still contain an expired URL's error page or a
-                    // truncated media container from an older version. Do not let that bad file
-                    // poison every later retry: refresh metadata and redownload only on a cache hit.
-                    if (failedVideoId == null || !audioCacheHit || failedCachedFile == null) throw e
+                    // Both a reused cache file and a just-downloaded file can contain an
+                    // HTTP error page, truncated container, or media unsupported by the decoder.
+                    // Refresh at most once; otherwise the same bad non-empty file could poison every retry.
+                    if (failedVideoId == null || failedCachedFile == null) throw e
                     // A canceled/obsolete session must not trigger an extra network download.
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     ensureCurrentSession(key)
+                    val audioOrigin = if (audioCacheHit) "缓存" else "刚下载的"
                     android.util.Log.w(
                         "PlaybackService",
-                        "Cached ASR audio could not be decoded for $failedVideoId; refreshing it once",
+                        "${audioOrigin} ASR audio could not be decoded for $failedVideoId; refreshing it once",
                         e,
                     )
                     failedCachedFile.delete()
                     File(failedCachedFile.parentFile, failedCachedFile.name + ".part").delete()
                     NewPipeRepo.invalidate(failedVideoId)
                     updateUiForSession(key) {
-                        it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "缓存音频无效，正在刷新播放地址并重新获取…")
+                        it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "${audioOrigin}音频无效，正在刷新播放地址并重新获取…")
                     }
                     val refreshedAudio = obtainAsrAudioFile(
                         failedVideoId,
