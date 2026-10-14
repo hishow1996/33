@@ -11,7 +11,7 @@ internal class Pcm16StreamingResampler(
     private val ratio: Double
     private var inputSamples = 0L
     private var nextOutputSample = 0L
-    private var previousSample: Short? = null
+    private var pendingSamples = ShortArray(0)
     private var finished = false
 
     init {
@@ -24,7 +24,17 @@ internal class Pcm16StreamingResampler(
         check(!finished) { "重采样器已结束" }
         if (input.isEmpty()) return ShortArray(0)
 
-        val chunkStart = inputSamples
+        // Keep every unconsumed input sample from the next output's left interpolation point.
+        // This handles tiny buffers where the first output cannot be emitted until later chunks.
+        val chunkStart = inputSamples - pendingSamples.size
+        val combined = if (pendingSamples.isEmpty()) {
+            input
+        } else {
+            ShortArray(pendingSamples.size + input.size).also {
+                pendingSamples.copyInto(it)
+                input.copyInto(it, destinationOffset = pendingSamples.size)
+            }
+        }
         val newInputCount = inputSamples + input.size
         val targetCountNow = (newInputCount.toDouble() / ratio).toInt().toLong()
         val estimatedOutputCount = ceil(input.size.toDouble() / ratio).toInt().coerceAtLeast(1) + 4
@@ -36,16 +46,28 @@ internal class Pcm16StreamingResampler(
             val leftIndex = floor(position).toLong()
             val rightIndex = leftIndex + 1L
             if (rightIndex >= newInputCount) break
-            val left = sampleAt(leftIndex, chunkStart, input)
-            val right = sampleAt(rightIndex, chunkStart, input)
+            val leftOffset = (leftIndex - chunkStart).toInt()
+            val rightOffset = (rightIndex - chunkStart).toInt()
+            check(leftOffset in combined.indices && rightOffset in combined.indices) {
+                "重采样器缺少跨块输入样本"
+            }
+            val left = combined[leftOffset]
+            val right = combined[rightOffset]
             val fraction = position - leftIndex
             if (produced == output.size) output = output.copyOf(output.size * 2)
             output[produced++] = (left + (right - left) * fraction).toInt().toShort()
             nextOutputSample++
         }
 
-        previousSample = input.last()
         inputSamples = newInputCount
+        if (inputSamples > 0L) {
+            val nextLeftIndex = floor(nextOutputSample.toDouble() * ratio).toLong()
+            val keepFrom = nextLeftIndex.coerceIn(chunkStart, inputSamples - 1L)
+            val keepOffset = (keepFrom - chunkStart).toInt()
+            pendingSamples = combined.copyOfRange(keepOffset, combined.size)
+        } else {
+            pendingSamples = ShortArray(0)
+        }
         return output.copyOf(produced)
     }
 
@@ -59,22 +81,13 @@ internal class Pcm16StreamingResampler(
         val remaining = (targetCount - nextOutputSample).coerceAtLeast(0L)
         require(remaining <= Int.MAX_VALUE.toLong()) { "重采样输出过长" }
         val tail = ShortArray(remaining.toInt())
-        val last = previousSample ?: return ShortArray(0)
+        val last = pendingSamples.lastOrNull()
+            ?: error("重采样器缺少最后一个输入样本")
         for (i in tail.indices) {
-            // Unavailable right samples are clamped to the final source sample, as before.
+            // Any deferred tail positions clamp to the final source sample, matching the old algorithm.
             tail[i] = last
             nextOutputSample++
         }
         return tail
-    }
-
-    private fun sampleAt(index: Long, chunkStart: Long, input: ShortArray): Short {
-        if (index < chunkStart) {
-            check(index == chunkStart - 1L) { "重采样器缺少跨块边界样本" }
-            return previousSample ?: error("重采样器缺少前一块样本")
-        }
-        val offset = (index - chunkStart).toInt()
-        check(offset in input.indices) { "重采样器读取超出当前数据块" }
-        return input[offset]
     }
 }
