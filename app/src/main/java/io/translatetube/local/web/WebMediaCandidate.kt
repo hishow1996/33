@@ -62,10 +62,36 @@ internal object WebMediaCandidatePolicy {
             else -> return null
         }
 
+        val inferredMime = when {
+            effectiveMime.isNotBlank() -> effectiveMime
+            kind == WebMediaKind.HLS -> "application/x-mpegURL"
+            kind == WebMediaKind.DASH -> "application/dash+xml"
+            kind == WebMediaKind.AUDIO_FILE -> when (extension) {
+                "m4a" -> "audio/mp4"
+                "mp3" -> "audio/mpeg"
+                "aac" -> "audio/aac"
+                "wav" -> "audio/wav"
+                "flac" -> "audio/flac"
+                "opus" -> "audio/opus"
+                else -> "audio/ogg"
+            }
+            kind == WebMediaKind.VIDEO_FILE -> when (extension) {
+                "mp4", "m4v" -> "video/mp4"
+                "webm" -> "video/webm"
+                "mov" -> "video/quicktime"
+                "ogv" -> "video/ogg"
+                "mkv" -> "video/x-matroska"
+                else -> null
+            }
+            kind == WebMediaKind.MEDIA_ELEMENT && mediaElement.equals("video", true) -> "video/mp4"
+            kind == WebMediaKind.MEDIA_ELEMENT && mediaElement.equals("audio", true) -> "audio/mp4"
+            else -> null
+        }
+
         return WebMediaCandidate(
             url = uri.normalize().toASCIIString(),
             kind = kind,
-            mimeType = effectiveMime.ifBlank { null },
+            mimeType = inferredMime,
             pageUrl = pageUrl,
         )
     }
