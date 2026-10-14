@@ -1060,19 +1060,42 @@ class PlaybackService : MediaSessionService() {
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             val translationProfileIdentity = translationEngineCacheIdentity(selectedTranslationId)
-            val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
-                ?: if (!sourceImportedLines.isNullOrEmpty()) {
+            val savedResumeCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
+            val resumeCacheMatchesProfile = resumeState != null &&
+                savedResumeCacheKey != null &&
+                TranslationCacheIdentity.matchesProfile(
+                    savedResumeCacheKey,
+                    key,
+                    selectedTranslationId,
+                    translationProfileIdentity,
+                )
+            val translationProfileChangedOnResume = resumeState != null && !resumeCacheMatchesProfile
+            val translationCacheKey = when {
+                resumeCacheMatchesProfile -> requireNotNull(savedResumeCacheKey)
+                resumeState != null && savedResumeCacheKey?.contains("|imported-") == true ->
+                    importedTranslationCacheKey(
+                        key,
+                        selectedTranslationId,
+                        resumeState.lines,
+                        translationProfileIdentity,
+                    )
+                resumeState != null ->
+                    TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
+                !sourceImportedLines.isNullOrEmpty() ->
                     importedTranslationCacheKey(
                         key,
                         selectedTranslationId,
                         sourceImportedLines,
                         translationProfileIdentity,
                     )
-                } else {
-                    TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
-                }
+                else -> TranslationCacheIdentity.videoKey(key, selectedTranslationId, translationProfileIdentity)
+            }
             updateUiForSession(key) { state ->
-                if (state.key == key) state.copy(translationCacheKey = translationCacheKey) else state
+                if (state.key == key) state.copy(
+                    translationCacheKey = translationCacheKey,
+                    progress = if (translationProfileChangedOnResume)
+                        "翻译配置已变更，正在重新翻译未完成任务…" else state.progress,
+                ) else state
             }
             val sourceSubtitleCacheKey = "$key|source|youtube"
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
