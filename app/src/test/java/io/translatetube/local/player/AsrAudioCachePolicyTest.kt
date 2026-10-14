@@ -20,7 +20,7 @@ class AsrAudioCachePolicyTest {
     fun onlyAcceptsCompleteDownloadedAudio() {
         assertTrue(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_024L))
         assertTrue(AsrAudioCachePolicy.isCompleteDownload(-1L, 1_024L))
-        assertTrue(AsrAudioCachePolicy.isCompleteDownload(0L, 1_024L))
+        assertFalse(AsrAudioCachePolicy.isCompleteDownload(0L, 1_024L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_023L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_025L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, 0L))
