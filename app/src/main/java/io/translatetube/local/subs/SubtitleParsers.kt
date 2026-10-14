@@ -76,14 +76,25 @@ object SubtitleParsers {
 
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
     fun parseTimedTextXml(src: String): List<SubLine> {
-        if (!src.contains("<transcript")) return emptyList()
+        if (!src.contains("<transcript", ignoreCase = true)) return emptyList()
         val out = mutableListOf<SubLine>()
-        val re = Regex("""<text[^>]*start="([\d.]+)"[^>]*(?:dur="([\d.]+)")?[^>]*>(.*?)</text>""", RegexOption.DOT_MATCHES_ALL)
-        re.findAll(src).forEachIndexed { i, m ->
-            val start = ((m.groupValues[1].toDoubleOrNull() ?: 0.0) * 1000.0).toLong()
-            val dur = ((m.groupValues[2].toDoubleOrNull() ?: 3.0) * 1000.0).toLong()
-            val text = android.text.Html.fromHtml(m.groupValues[3], android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
-            if (text.isNotEmpty()) out += SubLine(i, start, start + dur, text)
+        val cueRegex = Regex(
+            "<text\\b([^>]*)>(.*?)</text\\s*>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        )
+        val attributeRegex = Regex("([A-Za-z_:][\\w:.-]*)\\s*=\\s*[\"']([^\"']*)[\"']")
+        cueRegex.findAll(src).forEach { match ->
+            val attributes = attributeRegex.findAll(match.groupValues[1])
+                .associate { it.groupValues[1].lowercase(java.util.Locale.ROOT) to it.groupValues[2] }
+            val timing = TimedTextCueTimingPolicy.parse(attributes["start"], attributes["dur"])
+                ?: return@forEach
+            val text = android.text.Html.fromHtml(
+                match.groupValues[2],
+                android.text.Html.FROM_HTML_MODE_LEGACY,
+            ).toString().replace('\u00a0', ' ').trim()
+            if (text.isNotEmpty()) {
+                out += SubLine(out.size, timing.startMs, timing.endMs, text)
+            }
         }
         return out
     }
