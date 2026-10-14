@@ -274,9 +274,9 @@ internal class AsrAudioSegmentDownloader(
                         else -> throw IOException("音频读取失败：HTTP ${response.code}")
                     }
                 } catch (e: IOException) {
-                    // Retry a failed range a few times without discarding confirmed partial bytes.
-                    // If the connection died after writing part of a segment, the next request
-                    // starts at the actual file length and therefore does not duplicate bytes.
+                    // Retry the same range from the last fully confirmed offset. A partial
+                    // response body is rolled back inside the 206 handler before this catch runs,
+                    // so file length never advances past a range that failed Content-Range validation.
                     if (readMetadata(metaFile)?.rangeSupported == true &&
                         retriesAtOffset < MAX_RANGE_RETRIES
                     ) {
