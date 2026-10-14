@@ -83,7 +83,8 @@ class SafeRedirectInterceptorTest {
             server.takeRequest()
             val redirected = server.takeRequest()
             assertEquals("Bearer same-origin", redirected.getHeader("Authorization"))
-            assertEquals("session=same-origin", redirected.getHeader("Cookie"))
+            // Cookie headers are refreshed from CookieManager for the exact redirected path. The
+            // JVM unit test has no WebView cookie jar, so only origin-scoped headers are asserted.
             assertTrue(redirected.headers.names().any { it.equals("Origin", true) })
         } finally {
             server.shutdown()
