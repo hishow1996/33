@@ -29,6 +29,7 @@ import io.translatetube.local.translate.MlKitEngine
 import io.translatetube.local.translate.GoogleHybridEngine
 import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
+import io.translatetube.local.tts.KokoroVoiceRange
 import io.translatetube.local.tts.TtsEngine
 import io.translatetube.local.yt.NewPipeRepo
 import io.translatetube.local.yt.SubtitleTrackOption
@@ -2343,7 +2344,7 @@ class PlaybackService : MediaSessionService() {
                 if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
                     throw IllegalStateException("已选择 Kokoro，但配音模型尚未就绪")
                 }
-                KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
+                KokoroTts(this, speakerId = KokoroVoiceRange.clampSpeakerId(prefs.getInt("kokoro_speaker", KokoroVoiceRange.DEFAULT_SPEAKER_ID)))
             }
             else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
         }
@@ -2533,7 +2534,7 @@ class PlaybackService : MediaSessionService() {
             "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
         }
         val sessionSourceLang = sessionState.sourceLang
-        val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
+        val preferredVoice = KokoroVoiceRange.clampSpeakerId(getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", KokoroVoiceRange.DEFAULT_SPEAKER_ID))
         speakerJob = scope.launch {
             var pendingTts: TtsEngine? = null
             var oldEngineRetired = false
@@ -2881,7 +2882,7 @@ class PlaybackService : MediaSessionService() {
         if (sessionKey.isBlank() || videoKey != sessionKey) return
         val oldLines = sessionState.lines
         if (index !in oldLines.indices) return
-        val selectedVoice = speakerId.coerceIn(-1, 53)
+        val selectedVoice = KokoroVoiceRange.clampSelectionId(speakerId)
         if (oldLines[index].speakerId == selectedVoice) return
 
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)

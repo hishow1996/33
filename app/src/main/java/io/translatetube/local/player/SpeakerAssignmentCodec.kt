@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.tts.KokoroVoiceRange
+
 /**
  * Versioned, text-only representation of the user's per-video voice assignments.
  * Kept free of Android dependencies so decoding/validation can be unit-tested on the JVM.
@@ -18,13 +20,13 @@ internal object SpeakerAssignmentCodec {
     fun encode(snapshot: SpeakerAssignmentSnapshot): String {
         val parts = mutableListOf(VERSION)
         snapshot.speakerVoices.toSortedMap().forEach { (speaker, voice) ->
-            if (speaker in 0..53 && voice in -1..53) parts += "s:$speaker=$voice"
+            if (speaker in 0..53 && voice in -1..KokoroVoiceRange.MAX_SPEAKER_ID) parts += "s:$speaker=$voice"
         }
         snapshot.lineVoices.toSortedMap().forEach { (key, voice) ->
-            if (isValidLineKey(key) && voice in -1..53) parts += "v:$key=$voice"
+            if (isValidLineKey(key) && voice in -1..KokoroVoiceRange.MAX_SPEAKER_ID) parts += "v:$key=$voice"
         }
         snapshot.lineOverrides.toSortedMap().forEach { (key, voice) ->
-            if (isValidLineKey(key) && voice in -1..53) parts += "m:$key=$voice"
+            if (isValidLineKey(key) && voice in -1..KokoroVoiceRange.MAX_SPEAKER_ID) parts += "m:$key=$voice"
         }
         return parts.joinToString("|")
     }
@@ -41,7 +43,7 @@ internal object SpeakerAssignmentCodec {
             val equals = part.indexOf('=')
             if (equals <= 0 || equals == part.lastIndex) continue
             val left = part.substring(0, equals)
-            val voice = part.substring(equals + 1).toIntOrNull()?.takeIf { it in -1..53 } ?: continue
+            val voice = part.substring(equals + 1).toIntOrNull()?.takeIf { it in -1..KokoroVoiceRange.MAX_SPEAKER_ID } ?: continue
             val kind = left.substringBefore(':')
             val key = left.substringAfter(':', "")
             when (kind) {

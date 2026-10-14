@@ -21,7 +21,7 @@ interface TtsEngine {
 }
 
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
-class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
+class KokoroTts(private val ctx: Context, private val speakerId: Int = KokoroVoiceRange.DEFAULT_SPEAKER_ID, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
 
     // Model assets can be refreshed independently of the app version. Include file metadata so
@@ -43,7 +43,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     }
 
     override val cacheKey: String
-        get() = "$name-model-v2-${modelAssetsFingerprint}-default-${speakerId.coerceIn(0, 53)}"
+        get() = "$name-model-v2-${modelAssetsFingerprint}-default-${KokoroVoiceRange.clampSpeakerId(speakerId)}"
 
     private val tts: OfflineTts
 
@@ -73,7 +73,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
-        val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
+        val selectedSpeaker = KokoroVoiceRange.clampSpeakerId(if (speakerId >= 0) speakerId else this.speakerId)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
         val sampleRate = audio.sampleRate

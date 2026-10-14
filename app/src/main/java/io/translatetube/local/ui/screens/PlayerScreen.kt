@@ -1,5 +1,7 @@
 package io.translatetube.local.ui.screens
 
+import io.translatetube.local.tts.KokoroVoiceRange
+
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -1404,6 +1406,7 @@ private fun SubtitleList(
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
                 val active = i == state.currentLine
                 val activeDub = active && state.dubbingOn
+                var voiceMenuExpanded by remember(i) { mutableStateOf(false) }
                 val dubbingScale by rememberInfiniteTransition(label = "dubbingLinePulse").animateFloat(
                     initialValue = 1f,
                     targetValue = if (activeDub) 1.025f else 1f,
@@ -1465,24 +1468,44 @@ private fun SubtitleList(
                     }
                     if (active) {
                         Spacer(Modifier.height(7.dp))
-                        Surface(
-                            onClick = {
-                                val ids = listOf(-1, 0, 1, 2, 3)
-                                val index = ids.indexOf(line.speakerId).let { if (it < 0) 0 else it }
-                                svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
-                            },
-                            shape = RoundedCornerShape(50),
-                            color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
-                            contentColor = if (activeDub) Color(0xFF30343B) else SubText,
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        Box {
+                            Surface(
+                                onClick = { voiceMenuExpanded = true },
+                                shape = RoundedCornerShape(50),
+                                color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
+                                contentColor = if (activeDub) Color(0xFF30343B) else SubText,
                             ) {
-                                Icon(Icons.Filled.Face, contentDescription = "切换配音人物", modifier = Modifier.size(16.dp))
-                                Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
-                                Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(Icons.Filled.Face, contentDescription = "选择配音音色", modifier = Modifier.size(16.dp))
+                                    Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
+                                    Icon(Icons.Filled.ExpandMore, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = voiceMenuExpanded,
+                                onDismissRequest = { voiceMenuExpanded = false },
+                                modifier = Modifier.heightIn(max = 420.dp),
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("默认音色（设置中的音色）") },
+                                    onClick = {
+                                        voiceMenuExpanded = false
+                                        svc?.setLineSpeaker(i, -1)
+                                    },
+                                )
+                                (0..KokoroVoiceRange.MAX_SPEAKER_ID).forEach { voiceId ->
+                                    DropdownMenuItem(
+                                        text = { Text("Kokoro 音色 $voiceId") },
+                                        onClick = {
+                                            voiceMenuExpanded = false
+                                            svc?.setLineSpeaker(i, voiceId)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
