@@ -9,6 +9,8 @@ import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import android.webkit.CookieManager
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -56,13 +58,14 @@ internal class HlsAudioSegmentCache(
             throw IOException("无法创建当前视频的 HLS 分段目录")
         }
         pruneOldSegmentCaches(root, sourceFolder)
+        val credentialOrigin = originOf(playlistUrl)
 
         var currentPlaylistUrl = playlistUrl
         var playlistText: String
         var depth = 0
         while (true) {
             checkActive()
-            playlistText = fetchPlaylist(currentPlaylistUrl, headers, checkActive)
+            playlistText = fetchPlaylist(currentPlaylistUrl, headers, credentialOrigin, checkActive)
             val next = HlsPlaylistParser.selectPlaylistUrl(currentPlaylistUrl, playlistText)
                 ?: break
             if (++depth > MAX_MANIFEST_DEPTH) {
@@ -93,7 +96,8 @@ internal class HlsAudioSegmentCache(
             checkActive()
             val mapFile = segmentFile(sourceFolder, "init", mapUrl)
             ensureCachedSegment(
-                downloader, mapUrl, mapFile, sourceKey, headers, checkActive
+                downloader, mapUrl, mapFile, sourceKey,
+                headersForTarget(mapUrl, headers, credentialOrigin), checkActive
             )
             orderedFiles += mapFile
         }
@@ -103,7 +107,7 @@ internal class HlsAudioSegmentCache(
             val segmentFile = segmentFile(sourceFolder, "seg-$index", segment.url)
             ensureCachedSegment(
                 downloader, segment.url, segmentFile, "$sourceKey:segment:$index",
-                headers, checkActive,
+                headersForTarget(segment.url, headers, credentialOrigin), checkActive,
             )
             orderedFiles += segmentFile
             onProgress(index + 1, playlist.segments.size)
@@ -220,12 +224,13 @@ internal class HlsAudioSegmentCache(
     private fun fetchPlaylist(
         url: String,
         headers: Map<String, String>,
+        credentialOrigin: String,
         checkActive: () -> Unit,
     ): String {
-        val request = buildRequest(url, headers)
+        val request = buildRequest(url, headersForTarget(url, headers, credentialOrigin))
             .header("Accept", "application/vnd.apple.mpegurl, application/x-mpegURL, */*")
             .build()
-        client.newCall(request).execute().use { response ->
+        SafeMediaHttp.execute(client, request).use { response ->
             checkActive()
             if (!response.isSuccessful) throw IOException("HLS 清单读取失败：HTTP ${response.code}")
             val body = response.body ?: throw IOException("HLS 清单响应为空")
@@ -254,6 +259,41 @@ internal class HlsAudioSegmentCache(
             return text
         }
     }
+
+    private fun headersForTarget(
+        url: String,
+        captured: Map<String, String>,
+        credentialOrigin: String,
+    ): Map<String, String> {
+        val targetOrigin = originOf(url)
+        val sameOrigin = targetOrigin == credentialOrigin
+        val headers = LinkedHashMap<String, String>()
+        captured.forEach { (name, value) ->
+            val normalized = name.trim().lowercase(java.util.Locale.ROOT)
+            val allowed = normalized in FORWARDABLE_HEADERS
+            val credential = normalized in setOf("cookie", "authorization", "origin")
+            val safeValue = value.isNotBlank() &&
+                value.none { it == '\\r' || it == '\\n' || it == '\\u0000' }
+            if (allowed && safeValue && (!credential || sameOrigin)) {
+                headers[name.trim()] = value
+            }
+        }
+        // Cookies are retrieved for each concrete manifest/segment URL rather than copied across
+        // CDN hosts from the first discovered stream.
+        runCatching { CookieManager.getInstance().getCookie(url) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { headers["Cookie"] = it }
+        return headers
+    }
+
+    private fun originOf(value: String): String = runCatching {
+        val uri = URI(value)
+        val scheme = uri.scheme.orEmpty().lowercase(java.util.Locale.ROOT)
+        val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+        val port = if (uri.port >= 0) uri.port else if (scheme == "https") 443 else 80
+        "$scheme://$host:$port"
+    }.getOrDefault("")
 
     private fun buildRequest(url: String, headers: Map<String, String>): Request.Builder {
         val builder = Request.Builder()
