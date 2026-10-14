@@ -83,8 +83,11 @@ class DubbingEngine(
     private val synthStartLock = Any()
     private val cacheInitGeneration = AtomicInteger(0)
 
-    private val _preparedUntil = MutableStateFlow(0)   // 已合成到第几行（0-based 含义：前 N 行就绪）
+    private val _preparedUntil = MutableStateFlow(0)   // 连续前缀就绪行数，用于定位最早未就绪行
     val preparedUntil: StateFlow<Int> = _preparedUntil
+    private val _preparedCount = MutableStateFlow(0)
+    /** Includes ready rows after the current gap, so progress remains useful after prioritizing a seek. */
+    val preparedCount: StateFlow<Int> = _preparedCount
     private val _totalLines = MutableStateFlow(0)
     val totalLines: StateFlow<Int> = _totalLines
 
@@ -109,6 +112,7 @@ class DubbingEngine(
         firstSynthesisReported.set(false)
         _totalLines.value = this.lines.size
         _preparedUntil.value = 0
+        _preparedCount.value = 0
         readiness.clear()
         pending.clear()
         priorityTarget = -1
@@ -412,13 +416,16 @@ class DubbingEngine(
 
     private fun markCuePending(idx: Int) {
         readiness.markPending(idx)
+        _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
         // If a previously ready cue becomes invalid, progress must no longer claim that its
         // contiguous prefix is complete. Later ready cues remain available independently.
         if (idx >= 0 && idx < _preparedUntil.value) _preparedUntil.value = idx
     }
 
     private fun bumpPrepared() {
-        // The display remains a contiguous count, but playback readiness is tracked per line.
+        // Keep both the contiguous prefix and the actual ready-cue count. The latter is used for
+        // progress after a seek prioritizes a later subtitle before an earlier gap is filled.
+        _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
         var n = _preparedUntil.value
         while (n < lines.size && readiness.isReady(n)) n++
         _preparedUntil.value = n
