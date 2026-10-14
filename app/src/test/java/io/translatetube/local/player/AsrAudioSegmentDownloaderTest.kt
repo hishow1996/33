@@ -68,7 +68,9 @@ class AsrAudioSegmentDownloaderTest {
 
             val destination = File(directory, "audio.bin")
             AsrAudioSegmentDownloader(
-                client = okhttp3.OkHttpClient(),
+                // Disable OkHttp's transparent retry so this test exercises the downloader's
+                // own rollback of an incomplete range and explicit same-offset retry.
+                client = okhttp3.OkHttpClient.Builder().retryOnConnectionFailure(false).build(),
                 maxBytes = 100L,
                 chunkBytes = 4L,
             ).download(
