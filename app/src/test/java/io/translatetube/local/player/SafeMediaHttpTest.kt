@@ -40,6 +40,29 @@ class SafeMediaHttpTest {
         }
     }
 
+
+    @Test
+    fun forwardsValidatedRangeHeaderForPartialMediaRequests() {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(206)
+                    .addHeader("Content-Range", "bytes 4-7/12")
+                    .setBody("data")
+            )
+
+            SafeMediaHttp.execute(
+                url = server.url("/media.bin").toString(),
+                requestHeaders = mapOf("Range" to "bytes=4-7"),
+            ).use { response ->
+                assertEquals(206, response.code)
+                assertEquals("data", response.body?.string())
+            }
+            assertEquals("bytes=4-7", server.takeRequest().getHeader("Range"))
+        }
+    }
+
     @Test
     fun recognizesCommonHtmlAndJsonErrorPayloads() {
         assertTrue(isHtmlOrJsonContentType("text/html; charset=utf-8"))

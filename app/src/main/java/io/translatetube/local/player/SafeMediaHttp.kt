@@ -59,6 +59,13 @@ internal object SafeMediaHttp {
                         current.port == cookieOrigin.port -> {
                         builder.header("Cookie", value)
                     }
+                    name.equals("Range", ignoreCase = true) -> {
+                        val range = value.trim()
+                        if (!Regex("""(?i)^bytes=\d+-\d+$""").matches(range)) {
+                            throw IllegalArgumentException("媒体 Range 请求头无效。")
+                        }
+                        builder.header("Range", range)
+                    }
                 }
             }
 

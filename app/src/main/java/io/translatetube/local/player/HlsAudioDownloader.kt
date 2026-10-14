@@ -29,7 +29,28 @@ internal object HlsAudioDownloader {
 
     private data class FetchedText(val finalUrl: String, val text: String)
     private data class Variant(val uri: String, val bandwidth: Long, val audioGroup: String?)
-    private data class MediaPlaylist(val initSegment: String?, val segments: List<String>)
+
+    internal data class SegmentSource(
+        val url: String,
+        val byteRangeStart: Long? = null,
+        val byteRangeLength: Long? = null,
+    ) {
+        init {
+            require((byteRangeStart == null) == (byteRangeLength == null))
+            require(byteRangeStart == null || byteRangeStart >= 0L)
+            require(byteRangeLength == null || byteRangeLength > 0L)
+            if (byteRangeStart != null && byteRangeLength != null) {
+                require(byteRangeStart <= Long.MAX_VALUE - byteRangeLength)
+            }
+        }
+    }
+
+    internal data class MediaPlaylist(
+        val initSegment: SegmentSource?,
+        val segments: List<SegmentSource>,
+    )
+
+    private data class ByteRangeSpec(val length: Long, val offset: Long?)
 
     fun isManifestUrl(value: String): Boolean = runCatching {
         URI(value.trim()).rawPath.orEmpty().endsWith(".m3u8", ignoreCase = true)
@@ -138,10 +159,16 @@ internal object HlsAudioDownloader {
                 var cachedBytes = 0L
                 segmentFiles.forEachIndexed { index, segmentFile ->
                     val age = System.currentTimeMillis() - segmentFile.lastModified()
+                        val expectedRangeLength = sources[index].byteRangeLength
+                    val hasValidLength = if (expectedRangeLength != null) {
+                        segmentFile.length() == expectedRangeLength
+                    } else {
+                        AsrAudioCachePolicy.isCompleteDownload(-1L, segmentFile.length())
+                    }
                     val reusable = segmentFile.isFile &&
                         segmentFile.lastModified() > 0L &&
                         age in 0L..AsrAudioCachePolicy.TTL_MS &&
-                        AsrAudioCachePolicy.isCompleteDownload(-1L, segmentFile.length())
+                        hasValidLength
                     reusableSegments[index] = reusable
                     if (reusable) {
                         cachedBytes += segmentFile.length()
@@ -162,7 +189,7 @@ internal object HlsAudioDownloader {
 
                 val cachedSegments = mutableListOf<File>()
                 var totalCachedBytes = cachedBytes
-                sources.forEachIndexed { index, segmentUrl ->
+                sources.forEachIndexed { index, source ->
                     ownerJob?.ensureActive()
                     val segmentFile = segmentFiles[index]
                     val reusable = reusableSegments[index]
@@ -172,7 +199,9 @@ internal object HlsAudioDownloader {
                     } else {
                         onProgress("正在缓存网页音轨 ${index + 1}/${sources.size}")
                         downloadSegment(
-                            url = segmentUrl,
+                            url = source.url,
+                            byteRangeStart = source.byteRangeStart,
+                            byteRangeLength = source.byteRangeLength,
                             destination = segmentFile,
                             headers = requestHeaders,
                             rootOrigin = rootOrigin,
@@ -239,11 +268,13 @@ internal object HlsAudioDownloader {
         }
     }
 
-    private fun prepareSegmentCache(directory: File, urls: List<String>) {
+    private fun prepareSegmentCache(directory: File, sources: List<SegmentSource>) {
         val marker = File(directory, "manifest.sha256")
-        // Segment links often contain short-lived signatures. Hash their stable URL identity
-        // so a renewed token can resume already-complete segments; actual request URLs stay intact.
-        val fingerprint = sha256(urls.joinToString("\n") { MediaUrlCacheIdentity.canonicalUrl(it) })
+        // Include byte ranges as well as canonical URLs so different slices of one object never
+        // reuse each other's cached bytes. Signed query values are still excluded from the marker.
+        val fingerprint = sha256(sources.joinToString("\n") { source ->
+            "${MediaUrlCacheIdentity.canonicalUrl(source.url)}|${source.byteRangeStart ?: ""}|${source.byteRangeLength ?: ""}"
+        })
         val hasMatchingManifest = marker.isFile &&
             runCatching { marker.readText(Charsets.UTF_8).trim() == fingerprint }.getOrDefault(false)
         if (!hasMatchingManifest) {
@@ -301,6 +332,8 @@ internal object HlsAudioDownloader {
 
     private suspend fun downloadSegment(
         url: String,
+        byteRangeStart: Long?,
+        byteRangeLength: Long?,
         destination: File,
         headers: Map<String, String>,
         rootOrigin: String,
@@ -309,6 +342,26 @@ internal object HlsAudioDownloader {
         onRetry: (attemptNumber: Int) -> Unit,
     ): File {
         val part = File(destination.parentFile, destination.name + ".part")
+        val byteRangeEnd = if (byteRangeStart != null && byteRangeLength != null &&
+            byteRangeStart >= 0L && byteRangeLength > 0L &&
+            byteRangeStart <= Long.MAX_VALUE - byteRangeLength
+        ) {
+            byteRangeStart + byteRangeLength - 1L
+        } else if (byteRangeStart == null && byteRangeLength == null) {
+            null
+        } else {
+            throw IllegalArgumentException("HLS 字节范围无效。")
+        }
+        if (byteRangeLength != null &&
+            (byteRangeLength > MAX_BYTES || cachedBytes > MAX_BYTES - byteRangeLength)
+        ) {
+            throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
+        }
+        val segmentHeaders = if (byteRangeEnd != null) {
+            headers + ("Range" to "bytes=${byteRangeStart}-${byteRangeEnd}")
+        } else {
+            headers
+        }
         var lastError: Exception? = null
         for (attempt in 1..3) {
             ownerJob?.ensureActive()
@@ -316,10 +369,18 @@ internal object HlsAudioDownloader {
             try {
                 SafeMediaHttp.execute(
                     url = url,
-                    requestHeaders = headers,
+                    requestHeaders = segmentHeaders,
                     allowedCookieOrigin = rootOrigin,
                 ).use { response ->
-                    if (!response.isSuccessful) {
+                    if (byteRangeEnd != null) {
+                        val expectedContentRange = Regex(
+                            """(?i)^bytes\s+${byteRangeStart}-${byteRangeEnd}/(?:\d+|\*)$"""
+                        )
+                        val contentRange = response.header("Content-Range").orEmpty().trim()
+                        if (response.code != 206 || !expectedContentRange.matches(contentRange)) {
+                            throw IllegalStateException("服务器未按 HLS BYTERANGE 返回请求的字节范围（HTTP ${response.code}）。")
+                        }
+                    } else if (!response.isSuccessful) {
                         throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
                     }
                     val body = response.body ?: throw IllegalStateException("HLS 片段响应为空。")
@@ -327,6 +388,9 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录。")
                     }
                     val expectedBytes = body.contentLength()
+                    if (byteRangeLength != null && expectedBytes >= 0L && expectedBytes != byteRangeLength) {
+                        throw IllegalStateException("HLS BYTERANGE 响应长度与清单声明不一致。")
+                    }
                     if (expectedBytes > MAX_BYTES || cachedBytes + expectedBytes.coerceAtLeast(0L) > MAX_BYTES) {
                         throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
                     }
@@ -361,6 +425,9 @@ internal object HlsAudioDownloader {
                     }
                     if (!AsrAudioCachePolicy.isCompleteDownload(expectedBytes, actualBytes)) {
                         throw IllegalStateException("HLS 片段下载不完整：预期 ${expectedBytes} 字节，实际收到 ${actualBytes} 字节。")
+                    }
+                    if (byteRangeLength != null && actualBytes != byteRangeLength) {
+                        throw IllegalStateException("HLS BYTERANGE 片段不完整：清单要求 ${byteRangeLength} 字节，实际收到 ${actualBytes} 字节。")
                     }
                 }
                 if (!part.renameTo(destination)) {
@@ -423,15 +490,12 @@ internal object HlsAudioDownloader {
         }
     }
 
-    private fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
+    internal fun parseMediaPlaylist(baseUrl: String, body: String): MediaPlaylist {
         val lines = body.removePrefix("\uFEFF").lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         if (lines.none { it == "#EXTM3U" }) {
             throw IllegalStateException("服务器返回的内容不是有效 HLS 清单。")
         }
 
-        if (lines.any { it.startsWith("#EXT-X-BYTERANGE", ignoreCase = true) }) {
-            throw IllegalStateException("该 HLS 使用 BYTERANGE 字节范围片段，当前版本暂不支持。")
-        }
         ensurePlaylistIsUnencrypted(body)
         if (lines.any {
                 it.equals("#EXT-X-DISCONTINUITY", ignoreCase = true) ||
@@ -441,28 +505,71 @@ internal object HlsAudioDownloader {
         }
         validateNoMissingSegments(body)
 
-        var initSegment: String? = null
-        val segments = mutableListOf<String>()
+        var initSegment: SegmentSource? = null
+        val segments = mutableListOf<SegmentSource>()
+        var pendingByteRange: ByteRangeSpec? = null
+        var previousRangeUrl: String? = null
+        var previousRangeEndExclusive: Long? = null
         var endList = false
         for (line in lines) {
             when {
-                line.equals("#EXT-X-ENDLIST", ignoreCase = true) -> endList = true
+                line.equals("#EXT-X-ENDLIST", ignoreCase = true) -> {
+                    if (pendingByteRange != null) {
+                        throw IllegalStateException("HLS BYTERANGE 后缺少对应的媒体片段。")
+                    }
+                    endList = true
+                }
                 line.startsWith("#EXT-X-MAP:", ignoreCase = true) -> {
                     val attributes = parseAttributes(line.substringAfter(':'))
-                    if (!attributes["BYTERANGE"].isNullOrBlank()) {
-                        throw IllegalStateException("该 HLS 初始化片段使用 BYTERANGE，当前暂不支持。")
-                    }
                     val path = attributes["URI"]
                         ?: throw IllegalStateException("HLS 初始化片段缺少 URI。")
                     val resolvedInit = resolveUrl(baseUrl, path)
-                    if (initSegment != null && initSegment != resolvedInit) {
+                    val rawRange = attributes["BYTERANGE"]
+                    val initSource = if (rawRange.isNullOrBlank()) {
+                        SegmentSource(resolvedInit)
+                    } else {
+                        val range = parseByteRangeSpec(rawRange)
+                        val start = range.offset
+                            ?: throw IllegalStateException("HLS 初始化片段 BYTERANGE 缺少明确偏移量。")
+                        SegmentSource(resolvedInit, start, range.length)
+                    }
+                    if (initSegment != null && initSegment != initSource) {
                         throw IllegalStateException("该 HLS 使用多个不同的初始化片段，当前版本无法安全拼接。")
                     }
-                    initSegment = resolvedInit
+                    initSegment = initSource
+                }
+                line.startsWith("#EXT-X-BYTERANGE:", ignoreCase = true) -> {
+                    if (pendingByteRange != null) {
+                        throw IllegalStateException("HLS 在同一媒体片段前声明了多个 BYTERANGE。")
+                    }
+                    pendingByteRange = parseByteRangeSpec(line.substringAfter(':'))
+                }
+                line.startsWith("#EXT-X-BYTERANGE", ignoreCase = true) -> {
+                    throw IllegalStateException("HLS BYTERANGE 标签格式无效。")
                 }
                 line.startsWith("#") -> Unit
                 else -> {
-                    segments += resolveUrl(baseUrl, line)
+                    val resolved = resolveUrl(baseUrl, line)
+                    val range = pendingByteRange
+                    val source = if (range == null) {
+                        SegmentSource(resolved)
+                    } else {
+                        val start = range.offset
+                            ?: previousRangeEndExclusive.takeIf { previousRangeUrl == resolved }
+                            ?: throw IllegalStateException(
+                                "HLS BYTERANGE 未给出偏移量，且前一个片段不是同一资源的字节范围。"
+                            )
+                        SegmentSource(resolved, start, range.length)
+                    }
+                    segments += source
+                    if (range != null) {
+                        previousRangeUrl = resolved
+                        previousRangeEndExclusive = source.byteRangeStart!! + range.length
+                    } else {
+                        previousRangeUrl = null
+                        previousRangeEndExclusive = null
+                    }
+                    pendingByteRange = null
                     if (segments.size > MAX_SEGMENTS) {
                         throw IllegalStateException("HLS 片段数量超过 ${MAX_SEGMENTS}，已停止以保护手机资源。")
                     }
@@ -512,6 +619,23 @@ internal object HlsAudioDownloader {
             }
             return FetchedText(response.request.url.toString(), String(buffer.toByteArray(), Charsets.UTF_8))
         }
+    }
+
+    private fun parseByteRangeSpec(value: String): ByteRangeSpec {
+        val match = Regex("""^(\d+)(?:@(\d+))?$""").matchEntire(value.trim())
+            ?: throw IllegalStateException("HLS BYTERANGE 格式无效。")
+        val length = match.groupValues[1].toLongOrNull()
+            ?: throw IllegalStateException("HLS BYTERANGE 长度无效。")
+        if (length <= 0L) throw IllegalStateException("HLS BYTERANGE 长度必须大于零。")
+        val offsetText = match.groupValues[2]
+        val offset = if (offsetText.isEmpty()) null else {
+            offsetText.toLongOrNull()
+                ?: throw IllegalStateException("HLS BYTERANGE 偏移量无效。")
+        }
+        if (offset != null && offset > Long.MAX_VALUE - length) {
+            throw IllegalStateException("HLS BYTERANGE 范围超出了可处理的文件偏移量。")
+        }
+        return ByteRangeSpec(length, offset)
     }
 
     private fun parseAttributes(input: String): Map<String, String> {

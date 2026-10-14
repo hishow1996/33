@@ -68,6 +68,80 @@ class HlsAudioDownloaderTest {
         )
     }
 
+
+    @Test
+    fun parsesExplicitAndImplicitByteRangesForTheSameResource() {
+        val playlist = """
+            #EXTM3U
+            #EXT-X-TARGETDURATION:6
+            #EXT-X-BYTERANGE:4@0
+            media.bin
+            #EXT-X-BYTERANGE:4
+            media.bin
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val parsed = HlsAudioDownloader.parseMediaPlaylist(
+            "https://cdn.example/path/index.m3u8",
+            playlist,
+        )
+        val source = "https://cdn.example/path/media.bin"
+        assertEquals(
+            listOf(
+                HlsAudioDownloader.SegmentSource(source, 0L, 4L),
+                HlsAudioDownloader.SegmentSource(source, 4L, 4L),
+            ),
+            parsed.segments,
+        )
+    }
+
+    @Test
+    fun parsesByteRangeForFmp4InitializationSection() {
+        val playlist = """
+            #EXTM3U
+            #EXT-X-MAP:URI="media.mp4",BYTERANGE="16@0"
+            #EXT-X-BYTERANGE:8@16
+            media.mp4
+            #EXT-X-BYTERANGE:8
+            media.mp4
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val parsed = HlsAudioDownloader.parseMediaPlaylist(
+            "https://cdn.example/path/index.m3u8",
+            playlist,
+        )
+        val source = "https://cdn.example/path/media.mp4"
+        assertEquals(HlsAudioDownloader.SegmentSource(source, 0L, 16L), parsed.initSegment)
+        assertEquals(
+            listOf(
+                HlsAudioDownloader.SegmentSource(source, 16L, 8L),
+                HlsAudioDownloader.SegmentSource(source, 24L, 8L),
+            ),
+            parsed.segments,
+        )
+    }
+
+    @Test
+    fun rejectsImplicitByteRangeWithoutAnImmediatelyPrecedingRangeOfTheSameResource() {
+        val playlist = """
+            #EXTM3U
+            #EXT-X-BYTERANGE:4
+            media.bin
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.parseMediaPlaylist(
+                "https://cdn.example/path/index.m3u8",
+                playlist,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("偏移量"))
+    }
+
     @Test
     fun detectsSignedHlsManifestUrlByItsPath() {
         assertEquals(true, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8?token=private"))
