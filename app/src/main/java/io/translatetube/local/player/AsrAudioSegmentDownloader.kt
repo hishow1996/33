@@ -207,16 +207,41 @@ internal class AsrAudioSegmentDownloader(
                                 rangeSupported = true,
                             )
                             saveMetadata(metaFile, metadata!!)
-                            val received = writeRange(
-                                body.byteStream(), part, append = offset > 0L,
-                                expectedBytes = countInRange,
-                                checkActive = checkActive,
-                                onProgress = { count ->
-                                    val total = range.totalBytes ?: metadata?.totalBytes ?: -1L
-                                    onProgress(offset + count, total)
-                                },
-                            )
+                            val received = try {
+                                writeRange(
+                                    body.byteStream(), part, append = offset > 0L,
+                                    expectedBytes = countInRange,
+                                    checkActive = checkActive,
+                                    onProgress = { count ->
+                                        val total = range.totalBytes ?: metadata?.totalBytes ?: -1L
+                                        onProgress(offset + count, total)
+                                    },
+                                )
+                            } catch (e: Exception) {
+                                // A range is committed only when its entire Content-Range body has
+                                // arrived. Roll back bytes from a truncated/failed range so the
+                                // next request retries this same range, instead of treating an
+                                // unvalidated prefix as a durable resume offset.
+                                try {
+                                    truncatePartial(part, offset)
+                                } catch (rollback: Exception) {
+                                    e.addSuppressed(rollback)
+                                    discard(part, metaFile)
+                                    metadata = null
+                                }
+                                throw e
+                            }
                             if (received != countInRange) {
+                                try {
+                                    truncatePartial(part, offset)
+                                } catch (rollback: Exception) {
+                                    discard(part, metaFile)
+                                    metadata = null
+                                    throw IOException(
+                                        "音频分段不完整，且无法回滚未验证字节；已清理断点缓存",
+                                        rollback,
+                                    )
+                                }
                                 throw EOFException("音频分段中断：本段预期 $countInRange 字节，实际收到 $received 字节")
                             }
                             val newSize = part.length()
@@ -435,6 +460,21 @@ internal class AsrAudioSegmentDownloader(
         if (!temp.renameTo(file)) {
             temp.delete()
             throw IOException("无法保存音频断点信息")
+        }
+    }
+
+    private fun truncatePartial(part: File, confirmedLength: Long) {
+        require(confirmedLength >= 0L) { "已确认的音频断点不能为负数" }
+        if (!part.exists()) {
+            if (confirmedLength == 0L) return
+            throw IOException("音频断点文件丢失，无法回滚")
+        }
+        java.io.RandomAccessFile(part, "rw").use { output ->
+            if (output.length() < confirmedLength) {
+                throw IOException("音频断点短于已确认长度，无法回滚")
+            }
+            output.setLength(confirmedLength)
+            output.fd.sync()
         }
     }
 
