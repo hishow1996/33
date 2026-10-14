@@ -1,6 +1,7 @@
 package io.translatetube.local.asr
 
 import android.content.Context
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -129,7 +130,20 @@ object AudioExtract {
                     throw IllegalStateException("音频声道数不受支持：${channels}")
                 }
             }
+            fun validatePcmEncoding(encoding: Int) {
+                if (encoding != AudioFormat.ENCODING_PCM_16BIT &&
+                    encoding != AudioFormat.ENCODING_PCM_FLOAT
+                ) {
+                    throw IllegalStateException("音频解码器返回了不支持的 PCM 编码：${encoding}")
+                }
+            }
             validateOutputFormat(sourceRate, sourceChannels)
+            var pcmEncoding = if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+            } else {
+                AudioFormat.ENCODING_PCM_16BIT
+            }
+            validatePcmEncoding(pcmEncoding)
 
             // Recompute this bound if Android 9 reports the decoder's actual PCM format later.
             var maxSourceSamples = PcmDecodeLimitPolicy.maxSourceSamples(
@@ -143,6 +157,7 @@ object AudioExtract {
             var resampler: Pcm16StreamingResampler? = null
             var resamplerRate = -1
             var resamplerChannels = -1
+            var resamplerEncoding = -1
             var sawInputEos = false
             var sawOutputEos = false
             val info = MediaCodec.BufferInfo()
@@ -173,7 +188,12 @@ object AudioExtract {
                         val outputBuffer = codec.getOutputBuffer(outBufferIndex)
                             ?: throw IllegalStateException("音频解码器没有输出缓冲区")
                         val endOffset = info.offset.toLong() + info.size.toLong()
-                        if (info.offset < 0 || info.size < 0 || info.size % 2 != 0 ||
+                        val bytesPerSample = when (pcmEncoding) {
+                            AudioFormat.ENCODING_PCM_16BIT -> 2
+                            AudioFormat.ENCODING_PCM_FLOAT -> 4
+                            else -> throw IllegalStateException("音频解码器返回了不支持的 PCM 编码：${pcmEncoding}")
+                        }
+                        if (info.offset < 0 || info.size < 0 || info.size % bytesPerSample != 0 ||
                             endOffset > outputBuffer.capacity().toLong()
                         ) {
                             codec.releaseOutputBuffer(outBufferIndex, false)
@@ -185,23 +205,36 @@ object AudioExtract {
                         pcmBytes.clear()
                         pcmBytes.position(info.offset)
                         pcmBytes.limit(endOffset.toInt())
-                        val shortBuffer = pcmBytes.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                        val availableSamples = shortBuffer.remaining()
+                        val sampleBytes = pcmBytes.slice().order(ByteOrder.LITTLE_ENDIAN)
+                        val availableSamples = info.size / bytesPerSample
                         val remainingSamples = (maxSourceSamples - decodedSourceSamples)
                             .coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                         val rawTake = minOf(availableSamples, remainingSamples)
                         val take = rawTake - rawTake % sourceChannels
                         if (take > 0) {
-                            val decodedChunk = ShortArray(take)
-                            shortBuffer.get(decodedChunk, 0, take)
+                            val decodedChunk = when (pcmEncoding) {
+                                AudioFormat.ENCODING_PCM_16BIT -> ShortArray(take).also { samples ->
+                                    sampleBytes.asShortBuffer().get(samples, 0, take)
+                                }
+                                AudioFormat.ENCODING_PCM_FLOAT -> ShortArray(take).also { samples ->
+                                    val floats = sampleBytes.asFloatBuffer()
+                                    repeat(take) { index ->
+                                        samples[index] = Pcm16SampleConverter.floatToPcm16(floats.get())
+                                    }
+                                }
+                                else -> throw IllegalStateException("音频解码器返回了不支持的 PCM 编码：${pcmEncoding}")
+                            }
                             decodedSourceSamples += take
 
                             val activeResampler = resampler ?: Pcm16StreamingResampler(sourceRate, 16_000).also {
                                 resampler = it
                                 resamplerRate = sourceRate
                                 resamplerChannels = sourceChannels
+                                resamplerEncoding = pcmEncoding
                             }
-                            if (sourceRate != resamplerRate || sourceChannels != resamplerChannels) {
+                            if (sourceRate != resamplerRate || sourceChannels != resamplerChannels ||
+                                pcmEncoding != resamplerEncoding
+                            ) {
                                 codec.releaseOutputBuffer(outBufferIndex, false)
                                 throw IllegalStateException("音频解码格式在处理中途改变，无法安全转换")
                             }
@@ -230,9 +263,14 @@ object AudioExtract {
                         if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                             sourceChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         }
+                        if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                            pcmEncoding = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                        }
                         validateOutputFormat(sourceRate, sourceChannels)
+                        validatePcmEncoding(pcmEncoding)
                         if (resampler != null &&
-                            (sourceRate != resamplerRate || sourceChannels != resamplerChannels)
+                            (sourceRate != resamplerRate || sourceChannels != resamplerChannels ||
+                                pcmEncoding != resamplerEncoding)
                         ) {
                             throw IllegalStateException("音频解码格式在处理中途改变，无法安全转换")
                         }
