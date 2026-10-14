@@ -576,7 +576,9 @@ class PlaybackService : MediaSessionService() {
             ensureCurrentSession(sessionKey)
             if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
             val positionMs = withContext(Dispatchers.Main) { pm.position() }
-            val wasPlaying = withContext(Dispatchers.Main) { pm.player.isPlaying }
+            // isPlaying is false while buffering even when the user intends playback.
+            // Preserve playWhenReady so switching quality does not accidentally pause the video.
+            val wasPlaying = withContext(Dispatchers.Main) { pm.player.playWhenReady }
             updateUiForSession(sessionKey) { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
             try {
                 ensureCurrentSession(sessionKey)
