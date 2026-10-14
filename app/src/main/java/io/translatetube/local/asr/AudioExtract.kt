@@ -17,6 +17,9 @@ import java.nio.ByteOrder
 /** 任意音频源 → 16kHz 单声道 PCM；文件形式用于长音频，避免一次性保留多份大数组。 */
 object AudioExtract {
 
+    // Keep compatibility reads bounded on memory-constrained phones.
+    private const val MAX_FLOAT_ARRAY_BYTES = 32L * 1024L * 1024L
+
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
 
     /** 小端 PCM16 暂存文件。只在需要转写的当前语音段上分配 FloatArray。 */
@@ -38,6 +41,9 @@ object AudioExtract {
             }
             require(count.toLong() <= sampleCount - startSample) { "PCM 读取范围超出文件长度" }
             require(count.toLong() * 2L <= Int.MAX_VALUE.toLong()) { "单次读取的 PCM 片段过大" }
+            require(count.toLong() * 4L <= AudioExtract.MAX_FLOAT_ARRAY_BYTES) {
+                "单次 PCM 浮点读取超过 32 MB 安全上限，请缩小分段范围"
+            }
             if (count == 0) return FloatArray(0)
 
             val result = FloatArray(count)
@@ -76,8 +82,10 @@ object AudioExtract {
         )
         try {
             checkActive()
-            if (pcmFile.sampleCount > Int.MAX_VALUE.toLong()) {
-                throw IllegalStateException("音频过长，无法一次性加载到内存；请使用分段识别")
+            if (pcmFile.sampleCount > Int.MAX_VALUE.toLong() ||
+                pcmFile.sampleCount * 4L > MAX_FLOAT_ARRAY_BYTES
+            ) {
+                throw IllegalStateException("音频过长，无法安全地一次性加载到内存；请使用分段识别")
             }
             return Pcm(
                 pcmFile.readFloatSamples(
@@ -239,6 +247,7 @@ object AudioExtract {
                                 AudioFormat.ENCODING_PCM_FLOAT -> ShortArray(take).also { samples ->
                                     val floats = sampleBytes.asFloatBuffer()
                                     repeat(take) { index ->
+                                        if ((index and 0x1fff) == 0) checkActive()
                                         samples[index] = Pcm16SampleConverter.floatToPcm16(floats.get())
                                     }
                                 }
@@ -328,8 +337,8 @@ object AudioExtract {
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
-            extractor.release()
-            if (!success) destination.delete()
+            runCatching { extractor.release() }
+            if (!success) runCatching { destination.delete() }
         }
     }
 
