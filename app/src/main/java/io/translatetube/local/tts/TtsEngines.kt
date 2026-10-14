@@ -100,6 +100,11 @@ class SystemTts(context: Context) : TtsEngine {
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile private var activeFailure: String? = null
+    /**
+     * Makes utterance-id validation, latch publication, callbacks and close atomic with respect
+     * to one another. Utterance callbacks may arrive on different threads.
+     */
+    private val lifecycleLock = Any()
 
     init {
         val tts = TextToSpeech(appCtx) { status ->
@@ -155,31 +160,39 @@ class SystemTts(context: Context) : TtsEngine {
             override fun onStart(utteranceId: String?) = Unit
 
             override fun onDone(utteranceId: String?) {
-                if (utteranceId == activeUtteranceId) activeLatch?.countDown()
+                synchronized(lifecycleLock) {
+                    if (utteranceId == activeUtteranceId) activeLatch?.countDown()
+                }
             }
 
             override fun onError(utteranceId: String?) {
-                if (utteranceId == activeUtteranceId) {
-                    activeFailure = "系统 TTS 合成回调返回错误"
-                    activeLatch?.countDown()
+                synchronized(lifecycleLock) {
+                    if (utteranceId == activeUtteranceId) {
+                        activeFailure = "系统 TTS 合成回调返回错误"
+                        activeLatch?.countDown()
+                    }
                 }
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
-                if (utteranceId == activeUtteranceId) {
-                    activeFailure = "系统 TTS 合成失败（错误码 $errorCode）"
-                    activeLatch?.countDown()
+                synchronized(lifecycleLock) {
+                    if (utteranceId == activeUtteranceId) {
+                        activeFailure = "系统 TTS 合成失败（错误码 $errorCode）"
+                        activeLatch?.countDown()
+                    }
                 }
             }
 
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                if (utteranceId == activeUtteranceId) {
-                    activeFailure = if (interrupted) {
-                        "系统 TTS 合成过程中被中断"
-                    } else {
-                        "系统 TTS 合成在开始前被取消或从队列中移除"
+                synchronized(lifecycleLock) {
+                    if (utteranceId == activeUtteranceId) {
+                        activeFailure = if (interrupted) {
+                            "系统 TTS 合成过程中被中断"
+                        } else {
+                            "系统 TTS 合成在开始前被取消或从队列中移除"
+                        }
+                        activeLatch?.countDown()
                     }
-                    activeLatch?.countDown()
                 }
             }
         })
@@ -187,19 +200,24 @@ class SystemTts(context: Context) : TtsEngine {
 
     @Synchronized
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
-        if (closed) throw IllegalStateException("系统 TTS 实例已经关闭")
         if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
-        val tts = ttsRef.get()
-            ?: throw IllegalStateException("系统 TTS 实例已经关闭")
-        if (!ok) throw IllegalStateException("系统 TTS 尚未初始化成功")
 
+        // Create the temporary file before publishing a request. If close() races with this
+        // allocation, the closed check below prevents a request from waiting on an unobserved latch.
         val tmp = java.io.File.createTempFile("tts_", ".wav", contextCacheDir())
         val utteranceId = "system-tts-" + System.nanoTime()
         val completed = java.util.concurrent.CountDownLatch(1)
-        activeUtteranceId = utteranceId
-        activeLatch = completed
-        activeFailure = null
         try {
+            val tts = synchronized(lifecycleLock) {
+                if (closed) throw IllegalStateException("系统 TTS 实例已经关闭")
+                val instance = ttsRef.get()
+                    ?: throw IllegalStateException("系统 TTS 实例已经关闭")
+                if (!ok) throw IllegalStateException("系统 TTS 尚未初始化成功")
+                activeUtteranceId = utteranceId
+                activeLatch = completed
+                activeFailure = null
+                instance
+            }
             val defaultVoice = defaultChineseVoice
                 ?: throw IllegalStateException("系统 TTS 没有可用的中文音色")
             val voices = chineseVoiceCatalog
@@ -234,8 +252,13 @@ class SystemTts(context: Context) : TtsEngine {
             }
             return audio
         } finally {
-            activeUtteranceId = null
-            activeLatch = null
+            synchronized(lifecycleLock) {
+                if (activeUtteranceId == utteranceId) {
+                    activeUtteranceId = null
+                    activeLatch = null
+                    activeFailure = null
+                }
+            }
             tmp.delete()
         }
     }
@@ -246,10 +269,18 @@ class SystemTts(context: Context) : TtsEngine {
     private fun readWav(file: java.io.File): TtsAudio = SystemTtsWavDecoder.decode(file)
 
     override fun close() {
-        // Set this before waking synth(): a released waiter must not read the temp WAV.
-        closed = true
-        activeLatch?.countDown()
-        val engine = ttsRef.getAndSet(null)
+        // Publish closure and wake the active synthesis under the same lock used by request setup
+        // and callbacks. This prevents close() from missing the brief setup window before a latch
+        // is installed, and avoids a stale callback waking the next utterance's latch.
+        val engine = synchronized(lifecycleLock) {
+            if (closed) {
+                null
+            } else {
+                closed = true
+                activeLatch?.countDown()
+                ttsRef.getAndSet(null)
+            }
+        }
         if (engine != null) {
             runCatching { engine.stop() }
             runCatching { engine.shutdown() }
