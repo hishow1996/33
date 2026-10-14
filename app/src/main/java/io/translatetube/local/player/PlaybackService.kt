@@ -693,7 +693,7 @@ class PlaybackService : MediaSessionService() {
                         lines = translatedLines,
                         totalLines = translatedLines.size,
                         preparedUntil = 0,
-                    preparedCount = 0,
+                        preparedCount = 0,
                         sourceLang = "zh",
                         error = null,
                         noModelHint = null,
@@ -2897,6 +2897,7 @@ class PlaybackService : MediaSessionService() {
                             phase = Phase.SYNTHESIZING,
                             totalLines = updated.size,
                             preparedUntil = 0,
+                            preparedCount = 0,
                             currentLine = -1,
                         )
                     } else state
@@ -3071,6 +3072,7 @@ class PlaybackService : MediaSessionService() {
                     it.copy(
                         lines = updated,
                         preparedUntil = 0,
+                        preparedCount = 0,
                         totalLines = updated.size,
                         currentLine = -1,
                         phase = Phase.SYNTHESIZING,
