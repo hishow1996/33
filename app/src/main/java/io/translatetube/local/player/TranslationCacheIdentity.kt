@@ -43,6 +43,16 @@ internal object TranslationCacheIdentity {
         return cacheKey == expected || cacheKey.startsWith("$expected|imported-")
     }
 
+    /** Language tags are case-insensitive, but different regional tags are kept distinct. */
+    fun sameSourceLanguage(cachedLanguage: String, currentLanguage: String): Boolean {
+        val cached = normalizeLanguage(cachedLanguage)
+        val current = normalizeLanguage(currentLanguage)
+        return cached.isNotBlank() && current.isNotBlank() && cached == current
+    }
+
+    private fun normalizeLanguage(language: String): String =
+        language.trim().replace('_', '-').lowercase()
+
     private fun fingerprint(value: String, bytesToKeep: Int): String {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray(Charsets.UTF_8))

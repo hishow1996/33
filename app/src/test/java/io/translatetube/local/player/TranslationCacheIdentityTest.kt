@@ -2,6 +2,8 @@ package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -70,6 +72,15 @@ class TranslationCacheIdentityTest {
         assertTrue(TranslationCacheIdentity.matchesProfile(imported, "video-key", 42L, "provider-A"))
         assertFalse(TranslationCacheIdentity.matchesProfile(matching, "video-key", 42L, "provider-B"))
         assertFalse(TranslationCacheIdentity.matchesProfile(matching, "another-video", 42L, "provider-A"))
+    }
+
+    @Test
+    fun sourceLanguageComparisonIgnoresCaseAndUnderscoresButSeparatesDifferentLocales() {
+        assertTrue(TranslationCacheIdentity.sameSourceLanguage("en-US", "EN_us"))
+        assertTrue(TranslationCacheIdentity.sameSourceLanguage("zh-Hans", "zh-hans"))
+        assertFalse(TranslationCacheIdentity.sameSourceLanguage("en", "ja"))
+        assertFalse(TranslationCacheIdentity.sameSourceLanguage("", "en"))
+        assertFalse(TranslationCacheIdentity.sameSourceLanguage("en-US", "en-GB"))
     }
 
 }

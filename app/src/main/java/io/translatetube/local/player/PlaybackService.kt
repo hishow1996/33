@@ -1239,7 +1239,13 @@ class PlaybackService : MediaSessionService() {
                 cached != null &&
                 sourceImportedLines.isNullOrEmpty() &&
                 restoredSourceLines != null &&
-                !translationCacheMatchesSource(cached.linesJson, restoredSourceLines)
+                (
+                    !translationCacheMatchesSource(cached.linesJson, restoredSourceLines) ||
+                    !TranslationCacheIdentity.sameSourceLanguage(
+                        cached.srcLang,
+                        restoredSourceLang.orEmpty(),
+                    )
+                )
             ) {
                 android.util.Log.w(
                     "PlaybackService",
@@ -1266,7 +1272,10 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     restoredSourceLines = fetched.first
                     restoredSourceLang = fetched.second
-                    if (!translationCacheMatchesSource(cached.linesJson, fetched.first)) {
+                    if (
+                        !translationCacheMatchesSource(cached.linesJson, fetched.first) ||
+                        !TranslationCacheIdentity.sameSourceLanguage(cached.srcLang, fetched.second)
+                    ) {
                         android.util.Log.w(
                             "PlaybackService",
                             "Discarding legacy translation cache for $videoId; source subtitle cues do not match"
