@@ -39,4 +39,15 @@ class SpeakerAssignmentCodecTest {
             ).lineOverrides.containsKey("1200:2400")
         )
     }
+    @Test
+    fun roundTripRetainsVoiceIdsAboveTheOld54VoiceLimit() {
+        val expected = SpeakerAssignmentSnapshot(
+            speakerVoices = mapOf(0 to -1, 3 to 102),
+            lineVoices = mapOf("0:1000" to 102),
+            lineOverrides = mapOf("1000:2000" to 101),
+        )
+
+        assertEquals(expected, SpeakerAssignmentCodec.decode(SpeakerAssignmentCodec.encode(expected)))
+    }
+
 }
