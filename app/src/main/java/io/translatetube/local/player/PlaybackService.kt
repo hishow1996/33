@@ -3259,7 +3259,11 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         pm.seekTo(ms)
     }
-    fun playPause() { if (pm.isPlaying.value) pm.pause() else pm.play() }
+    fun playPause() {
+        // A player that is buffering can have isPlaying=false while playWhenReady=true.
+        // Toggle the intended state so the pause control still works during a slow network load.
+        if (pm.player.playWhenReady) pm.pause() else pm.play()
+    }
 
     /** 记录观看进度（退出播放页时调用，历史列表续看用） */
     fun saveProgress() {
