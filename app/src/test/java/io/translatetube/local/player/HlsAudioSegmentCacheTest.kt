@@ -97,6 +97,59 @@ class HlsAudioSegmentCacheTest {
     }
 
     @Test
+    fun reusesCompletedSegmentsWhenOnlyTheirSigningTokensRotate() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "hls-signed-query-reuse-test")
+        server.start()
+        try {
+            fun playlist(token: String) = """
+                #EXTM3U
+                #EXT-X-TARGETDURATION:4
+                #EXTINF:4.0,
+                seg-1.ts?token=$token
+                #EXTINF:4.0,
+                seg-2.ts?token=$token
+                #EXT-X-ENDLIST
+            """.trimIndent()
+
+            server.enqueue(playlistResponse(playlist("old")))
+            server.enqueue(segmentResponse("SEGMENT-ONE"))
+            server.enqueue(segmentResponse("SEGMENT-TWO"))
+            val destination = File(directory, "audio.bin")
+            val incompleteAssembly = runCatching {
+                HlsAudioSegmentCache(directory, maxOutputBytes = 4, maxSegmentBytes = 100)
+                    .download(
+                        server.url("/media/list.m3u8").toString(),
+                        destination,
+                        "stable-hls-source",
+                    )
+            }.exceptionOrNull()
+            assertTrue(incompleteAssembly is java.io.IOException)
+            assertEquals(3, server.requestCount)
+
+            // The playlist refreshes expiring tokens, but the segment paths and source are
+            // unchanged. Complete cached segments are safe to reuse without another network fetch.
+            server.enqueue(playlistResponse(playlist("new")))
+            val result = HlsAudioSegmentCache(directory, maxOutputBytes = 100, maxSegmentBytes = 100)
+                .download(
+                    server.url("/media/list.m3u8").toString(),
+                    destination,
+                    "stable-hls-source",
+                )
+
+            assertEquals("SEGMENT-ONESEGMENT-TWO", result.readText())
+            assertEquals(
+                "refreshing only auth parameters should fetch a new playlist, not re-download segments",
+                4,
+                server.requestCount,
+            )
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun removesOrphanedFilesWhenSignedSegmentUrlsChangeBetweenRetries() {
         val server = MockWebServer()
         val directory = createTempDir(prefix = "hls-rotated-url-test")
