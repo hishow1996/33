@@ -83,6 +83,45 @@ class HlsPlaylistParserTest {
     }
 
     @Test
+    fun prefersTheVideoVariantsAudioGroupOverAnUnrelatedLowBitrateAudioOnlyVariant() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="main",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="audio/main-en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=640000,CODECS="avc1.42e01e,mp4a.40.2",AUDIO="main"
+            video/main.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"
+            audio/commentary-only.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/audio/main-en.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
+    fun avoidsVideoOnlyVariantWhenAnAudioBearingVariantIsDeclared() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=48000,CODECS="avc1.42e01e"
+            video/video-only.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS="mp4a.40.2"
+            audio/main.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/audio/main.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
     fun parsesVodSegmentsAndFmp4InitMapWithRelativeUris() {
         val playlist = """
             #EXTM3U
