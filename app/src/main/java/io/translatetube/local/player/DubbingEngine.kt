@@ -205,9 +205,15 @@ class DubbingEngine(
     }
 
     private fun startSynthLoop() {
-        synthJob?.cancel()
+        // Never cancel an active provider call just to restart queue processing: many TTS
+        // providers perform blocking native work and cancellation cannot stop it immediately.
+        // Starting a second worker could then call the same engine concurrently.
+        if (released || synthJob?.isActive == true) return
         synthJob = scope.launch(Dispatchers.Default) {
-            while (!released && !pending.isEmpty()) {
+            // Poll under the same lock used by prioritizeAround(). Do not inspect isEmpty()
+            // outside the lock: queue reordering temporarily drains the deque, and a separate
+            // isEmpty() check could let this worker exit before the reordered work is restored.
+            while (!released) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
                 val cachedAudioState = cached(idx)
@@ -464,6 +470,13 @@ class DubbingEngine(
         }
     }
 
+    /** Update the file-backed LRU timestamp when a PCM row is actually reused for playback. */
+    private fun touchCacheFile(file: File) {
+        runCatching {
+            if (file.isFile) file.setLastModified(System.currentTimeMillis())
+        }
+    }
+
     /** true = valid audio, false = valid empty marker, null = missing or corrupt cache. */
     private fun cached(idx: Int): Boolean? {
         if (synchronized(mem) { mem.containsKey(idx) }) return true
@@ -503,8 +516,15 @@ class DubbingEngine(
 
     /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。 */
     private fun load(idx: Int): Pair<FloatArray, Int>? {
-        synchronized(mem) { mem[idx]?.let { return it } }
         val f = cacheFile(idx)
+        val memoryAudio = synchronized(mem) { mem[idx] }
+        if (memoryAudio != null) {
+            // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
+            // mtime aligned when playback hits memory so frequently reused PCM isn't evicted as
+            // if it had not been used since the original synthesis.
+            touchCacheFile(f)
+            return memoryAudio
+        }
         if (!validCache(f)) {
             readiness.markPrepared(idx, hasAudio = false)
             return null
