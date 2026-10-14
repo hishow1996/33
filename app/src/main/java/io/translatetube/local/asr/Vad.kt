@@ -102,16 +102,5 @@ private fun readFully(input: InputStream, target: ByteArray) {
     }
 }
 
-private fun mergeVadSegments(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
-    val merged = mutableListOf<Pair<Long, Long>>()
-    for ((start, end) in segments) {
-        if (end - start < 300) continue
-        val last = merged.lastOrNull()
-        if (last != null && start - last.second < 400) {
-            merged[merged.lastIndex] = last.first to end
-        } else {
-            merged += start to end
-        }
-    }
-    return merged
-}
+private fun mergeVadSegments(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> =
+    VadSegmentMergePolicy.merge(segments)
