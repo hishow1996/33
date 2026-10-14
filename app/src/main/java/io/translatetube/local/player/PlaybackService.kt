@@ -1507,7 +1507,7 @@ class PlaybackService : MediaSessionService() {
 
                 val selectedEngineReady = when (selectedTts) {
                     "system" -> true
-                    "kokoro" -> io.translatetube.local.data.ModelFiles.ttsReady(this)
+                    "kokoro" -> kokoroRuntimeReady()
                     else -> false
                 }
                 if (selectedEngineReady) {
@@ -2143,13 +2143,21 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun kokoroRuntimeReady(): Boolean = runCatching {
+        val files = io.translatetube.local.data.ModelFiles
+        if (files.ttsCoreReady(this)) files.installBundledTtsSupportFiles(this)
+        files.ttsReady(this)
+    }.onFailure {
+        android.util.Log.w("PlaybackService", "Kokoro runtime readiness check failed", it)
+    }.getOrDefault(false)
+
     private fun makeTts(engineId: String? = null): TtsEngine {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val selected = engineId ?: (prefs.getString("tts_engine", "kokoro") ?: "kokoro")
         return when (selected) {
             "system" -> io.translatetube.local.tts.SystemTts(this)
             "kokoro" -> {
-                if (!io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+                if (!kokoroRuntimeReady()) {
                     throw IllegalStateException("已选择 Kokoro，但配音模型尚未就绪")
                 }
                 KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
@@ -2330,7 +2338,7 @@ class PlaybackService : MediaSessionService() {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
             return
         }
-        if (selectedTts == "kokoro" && !io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+        if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
             ui.update { it.copy(error = "Kokoro 配音模型尚未就绪；已保留当前播放和字幕，请先在设置中准备模型后再区分人物。") }
             return
         }
@@ -2569,7 +2577,7 @@ class PlaybackService : MediaSessionService() {
 
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
             .getString("tts_engine", "kokoro") ?: "kokoro"
-        if (selectedTts == "kokoro" && !io.translatetube.local.data.ModelFiles.ttsReady(this)) {
+        if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
             updateUiForSession(sessionKey) {
                 it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
             }

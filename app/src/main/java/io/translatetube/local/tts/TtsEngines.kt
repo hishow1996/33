@@ -23,10 +23,15 @@ interface TtsEngine {
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
 class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
     override val name = "Kokoro"
-    override val cacheKey: String get() = "$name-default-${speakerId.coerceIn(0, 53)}"
+    private val runtimeSignature by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        io.translatetube.local.data.ModelFiles.ttsCacheSignature(ctx)
+    }
+    override val cacheKey: String
+        get() = "$name-default-${speakerId.coerceIn(0, 53)}-$runtimeSignature"
     private val tts: OfflineTts
 
     init {
+        io.translatetube.local.data.ModelFiles.ensureTtsRuntimeFiles(ctx)
         val m = io.translatetube.local.data.ModelFiles.ttsDir(ctx).absolutePath + "/"
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(

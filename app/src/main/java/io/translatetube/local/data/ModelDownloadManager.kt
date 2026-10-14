@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import io.translatetube.local.tts.KokoroRuntimeFilePolicy
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.File
@@ -32,24 +33,81 @@ data class ModelState(
 
 /** 模型文件就绪判定与路径（engine 加载的单一事实来源） */
 object ModelFiles {
+    private val ttsAssetInstallLock = Any()
+    private val bundledTtsSupportFiles = listOf(
+        "tokens.txt", "lexicon-zh.txt", "phone-zh.fst", "date-zh.fst", "number-zh.fst",
+    )
+
     fun ttsDir(ctx: Context) = File(ctx.filesDir, "models/tts")
     fun asrDir(ctx: Context) = File(ctx.filesDir, "models/whisper")
 
-    // 模型文件只有存在且达到合理最小体积才视为就绪，避免截断文件触发 ONNX 原生层崩溃。
     private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
         file.isFile && file.length() >= minBytes
 
-    fun ttsReady(ctx: Context) =
+    fun ttsCoreReady(ctx: Context): Boolean =
         validModel(File(ttsDir(ctx), "model.int8.onnx")) &&
             validModel(File(ttsDir(ctx), "voices.bin"))
+
+    fun ttsReady(ctx: Context): Boolean = ttsDirectoryReady(ttsDir(ctx))
+    internal fun ttsDirectoryReady(dir: File): Boolean =
+        KokoroRuntimeFilePolicy.missingRuntimeFiles(dir).isEmpty()
+    internal fun missingTtsRuntimeFiles(dir: File): List<String> =
+        KokoroRuntimeFilePolicy.missingRuntimeFiles(dir)
+
+    /** Restore small bundled text/FST assets without re-downloading the large ONNX package. */
+    internal fun installBundledTtsSupportFiles(ctx: Context, targetDir: File = ttsDir(ctx)) {
+        synchronized(ttsAssetInstallLock) {
+            if (!targetDir.isDirectory && !targetDir.mkdirs()) {
+                throw java.io.IOException("无法创建 Kokoro 模型目录：${targetDir.absolutePath}")
+            }
+            for (name in bundledTtsSupportFiles) {
+                val target = File(targetDir, name)
+                if (KokoroRuntimeFilePolicy.isValidRequiredFile(name, target)) continue
+                val temp = File(targetDir, ".$name.asset.tmp")
+                temp.delete()
+                try {
+                    ctx.assets.open("tts/$name").use { input ->
+                        java.io.FileOutputStream(temp).use { output ->
+                            input.copyTo(output, 32 * 1024)
+                            output.fd.sync()
+                        }
+                    }
+                    if (!KokoroRuntimeFilePolicy.isValidRequiredFile(name, temp)) {
+                        throw java.io.IOException("应用内 Kokoro 附属文件为空或不完整：$name")
+                    }
+                    if (target.exists() && !target.delete()) {
+                        throw java.io.IOException("无法替换缺失的 Kokoro 附属文件：$name")
+                    }
+                    if (!temp.renameTo(target)) {
+                        throw java.io.IOException("无法安装 Kokoro 附属文件：$name")
+                    }
+                } catch (e: Exception) {
+                    temp.delete()
+                    throw e
+                }
+            }
+        }
+    }
+
+    fun ensureTtsRuntimeFiles(ctx: Context) {
+        val dir = ttsDir(ctx)
+        installBundledTtsSupportFiles(ctx, dir)
+        val missing = missingTtsRuntimeFiles(dir)
+        if (missing.isNotEmpty()) {
+            throw IllegalStateException(
+                "Kokoro 运行文件不完整：${missing.joinToString("、")}。请在设置中重新准备配音模型。"
+            )
+        }
+    }
+
+    fun ttsCacheSignature(ctx: Context): String =
+        KokoroRuntimeFilePolicy.cacheSignature(ttsDir(ctx))
 
     fun asrCoreReady(ctx: Context) =
         validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
             validModel(File(asrDir(ctx), "base-decoder.int8.onnx"))
-
     fun asrReady(ctx: Context) =
         asrCoreReady(ctx) && validModel(File(asrDir(ctx), "silero_vad.onnx"), 512L * 1024)
-
     fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
 }
 
@@ -105,8 +163,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         when (kind) {
             ModelKind.TTS -> {
                 if (ttsJob?.isActive == true ||
-                    _tts.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
-                    ModelFiles.ttsReady(ctx)) return
+                    _tts.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING)) return
+                runCatching {
+                    if (ModelFiles.ttsCoreReady(ctx)) ModelFiles.installBundledTtsSupportFiles(ctx)
+                }.onFailure {
+                    Log.w("ModelDL", "无法修复 Kokoro 应用内附属文件，将检查完整模型包：${it.message}")
+                }
+                if (ModelFiles.ttsReady(ctx)) return
                 if (!startBackgroundDownloadService()) {
                     _tts.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
                     return
@@ -455,6 +518,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     !file.isFile || file.length() < 1L * 1024 * 1024
                 }) {
                 throw java.io.IOException("模型包缺少必要文件或文件体积异常，已取消安装")
+            }
+
+            if (destDir.name == "tts") {
+                ModelFiles.installBundledTtsSupportFiles(ctx, staging)
+                val missing = ModelFiles.missingTtsRuntimeFiles(staging)
+                if (missing.isNotEmpty()) {
+                    throw java.io.IOException(
+                        "Kokoro 模型包缺少运行文件：${missing.joinToString("、")}，已取消安装"
+                    )
+                }
             }
 
             val old = File(parent, destDir.name + ".old")
