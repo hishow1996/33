@@ -33,6 +33,25 @@ internal object MediaUrlCacheIdentity {
         "__token__",
     )
 
+    // Generic credentials can sometimes double as the only media identifier (for example,
+    // /stream?token=asset-id). Strip them only when another stable identity is available.
+    private val genericCredentialParameterNames = setOf(
+        "access_token", "auth", "auth_key", "authorization", "token", "jwt", "__token__",
+    )
+    private val stableMediaSelectorNames = setOf(
+        "id", "video_id", "media_id", "asset_id", "track", "itag", "quality", "format",
+        "variant", "rendition", "stream", "type", "mime", "part", "segment", "audio",
+        "lang", "language",
+    )
+    private val signatureHintNames = setOf(
+        "expires", "expiry", "exp", "signature", "sig", "policy", "key-pair-id",
+        "hdnea", "hdnts", "wmsauthsign",
+    )
+    private val mediaFilePath = Regex(
+        """\\.(?:mp4|m4v|mov|webm|mkv|mp3|m4a|aac|ogg|wav|flac|m3u8|m4s|ts|mpd)$""",
+        RegexOption.IGNORE_CASE,
+    )
+
     private val azureSasParameterNames = setOf(
         "se", "sp", "sr", "st", "sip", "spr", "sv", "srt", "ss",
         "skoid", "sktid", "skt", "ske", "sks", "skv",
@@ -67,15 +86,29 @@ internal object MediaUrlCacheIdentity {
         val hasGoogleSignature = decodedNames.any { it == "x-goog-signature" }
         val hasAzureSignature = decodedNames.any { it == "sig" } &&
             decodedNames.any { it == "sv" || it == "se" || it == "sr" }
+        val hasExplicitSignature = decodedNames.any { it in signatureHintNames } ||
+            hasAwsSignature || hasGoogleSignature || hasAzureSignature
+        val hasStableSelector = decodedNames.any { it in stableMediaSelectorNames }
+        val hasMediaFilePath = mediaFilePath.containsMatchIn(rawPath)
+        val canStripGenericCredentials =
+            hasExplicitSignature || hasStableSelector || hasMediaFilePath
 
-        val stableQuery = params.filterIndexed { index, _ ->
+        // Keep generic tokens distinct on opaque endpoints that expose no other stable media
+        // identity. Hash their values instead of retaining raw credentials in the canonical URL.
+        val stableQuery = params.mapIndexedNotNull { index, part ->
             val name = decodedNames[index]
             when {
-                name in authParameterNames -> false
-                hasAwsSignature && name.startsWith("x-amz-") -> false
-                hasGoogleSignature && name.startsWith("x-goog-") -> false
-                hasAzureSignature && name in azureSasParameterNames -> false
-                else -> true
+                name in genericCredentialParameterNames && canStripGenericCredentials -> null
+                name in genericCredentialParameterNames -> {
+                    val key = part.substringBefore('=')
+                    val value = part.substringAfter('=', missingDelimiterValue = "")
+                    "$key=${sha256(value)}"
+                }
+                name in authParameterNames -> null
+                hasAwsSignature && name.startsWith("x-amz-") -> null
+                hasGoogleSignature && name.startsWith("x-goog-") -> null
+                hasAzureSignature && name in azureSasParameterNames -> null
+                else -> part
             }
         }.sorted()
         val querySuffix = stableQuery.takeIf { it.isNotEmpty() }
