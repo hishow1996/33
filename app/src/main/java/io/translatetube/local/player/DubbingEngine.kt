@@ -104,6 +104,9 @@ class DubbingEngine(
     @Volatile private var playbackStartedLine = -1
 
     fun attach(tts: TtsEngine, lines: List<SubLine>) {
+        // Publish the TTS instance, subtitle list and cache-init Job atomically with release().
+        // Otherwise a concurrent retirement could miss this TTS instance or the newly launched job.
+        synchronized(cacheWriteLock) {
         if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
         this.tts = tts
         this.lines = lines.toList()
@@ -209,6 +212,7 @@ class DubbingEngine(
                     startSynthLoop()
                 }
             }
+        }
         }
     }
 
