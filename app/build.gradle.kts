@@ -172,6 +172,8 @@ dependencies {
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-extractor:1.4.1")
+    // Safe HTTP redirect policy for webpage media manifests and segments.
+    implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
 
     // NewPipe Extractor
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
