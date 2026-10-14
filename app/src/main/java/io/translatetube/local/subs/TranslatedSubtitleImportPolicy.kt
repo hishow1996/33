@@ -14,8 +14,9 @@ internal object TranslatedSubtitleImportPolicy {
             .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.index })
             .mapNotNull { line ->
                 val parts = line.text.lines().map { it.trim() }.filter { it.isNotBlank() }
+                // This entry point is explicitly for already translated Chinese subtitles.
+                // Never mistake an English-only source cue for a translation and speak it as output.
                 val translation = parts.lastOrNull { chinesePattern.containsMatchIn(it) }
-                    ?: parts.lastOrNull()
                     ?: return@mapNotNull null
                 val cleanedTranslation = SubtitleParsers.cleanTranslatedText(translation)
                     ?: return@mapNotNull null

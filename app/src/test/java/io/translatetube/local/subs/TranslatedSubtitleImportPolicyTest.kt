@@ -39,4 +39,18 @@ class TranslatedSubtitleImportPolicyTest {
         assertEquals("有效译文", result.single().zh)
         assertTrue(result.single().startMs == 4_000L)
     }
+    @Test
+    fun rejectsEnglishOnlySourceSubtitlesInsteadOfTreatingThemAsChineseTranslations() {
+        val result = TranslatedSubtitleImportPolicy.prepare(
+            listOf(
+                SubLine(0, 0, 1_000, "Hello, how are you?"),
+                SubLine(1, 1_000, 2_000, "This row has no translated Chinese text."),
+                SubLine(2, 2_000, 3_000, "Hello\\n你好"),
+            )
+        )
+        assertEquals(1, result.size)
+        assertEquals("你好", result.single().zh)
+        assertEquals("Hello", result.single().text)
+    }
+
 }
