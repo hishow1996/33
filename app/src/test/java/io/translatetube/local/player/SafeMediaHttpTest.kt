@@ -79,7 +79,7 @@ class SafeMediaHttpTest {
         )
         assertEquals(
             false,
-            isLikelyTextErrorPayload(byteArrayOf(0, 0, 0, 24, 'f'.toByte(), 't'.toByte(), 'y'.toByte(), 'p'.toByte()), 8),
+            isLikelyTextErrorPayload(byteArrayOf(0, 0, 0, 24, 'f'.code.toByte(), 't'.code.toByte(), 'y'.code.toByte(), 'p'.code.toByte()), 8),
         )
         assertEquals(
             false,
