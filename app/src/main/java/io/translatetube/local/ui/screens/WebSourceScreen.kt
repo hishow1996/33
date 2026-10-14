@@ -61,18 +61,15 @@ import io.translatetube.local.ui.theme.SubText
 import io.translatetube.local.web.WebMediaCandidate
 import io.translatetube.local.web.WebMediaCandidatePolicy
 import io.translatetube.local.web.WebMediaKind
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONTokener
-import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
 @Composable
 fun WebSourceScreen(
     pageUrl: String,
     onBack: () -> Unit,
-    onUseMedia: (String, Map<String, String>) -> Unit,
+    onUseMedia: (String, Map<String, String>, String?) -> Unit,
 ) {
     val context = LocalContext.current
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
@@ -210,13 +207,11 @@ fun WebSourceScreen(
                             val req = request ?: return null
                             val url = req.url?.toString() ?: return null
                             val reqHeaders = req.requestHeaders.orEmpty()
-                            val accept = reqHeaders.entries.firstOrNull {
-                                it.key.equals("Accept", true)
-                            }?.value
                             val page = currentPage
+                            // WebResourceRequest exposes request headers, not response Content-Type.
+                            // Do not mislabel an Accept header as the media's actual MIME type.
                             val candidate = WebMediaCandidatePolicy.classify(
                                 url = url,
-                                mimeType = accept,
                                 pageUrl = page,
                             ) ?: return null
                             val safe = headersForMedia(candidate.url, reqHeaders, page)
@@ -274,7 +269,10 @@ fun WebSourceScreen(
                                         sawBlob = true
                                         continue
                                     }
-                                    sawEncrypted = sawEncrypted || encrypted
+                                    if (encrypted) {
+                                        sawEncrypted = true
+                                        continue
+                                    }
                                     addFromUrl(url, item.optString("mime").takeIf { it.isNotBlank() }, element, currentPage, emptyMap())
                                 }
                                 notice = when {
@@ -334,7 +332,7 @@ fun WebSourceScreen(
                                         runCatching { view.evaluateJavascript(PAUSE_MEDIA_JS, null) }
                                         view.onPause()
                                     }
-                                    onUseMedia(candidate.url, candidate.headers)
+                                    onUseMedia(candidate.url, candidate.headers, candidate.mimeType)
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White),
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 7.dp),
