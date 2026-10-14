@@ -107,4 +107,29 @@ class SubtitleParsersTest {
         assertEquals(3_723_500L, SubtitleParsers.parseTtmlTime("1:02:03.5"))
     }
 
+    @Test
+    fun preservesNumericOnlySubtitleTextWithoutTreatingItAsAnSrtIndex() {
+        val webVtt = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:01.000
+            2026
+
+            00:00:01.000 --> 00:00:02.000
+            123
+        """.trimIndent()
+        val srt = """
+            1
+            00:00:00,000 --> 00:00:01,000
+            2026
+
+            2
+            00:00:01,000 --> 00:00:02,000
+            123
+        """.trimIndent()
+
+        assertEquals(listOf("2026", "123"), SubtitleParsers.parseVtt(webVtt).map { it.text })
+        assertEquals(listOf("2026", "123"), SubtitleParsers.parseSrt(srt).map { it.text })
+    }
+
 }

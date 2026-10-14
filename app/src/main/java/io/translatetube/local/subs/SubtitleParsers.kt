@@ -14,7 +14,6 @@ object SubtitleParsers {
 
     // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
     private val webVttTimestampRegex = Regex("""(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3}""")
-    private val cueIndexRegex = Regex("^[0-9]+$")
     private val ttmlCueRegex = Regex(
         "<p\\b([^>]*)>(.*?)</p\\s*>",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
@@ -61,7 +60,7 @@ object SubtitleParsers {
             } else if (line.isEmpty()) {
                 // 行结束标记交给下一条 cue 前统一 flush
             } else if (pendingStart >= 0 && !line.startsWith("NOTE") && !line.startsWith("WEBVTT") &&
-                !line.startsWith("Kind:") && !line.startsWith("Language:") && !cueIndexRegex.matches(line)
+                !line.startsWith("Kind:") && !line.startsWith("Language:")
             ) {
                 buf.appendLine(stripTags(line))
             }
