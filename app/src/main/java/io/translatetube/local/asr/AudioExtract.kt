@@ -61,8 +61,17 @@ object AudioExtract {
                 "单次 PCM 浮点读取超过 32 MB 安全上限，请缩小分段范围"
             }
             if (count == 0) return FloatArray(0)
-            // A cancelled/stale ASR task must stop before reserving a potentially large array.
+            // A cancelled/stale ASR task must stop before file inspection or array allocation.
             checkActive()
+
+            // Validate offset arithmetic and the on-disk range before reserving memory. A stale or
+            // truncated PCM file must fail cheaply instead of allocating a buffer and failing later.
+            require(sampleCount <= Long.MAX_VALUE / 2L) { "PCM 文件采样范围超出可寻址长度" }
+            val endSample = startSample + count.toLong()
+            val endByte = endSample * 2L
+            require(file.isFile && file.length() >= endByte) {
+                "PCM 临时文件长度小于声明的采样范围"
+            }
 
             val result = FloatArray(count)
             RandomAccessFile(file, "r").use { input ->
