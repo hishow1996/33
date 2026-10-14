@@ -41,6 +41,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     var asrEngine by remember { mutableStateOf(prefs.getString("asr_provider", "local") ?: "local") }
     var elevenLabsKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_elevenlabs_key", "").orEmpty())) }
     var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
+    var kawaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_kawa_key", "").orEmpty())) }
+    var kawaLanguage by remember { mutableStateOf(prefs.getString("asr_kawa_language", "auto") ?: "auto") }
+    var kawaLanguageMenuExpanded by remember { mutableStateOf(false) }
     var cartesiaLanguage by remember { mutableStateOf(prefs.getString("asr_cartesia_language", "en") ?: "en") }
     var cartesiaLanguageMenuExpanded by remember { mutableStateOf(false) }
     val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "no" to "挪威语") }
@@ -123,6 +126,11 @@ Section("转写引擎") {
         asrEngine = engine
         prefs.edit().putString("asr_provider", engine).apply()
     }
+    EngineOption("kawa", "Kawa · 每月 1,000 分钟免费", asrEngine) { engine ->
+        asrEngine = engine
+        prefs.edit().putString("asr_provider", engine).apply()
+    }
+    HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
     if (asrEngine == "elevenlabs") {
         Spacer(Modifier.height(8.dp))
         Text("填写 ElevenLabs API Key。密钥使用 Android Keystore 加密后保存在本机；云端额度以账户为准。", color = SubText, style = MaterialTheme.typography.bodySmall)
@@ -184,6 +192,28 @@ Section("转写引擎") {
             }
         }
         Text("Cartesia 需要指定原声语言；ElevenLabs 会自动检测语种。", color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+    }
+    if (asrEngine == "kawa") {
+        Spacer(Modifier.height(8.dp))
+        Text("Kawa 提供每月 1,000 分钟免费转写额度。API Key 使用 Android Keystore 加密后保存在本机。长音频会自动分段上传（每段低于 10 MB），只上传音频，不上传视频画面。", color = SubText, style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(value = kawaKey, onValueChange = { value ->
+            kawaKey = value
+            prefs.edit().putString("asr_kawa_key", Crypto.encrypt(value.trim())).apply()
+        }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Kawa API Key") }, placeholder = { Text("粘贴 Kawa API Key") }, visualTransformation = PasswordVisualTransformation())
+        Text(if (kawaKey.isBlank()) "尚未填写密钥" else "密钥已保存在本机", color = if (kawaKey.isBlank()) SubText else BrandBright, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 4.dp, top = 3.dp))
+        Text("识别语言（默认自动检测）", color = OnBg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+        Box {
+            OutlinedButton(onClick = { kawaLanguageMenuExpanded = true }) {
+                Text(if (kawaLanguage == "auto") "自动检测" else cartesiaLanguages.firstOrNull { it.first == kawaLanguage }?.second ?: "自动检测")
+                Icon(Icons.Filled.ExpandMore, contentDescription = "选择 Kawa 识别语言")
+            }
+            DropdownMenu(expanded = kawaLanguageMenuExpanded, onDismissRequest = { kawaLanguageMenuExpanded = false }) {
+                DropdownMenuItem(text = { Text("自动检测") }, onClick = { kawaLanguage = "auto"; prefs.edit().putString("asr_kawa_language", "auto").apply(); kawaLanguageMenuExpanded = false })
+                cartesiaLanguages.forEach { (code, label) -> DropdownMenuItem(text = { Text(label) }, onClick = { kawaLanguage = code; prefs.edit().putString("asr_kawa_language", code).apply(); kawaLanguageMenuExpanded = false }) }
+            }
+        }
+        Text("Kawa 是批量转写接口；分段字幕时间戳会换算回整段音频时间轴。", color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
     }
     Text(
         "选择云端转写后，无字幕视频会调用对应服务；未填写或无效密钥时会提示错误，不会静默切换引擎。",
