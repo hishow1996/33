@@ -1340,7 +1340,16 @@ class PlaybackService : MediaSessionService() {
                     // forever. Otherwise every user retry reuses the same unusable bytes and fails
                     // before ASR can start. Successful decodes still retain audio for ASR retries.
                     if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
-                        val removed = !audioFile.exists() || audioFile.delete()
+                        val removed = if (!audioFile.exists()) {
+                            true
+                        } else {
+                            // This pipeline owns one lease. Retire the failed file only if no
+                            // concurrent ASR/diarization reader owns an additional lease.
+                            activeAsrAudioPaths.deleteIfLeaseCountAtMost(
+                                audioFile.absolutePath,
+                                allowedLeaseCount = 1,
+                            ) { audioFile.delete() }
+                        }
                         File(audioFile.parentFile, audioFile.name + ".part").delete()
                         android.util.Log.w(
                             "PlaybackService",
@@ -2386,8 +2395,9 @@ class PlaybackService : MediaSessionService() {
             return file
         }
         activeAsrAudioPaths.release(file.absolutePath)
-        // Do not remove a candidate another active reader still owns, even if this caller won't reuse it.
-        if (!activeAsrAudioPaths.contains(file.absolutePath)) file.delete()
+        // Release and deletion must be coordinated with acquisition, not a separate contains()
+        // check: a new reader could otherwise acquire this path just before file.delete().
+        activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
         File(file.parentFile, file.name + ".part").delete()
         return null
     }
@@ -2418,12 +2428,15 @@ class PlaybackService : MediaSessionService() {
         // could leave stale cache files on disk indefinitely.
         files.forEach { file ->
             val isKept = keep != null && file.absolutePath == keep.absolutePath
-            val isActive = activeAsrAudioPaths.contains(file.absolutePath)
             val age = now - file.lastModified()
-            if (!isKept && !isActive &&
+            val shouldExpire = !isKept &&
                 (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)
-            ) {
-                file.delete()
+            if (shouldExpire) {
+                // The lease registry holds its monitor through deletion. A simultaneous reader
+                // either acquires first (and protects the file) or waits until deletion finishes.
+                if (!activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }) {
+                    totalBytes += file.length()
+                }
             } else {
                 // Active files still count toward the budget, but must not be deleted mid-decode.
                 totalBytes += file.length()
@@ -2434,9 +2447,10 @@ class PlaybackService : MediaSessionService() {
         for (file in files.sortedBy { it.lastModified() }) {
             if (totalBytes <= budget) break
             if (keep != null && file.absolutePath == keep.absolutePath) continue
-            if (activeAsrAudioPaths.contains(file.absolutePath)) continue
             val size = file.length()
-            if (file.delete()) totalBytes -= size
+            if (activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }) {
+                totalBytes = (totalBytes - size).coerceAtLeast(0L)
+            }
         }
     }
 
