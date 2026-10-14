@@ -48,7 +48,8 @@ internal object SafeMediaHttp {
                 if (value.isBlank()) return@forEach
                 when {
                     name.equals("Referer", ignoreCase = true) -> {
-                        if (value.toHttpUrlOrNull()?.scheme in setOf("http", "https")) {
+                        val refererScheme = value.toHttpUrlOrNull()?.scheme
+                        if (refererScheme == "http" || refererScheme == "https") {
                             builder.header("Referer", value)
                         }
                     }
