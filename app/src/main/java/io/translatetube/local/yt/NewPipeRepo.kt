@@ -79,42 +79,68 @@ object NewPipeRepo {
             // video share one network extraction rather than receiving separate signed URL sets.
             infoFetchMutex.withLock {
                 freshCached()?.let { return@withLock it }
-                val request = synchronized(infoLock) {
+                var request = synchronized(infoLock) {
                     infoRequestGeneration += 1L
                     infoCacheGeneration to infoRequestGeneration
                 }
                 initOnce()
                 // Network work remains outside infoLock so invalidate() can run while it is in flight.
                 val videoUrl = "https://www.youtube.com/watch?v=$videoId"
-                val fetched = try {
-                    StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (!StreamInfoCachePolicy.isRetryableFailure(e)) throw e
-                    android.util.Log.w(
-                        "NewPipeRepo",
-                        "Transient YouTube metadata request failed; retrying once for video=$videoId",
-                        e,
-                    )
-                    kotlinx.coroutines.delay(400L)
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
-                }
-                synchronized(infoLock) {
-                    if (StreamInfoCachePolicy.mayPublish(
-                            requestGeneration = request.second,
-                            currentRequestGeneration = infoRequestGeneration,
-                            invalidationGeneration = request.first,
-                            currentInvalidationGeneration = infoCacheGeneration,
+                suspend fun fetchInfoWithTransportRetry(): StreamInfo {
+                    return try {
+                        StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (!StreamInfoCachePolicy.isRetryableFailure(e)) throw e
+                        android.util.Log.w(
+                            "NewPipeRepo",
+                            "Transient YouTube metadata request failed; retrying once for video=$videoId",
+                            e,
                         )
-                    ) {
-                        cachedInfo = fetched
-                        cachedId = videoId
-                        cachedAtMs = System.currentTimeMillis()
+                        kotlinx.coroutines.delay(400L)
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
                     }
                 }
-                fetched
+
+                // A stream error can invalidate signed URLs while extraction is running. Never
+                // return the result of that invalidated request to a caller: throw it away and
+                // resolve again once under the latest generation, otherwise fail clearly.
+                for (refreshAttempt in 0..1) {
+                    val fetched = fetchInfoWithTransportRetry()
+                    val published = synchronized(infoLock) {
+                        if (StreamInfoCachePolicy.mayPublish(
+                                requestGeneration = request.second,
+                                currentRequestGeneration = infoRequestGeneration,
+                                invalidationGeneration = request.first,
+                                currentInvalidationGeneration = infoCacheGeneration,
+                            )
+                        ) {
+                            cachedInfo = fetched
+                            cachedId = videoId
+                            cachedAtMs = System.currentTimeMillis()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (published) return@withLock fetched
+                    if (refreshAttempt == 1) {
+                        throw java.io.IOException(
+                            "YouTube 视频流地址在解析期间连续失效，请重新尝试播放",
+                        )
+                    }
+                    request = synchronized(infoLock) {
+                        infoRequestGeneration += 1L
+                        infoCacheGeneration to infoRequestGeneration
+                    }
+                    android.util.Log.i(
+                        "NewPipeRepo",
+                        "Discarded invalidated stream metadata for video=$videoId; refreshing once",
+                    )
+                }
+                throw java.io.IOException("无法获取仍然有效的 YouTube 视频流地址")
             }
         }
 
