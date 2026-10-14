@@ -144,6 +144,7 @@ internal class AsrAudioSegmentDownloader(
                             val body = response.body ?: throw IOException("音频响应内容为空")
                             val total = body.contentLength()
                             validateDeclaredResponse(response, total)
+                            if (total > 0L) ensureDiskSpace(parent, total)
                             metadata = metadataFor(
                                 sourceKey, currentUrlHash, response, total, rangeSupported = false
                             )
@@ -176,6 +177,9 @@ internal class AsrAudioSegmentDownloader(
                             if (range.totalBytes != null && range.totalBytes !in 1L..maxBytes) {
                                 discard(part, metaFile)
                                 throw IOException("音频文件超过 ${maxBytes / (1024L * 1024L)} MB 限制")
+                            }
+                            if (range.totalBytes != null) {
+                                ensureDiskSpace(parent, (range.totalBytes - offset).coerceAtLeast(0L))
                             }
                             val responseEtag = response.header("ETag")?.takeIf { it.isNotBlank() }
                             val responseModified = response.header("Last-Modified")?.takeIf { it.isNotBlank() }
@@ -355,6 +359,17 @@ internal class AsrAudioSegmentDownloader(
         }
     }
 
+    private fun ensureDiskSpace(parent: File, bytesToWrite: Long) {
+        val usable = runCatching { parent.usableSpace }.getOrDefault(-1L)
+        if (usable <= 0L) return
+        if (usable < MIN_FREE_STORAGE_BYTES || bytesToWrite > usable - MIN_FREE_STORAGE_BYTES) {
+            throw IOException(
+                "可用存储空间不足，音频缓存需要约 ${bytesToWrite / (1024L * 1024L)} MB，" +
+                    "建议至少保留 32 MB 可用空间后重试"
+            )
+        }
+    }
+
     private fun readPrefix(file: File): ByteArray = runCatching {
         FileInputStream(file).use { input -> ByteArray(512).also { buffer ->
             val count = input.read(buffer)
@@ -442,6 +457,7 @@ internal class AsrAudioSegmentDownloader(
         private const val MAX_METADATA_BYTES = 16L * 1024L
         private const val MAX_RANGE_RETRIES = 3
         private const val RETRY_DELAY_MS = 250L
+        private const val MIN_FREE_STORAGE_BYTES = 32L * 1024L * 1024L
         private val FORWARDABLE_HEADER_NAMES = setOf(
             "user-agent", "referer", "origin", "cookie", "authorization", "accept-language"
         )
