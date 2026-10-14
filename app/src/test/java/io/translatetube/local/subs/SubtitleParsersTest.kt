@@ -40,4 +40,40 @@ class SubtitleParsersTest {
         assertEquals(0L, parsed.single().startMs)
         assertEquals(1_000L, parsed.single().endMs)
     }
+    @Test
+    fun sortsOutOfOrderWebVttCuesBeforeAssigningTimelineIndices() {
+        val source = """
+            WEBVTT
+
+            00:00:02.000 --> 00:00:03.000
+            third cue
+
+            00:00:00.000 --> 00:00:01.000
+            first cue
+
+            00:00:01.000 --> 00:00:02.000
+            second cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("first cue", "second cue", "third cue"), parsed.map { it.text })
+        assertEquals(listOf(0, 1, 2), parsed.map { it.index })
+    }
+
+    @Test
+    fun sortsOutOfOrderAssCuesWhenUsingTheFormatSpecificParser() {
+        val source = """
+            [Events]
+            Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,third cue
+            Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,first cue
+            Dialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,,second cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAss(source)
+
+        assertEquals(listOf("first cue", "second cue", "third cue"), parsed.map { it.text })
+        assertEquals(listOf(1_000L, 2_000L, 3_000L), parsed.map { it.startMs })
+        assertEquals(listOf(0, 1, 2), parsed.map { it.index })
+    }
 }

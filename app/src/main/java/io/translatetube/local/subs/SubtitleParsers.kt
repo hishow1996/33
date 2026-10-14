@@ -48,7 +48,7 @@ object SubtitleParsers {
             }
         }
         flush()
-        return mergeDuplicate(out)
+        return normalizeTimeline(out)
     }
 
     /** SRT（1 行格式 00:00:01,000 --> 00:00:04,000） */
@@ -92,7 +92,7 @@ object SubtitleParsers {
             val text = android.text.Html.fromHtml(m.groupValues[3], android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
-        return out
+        return normalizeTimeline(out)
     }
 
     /** YouTube/NewPipe TTML：从 p 标签提取 begin/end/dur。 */
@@ -126,7 +126,7 @@ object SubtitleParsers {
             ).toString().replace('\u00a0', ' ').trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
-        return mergeDuplicate(out)
+        return normalizeTimeline(out)
     }
 
     private fun parseTtmlTime(value: String): Long? {
@@ -153,7 +153,7 @@ object SubtitleParsers {
                 parseTtml(t).ifEmpty { parseTimedTextXml(t) }
             else -> parseSrt(t)
         }
-        return parsed.sortedBy { it.startMs }.mapIndexed { i, l -> l.copy(index = i) }
+        return normalizeTimeline(parsed)
     }
 
     /**
@@ -234,9 +234,14 @@ object SubtitleParsers {
             val text = p.drop(9).joinToString(",").replace(Regex("\\{[^}]*\\}"), "").replace(Regex("\\\\N|\\\\n"), "\n").trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
-        return mergeDuplicate(out)
+        return normalizeTimeline(out)
     }
 
+    /** Keep every public parser safe for the binary-search playback timeline, not only parseAuto. */
+    private fun normalizeTimeline(lines: List<SubLine>): List<SubLine> =
+        mergeDuplicate(lines.sortedBy { it.startMs }).mapIndexed { index, line ->
+            line.copy(index = index)
+        }
     private fun mergeDuplicate(lines: List<SubLine>): List<SubLine> {
         // YouTube 自动字幕常见同一句重复多时间片：相同文本且首尾相接 → 合并
         val out = mutableListOf<SubLine>()
