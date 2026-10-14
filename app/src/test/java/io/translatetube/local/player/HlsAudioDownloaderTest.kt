@@ -9,6 +9,34 @@ class HlsAudioDownloaderTest {
 
 
     @Test
+    fun failedSegmentInstallKeepsExistingDestinationAndCompletedPart() {
+        val parent = createTempDir(prefix = "hls-install-preserve")
+        try {
+            val part = java.io.File(parent, "segment.seg.part").apply {
+                writeBytes(byteArrayOf(1, 2, 3, 4))
+            }
+            val destination = java.io.File(parent, "segment.seg").apply {
+                mkdirs()
+            }
+            val sentinel = java.io.File(destination, "keep.txt").apply {
+                writeText("previous cache must survive")
+            }
+
+            val error = runCatching {
+                HlsAudioDownloader.installCompletedSegment(part, destination)
+            }.exceptionOrNull()
+
+            assertTrue(error is IllegalStateException)
+            assertTrue(destination.isDirectory)
+            assertTrue(sentinel.isFile)
+            assertTrue(part.isFile)
+            assertEquals("previous cache must survive", sentinel.readText())
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
     fun cleanupSegmentCacheRemovesOnlyTheMatchingMediaDirectory() {
         val parent = createTempDir(prefix = "hls-cache-cleanup")
         try {
