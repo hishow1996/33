@@ -65,11 +65,8 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
             android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=${audio.samples.size}")
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
-        // Discard NaN/Infinity and prevent invalid floats from reaching AudioTrack.
-        val clean = FloatArray(audio.samples.size) { i ->
-            val value = audio.samples[i]
-            if (value.isFinite()) value.coerceIn(-1f, 1f) else 0f
-        }
+        // Sanitize the JNI-returned array in place to avoid a second full PCM allocation.
+        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples)
         return TtsAudio(clean, sampleRate)
     }
 
