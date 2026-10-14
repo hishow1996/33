@@ -183,6 +183,30 @@ class HlsAudioDownloaderTest {
     }
 
     @Test
+    fun rejectsPartialHttpResponseWhenNoByteRangeWasRequested() {
+        val error = runCatching {
+            HlsAudioDownloader.validateSegmentResponse(206, null, null, "bytes 0-99/1000")
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("完整 HLS 片段"))
+    }
+
+    @Test
+    fun acceptsCompleteResponseAndValidatesByteRangeTotals() {
+        HlsAudioDownloader.validateSegmentResponse(200, null, null, null)
+
+        assertEquals(
+            true,
+            runCatching { HlsAudioDownloader.validateSegmentResponse(206, 10L, 19L, "bytes 10-19/1000") }.isSuccess,
+        )
+        assertEquals(
+            false,
+            runCatching { HlsAudioDownloader.validateSegmentResponse(206, 10L, 19L, "bytes 10-19/19") }.isSuccess,
+        )
+    }
+
+    @Test
     fun detectsSignedHlsManifestUrlByItsPath() {
         assertEquals(true, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8?token=private"))
         assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example/video.mp4?token=private"))

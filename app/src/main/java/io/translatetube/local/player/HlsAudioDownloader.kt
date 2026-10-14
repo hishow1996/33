@@ -55,6 +55,33 @@ internal object HlsAudioDownloader {
     internal fun headersWithoutInheritedRange(headers: Map<String, String>): Map<String, String> =
         headers.filterKeys { !it.equals("Range", ignoreCase = true) }
 
+    /** Validate that un-ranged segments are whole responses and ranged segments match exactly. */
+    internal fun validateSegmentResponse(
+        code: Int,
+        byteRangeStart: Long?,
+        byteRangeEnd: Long?,
+        contentRangeHeader: String?,
+    ) {
+        if (byteRangeStart == null && byteRangeEnd == null) {
+            if (code != 200) throw IllegalStateException("服务器未返回完整 HLS 片段（HTTP " + code + "）。")
+            return
+        }
+        if (byteRangeStart == null || byteRangeEnd == null ||
+            byteRangeStart < 0L || byteRangeEnd < byteRangeStart
+        ) {
+            throw IllegalArgumentException("HLS 字节范围无效。")
+        }
+        val contentRange = contentRangeHeader.orEmpty().trim()
+        val expectedContentRange = Regex("""(?i)^bytes\s+""" + byteRangeStart + "-" + byteRangeEnd + """/(?:\d+|\*)$""")
+        if (code != 206 || !expectedContentRange.matches(contentRange)) {
+            throw IllegalStateException("服务器未按 HLS BYTERANGE 返回请求的字节范围（HTTP " + code + "）。")
+        }
+        val totalLength = contentRange.substringAfterLast('/').toLongOrNull()
+        if (totalLength != null && totalLength <= byteRangeEnd) {
+            throw IllegalStateException("服务器返回的 HLS BYTERANGE 总长度无效。")
+        }
+    }
+
     /** Remove the retry cache only after the assembled file has decoded successfully. */
     internal fun cleanupSegmentCache(destination: File): Boolean {
         val parent = destination.absoluteFile.parentFile ?: return false
@@ -388,17 +415,12 @@ internal object HlsAudioDownloader {
                     requestHeaders = segmentHeaders,
                     allowedCookieOrigin = rootOrigin,
                 ).use { response ->
-                    if (byteRangeEnd != null) {
-                        val expectedContentRange = Regex(
-                            """(?i)^bytes\s+${byteRangeStart}-${byteRangeEnd}/(?:\d+|\*)$"""
-                        )
-                        val contentRange = response.header("Content-Range").orEmpty().trim()
-                        if (response.code != 206 || !expectedContentRange.matches(contentRange)) {
-                            throw IllegalStateException("服务器未按 HLS BYTERANGE 返回请求的字节范围（HTTP ${response.code}）。")
-                        }
-                    } else if (!response.isSuccessful) {
-                        throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
-                    }
+                    validateSegmentResponse(
+                        code = response.code,
+                        byteRangeStart = byteRangeStart,
+                        byteRangeEnd = byteRangeEnd,
+                        contentRangeHeader = response.header("Content-Range"),
+                    )
                     val body = response.body ?: throw IllegalStateException("HLS 片段响应为空。")
                     if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
                         throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录。")
