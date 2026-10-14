@@ -43,9 +43,8 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
     var kawaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_kawa_key", "").orEmpty())) }
     var kawaLanguage by remember { mutableStateOf(prefs.getString("asr_kawa_language", "auto") ?: "auto") }
-    var kawaLanguageMenuExpanded by remember { mutableStateOf(false) }
     var cartesiaLanguage by remember { mutableStateOf(prefs.getString("asr_cartesia_language", "en") ?: "en") }
-    var cartesiaLanguageMenuExpanded by remember { mutableStateOf(false) }
+    var asrLanguageMenuExpanded by remember { mutableStateOf(false) }
     val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "no" to "挪威语") }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
     val floatingManager = remember { FloatingManager(ctx) }
@@ -107,120 +106,185 @@ Section("翻译引擎", onHeaderClick = onApiManager) {}
 
 Section("转写引擎") {
     Text(
-        "选择没有现成字幕时使用的语音转写方式。本地 Whisper 保留不变；云端模式只上传提取后的音频，不上传视频画面。",
+        "没有现成字幕时使用。云端模式只上传提取后的音频，不上传视频画面。",
         color = SubText,
         style = MaterialTheme.typography.bodySmall,
     )
+    Spacer(Modifier.height(10.dp))
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        AsrProviderCard(
+            title = "本地 Whisper",
+            subtitle = "离线 · 无需密钥",
+            selected = asrEngine == "local",
+            modifier = Modifier.weight(1f),
+            onClick = {
+                asrEngine = "local"
+                prefs.edit().putString("asr_provider", "local").apply()
+            },
+        )
+        AsrProviderCard(
+            title = "ElevenLabs",
+            subtitle = "自动检测语种",
+            selected = asrEngine == "elevenlabs",
+            modifier = Modifier.weight(1f),
+            onClick = {
+                asrEngine = "elevenlabs"
+                prefs.edit().putString("asr_provider", "elevenlabs").apply()
+            },
+        )
+    }
     Spacer(Modifier.height(8.dp))
-    EngineOption("local", "本地 Whisper · 离线转写", asrEngine) { engine ->
-        asrEngine = engine
-        prefs.edit().putString("asr_provider", engine).apply()
-    }
-    HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
-    EngineOption("elevenlabs", "ElevenLabs Scribe · 云端转写", asrEngine) { engine ->
-        asrEngine = engine
-        prefs.edit().putString("asr_provider", engine).apply()
-    }
-    HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
-    EngineOption("cartesia", "Cartesia Ink · 云端转写", asrEngine) { engine ->
-        asrEngine = engine
-        prefs.edit().putString("asr_provider", engine).apply()
-    }
-    EngineOption("kawa", "Kawa · 每月 1,000 分钟免费", asrEngine) { engine ->
-        asrEngine = engine
-        prefs.edit().putString("asr_provider", engine).apply()
-    }
-    HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
-    if (asrEngine == "elevenlabs") {
-        Spacer(Modifier.height(8.dp))
-        Text("填写 ElevenLabs API Key。密钥使用 Android Keystore 加密后保存在本机；云端额度以账户为准。", color = SubText, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(6.dp))
-        OutlinedTextField(
-            value = elevenLabsKey,
-            onValueChange = { value ->
-                elevenLabsKey = value
-                prefs.edit().putString("asr_elevenlabs_key", Crypto.encrypt(value.trim())).apply()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        AsrProviderCard(
+            title = "Cartesia Ink",
+            subtitle = "需指定原声语言",
+            selected = asrEngine == "cartesia",
+            modifier = Modifier.weight(1f),
+            onClick = {
+                asrEngine = "cartesia"
+                prefs.edit().putString("asr_provider", "cartesia").apply()
             },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("ElevenLabs API Key") },
-            placeholder = { Text("粘贴 API Key") },
-            visualTransformation = PasswordVisualTransformation(),
         )
-        Text(
-            if (elevenLabsKey.isBlank()) "尚未填写密钥" else "密钥已保存在本机",
-            color = if (elevenLabsKey.isBlank()) SubText else BrandBright,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(start = 4.dp, top = 3.dp),
-        )
-    } else if (asrEngine == "cartesia") {
-        Spacer(Modifier.height(8.dp))
-        Text("填写 Cartesia API Key。密钥使用 Android Keystore 加密后保存在本机；云端额度以账户为准。", color = SubText, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(6.dp))
-        OutlinedTextField(
-            value = cartesiaKey,
-            onValueChange = { value ->
-                cartesiaKey = value
-                prefs.edit().putString("asr_cartesia_key", Crypto.encrypt(value.trim())).apply()
+        AsrProviderCard(
+            title = "Kawa",
+            subtitle = "每月 1,000 分钟*",
+            selected = asrEngine == "kawa",
+            modifier = Modifier.weight(1f),
+            onClick = {
+                asrEngine = "kawa"
+                prefs.edit().putString("asr_provider", "kawa").apply()
             },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Cartesia API Key") },
-            placeholder = { Text("粘贴 API Key") },
-            visualTransformation = PasswordVisualTransformation(),
         )
+    }
+
+    Spacer(Modifier.height(12.dp))
+    if (asrEngine == "local") {
         Text(
-            if (cartesiaKey.isBlank()) "尚未填写密钥" else "密钥已保存在本机",
-            color = if (cartesiaKey.isBlank()) SubText else BrandBright,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(start = 4.dp, top = 3.dp),
+            "本地识别不需要 API Key。请先在模型管理中下载 Whisper 模型。",
+            color = SubText,
+            style = MaterialTheme.typography.bodySmall,
         )
-        Text("识别语言（按视频原声选择）", color = OnBg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-        Box {
-            OutlinedButton(onClick = { cartesiaLanguageMenuExpanded = true }) {
-                Text(cartesiaLanguages.firstOrNull { it.first == cartesiaLanguage }?.second ?: "英语")
-                Icon(Icons.Filled.ExpandMore, contentDescription = "选择识别语言")
-            }
-            DropdownMenu(expanded = cartesiaLanguageMenuExpanded, onDismissRequest = { cartesiaLanguageMenuExpanded = false }) {
-                cartesiaLanguages.forEach { (code, label) ->
-                    DropdownMenuItem(text = { Text(label) }, onClick = {
-                        cartesiaLanguage = code
-                        prefs.edit().putString("asr_cartesia_language", code).apply()
-                        cartesiaLanguageMenuExpanded = false
-                    })
+    } else {
+        val providerTitle = when (asrEngine) {
+            "elevenlabs" -> "ElevenLabs Scribe"
+            "cartesia" -> "Cartesia Ink"
+            else -> "Kawa"
+        }
+        val selectedApiKey = when (asrEngine) {
+            "elevenlabs" -> elevenLabsKey
+            "cartesia" -> cartesiaKey
+            else -> kawaKey
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFFF7F9FC),
+            shape = RoundedCornerShape(16.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
+            tonalElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("服务配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    when (asrEngine) {
+                        "elevenlabs" -> "使用 Scribe 云端识别，语言自动检测。"
+                        "cartesia" -> "填写 API Key，并选择视频原声语言。"
+                        else -> "每月免费额度及实际计费以 Kawa 账户显示为准。"
+                    },
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = selectedApiKey,
+                    onValueChange = { value ->
+                        when (asrEngine) {
+                            "elevenlabs" -> {
+                                elevenLabsKey = value
+                                prefs.edit().putString("asr_elevenlabs_key", Crypto.encrypt(value.trim())).apply()
+                            }
+                            "cartesia" -> {
+                                cartesiaKey = value
+                                prefs.edit().putString("asr_cartesia_key", Crypto.encrypt(value.trim())).apply()
+                            }
+                            else -> {
+                                kawaKey = value
+                                prefs.edit().putString("asr_kawa_key", Crypto.encrypt(value.trim())).apply()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("API Key") },
+                    placeholder = { Text("粘贴服务商 API Key") },
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+                Text(
+                    if (selectedApiKey.isBlank()) "尚未填写密钥" else "密钥已加密保存在本机",
+                    color = if (selectedApiKey.isBlank()) SubText else BrandBright,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+
+                if (asrEngine == "cartesia" || asrEngine == "kawa") {
+                    val selectedLanguage = if (asrEngine == "cartesia") cartesiaLanguage else kawaLanguage
+                    Text("识别语言", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                    Box {
+                        OutlinedButton(onClick = { asrLanguageMenuExpanded = true }) {
+                            Text(
+                                if (selectedLanguage == "auto") "自动检测"
+                                else cartesiaLanguages.firstOrNull { it.first == selectedLanguage }?.second ?: "英语"
+                            )
+                            Icon(Icons.Filled.ExpandMore, contentDescription = "选择识别语言")
+                        }
+                        DropdownMenu(
+                            expanded = asrLanguageMenuExpanded,
+                            onDismissRequest = { asrLanguageMenuExpanded = false },
+                        ) {
+                            if (asrEngine == "kawa") {
+                                DropdownMenuItem(
+                                    text = { Text("自动检测") },
+                                    onClick = {
+                                        kawaLanguage = "auto"
+                                        prefs.edit().putString("asr_kawa_language", "auto").apply()
+                                        asrLanguageMenuExpanded = false
+                                    },
+                                )
+                            }
+                            cartesiaLanguages.forEach { (code, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        if (asrEngine == "cartesia") {
+                                            cartesiaLanguage = code
+                                            prefs.edit().putString("asr_cartesia_language", code).apply()
+                                        } else {
+                                            kawaLanguage = code
+                                            prefs.edit().putString("asr_kawa_language", code).apply()
+                                        }
+                                        asrLanguageMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
-        Text("Cartesia 需要指定原声语言；ElevenLabs 会自动检测语种。", color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+        Text(
+            "提示：云端服务需要网络，识别额度与超额收费由服务商决定。",
+            color = SubText,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(start = 2.dp, top = 5.dp),
+        )
     }
-    if (asrEngine == "kawa") {
-        Spacer(Modifier.height(8.dp))
-        Text("Kawa 提供每月 1,000 分钟免费转写额度。API Key 使用 Android Keystore 加密后保存在本机。长音频会自动分段上传（每段低于 10 MB），只上传音频，不上传视频画面。", color = SubText, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(6.dp))
-        OutlinedTextField(value = kawaKey, onValueChange = { value ->
-            kawaKey = value
-            prefs.edit().putString("asr_kawa_key", Crypto.encrypt(value.trim())).apply()
-        }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Kawa API Key") }, placeholder = { Text("粘贴 Kawa API Key") }, visualTransformation = PasswordVisualTransformation())
-        Text(if (kawaKey.isBlank()) "尚未填写密钥" else "密钥已保存在本机", color = if (kawaKey.isBlank()) SubText else BrandBright, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 4.dp, top = 3.dp))
-        Text("识别语言（默认自动检测）", color = OnBg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-        Box {
-            OutlinedButton(onClick = { kawaLanguageMenuExpanded = true }) {
-                Text(if (kawaLanguage == "auto") "自动检测" else cartesiaLanguages.firstOrNull { it.first == kawaLanguage }?.second ?: "自动检测")
-                Icon(Icons.Filled.ExpandMore, contentDescription = "选择 Kawa 识别语言")
-            }
-            DropdownMenu(expanded = kawaLanguageMenuExpanded, onDismissRequest = { kawaLanguageMenuExpanded = false }) {
-                DropdownMenuItem(text = { Text("自动检测") }, onClick = { kawaLanguage = "auto"; prefs.edit().putString("asr_kawa_language", "auto").apply(); kawaLanguageMenuExpanded = false })
-                cartesiaLanguages.forEach { (code, label) -> DropdownMenuItem(text = { Text(label) }, onClick = { kawaLanguage = code; prefs.edit().putString("asr_kawa_language", code).apply(); kawaLanguageMenuExpanded = false }) }
-            }
-        }
-        Text("Kawa 是批量转写接口；分段字幕时间戳会换算回整段音频时间轴。", color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
-    }
-    Text(
-        "选择云端转写后，无字幕视频会调用对应服务；未填写或无效密钥时会提示错误，不会静默切换引擎。",
-        color = SubText,
-        style = MaterialTheme.typography.bodySmall,
-        modifier = Modifier.padding(start = 8.dp, top = 5.dp),
-    )
 }
 
 Section("配音设置") {
@@ -708,6 +772,51 @@ private fun EngineOption(
             modifier = Modifier.weight(1f).padding(start = 4.dp),
         )
         if (current == id) Text("当前", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+
+@Composable
+private fun AsrProviderCard(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Surface(
+        modifier = modifier.clip(shape).clickable(onClick = onClick),
+        color = if (selected) Color(0xFFEAF2FF) else Color.White,
+        shape = shape,
+        border = androidx.compose.foundation.BorderStroke(
+            if (selected) 1.5.dp else 1.dp,
+            if (selected) BrandBright else OutlineSoft,
+        ),
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    color = OnBg,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                if (selected) {
+                    Text("✓", color = BrandBright, style = MaterialTheme.typography.titleSmall)
+                }
+            }
+            Text(
+                subtitle,
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+            )
+        }
     }
 }
 
