@@ -1439,7 +1439,7 @@ class PlaybackService : MediaSessionService() {
                 val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("asr_provider", "local") ?: "local"
                 val asrProvider = storedAsrProvider.takeIf {
-                    it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa
+                    it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
                 } ?: "local"
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
