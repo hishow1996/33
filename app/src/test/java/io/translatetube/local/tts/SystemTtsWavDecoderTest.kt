@@ -65,6 +65,22 @@ class SystemTtsWavDecoderTest {
         assertEquals(-0.75f, floatPcm.samples[1], 0.001f)
     }
 
+    @Test
+    fun rejectsOversizedWavBeforeReadingItsContents() {
+        val file = java.io.File.createTempFile("tts_oversized_", ".wav")
+        try {
+            java.io.RandomAccessFile(file, "rw").use { it.setLength(17L * 1024L * 1024L) }
+            try {
+                SystemTtsWavDecoder.decode(file)
+                throw AssertionError("Expected oversized WAV to be rejected")
+            } catch (expected: IllegalStateException) {
+                assertTrue(expected.message.orEmpty().contains("大小异常"))
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
     @Test(expected = IllegalStateException::class)
     fun rejectsPcmDataThatEndsMidSampleFrame() {
         SystemTtsWavDecoder.decode(
