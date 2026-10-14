@@ -50,6 +50,14 @@ class SafeMediaHttpTest {
     }
 
     @Test
+    fun recognizesHlsManifestBodyWithoutAnExtensionInTheUrl() {
+        val playlist = "\uFEFF#EXTM3U\n#EXT-X-TARGETDURATION:6".toByteArray(Charsets.UTF_8)
+        assertEquals(true, isHlsManifestPayload(playlist, playlist.size))
+        assertEquals(false, isHlsManifestPayload("audio payload".toByteArray(Charsets.UTF_8), 13))
+        assertEquals(false, isHlsManifestPayload("#EXAMPLE".toByteArray(Charsets.UTF_8), 8))
+    }
+
+    @Test
     fun detectsTextErrorDocumentsMislabeledAsBinaryMedia() {
         assertTrue(
             isLikelyTextErrorPayload(
