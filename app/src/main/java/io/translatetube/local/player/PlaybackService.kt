@@ -1229,7 +1229,15 @@ class PlaybackService : MediaSessionService() {
             }
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
-            var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
+            val savedResumeLines = resumeState?.lines?.takeIf { it.isNotEmpty() }
+            var lines: List<SubLine>? = if (
+                translationProfileChangedOnResume &&
+                !isChineseLanguage(srcLang)
+            ) {
+                // A retry with a changed translation profile must not combine completed rows from
+                // the old engine with pending rows from the new engine.
+                savedResumeLines?.map { it.copy(zh = null) }
+            } else savedResumeLines
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
                 if (restoredSourceLines != null) {
                     lines = restoredSourceLines
