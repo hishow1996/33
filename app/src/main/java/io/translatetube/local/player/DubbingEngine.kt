@@ -331,12 +331,23 @@ class DubbingEngine(
                             firstAudio
                         }
                     } else firstAudio
-                    writeCache(idx, readyAudio.sampleRate, readyAudio.samples)
+                    val maxUsefulSamples = DubbingSynthesisPolicy.maxUsefulSampleCount(
+                        sampleRate = readyAudio.sampleRate,
+                        cueDurationMs = cueDurationMs,
+                    )
+                    val boundedSamples = if (maxUsefulSamples in 1 until readyAudio.samples.size) {
+                        readyAudio.samples.copyOf(maxUsefulSamples).takeIf {
+                            DubbingPcmValidation.isValidAudio(readyAudio.sampleRate, it)
+                        } ?: readyAudio.samples
+                    } else {
+                        readyAudio.samples
+                    }
+                    writeCache(idx, readyAudio.sampleRate, boundedSamples)
                     readiness.markPrepared(idx, hasAudio = true)
-                    synchronized(mem) { mem[idx] = readyAudio.samples to readyAudio.sampleRate }
+                    synchronized(mem) { mem[idx] = boundedSamples to readyAudio.sampleRate }
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
-                            onFirstSynthesisReady?.invoke(idx, readyAudio.samples.size, readyAudio.sampleRate)
+                            onFirstSynthesisReady?.invoke(idx, boundedSamples.size, readyAudio.sampleRate)
                         }.onFailure {
                             android.util.Log.w("DubbingEngine", "Could not publish first-PCM diagnostic", it)
                         }

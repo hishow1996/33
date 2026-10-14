@@ -46,4 +46,16 @@ class DubbingSynthesisPolicyTest {
             0.001f,
         )
     }
+    @Test
+    fun boundsCachedPcmToWhatCanPlayInsideTheSubtitleWindow() {
+        assertEquals(32_000, DubbingSynthesisPolicy.maxUsefulSampleCount(16_000, 1_000))
+        assertEquals(44_100, DubbingSynthesisPolicy.maxUsefulSampleCount(22_050, 1_000))
+        assertEquals(
+            DubbingPcmValidation.MAX_SAMPLE_COUNT,
+            DubbingSynthesisPolicy.maxUsefulSampleCount(192_000, 60_000),
+        )
+        assertEquals(0, DubbingSynthesisPolicy.maxUsefulSampleCount(0, 1_000))
+        assertEquals(0, DubbingSynthesisPolicy.maxUsefulSampleCount(16_000, 0))
+    }
+
 }

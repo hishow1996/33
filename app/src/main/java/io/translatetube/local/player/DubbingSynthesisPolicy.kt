@@ -8,6 +8,25 @@ internal object DubbingSynthesisPolicy {
     private const val LONG_CUE_RATIO = 1.15
     private const val TARGET_CUE_FILL = 0.90
 
+    /**
+     * Audio beyond the subtitle window multiplied by the maximum sync rate can never be played.
+     * Avoid caching that unused tail on long videos; a caller still keeps the original if the
+     * bounded prefix is not valid audible PCM.
+     */
+    fun maxUsefulSampleCount(
+        sampleRate: Int,
+        cueDurationMs: Long,
+        maxSamples: Int = DubbingPcmValidation.MAX_SAMPLE_COUNT,
+    ): Int {
+        if (sampleRate !in 8_000..192_000 || cueDurationMs <= 0L || maxSamples <= 0) return 0
+        val useful = kotlin.math.ceil(
+            cueDurationMs.toDouble() * sampleRate.toDouble() *
+                DubbingTiming.MAX_SYNC_RATE.toDouble() / 1_000.0
+        )
+        if (!useful.isFinite() || useful >= maxSamples.toDouble()) return maxSamples
+        return useful.toInt().coerceIn(1, maxSamples)
+    }
+
     fun recommendedSpeed(
         baseSpeed: Float,
         sampleCount: Int,
