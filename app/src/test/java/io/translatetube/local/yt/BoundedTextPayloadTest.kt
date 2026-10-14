@@ -1,6 +1,7 @@
 package io.translatetube.local.yt
 
 import java.io.ByteArrayInputStream
+import java.util.concurrent.CancellationException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -43,5 +44,23 @@ class BoundedTextPayloadTest {
 
         assertFalse(result.isSuccess)
         assertEquals(true, result.exceptionOrNull()?.message.orEmpty().contains("导入的字幕文件"))
+    }
+
+    @Test
+    fun stopsReadingWhenOwnerCancelsBetweenChunks() {
+        var checks = 0
+        val result = runCatching {
+            BoundedTextPayload.readBytes(
+                ByteArrayInputStream(ByteArray(40 * 1024) { 65.toByte() }),
+                maxBytes = 64L * 1024L,
+                checkActive = {
+                    checks++
+                    if (checks == 2) throw CancellationException("subtitle import cancelled")
+                },
+            )
+        }
+
+        assertEquals(true, result.exceptionOrNull() is CancellationException)
+        assertEquals(2, checks)
     }
 }
