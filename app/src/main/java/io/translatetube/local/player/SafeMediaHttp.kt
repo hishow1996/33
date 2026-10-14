@@ -41,6 +41,10 @@ internal object SafeMediaHttp {
                 response.close()
                 throw IOException("媒体服务器返回了无效的重定向地址")
             }
+            if (current.url.isHttps && !nextUrl.isHttps) {
+                response.close()
+                throw IOException("已阻止媒体下载从 HTTPS 降级重定向到 HTTP")
+            }
             val oldOrigin = origin(current.url.scheme, current.url.host, current.url.port)
             val newOrigin = origin(nextUrl.scheme, nextUrl.host, nextUrl.port)
             val builder = current.newBuilder().url(nextUrl)
