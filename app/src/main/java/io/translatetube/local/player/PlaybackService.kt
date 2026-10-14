@@ -2140,14 +2140,9 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Stable cache identity: signed media URL query strings do not belong in cache keys. */
-    private fun remoteCacheIdentity(url: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(url.toByteArray(Charsets.UTF_8))
-        val hex = digest.joinToString("") { byte ->
-            (byte.toInt() and 0xff).toString(16).padStart(2, '0')
-        }
-        return "remote-sha256:$hex"
-    }
+    /** Stable translation identity excludes rotating URL signatures and authentication tokens. */
+    private fun remoteCacheIdentity(url: String): String =
+        MediaUrlCacheIdentity.key(url)
 
     /**
      * Download a direct or finite HLS webpage media URL into a bounded cache for Whisper.
@@ -2160,7 +2155,9 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         cacheHitProgress: String,
     ): File {
-        val identity = "remote:$mediaUrl"
+        // Reuse downloaded bytes across rotating signed URLs, but never across page origins or
+        // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
+        val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
         val mutex = asrAudioDownloadLocks.computeIfAbsent(identity) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
             reusableAsrAudioFile(identity)?.let { cached ->
