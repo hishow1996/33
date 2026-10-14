@@ -16,9 +16,10 @@ import java.util.Locale
 internal object AsrAudioCacheIdentity {
     private val sourcePrefixes = setOf("webmedia", "webpage", "local")
     private val volatileQueryParameters = setOf(
-        "token", "access_token", "auth", "authorization", "auth_key", "session",
-        "sessionid", "jwt", "signature", "sig", "lsig", "policy", "key-pair-id",
-        "expires", "expiry", "expire", "hdnea", "__token", "hmac", "nonce",
+        "token", "access_token", "access-token", "auth", "auth_token", "x-auth-token",
+        "authorization", "auth_key", "session", "sessionid", "session_token", "jwt",
+        "signature", "sig", "lsig", "policy", "key-pair-id",
+        "expires", "expiry", "expire", "expires_at", "hdnea", "hdnts", "__token", "hmac", "nonce",
         "x-amz-signature", "x-amz-credential", "x-amz-date", "x-amz-expires",
         "x-amz-security-token", "x-goog-signature", "x-goog-credential",
         "x-goog-date", "x-goog-expires", "x-goog-security-token",
