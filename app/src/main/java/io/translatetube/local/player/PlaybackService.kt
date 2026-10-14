@@ -2456,16 +2456,30 @@ class PlaybackService : MediaSessionService() {
 
     private fun looksLikeDashUrl(value: String): Boolean = runCatching {
         val uri = Uri.parse(value)
+        val format = uri.getQueryParameter("format").orEmpty()
+        val type = uri.getQueryParameter("type").orEmpty()
         uri.path.orEmpty().endsWith(".mpd", ignoreCase = true) ||
-            uri.getQueryParameter("type").equals("application/dash+xml", ignoreCase = true)
+            format.equals("mpd", ignoreCase = true) ||
+            format.equals("dash", ignoreCase = true) ||
+            format.equals("application/dash+xml", ignoreCase = true) ||
+            type.equals("mpd", ignoreCase = true) ||
+            type.equals("dash", ignoreCase = true) ||
+            type.equals("application/dash+xml", ignoreCase = true)
     }.getOrDefault(false)
 
     private fun looksLikeHlsUrl(value: String): Boolean = runCatching {
         val uri = Uri.parse(value)
-        val path = uri.path.orEmpty()
-        path.endsWith(".m3u8", ignoreCase = true) ||
-            uri.getQueryParameter("format").equals("m3u8", ignoreCase = true) ||
-            uri.getQueryParameter("type").equals("application/vnd.apple.mpegurl", ignoreCase = true)
+        val format = uri.getQueryParameter("format").orEmpty()
+        val type = uri.getQueryParameter("type").orEmpty()
+        uri.path.orEmpty().endsWith(".m3u8", ignoreCase = true) ||
+            format.equals("m3u8", ignoreCase = true) ||
+            format.equals("hls", ignoreCase = true) ||
+            format.equals("application/x-mpegURL", ignoreCase = true) ||
+            format.equals("application/vnd.apple.mpegurl", ignoreCase = true) ||
+            type.equals("m3u8", ignoreCase = true) ||
+            type.equals("hls", ignoreCase = true) ||
+            type.equals("application/x-mpegURL", ignoreCase = true) ||
+            type.equals("application/vnd.apple.mpegurl", ignoreCase = true)
     }.getOrDefault(false)
 
     private fun looksLikePlaylistFailure(error: Throwable): Boolean {
