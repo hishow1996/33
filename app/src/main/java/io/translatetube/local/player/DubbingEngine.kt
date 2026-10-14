@@ -75,6 +75,7 @@ class DubbingEngine(
     }
     /** Serializes cache publication with release so a cancelled old run cannot install stale PCM. */
     private val cacheWriteLock = Any()
+    private val cacheWriterId = nextCacheWriterId.incrementAndGet()
     private val ttsCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     // Completes only after every queued AudioTrack operation and the final track cleanup have drained.
     private val audioCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -145,14 +146,20 @@ class DubbingEngine(
 
                     val expectedCacheNames = this@DubbingEngine.lines.indices
                         .map { cacheFile(it).name }.toHashSet()
-                    val existing = cacheDir.listFiles().orEmpty()
-                    for (file in existing) {
-                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        if (released || generation != cacheInitGeneration.get()) return@launch
-                        if ((file.name.endsWith(".pcm") || file.name.endsWith(".pcm.tmp")) &&
-                            file.name !in expectedCacheNames
-                        ) {
-                            file.delete()
+                    // Coordinate installs with cache pruning across engine instances. Temporary
+                    // staging files use per-engine names and are removed only after they go stale.
+                    synchronized(cacheInstallLock) {
+                        val nowMs = System.currentTimeMillis()
+                        val existing = cacheDir.listFiles().orEmpty()
+                        for (file in existing) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            if (released || generation != cacheInitGeneration.get()) return@launch
+                            when {
+                                file.name.endsWith(".pcm") && file.name !in expectedCacheNames ->
+                                    file.delete()
+                                isStalePcmTemp(file, nowMs) ->
+                                    file.delete()
+                            }
                         }
                     }
 
@@ -507,14 +514,17 @@ class DubbingEngine(
     private fun pruneOldDubbingCaches() {
         val root = cacheRootDir
         if (!root.isDirectory) return
+        val nowMs = System.currentTimeMillis()
         val staleTemps = root.walkTopDown()
             .filter { file ->
-                file.isFile && file.name.endsWith(".pcm.tmp") &&
+                isStalePcmTemp(file, nowMs) &&
                     file.parentFile?.absolutePath != cacheDir.absolutePath
             }
             .toList()
-        staleTemps.forEach { temp ->
-            if (temp.delete()) temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+        synchronized(cacheInstallLock) {
+            staleTemps.forEach { temp ->
+                if (temp.delete()) temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+            }
         }
 
         val pcmFiles = root.walkTopDown()
@@ -646,7 +656,7 @@ class DubbingEngine(
         checkActive: () -> Unit = {},
     ) {
         val target = cacheFile(idx)
-        val temp = File(cacheDir, target.name + ".tmp")
+        val temp = File(cacheDir, DubbingCacheIdentity.tempFileName(target.name, cacheWriterId))
         temp.delete()
         try {
             checkActive()
@@ -665,14 +675,17 @@ class DubbingEngine(
             if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
                 throw java.io.IOException("PCM 缓存写入不完整")
             }
-            synchronized(cacheWriteLock) {
-                if (released) {
-                    throw kotlinx.coroutines.CancellationException("配音引擎已释放，取消缓存写入")
-                }
-                // Same-directory rename is atomic on Android/Linux and replaces a regular
-                // destination file. Do not delete the previous good cache before the commit succeeds.
-                if (!temp.renameTo(target)) {
-                    throw java.io.IOException("无法原子替换 PCM 缓存；旧缓存已保留")
+            synchronized(cacheInstallLock) {
+                checkActive()
+                synchronized(cacheWriteLock) {
+                    if (released) {
+                        throw kotlinx.coroutines.CancellationException("配音引擎已释放，取消缓存写入")
+                    }
+                    // Serialize publication across old/new engine instances. Each writer has a
+                    // unique staging path so a retired writer cannot rename another writer's temp.
+                    if (!temp.renameTo(target)) {
+                        throw java.io.IOException("无法原子替换 PCM 缓存；旧缓存已保留")
+                    }
                 }
             }
         } catch (error: Exception) {
@@ -1234,6 +1247,12 @@ class DubbingEngine(
         audioExec.shutdown()
     }
 
+    private fun isStalePcmTemp(file: File, nowMs: Long): Boolean {
+        if (!file.isFile || !file.name.endsWith(".pcm.tmp")) return false
+        val modified = file.lastModified()
+        return modified > 0L && nowMs >= modified && nowMs - modified > TEMP_PCM_AGE_MS
+    }
+
     /** Release immediately, then await TTS and AudioTrack disposal before replacing this engine. */
     suspend fun releaseAndJoin() {
         release()
@@ -1245,5 +1264,11 @@ class DubbingEngine(
         synthJob?.join()
         ttsCloseSignal.await()
         audioCloseSignal.await()
+    }
+
+    private companion object {
+        private val cacheInstallLock = Any()
+        private val nextCacheWriterId = AtomicInteger(0)
+        private const val TEMP_PCM_AGE_MS = 6L * 60L * 60L * 1_000L
     }
 }
