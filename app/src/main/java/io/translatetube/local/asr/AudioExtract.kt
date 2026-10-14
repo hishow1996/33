@@ -100,11 +100,13 @@ object AudioExtract {
                 file != null -> extractor.setDataSource(file.absolutePath)
                 src != null && (src.scheme.equals("http", true) || src.scheme.equals("https", true)) -> {
                     // Read accessible progressive web media directly through MediaExtractor instead
-                    // of downloading the full video first. Android 9 supports the URL + headers
-                    // overload, including servers that require Referer/Cookie/Authorization.
+                    // of downloading the full video first. MediaExtractor follows HTTP redirects
+                    // internally without exposing a redirect callback, so only forward non-secret
+                    // headers here. Authenticated URLs should fail closed rather than risk replaying
+                    // Cookie/Authorization/Origin at an unrelated redirect target.
                     val safeHeaders = headers.filter { (name, value) ->
                         name.trim().lowercase(java.util.Locale.ROOT) in setOf(
-                            "user-agent", "referer", "origin", "cookie", "authorization", "accept-language"
+                            "user-agent", "referer", "accept-language"
                         ) && value.isNotBlank() &&
                             value.none { it == '\r' || it == '\n' || it == '\u0000' }
                     }
