@@ -3,9 +3,14 @@ package io.translatetube.local.player
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
-import org.json.JSONArray
-import org.json.JSONObject
-import io.translatetube.local.asr.SpeakerDiarizer
+
+/** Pure, versioned speaker timeline record so cache validation can be JVM-tested without Android. */
+internal data class SpeakerDiarizationRecord(
+    val startSec: Float,
+    val endSec: Float,
+    val speaker: Int,
+    val confidence: Float,
+)
 
 /**
  * Audio fingerprint and defensive serialization for per-video speaker diarization checkpoints.
@@ -15,6 +20,7 @@ import io.translatetube.local.asr.SpeakerDiarizer
 internal object SpeakerDiarizationCachePolicy {
     private const val VERSION = 1
     private const val MAX_CACHED_SEGMENTS = 20_000
+    private const val HEADER = "speaker-diarization-v$VERSION"
 
     fun signature(samples: FloatArray): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -34,55 +40,52 @@ internal object SpeakerDiarizationCachePolicy {
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
-    fun encodeSegments(signature: String, segments: List<SpeakerDiarizer.Segment>): String {
+    fun encodeSegments(signature: String, segments: List<SpeakerDiarizationRecord>): String {
         require(signature.isNotBlank())
         require(segments.size in 1..MAX_CACHED_SEGMENTS)
-        val rows = JSONArray()
+        val rows = ArrayList<String>(segments.size + 1)
+        rows += "$HEADER|$signature"
         segments.forEach { segment ->
             require(segment.startSec.isFinite() && segment.endSec.isFinite())
             require(segment.startSec >= 0f && segment.endSec > segment.startSec)
             require(segment.speaker in 0..999)
-            rows.put(
-                JSONObject()
-                    .put("s", segment.startSec.toDouble())
-                    .put("e", segment.endSec.toDouble())
-                    .put("sp", segment.speaker)
-                    .put("c", segment.confidence.takeIf { it.isFinite() }?.toDouble() ?: -2.0),
-            )
+            val confidence = segment.confidence.takeIf { it.isFinite() } ?: -2f
+            rows += listOf(
+                segment.startSec.toRawBits(),
+                segment.endSec.toRawBits(),
+                segment.speaker,
+                confidence.toRawBits(),
+            ).joinToString(",")
         }
-        return JSONObject()
-            .put("version", VERSION)
-            .put("signature", signature)
-            .put("segments", rows)
-            .toString()
+        return rows.joinToString("\n")
     }
 
     fun decodeSegments(
-        json: String,
+        encoded: String,
         savedSignature: String,
         expectedSignature: String,
-    ): List<SpeakerDiarizer.Segment>? {
+    ): List<SpeakerDiarizationRecord>? {
         if (savedSignature.isBlank() || savedSignature != expectedSignature) return null
-        return runCatching {
-            val root = JSONObject(json)
-            if (root.optInt("version", -1) != VERSION ||
-                root.optString("signature") != expectedSignature
-            ) return@runCatching null
-            val rows = root.optJSONArray("segments") ?: return@runCatching null
-            if (rows.length() !in 1..MAX_CACHED_SEGMENTS) return@runCatching null
-            val segments = ArrayList<SpeakerDiarizer.Segment>(rows.length())
-            for (index in 0 until rows.length()) {
-                val row = rows.optJSONObject(index) ?: return@runCatching null
-                val start = row.optDouble("s", Double.NaN).toFloat()
-                val end = row.optDouble("e", Double.NaN).toFloat()
-                val speaker = row.optInt("sp", -1)
-                val confidence = row.optDouble("c", -2.0).toFloat()
-                if (!start.isFinite() || !end.isFinite() || start < 0f ||
-                    end <= start || speaker !in 0..999 || !confidence.isFinite()
-                ) return@runCatching null
-                segments += SpeakerDiarizer.Segment(start, end, speaker, confidence)
-            }
-            segments
-        }.getOrNull()
+        val rows = encoded.split('\n')
+        if (rows.firstOrNull() != "$HEADER|$expectedSignature") return null
+        val records = rows.drop(1)
+        if (records.size !in 1..MAX_CACHED_SEGMENTS) return null
+        val decoded = ArrayList<SpeakerDiarizationRecord>(records.size)
+        for (row in records) {
+            val values = row.split(',')
+            if (values.size != 4) return null
+            val startBits = values[0].toIntOrNull() ?: return null
+            val endBits = values[1].toIntOrNull() ?: return null
+            val speaker = values[2].toIntOrNull() ?: return null
+            val confidenceBits = values[3].toIntOrNull() ?: return null
+            val start = Float.fromBits(startBits)
+            val end = Float.fromBits(endBits)
+            val confidence = Float.fromBits(confidenceBits)
+            if (!start.isFinite() || !end.isFinite() || start < 0f ||
+                end <= start || speaker !in 0..999 || !confidence.isFinite()
+            ) return null
+            decoded += SpeakerDiarizationRecord(start, end, speaker, confidence)
+        }
+        return decoded
     }
 }

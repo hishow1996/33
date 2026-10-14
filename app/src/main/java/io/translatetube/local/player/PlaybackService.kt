@@ -2556,7 +2556,16 @@ class PlaybackService : MediaSessionService() {
                 val subtitleCacheDao = AppDatabase.get(this@PlaybackService).subtitleCacheDao()
                 val cachedDiarization = subtitleCacheDao.get(diarizationCacheKey)
                 val restoredSegments = cachedDiarization?.let { cached ->
-                    SpeakerDiarizationCachePolicy.decodeSegments(cached.linesJson, cached.srcLang, diarizationSignature)
+                    SpeakerDiarizationCachePolicy
+                        .decodeSegments(cached.linesJson, cached.srcLang, diarizationSignature)
+                        ?.map { record ->
+                            SpeakerDiarizer.Segment(
+                                startSec = record.startSec,
+                                endSec = record.endSec,
+                                speaker = record.speaker,
+                                confidence = record.confidence,
+                            )
+                        }
                 }
                 val segments = if (!restoredSegments.isNullOrEmpty()) {
                     updateUiForSession(sessionKey) { state ->
@@ -2584,7 +2593,14 @@ class PlaybackService : MediaSessionService() {
                                         srcLang = diarizationSignature,
                                         linesJson = SpeakerDiarizationCachePolicy.encodeSegments(
                                             diarizationSignature,
-                                            freshSegments,
+                                            freshSegments.map { segment ->
+                                                SpeakerDiarizationRecord(
+                                                    startSec = segment.startSec,
+                                                    endSec = segment.endSec,
+                                                    speaker = segment.speaker,
+                                                    confidence = segment.confidence,
+                                                )
+                                            },
                                         ),
                                         updatedAt = System.currentTimeMillis(),
                                     )

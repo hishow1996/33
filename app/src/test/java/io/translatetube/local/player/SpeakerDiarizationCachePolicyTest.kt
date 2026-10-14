@@ -2,6 +2,8 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpeakerDiarizationCachePolicyTest {
@@ -25,4 +27,30 @@ class SpeakerDiarizationCachePolicyTest {
         assertFalse(signature == SpeakerDiarizationCachePolicy.signature(changedLength))
     }
 
+    @Test
+    fun speakerTimelineRoundTripsWithoutLosingTimelineOrSpeakerIds() {
+        val signature = "audio-fingerprint"
+        val expected = listOf(
+            SpeakerDiarizationRecord(0.125f, 1.250f, 0, 0.91f),
+            SpeakerDiarizationRecord(1.500f, 2.875f, 2, 0.77f),
+        )
+        val encoded = SpeakerDiarizationCachePolicy.encodeSegments(signature, expected)
+
+        assertEquals(expected, SpeakerDiarizationCachePolicy.decodeSegments(encoded, signature, signature))
+    }
+
+    @Test
+    fun rejectsMismatchedFingerprintMalformedRowsAndInvalidIntervals() {
+        val expectedSignature = "expected"
+        val otherSignature = "other"
+        val validOther = SpeakerDiarizationCachePolicy.encodeSegments(
+            otherSignature,
+            listOf(SpeakerDiarizationRecord(0f, 1f, 0, 0.9f)),
+        )
+        val invalidInterval = "speaker-diarization-v1|expected\n0,1065353216,0,1063675494"
+
+        assertNull(SpeakerDiarizationCachePolicy.decodeSegments(validOther, otherSignature, expectedSignature))
+        assertNull(SpeakerDiarizationCachePolicy.decodeSegments("bad", expectedSignature, expectedSignature))
+        assertNull(SpeakerDiarizationCachePolicy.decodeSegments(invalidInterval, expectedSignature, expectedSignature))
+    }
 }
