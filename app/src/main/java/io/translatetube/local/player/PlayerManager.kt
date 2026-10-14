@@ -54,14 +54,29 @@ class PlayerManager(private val ctx: Context) {
     val errorSink = MutableStateFlow<String?>(null)
 
     var onTick: ((ms: Long) -> Unit)? = null
+        set(value) {
+            field = value
+            syncTicker()
+        }
     var onEnded: (() -> Unit)? = null
     var onVideoAspect: ((ratio: Float) -> Unit)? = null
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
-            if (onTick != null && player.isPlaying) onTick?.invoke(player.currentPosition)
-            mainHandler.postDelayed(this, 100)
+            if (onTick == null || !player.isPlaying) return
+            onTick?.invoke(player.currentPosition)
+            if (onTick != null && player.isPlaying) {
+                mainHandler.postDelayed(this, 100)
+            }
+        }
+    }
+
+    /** Poll only while playback is active and a consumer needs timeline updates. */
+    private fun syncTicker() {
+        mainHandler.removeCallbacks(ticker)
+        if (onTick != null && player.isPlaying) {
+            mainHandler.postDelayed(ticker, 100)
         }
     }
 
@@ -79,10 +94,9 @@ class PlayerManager(private val ctx: Context) {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
-                // The periodic ticker is intentionally silent while paused. Emit one immediate
-                // timeline update on both pause and resume so pending AudioTrack startup is
-                // invalidated before it can play detached from the video.
+                // Emit an immediate update on pause/resume to invalidate detached AudioTrack work.
                 onTick?.invoke(player.currentPosition)
+                syncTicker()
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 // Push seek/speed synchronization now rather than waiting for the 100 ms ticker.
@@ -116,7 +130,7 @@ class PlayerManager(private val ctx: Context) {
                 }
             }
         })
-        mainHandler.post(ticker)
+        // No idle ticker: onIsPlayingChanged starts it when an observed player begins playback.
     }
 
     /** 通知栏/锁屏显示的媒体元数据（标题/作者/封面） */
