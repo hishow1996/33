@@ -59,6 +59,10 @@ fun vadSegmentsFromFile(
     checkActive: () -> Unit = {},
 ): List<Pair<Long, Long>> {
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
+    require(PcmTempFilePolicy.hasCompletePcm16Payload(pcmFile.file, pcmFile.sampleCount)) {
+        "PCM 临时文件缺失、为空或长度与声明的采样数不匹配"
+    }
+    // Fail before initializing the native VAD model when the scratch file is already truncated.
     val vad = newVad(ctx, sr)
     val segments = mutableListOf<Pair<Long, Long>>()
     val window = 512
