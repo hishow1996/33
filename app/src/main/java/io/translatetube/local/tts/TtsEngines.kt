@@ -101,6 +101,7 @@ class SystemTts(context: Context) : TtsEngine {
 
     val chineseVoiceCount: Int get() = chineseVoiceCatalog.size
     val supportsMultipleChineseVoices: Boolean get() = chineseVoiceCount > 1
+    val chineseVoiceNames: List<String> get() = chineseVoiceCatalog.map { it.name }
 
     // Keep this identity stable while synth() switches per-speaker voices. The selected default
     // voice and complete Chinese voice catalogue make PCM cache entries invalid when capabilities change.

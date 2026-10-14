@@ -1,6 +1,7 @@
 package io.translatetube.local.ui.screens
 
 import io.translatetube.local.tts.KokoroVoiceRange
+import io.translatetube.local.player.SpeakerVoiceOptionPolicy
 
 import android.view.TextureView
 import android.view.ViewGroup
@@ -1491,19 +1492,15 @@ private fun SubtitleList(
                                 onDismissRequest = { voiceMenuExpanded = false },
                                 modifier = Modifier.heightIn(max = 420.dp),
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text("默认音色（设置中的音色）") },
-                                    onClick = {
-                                        voiceMenuExpanded = false
-                                        svc?.setLineSpeaker(i, -1)
-                                    },
-                                )
-                                (0..KokoroVoiceRange.MAX_SPEAKER_ID).forEach { voiceId ->
+                                SpeakerVoiceOptionPolicy.options(
+                                    isSystemTts = state.isSystemTtsSelected,
+                                    systemVoiceNames = state.systemTtsVoiceNames,
+                                ).forEach { option ->
                                     DropdownMenuItem(
-                                        text = { Text("Kokoro 音色 $voiceId") },
+                                        text = { Text(option.label) },
                                         onClick = {
                                             voiceMenuExpanded = false
-                                            svc?.setLineSpeaker(i, voiceId)
+                                            svc?.setLineSpeaker(i, option.speakerId)
                                         },
                                     )
                                 }

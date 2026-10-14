@@ -85,6 +85,8 @@ data class PlayerUiState(
     /** Translation cache identity is carried through retries so imported sources keep their fingerprint. */
     val translationCacheKey: String = "",
     val ttsEngineName: String = "",
+    val isSystemTtsSelected: Boolean = false,
+    val systemTtsVoiceNames: List<String> = emptyList(),
     val dubbingStatus: String = "",
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
@@ -508,6 +510,7 @@ class PlaybackService : MediaSessionService() {
             engineName = resumeState?.engineName.orEmpty(),
             translationCacheKey = effectiveTranslationCacheKey,
             ttsEngineName = configuredTtsName,
+            isSystemTtsSelected = configuredTts == "system",
         )
         pm.pause()
         prepJob = scope.launch {
@@ -2359,6 +2362,15 @@ class PlaybackService : MediaSessionService() {
         tts: TtsEngine,
         sessionKey: String = ui.value.key,
     ) {
+        val systemVoiceNames = (tts as? io.translatetube.local.tts.SystemTts)
+            ?.chineseVoiceNames.orEmpty()
+        ui.update { state ->
+            if (state.key == sessionKey) state.copy(
+                ttsEngineName = tts.name,
+                isSystemTtsSelected = tts is io.translatetube.local.tts.SystemTts,
+                systemTtsVoiceNames = systemVoiceNames,
+            ) else state
+        }
         engine.onFirstSynthesisReady = { index, sampleCount, sampleRate ->
             val durationMs = sampleCount.toLong() * 1_000L / sampleRate.coerceAtLeast(1)
             ui.update { state ->
