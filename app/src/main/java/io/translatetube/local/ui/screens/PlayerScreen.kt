@@ -1,6 +1,5 @@
 package io.translatetube.local.ui.screens
 
-import io.translatetube.local.tts.KokoroVoiceRange
 import io.translatetube.local.player.SpeakerVoiceOptionPolicy
 
 import android.view.TextureView
