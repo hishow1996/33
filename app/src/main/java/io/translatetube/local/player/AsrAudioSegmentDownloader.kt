@@ -41,6 +41,7 @@ internal class AsrAudioSegmentDownloader(
         url: String,
         destination: File,
         sourceKey: String,
+        headers: Map<String, String> = emptyMap(),
         checkActive: () -> Unit = {},
         onProgress: (receivedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): File {
@@ -116,6 +117,11 @@ internal class AsrAudioSegmentDownloader(
                     .header("User-Agent", USER_AGENT)
                     .header("Accept-Encoding", "identity")
                     .header("Range", "bytes=$offset-$end")
+                // Only forward request headers explicitly supplied by the resolver for this media
+                // URL. Never allow callers to override transport-critical byte-range headers.
+                headers.forEach { (name, value) ->
+                    if (isForwardableHeader(name, value)) requestBuilder.header(name, value)
+                }
                 if (offset > 0L) {
                     val validator = metadata?.etag?.takeIf { it.isNotBlank() }
                         ?: metadata?.lastModified?.takeIf { it.isNotBlank() }
@@ -412,6 +418,13 @@ internal class AsrAudioSegmentDownloader(
         File(metaFile.parentFile, metaFile.name + ".tmp").delete()
     }
 
+    private fun isForwardableHeader(name: String, value: String): Boolean {
+        val normalizedName = name.trim().lowercase()
+        if (normalizedName !in FORWARDABLE_HEADER_NAMES) return false
+        if (value.isBlank() || value.any { it == '\\r' || it == '\\n' || it == '\\u0000' }) return false
+        return true
+    }
+
     private fun validateUrl(url: String) {
         val parsed = runCatching { URI(url) }.getOrNull()
         require(parsed != null &&
@@ -429,6 +442,9 @@ internal class AsrAudioSegmentDownloader(
         private const val MAX_METADATA_BYTES = 16L * 1024L
         private const val MAX_RANGE_RETRIES = 3
         private const val RETRY_DELAY_MS = 250L
+        private val FORWARDABLE_HEADER_NAMES = setOf(
+            "user-agent", "referer", "origin", "cookie", "authorization", "accept-language"
+        )
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
     }
