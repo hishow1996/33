@@ -52,6 +52,12 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
+private data class PartialAsrTranscript(
+    val processedSegments: Int,
+    val rows: List<Triple<Long, Long, String>>,
+    val sourceLang: String,
+)
+
 private class TranslationFailureException(message: String, cause: Throwable) :
     IllegalStateException(message, cause)
 
@@ -1163,19 +1169,134 @@ class PlaybackService : MediaSessionService() {
                 // A canceled coroutine cannot interrupt a blocking native decode immediately.
                 // Serialize access to the shared recognizer and stop the old transcript between
                 // VAD segments as soon as that native call returns.
+                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
+                val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcm.samples.size, segs)
+                var restoredProcessedSegments = 0
+                var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
+                var restoredAsrLanguage = ""
+                val storedPartialAsr = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                    db.subtitleCacheDao().get(partialAsrCacheKey)
+                } else null
+                if (storedPartialAsr != null) {
+                    val restored = runCatching {
+                        val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
+                        val processed = checkpoint.optInt("processedSegments", -1)
+                        val total = checkpoint.optInt("totalSegments", -1)
+                        val savedSignature = checkpoint.optString("signature")
+                        if (!AsrTranscriptCheckpointPolicy.canResume(
+                                savedSignature,
+                                asrSignature,
+                                total,
+                                segs.size,
+                                processed,
+                            )
+                        ) {
+                            throw IllegalStateException("ASR 分段检查点与当前音频不匹配")
+                        }
+                        val savedRows = checkpoint.optJSONArray("rows")
+                            ?: throw IllegalStateException("ASR 检查点缺少字幕列表")
+                        if (savedRows.length() > processed) {
+                            throw IllegalStateException("ASR 检查点字幕数量超出已完成分段")
+                        }
+                        (0 until savedRows.length()).map { index ->
+                            val row = savedRows.optJSONObject(index)
+                                ?: throw IllegalStateException("ASR 检查点第 ${index + 1} 行格式无效")
+                            val rowStart = row.optLong("s", Long.MIN_VALUE)
+                            val rowEnd = row.optLong("e", Long.MIN_VALUE)
+                            val rowText = row.optString("t").trim()
+                            val belongsToProcessedSegment = segs.take(processed).any { segment ->
+                                segment.first == rowStart && segment.second == rowEnd
+                            }
+                            if (rowStart < 0L || rowEnd <= rowStart || rowText.isBlank() ||
+                                !belongsToProcessedSegment
+                            ) {
+                                throw IllegalStateException("ASR 检查点包含无效或未完成的字幕行")
+                            }
+                            Triple(rowStart, rowEnd, rowText)
+                        }.let { rows ->
+                            PartialAsrTranscript(processed, rows, storedPartialAsr.srcLang)
+                        }
+                    }.getOrNull()
+                    if (restored == null) {
+                        android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $videoId")
+                        db.subtitleCacheDao().delete(partialAsrCacheKey)
+                    } else {
+                        restoredProcessedSegments = restored.processedSegments
+                        restoredAsrRows = restored.rows
+                        restoredAsrLanguage = restored.sourceLang
+                        android.util.Log.i(
+                            "PlaybackService",
+                            "Resuming ASR for $videoId at segment ${restoredProcessedSegments}/${segs.size}",
+                        )
+                    }
+                }
+
                 val (asrLines, detectedAsrLang) = whisperMutex.withLock {
                     ensureCurrentSession(key)
                     withContext(Dispatchers.IO) {
                         val engine = whisper ?: WhisperEngine(this@PlaybackService).also { whisper = it }
-                        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                        val rows = engine.transcribeBySegments(
-                            pcm.samples,
-                            segs,
-                            checkActive = { ownerJob?.ensureActive() },
-                        ) { done, total ->
-                            updateUiForSession(key) { it.copy(progress = "转写中 $done/$total 段") }
+                        if (restoredProcessedSegments < segs.size) {
+                            // A shared engine may remember the previous video's detected language.
+                            // Reset it for this transcript, then use the saved checkpoint language as fallback.
+                            engine.clearDetectedLanguage()
                         }
-                        rows to engine.lastLang
+                        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        val rows = restoredAsrRows.toMutableList()
+                        var processed = restoredProcessedSegments
+                        while (processed < segs.size) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            val chunkStart = processed
+                            val chunkEnd = minOf(chunkStart + 3, segs.size)
+                            val chunkRows = engine.transcribeBySegments(
+                                pcm.samples,
+                                segs.subList(chunkStart, chunkEnd),
+                                checkActive = { ownerJob?.ensureActive() },
+                            ) { done, _ ->
+                                updateUiForSession(key) {
+                                    it.copy(progress = "转写中 ${chunkStart + done}/${segs.size} 段")
+                                }
+                            }
+                            rows.addAll(chunkRows)
+                            processed = chunkEnd
+
+                            if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                                ensureCurrentSession(key)
+                                val rowsJson = org.json.JSONArray()
+                                rows.forEach { (startMs, endMs, text) ->
+                                    rowsJson.put(
+                                        org.json.JSONObject()
+                                            .put("s", startMs)
+                                            .put("e", endMs)
+                                            .put("t", text)
+                                    )
+                                }
+                                val language = engine.lastLang.takeIf { it.isNotBlank() }
+                                    ?: restoredAsrLanguage
+                                val checkpointJson = org.json.JSONObject()
+                                    .put("version", 1)
+                                    .put("signature", asrSignature)
+                                    .put("totalSegments", segs.size)
+                                    .put("processedSegments", processed)
+                                    .put("rows", rowsJson)
+                                db.subtitleCacheDao().put(
+                                    io.translatetube.local.data.SubtitleCacheEntity(
+                                        partialAsrCacheKey,
+                                        language,
+                                        checkpointJson.toString(),
+                                        System.currentTimeMillis(),
+                                    )
+                                )
+                            }
+                        }
+                        val language = if (restoredProcessedSegments >= segs.size) {
+                            restoredAsrLanguage.takeIf { it.isNotBlank() }
+                                ?: detectLangFromText(rows.take(12).joinToString(" ") { it.third })
+                        } else {
+                            engine.lastLang.takeIf { it.isNotBlank() }
+                                ?: restoredAsrLanguage.takeIf { it.isNotBlank() }
+                                ?: "en"
+                        }
+                        rows to language
                     }
                 }
                 ensureCurrentSession(key)
@@ -1195,6 +1316,9 @@ class PlaybackService : MediaSessionService() {
                         SubLine(index, startMs, endMs, text)
                     }
                 if (transcribedLines.isEmpty()) {
+                    if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                        db.subtitleCacheDao().delete(partialAsrCacheKey)
+                    }
                     throw IllegalStateException(
                         if (videoId != null) {
                             "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
@@ -1228,6 +1352,7 @@ class PlaybackService : MediaSessionService() {
                             System.currentTimeMillis(),
                         )
                     )
+                    db.subtitleCacheDao().delete(partialAsrCacheKey)
                     // Keep the bounded source-audio cache after ASR as well: user-triggered
                     // speaker diarization can reuse it without downloading the same media again.
                     if (videoId != null && audioFile is File) {

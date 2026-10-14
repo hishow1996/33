@@ -78,6 +78,13 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         return out
     }
 
+    /** Reset language inference before a new video's ASR task to prevent cross-video leakage. */
+    @Synchronized
+    fun clearDetectedLanguage() {
+        check(!closed) { "Whisper 识别器已关闭" }
+        lastLang = ""
+    }
+
     /** VAD 分段精确转写：段起点/终点来自 VAD，行级时间轴 */
     @Synchronized
     fun transcribeBySegments(
