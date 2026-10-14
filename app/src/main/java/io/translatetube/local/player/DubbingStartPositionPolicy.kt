@@ -17,13 +17,18 @@ internal object DubbingStartPositionPolicy {
     ): Long? {
         if (lineIndex < 0 || lineEndMs <= lineStartMs) return null
 
-        // If the ticker has already reached this cue or passed it, trust that newer position.
-        // Never revive an old request when the user has moved into a gap or another cue.
-        if (latestCursor.positionMs >= lineStartMs) {
-            if (latestCursor.positionMs >= lineEndMs || latestCursor.lineIndex != lineIndex) return null
+        // Once any live ticker snapshot exists, it is authoritative—even after a backward seek.
+        // Checking only position >= lineStartMs lets a stale future cue restart after the user seeks
+        // earlier than that cue while its PCM is still loading in the background.
+        if (latestCursor.positionMs >= 0L) {
+            if (latestCursor.positionMs < lineStartMs ||
+                latestCursor.positionMs >= lineEndMs ||
+                latestCursor.lineIndex != lineIndex
+            ) return null
             return latestCursor.positionMs
         }
 
+        // No live snapshot has been published yet; only then may the original request be used.
         val requested = requestedPositionMs ?: lineStartMs
         return requested.takeIf { it >= lineStartMs && it < lineEndMs }
     }
