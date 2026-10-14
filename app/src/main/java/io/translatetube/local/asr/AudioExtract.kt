@@ -19,6 +19,9 @@ object AudioExtract {
 
     // Keep compatibility reads bounded on memory-constrained phones.
     private const val MAX_FLOAT_ARRAY_BYTES = 32L * 1024L * 1024L
+    // Splitting after downmix guarantees each 16 kHz resampler call stays bounded even for
+    // unusual but valid low-rate audio formats accepted by the decoder.
+    private const val MAX_RESAMPLER_INPUT_CHUNK_SAMPLES = 64 * 1024
 
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
 
@@ -271,15 +274,31 @@ object AudioExtract {
                             }
                             // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
                             val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels, checkActive)
-                            val converted = activeResampler.process(monoChunk, checkActive)
-                            if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
-                                throw IllegalStateException(
-                                    "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
+                            // MediaCodec output size is provider-dependent. Feed the resampler bounded
+                            // slices so a large valid codec buffer cannot trip its per-call safety cap.
+                            var monoOffset = 0
+                            while (monoOffset < monoChunk.size) {
+                                checkActive()
+                                val chunkCount = minOf(
+                                    MAX_RESAMPLER_INPUT_CHUNK_SAMPLES,
+                                    monoChunk.size - monoOffset,
                                 )
+                                val resampleInput = if (monoOffset == 0 && chunkCount == monoChunk.size) {
+                                    monoChunk
+                                } else {
+                                    monoChunk.copyOfRange(monoOffset, monoOffset + chunkCount)
+                                }
+                                val converted = activeResampler.process(resampleInput, checkActive)
+                                if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
+                                    throw IllegalStateException(
+                                        "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
+                                    )
+                                }
+                                writePcm16Le(output, converted, checkActive)
+                                outputBytes += converted.size.toLong() * 2L
+                                outputSamples += converted.size
+                                monoOffset += chunkCount
                             }
-                            writePcm16Le(output, converted, checkActive)
-                            outputBytes += converted.size.toLong() * 2L
-                            outputSamples += converted.size
                         }
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
                             decodedSourceSamples >= maxSourceSamples
