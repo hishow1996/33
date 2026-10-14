@@ -1860,9 +1860,8 @@ class PlaybackService : MediaSessionService() {
 
         val src = if (srcLang == "auto") "" else srcLang
         val batchSize = 10
-        val profileIdentity = translationEngineCacheIdentity(activeId)
         val translationCacheKey = cacheKeyOverride
-            ?: TranslationCacheIdentity.videoKey(key, activeId, profileIdentity)
+            ?: TranslationCacheIdentity.videoKey(key, activeId, translationEngineCacheIdentity(activeId))
         for (batchIndices in pendingIndices.chunked(batchSize)) {
             // A model may return fewer rows than requested, or put UI/status text in a translation
             // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
