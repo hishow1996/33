@@ -260,7 +260,8 @@ internal object HlsPlaylistParser {
             codec.startsWith("mp4a") || codec.startsWith("ac-3") ||
                 codec.startsWith("ec-3") || codec.startsWith("opus") ||
                 codec.startsWith("vorbis") || codec.startsWith("flac") ||
-                codec.startsWith("alac") || codec.startsWith("mp3")
+                codec.startsWith("alac") || codec.startsWith("mp3") ||
+                codec.startsWith("dts") || codec.startsWith("dca")
         }
     }
 
