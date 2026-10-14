@@ -227,7 +227,9 @@ internal object HlsAudioDownloader {
 
     private fun prepareSegmentCache(directory: File, urls: List<String>) {
         val marker = File(directory, "manifest.sha256")
-        val fingerprint = sha256(urls.joinToString("\n"))
+        // Segment links often contain short-lived signatures. Hash their stable URL identity
+        // so a renewed token can resume already-complete segments; actual request URLs stay intact.
+        val fingerprint = sha256(urls.joinToString("\n") { MediaUrlCacheIdentity.canonicalUrl(it) })
         val hasMatchingManifest = marker.isFile &&
             runCatching { marker.readText(Charsets.UTF_8).trim() == fingerprint }.getOrDefault(false)
         if (!hasMatchingManifest) {
