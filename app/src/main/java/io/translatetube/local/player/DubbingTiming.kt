@@ -98,6 +98,9 @@ internal object DubbingTiming {
         val end = (plan.startSample.toLong() + plan.sampleCount)
             .coerceAtMost(samples.size.toLong()).toInt()
         if (end <= plan.startSample) return FloatArray(0)
+        // The common path plays the entire cached cue unmodified. Reuse its array instead
+        // of duplicating up to 32 MB on the heap before AudioTrack copies it to native memory.
+        if (plan.startSample == 0 && end == samples.size && !plan.truncated) return samples
         val result = samples.copyOfRange(plan.startSample, end)
         if (plan.truncated && sampleRate > 0) {
             val fadeSamples = min(sampleRate * FADE_OUT_MS / 1000, result.size / 2)
