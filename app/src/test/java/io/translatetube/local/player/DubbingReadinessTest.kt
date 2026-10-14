@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -41,6 +42,22 @@ class DubbingReadinessTest {
         assertTrue(readiness.isPrepared(2))
         readiness.markPending(2)
         assertFalse(readiness.isReady(2))
+    }
+
+    @Test
+    fun readyCountTracksOutOfOrderCuesAndCacheInvalidation() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(8, hasAudio = true)
+        readiness.markPrepared(2, hasAudio = false)
+
+        assertEquals(2, readiness.readyCount())
+
+        readiness.markPending(8)
+        assertEquals(1, readiness.readyCount())
+        assertTrue(readiness.isSilent(2))
+
+        readiness.markPending(2)
+        assertEquals(0, readiness.readyCount())
     }
 
     @Test
