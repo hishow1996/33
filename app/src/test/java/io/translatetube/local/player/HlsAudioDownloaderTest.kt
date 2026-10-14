@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HlsAudioDownloaderTest {
@@ -71,6 +72,37 @@ class HlsAudioDownloaderTest {
     fun detectsSignedHlsManifestUrlByItsPath() {
         assertEquals(true, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8?token=private"))
         assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example/video.mp4?token=private"))
+    }
+
+
+    @Test
+    fun rejectsEncryptedMasterPlaylistBeforeResolvingRenditions() {
+        val master = """
+            #EXTM3U
+            #EXT-X-SESSION-KEY:METHOD=AES-128,URI="key.bin"
+            #EXT-X-STREAM-INF:BANDWIDTH=300000
+            stream/index.m3u8
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.ensurePlaylistIsUnencrypted(master)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("加密"))
+    }
+
+    @Test
+    fun allowsExplicitNoEncryptionMarker() {
+        HlsAudioDownloader.ensurePlaylistIsUnencrypted(
+            """
+                #EXTM3U
+                #EXT-X-KEY:METHOD=NONE
+                #EXTINF:6.0,
+                segment.ts
+                #EXT-X-ENDLIST
+            """.trimIndent()
+        )
     }
 
 }
