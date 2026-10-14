@@ -48,6 +48,7 @@ class PcmTempFilePolicyTest {
     fun pcmWriterKeepsMinimumFreeSpaceReserve() {
         val reserve = PcmTempFilePolicy.MIN_FREE_SPACE_BYTES
         assertTrue(PcmTempFilePolicy.hasDiskHeadroom(-1L, 1024L, reserve))
+        assertFalse(PcmTempFilePolicy.hasDiskHeadroom(0L, 0L, reserve))
         assertTrue(PcmTempFilePolicy.hasDiskHeadroom(reserve + 4096L, 4096L, reserve))
         assertFalse(PcmTempFilePolicy.hasDiskHeadroom(reserve + 4095L, 4096L, reserve))
         assertFalse(PcmTempFilePolicy.hasDiskHeadroom(reserve - 1L, 0L, reserve))
