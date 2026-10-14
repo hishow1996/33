@@ -238,11 +238,7 @@ internal class DashAudioSegmentCache(
                     output.write(buffer, 0, count)
                 }
             }
-            val text = output.toString(Charsets.UTF_8.name()).removePrefix("\uFEFF")
-            if (!text.contains("<MPD", ignoreCase = true)) {
-                throw IOException("该链接没有返回 DASH MPD 清单")
-            }
-            return text
+            return output.toString(Charsets.UTF_8.name()).removePrefix("\uFEFF")
         }
     }
 
