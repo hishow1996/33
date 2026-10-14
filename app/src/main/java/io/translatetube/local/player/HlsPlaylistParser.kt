@@ -10,6 +10,7 @@ import java.util.Locale
  */
 internal object HlsPlaylistParser {
     const val MAX_SEGMENTS = 20_000
+    const val DEFAULT_SEGMENT_RANGE_BYTES = 1L * 1024L * 1024L
     const val MAX_DURATION_MS = 12L * 60L * 60L * 1_000L
     const val MAX_MANIFEST_CHARS = 2 * 1024 * 1024
 
@@ -39,6 +40,14 @@ internal object HlsPlaylistParser {
         val lines = normalizedLines(text)
         requireHeader(lines)
         if (isMediaPlaylist(lines)) return null
+        if (lines.any { it.startsWith("#EXT-X-SESSION-KEY:", true) } ||
+            lines.any { line ->
+                line.startsWith("#EXT-X-KEY:", true) &&
+                    !parseAttributes(line.substringAfter(':'))["METHOD"].equals("NONE", true)
+            }
+        ) {
+            throw UnsupportedOperationException("该 HLS 播放列表使用加密或 DRM 保护，不能提取音轨")
+        }
 
         val variants = mutableListOf<MasterVariant>()
         var pendingAttributes: Map<String, String>? = null
