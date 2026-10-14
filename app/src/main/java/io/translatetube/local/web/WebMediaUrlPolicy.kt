@@ -25,6 +25,15 @@ internal object WebMediaUrlPolicy {
         return uri.toASCIIString()
     }
 
+    /** Network-observed media resources, including videos inside cross-origin iframes. */
+    fun looksLikeMediaRequest(input: String): Boolean {
+        val uri = runCatching { URI(input.trim()) }.getOrNull() ?: return false
+        if (uri.scheme?.lowercase() !in setOf("http", "https") || uri.host.isNullOrBlank()) return false
+        val path = uri.rawPath.orEmpty().lowercase()
+        return listOf(".mp4", ".webm", ".m4v", ".mov", ".mkv", ".mp3", ".m4a", ".aac", ".ogg", ".m3u8", ".mpd")
+            .any(path::endsWith)
+    }
+
     fun normalizeMediaUrl(input: String): String? {
         val raw = input.trim()
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
