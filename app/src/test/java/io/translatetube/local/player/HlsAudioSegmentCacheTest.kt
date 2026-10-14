@@ -53,6 +53,53 @@ class HlsAudioSegmentCacheTest {
     }
 
     @Test
+    fun resolvesRelativeSegmentsAgainstFinalPlaylistUrlAfterRedirect() {
+        val server = MockWebServer()
+        val directory = createTempDir(prefix = "hls-redirect-base-test")
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(302)
+                    .setHeader("Location", "/actual/list.m3u8"),
+            )
+            server.enqueue(
+                playlistResponse(
+                    """
+                        #EXTM3U
+                        #EXT-X-TARGETDURATION:4
+                        #EXTINF:4.0,
+                        seg-1.ts
+                        #EXTINF:4.0,
+                        seg-2.ts
+                        #EXT-X-ENDLIST
+                    """.trimIndent()
+                )
+            )
+            server.enqueue(segmentResponse("AUDIO-ONE"))
+            server.enqueue(segmentResponse("AUDIO-TWO"))
+
+            val destination = File(directory, "redirected-audio.bin")
+            val result = HlsAudioSegmentCache(directory, maxOutputBytes = 100L, maxSegmentBytes = 100L)
+                .download(
+                    server.url("/redirect/list.m3u8").toString(),
+                    destination,
+                    "redirected-hls-source",
+                )
+
+            assertEquals("AUDIO-ONEAUDIO-TWO", result.readText())
+            assertEquals(4, server.requestCount)
+            assertEquals("/redirect/list.m3u8", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/list.m3u8", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/seg-1.ts", server.takeRequest().requestUrl?.encodedPath)
+            assertEquals("/actual/seg-2.ts", server.takeRequest().requestUrl?.encodedPath)
+        } finally {
+            server.shutdown()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun keepsCompletedSegmentsAfterAssemblyFailureAndReusesThemOnRetry() {
         val server = MockWebServer()
         val directory = createTempDir(prefix = "hls-audio-retry-test")
