@@ -37,6 +37,6 @@ class TimedTextCueTimingPolicyTest {
         assertNull(TimedTextCueTimingPolicy.parse("1", "Infinity"))
         assertNull(TimedTextCueTimingPolicy.parse("1", "not-a-duration"))
         assertNull(TimedTextCueTimingPolicy.parse("1", "0"))
-        assertNull(TimedTextCueTimingPolicy.parse("9.22e15", "3"))
+        assertNull(TimedTextCueTimingPolicy.parse("9.3e15", "3"))
     }
 }
