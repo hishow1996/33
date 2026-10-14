@@ -45,6 +45,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -696,8 +697,12 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
-                    d.preparedCount.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedCount = n) } }
+                    combine(d.preparedUntil, d.preparedCount) { until, count -> until to count }
+                        .collect { (until, count) ->
+                            updateUiForSession(sessionKey) {
+                                it.copy(preparedUntil = until, preparedCount = count)
+                            }
+                        }
                 }
                 lastLineIdx = Int.MIN_VALUE
                 ensureCurrentSession(sessionKey)
@@ -851,10 +856,12 @@ class PlaybackService : MediaSessionService() {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
-                }
-                scope.launch {
-                    d.preparedCount.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedCount = n) } }
+                    combine(d.preparedUntil, d.preparedCount) { until, count -> until to count }
+                        .collect { (until, count) ->
+                            updateUiForSession(sessionKey) {
+                                it.copy(preparedUntil = until, preparedCount = count)
+                            }
+                        }
                 }
 
                 // Store a cache only after import + translation produced useful subtitle rows.
@@ -1765,8 +1772,12 @@ class PlaybackService : MediaSessionService() {
                             throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频配音引擎")
                         }
                         dubCollectJob = scope.launch {
-                            d.preparedUntil.collect { n -> updateUiForSession(key) { it.copy(preparedUntil = n) } }
-                            d.preparedCount.collect { n -> updateUiForSession(key) { it.copy(preparedCount = n) } }
+                            combine(d.preparedUntil, d.preparedCount) { until, count -> until to count }
+                                .collect { (until, count) ->
+                                    updateUiForSession(key) {
+                                        it.copy(preparedUntil = until, preparedCount = count)
+                                    }
+                                }
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -2905,12 +2916,14 @@ class PlaybackService : MediaSessionService() {
                 }
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    d.preparedUntil.collect { n ->
-                        updateUiForSession(sessionKey) { state -> if (state.key == sessionKey) state.copy(preparedUntil = n) else state }
-                    }
-                    d.preparedCount.collect { n ->
-                        updateUiForSession(sessionKey) { state -> if (state.key == sessionKey) state.copy(preparedCount = n) else state }
-                    }
+                    combine(d.preparedUntil, d.preparedCount) { until, count -> until to count }
+                        .collect { (until, count) ->
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(preparedUntil = until, preparedCount = count)
+                                } else state
+                            }
+                        }
                 }
                 val arr = org.json.JSONArray()
                 for (line in updated) arr.put(
@@ -3061,20 +3074,17 @@ class PlaybackService : MediaSessionService() {
 
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
-                    engine.preparedUntil.collect { count ->
-                        updateUiForSession(sessionKey) { state ->
-                            state.copy(
-                                preparedUntil = count,
-                                phase = if (count >= updated.size) Phase.READY else Phase.SYNTHESIZING,
-                                progress = if (count >= updated.size) "" else "正在准备多人物配音…",
-                            )
+                    combine(engine.preparedUntil, engine.preparedCount) { until, count -> until to count }
+                        .collect { (until, count) ->
+                            updateUiForSession(sessionKey) { state ->
+                                state.copy(
+                                    preparedUntil = until,
+                                    preparedCount = count,
+                                    phase = if (count >= updated.size) Phase.READY else Phase.SYNTHESIZING,
+                                    progress = if (count >= updated.size) "" else "正在准备多人物配音…",
+                                )
+                            }
                         }
-                    }
-                }
-                scope.launch {
-                    engine.preparedCount.collect { count ->
-                        updateUiForSession(sessionKey) { it.copy(preparedCount = count) }
-                    }
                 }
 
                 val cacheRows = org.json.JSONArray()
