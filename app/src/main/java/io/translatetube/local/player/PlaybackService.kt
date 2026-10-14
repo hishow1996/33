@@ -921,10 +921,22 @@ class PlaybackService : MediaSessionService() {
     private suspend fun translationEngineCacheIdentity(activeId: Long): String {
         val enabledProfile = AppDatabase.get(this).apiProfileDao().enabled()
             .firstOrNull { it.id == activeId }
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         return when {
             activeId == -1L || activeId == -2L -> "google-hybrid-v1"
-            activeId == EngineFactory.ID_FREE_GEMINI -> "builtin-gemini-v1"
-            activeId == EngineFactory.ID_FREE_DEEPSEEK -> "builtin-deepseek-v1"
+            activeId == EngineFactory.ID_FREE_GEMINI -> listOf(
+                "builtin-gemini-v2",
+                prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL).orEmpty().trim(),
+                // Free-model keys are encrypted in preferences. The raw value is passed only to the
+                // one-way cache fingerprint and is never written as part of the key.
+                prefs.getString("free_gemini_key", "").orEmpty(),
+            ).joinToString("|")
+            activeId == EngineFactory.ID_FREE_DEEPSEEK -> listOf(
+                "builtin-deepseek-v2",
+                prefs.getString("free_deepseek_base_url", FreeModelDefaults.DEEPSEEK_BASE_URL).orEmpty().trim(),
+                prefs.getString("free_deepseek_model", FreeModelDefaults.DEEPSEEK_MODEL).orEmpty().trim(),
+                prefs.getString("free_deepseek_key", "").orEmpty(),
+            ).joinToString("|")
             enabledProfile != null -> listOf(
                 "api-profile-v1",
                 enabledProfile.type,
