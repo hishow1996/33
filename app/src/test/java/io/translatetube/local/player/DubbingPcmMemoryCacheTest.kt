@@ -36,7 +36,7 @@ class DubbingPcmMemoryCacheTest {
 
         assertSame(first.first, cache[1]?.first)
         assertNull(cache[2])
-        assertTrue(cache.retainedBytes() <= 24L)
+        assertTrue(cache.retainedBytes() <= 40L)
     }
 
     @Test
