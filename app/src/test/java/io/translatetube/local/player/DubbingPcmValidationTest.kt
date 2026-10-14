@@ -35,6 +35,21 @@ class DubbingPcmValidationTest {
     }
 
     @Test
+    fun largePcmValidationCanBeCancelledBetweenChunks() {
+        val samples = FloatArray(20_000) { 0.01f }
+        var checks = 0
+        val error = runCatching {
+            DubbingPcmValidation.isValidAudio(16_000, samples) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("cancelled")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertTrue(checks >= 2)
+    }
+
+    @Test
     fun audibleSamplePredicateRejectsNonFiniteAndLowAmplitudeValues() {
         assertTrue(DubbingPcmValidation.isAudibleSample(-0.001f))
         assertFalse(DubbingPcmValidation.isAudibleSample(0.000001f))
