@@ -10,6 +10,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteOrder
 
@@ -85,7 +86,11 @@ object AudioExtract {
         file: File?,
         maxDurationMs: Long = Long.MAX_VALUE,
         checkActive: () -> Unit = {},
+        headers: Map<String, String> = emptyMap(),
+        maxPcmBytes: Long = PcmTempFilePolicy.MAX_PCM_BYTES,
+        onProgress: (processedSamples: Long, totalSamples: Long) -> Unit = { _, _ -> },
     ): PcmFile {
+        require(maxPcmBytes > 0L) { "PCM 临时文件大小上限必须大于 0" }
         PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
         val destination = File.createTempFile("translate-pcm-", ".s16le", ctx.cacheDir)
         val extractor = MediaExtractor()
@@ -94,6 +99,34 @@ object AudioExtract {
         try {
             when {
                 file != null -> extractor.setDataSource(file.absolutePath)
+                src != null && (src.scheme.equals("http", true) || src.scheme.equals("https", true)) -> {
+                    // Read accessible progressive web media directly through MediaExtractor instead
+                    // of downloading the full video first. MediaExtractor follows HTTP redirects
+                    // internally without exposing a redirect callback, so only forward non-secret
+                    // headers here. Authenticated URLs should fail closed rather than risk replaying
+                    // Cookie/Authorization/Origin at an unrelated redirect target.
+                    val safeHeaders = headers.filter { (name, value) ->
+                        name.trim().lowercase(java.util.Locale.ROOT) in setOf(
+                            "user-agent", "referer", "accept-language"
+                        ) && value.isNotBlank() &&
+                            value.none { it == '\r' || it == '\n' || it == '\u0000' }
+                    }
+                    try {
+                        extractor.setDataSource(src.toString(), safeHeaders)
+                    } catch (e: Exception) {
+                        val needsSessionCredentials = headers.keys.any {
+                            it.trim().lowercase(java.util.Locale.ROOT) in setOf("cookie", "authorization")
+                        }
+                        if (needsSessionCredentials) {
+                            throw IllegalStateException(
+                                "无法安全读取这个网页的音轨。该媒体可能需要登录态 Cookie/Authorization；" +
+                                    "为避免在重定向时泄漏账号凭据，本地直读不会转发这些信息。请尝试公开可访问的音轨/清单，或导入字幕文件。",
+                                e,
+                            )
+                        }
+                        throw e
+                    }
+                }
                 src != null -> extractor.setDataSource(ctx, src, null)
                 else -> throw IllegalStateException("无音频源")
             }
@@ -130,6 +163,15 @@ object AudioExtract {
                 }
             }
             validateOutputFormat(sourceRate, sourceChannels)
+            val expectedDurationUs = runCatching {
+                format.getLong(MediaFormat.KEY_DURATION)
+            }.getOrDefault(-1L)
+            val expectedOutputSamples = if (expectedDurationUs > 0L) {
+                (expectedDurationUs.toDouble() * 16_000.0 / 1_000_000.0)
+                    .toLong()
+                    .coerceAtLeast(1L)
+            } else -1L
+            var lastProgressSamples = 0L
 
             val rawMaxSourceSamples = if (maxDurationMs == Long.MAX_VALUE) {
                 Int.MAX_VALUE.toLong()
@@ -140,6 +182,28 @@ object AudioExtract {
             val maxSourceSamples = rawMaxSourceSamples - rawMaxSourceSamples % sourceChannels
             var decodedSourceSamples = 0L
             var outputSamples = 0L
+            var outputBytesWritten = 0L
+            var nextStorageCheckAt = 0L
+            fun writeConvertedPcm(output: BufferedOutputStream, samples: ShortArray) {
+                val chunkBytes = samples.size.toLong() * 2L
+                if (!PcmTempFilePolicy.canAppendPcm(outputBytesWritten, chunkBytes, maxPcmBytes)) {
+                    throw IOException(
+                        "转写音频超过 ${maxPcmBytes / (1024L * 1024L)} MB 临时文件限制。" +
+                            "为避免占满手机存储，已停止处理；可以改用较短的视频或更短的片段。"
+                    )
+                }
+                if (outputBytesWritten >= nextStorageCheckAt) {
+                    val usable = runCatching { destination.parentFile?.usableSpace ?: -1L }.getOrDefault(-1L)
+                    if (!PcmTempFilePolicy.hasDiskHeadroom(usable, chunkBytes)) {
+                        throw IOException(
+                            "手机可用存储空间不足，无法继续生成转写音频；已保留原视频和已完成字幕。"
+                        )
+                    }
+                    nextStorageCheckAt = outputBytesWritten + PcmTempFilePolicy.SPACE_CHECK_INTERVAL_BYTES
+                }
+                writePcm16Le(output, samples)
+                outputBytesWritten += chunkBytes
+            }
             var resampler: Pcm16StreamingResampler? = null
             var resamplerRate = -1
             var resamplerChannels = -1
@@ -208,8 +272,12 @@ object AudioExtract {
                             // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
                             val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
                             val converted = activeResampler.process(monoChunk)
-                            writePcm16Le(output, converted)
+                            writeConvertedPcm(output, converted)
                             outputSamples += converted.size
+                            if (outputSamples - lastProgressSamples >= 16_000L) {
+                                onProgress(outputSamples, expectedOutputSamples)
+                                lastProgressSamples = outputSamples
+                            }
                         }
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
                             decodedSourceSamples >= maxSourceSamples
@@ -240,8 +308,9 @@ object AudioExtract {
                 val activeResampler = resampler
                     ?: throw IllegalStateException("音频轨没有可解码的 PCM 数据")
                 val tail = activeResampler.finish()
-                writePcm16Le(output, tail)
+                writeConvertedPcm(output, tail)
                 outputSamples += tail.size
+                onProgress(outputSamples, expectedOutputSamples)
                 output.flush()
             }
 

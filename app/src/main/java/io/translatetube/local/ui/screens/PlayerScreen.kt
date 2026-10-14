@@ -58,11 +58,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.SubtitleTimelinePolicy
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.yt.SubtitleTrackOption
+import io.translatetube.local.web.WebMediaCandidatePolicy
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
@@ -76,9 +78,22 @@ fun PlayerScreen(
     localUri: android.net.Uri?,
     onBack: () -> Unit,
     onGoSettings: () -> Unit = {},
+    remoteHeaders: Map<String, String> = emptyMap(),
+    remoteMimeType: String? = null,
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
+    // History/resume tasks persist the web media URL but not the transient picker MIME type.
+    // Re-classify the URL when MIME is absent so opaque ?format=m3u8/?format=mpd URLs still
+    // reach Media3's HLS/DASH source factories instead of being treated as progressive files.
+    val effectiveRemoteMimeType = remember(localUri, remoteMimeType) {
+        remoteMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
+            ?: localUri?.toString()?.let { value ->
+                if (value.startsWith("http://", true) || value.startsWith("https://", true)) {
+                    WebMediaCandidatePolicy.classify(value)?.mimeType
+                } else null
+            }
+    }
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
     var advancedMenuExpanded by remember { mutableStateOf(false) }
@@ -93,22 +108,27 @@ fun PlayerScreen(
     var handledRetryNonce by remember { mutableStateOf(0) }
 
     fun retryCurrentTask() {
-        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+        val key = playerRequestKey(videoId, localUri)
         val current = PlaybackService.ui.value
         val service = PlaybackService.instance
         val canResumeExistingWork = current.key == key &&
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current)
+            service.open(
+                key, videoId, localUri,
+                resumeState = current,
+                sourceHeaders = remoteHeaders,
+                sourceMimeType = effectiveRemoteMimeType,
+            )
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, retryNonce) {
-        val key = if (videoId != null) "youtube:$videoId" else "local:${localUri ?: ""}"
+    LaunchedEffect(videoId, localUri, remoteHeaders, effectiveRemoteMimeType, retryNonce) {
+        val key = playerRequestKey(videoId, localUri)
         val retryRequested = retryNonce != handledRetryNonce
         if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
             if (retryRequested) handledRetryNonce = retryNonce
@@ -151,7 +171,12 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork)
+                    s.open(
+                        key, videoId, localUri,
+                        resumeState = resumeExistingWork,
+                        sourceHeaders = remoteHeaders,
+                        sourceMimeType = effectiveRemoteMimeType,
+                    )
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
@@ -458,6 +483,9 @@ fun PlayerScreen(
                         onStartFloat = { startFloatingWindow() },
                         onExitFloat = { exitFloating() },
                     )
+                    if (subtitlesVisible) {
+                        LiveChineseSubtitleOverlay(state = state)
+                    }
                 }
                 // 阶段进度覆盖层
                 val phase = state.phase
@@ -1363,6 +1391,58 @@ private fun PlayerToolTile(
     }
 }
 
+/**
+ * Subtitle overlays follow the real media playhead, not the list's nearest-row highlight.
+ * The subtitle list deliberately keeps the preceding row selected in short gaps for easier reading;
+ * the on-video subtitle must disappear once that cue's own end timestamp has passed.
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.LiveChineseSubtitleOverlay(
+    state: PlayerUiState,
+) {
+    var playbackPositionMs by remember(state.key) {
+        mutableLongStateOf(PlaybackService.instance?.position() ?: 0L)
+    }
+
+    LaunchedEffect(state.key, state.phase) {
+        if (state.phase != Phase.READY && state.phase != Phase.SYNTHESIZING) return@LaunchedEffect
+        while (true) {
+            playbackPositionMs = PlaybackService.instance?.position() ?: playbackPositionMs
+            delay(120)
+        }
+    }
+
+    val subtitleTimeline = remember(state.key, state.lines) { SubtitleTimelinePolicy(state.lines) }
+    val liveSubtitle = subtitleTimeline.lineAtPosition(playbackPositionMs)
+        ?.zh
+        ?.let { SubtitleParsers.cleanTranslatedText(it) }
+        ?.takeIf { it.isNotBlank() }
+        ?: return
+
+    Surface(
+        modifier = Modifier
+            .align(androidx.compose.ui.Alignment.BottomCenter)
+            .fillMaxWidth(0.92f)
+            .padding(bottom = 62.dp),
+        color = Color(0xC9000000),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Text(
+            liveSubtitle,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+            ),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+        )
+    }
+}
+
+
 @Composable
 private fun SubtitleList(
     state: PlayerUiState,
@@ -1669,4 +1749,12 @@ private fun LangLabel(code: String) = when (code) {
     "zh" -> "中"; "en" -> "英"; "ja" -> "日"; "ko" -> "韩"; "fr" -> "法"; "de" -> "德"
     "es" -> "西"; "pt" -> "葡"; "ru" -> "俄"; "it" -> "意"; "auto" -> "自动"
     else -> code
+}
+
+
+private fun playerRequestKey(videoId: String?, uri: android.net.Uri?): String = when {
+    videoId != null -> "youtube:$videoId"
+    uri?.scheme.equals("http", ignoreCase = true) ||
+        uri?.scheme.equals("https", ignoreCase = true) -> "webmedia:$uri"
+    else -> "local:${uri ?: ""}"
 }

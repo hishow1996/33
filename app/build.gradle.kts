@@ -147,6 +147,7 @@ dependencies {
     // Backport newer Java library APIs used by NewPipeExtractor to Android 7–12.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     // 本地 aar：sherpa-onnx（TTS Kokoro + ASR Whisper 推理引擎）
     implementation(files("libs/sherpa-onnx.aar"))
@@ -166,9 +167,13 @@ dependencies {
 
     // 播放
     implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-extractor:1.4.1")
+    // Safe HTTP redirect policy for webpage media manifests and segments.
+    implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
 
     // NewPipe Extractor
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")

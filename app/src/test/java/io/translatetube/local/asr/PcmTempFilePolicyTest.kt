@@ -35,6 +35,26 @@ class PcmTempFilePolicyTest {
     }
 
     @Test
+    fun pcmAppendNeverExceedsConfiguredScratchBudget() {
+        val budget = 512L * 1024L * 1024L
+        assertTrue(PcmTempFilePolicy.canAppendPcm(0L, 64L * 1024L, budget))
+        assertTrue(PcmTempFilePolicy.canAppendPcm(budget - 1L, 1L, budget))
+        assertFalse(PcmTempFilePolicy.canAppendPcm(budget, 1L, budget))
+        assertFalse(PcmTempFilePolicy.canAppendPcm(-1L, 1L, budget))
+        assertFalse(PcmTempFilePolicy.canAppendPcm(0L, -1L, budget))
+    }
+
+    @Test
+    fun pcmWriterKeepsMinimumFreeSpaceReserve() {
+        val reserve = PcmTempFilePolicy.MIN_FREE_SPACE_BYTES
+        assertTrue(PcmTempFilePolicy.hasDiskHeadroom(-1L, 1024L, reserve))
+        assertFalse(PcmTempFilePolicy.hasDiskHeadroom(0L, 0L, reserve))
+        assertTrue(PcmTempFilePolicy.hasDiskHeadroom(reserve + 4096L, 4096L, reserve))
+        assertFalse(PcmTempFilePolicy.hasDiskHeadroom(reserve + 4095L, 4096L, reserve))
+        assertFalse(PcmTempFilePolicy.hasDiskHeadroom(reserve - 1L, 0L, reserve))
+    }
+
+    @Test
     fun futureTimestampsAndUnrelatedNamesAreNotTreatedAsStale() {
         val now = 10_000_000_000L
         assertFalse(PcmTempFilePolicy.isStale("translate-pcm-a.s16le", now + 1L, now))

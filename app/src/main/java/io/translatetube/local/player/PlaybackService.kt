@@ -35,6 +35,7 @@ import io.translatetube.local.yt.SubtitleTrackOption
 import io.translatetube.local.yt.YouTubeAudioCandidate
 import io.translatetube.local.yt.YouTubeStreamSelector
 import io.translatetube.local.yt.YouTubeVideoCandidate
+import io.translatetube.local.web.WebMediaCandidatePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,10 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
 private data class PartialAsrTranscript(
@@ -143,6 +141,7 @@ class PlaybackService : MediaSessionService() {
     private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
+    @Volatile private var sourceHeaders: Map<String, String> = emptyMap()
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var qualityRecoveryAttempted = false
@@ -153,6 +152,7 @@ class PlaybackService : MediaSessionService() {
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
     private val asrAudioDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val asrAudioSegmentDownloader = AsrAudioSegmentDownloader()
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -162,6 +162,7 @@ class PlaybackService : MediaSessionService() {
         /** 播放画面 TextureView（供悬浮窗摘取 reparent） */
         @Volatile var videoSurfaceView: android.view.TextureView? = null
         const val CH_MAIN = "playback"
+        const val SIDECAR_TEMP_TTL_MS = 5L * 60L * 1_000L
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -483,6 +484,8 @@ class PlaybackService : MediaSessionService() {
         localUri: Uri?,
         importedLines: List<SubLine>? = null,
         resumeState: PlayerUiState? = null,
+        sourceHeaders: Map<String, String> = emptyMap(),
+        sourceMimeType: String? = null,
     ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
@@ -497,6 +500,9 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
+        val safeSourceHeaders = WebMediaCandidatePolicy.safeHeaders(sourceHeaders)
+        val safeSourceMimeType = sourceMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
+        this.sourceHeaders = safeSourceHeaders
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -507,11 +513,12 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+        val sourceIdentity = stableSourceCacheIdentity(key, videoId)
         val effectiveTranslationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
             ?: if (!importedLines.isNullOrEmpty()) {
                 importedTranslationCacheKey(key, activeTranslationId, importedLines)
             } else {
-                "$key|zh|$activeTranslationId"
+                "$sourceIdentity|zh|$activeTranslationId"
             }
         val configuredTtsName = when (configuredTts) {
             "system" -> "系统 TTS"
@@ -535,7 +542,7 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot)
+            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, safeSourceHeaders, safeSourceMimeType)
         }
     }
 
@@ -685,7 +692,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     runCatching { tts.close() }
                     throw e
@@ -824,7 +831,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     runCatching { tts.close() }
                     throw e
@@ -960,10 +967,13 @@ class PlaybackService : MediaSessionService() {
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
         sourceImportedLines: List<SubLine>? = null,
+        sourceHeaders: Map<String, String> = emptyMap(),
+        sourceMimeType: String? = null,
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
+        var extractedLocalAudioForAsr = false
         try {
             ensureCurrentSession(key)
             awaitRetiredDubbingEngines()
@@ -997,20 +1007,35 @@ class PlaybackService : MediaSessionService() {
                 updateUiForSession(key) { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
             } else if (resumeState == null) {
                 localUri?.let { u ->
-                    // 本地视频：取真实标题/时长
-                    var title = u.lastPathSegment ?: "本地视频"
-                    var dur = 0L
-                    try {
-                        val mmr = android.media.MediaMetadataRetriever()
-                        mmr.setDataSource(this, u)
-                        title = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
-                            ?.takeIf { it.isNotBlank() } ?: title
-                        dur = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                            ?: "0").toLongOrNull() ?: 0L
-                        mmr.release()
-                    } catch (_: Exception) {}
-                    meta = meta.copy(title = title, durationSec = dur / 1000)
-                    updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
+                    if (isHttpMediaUri(u)) {
+                        // Do not run MediaMetadataRetriever against remote web streams; many servers
+                        // reject its request headers and it can block before the audio pipeline starts.
+                        val title = remoteMediaTitle(u)
+                        val channel = u.host.orEmpty()
+                        meta = meta.copy(title = title, channel = channel)
+                        updateUiForSession(key) {
+                            it.copy(title = title, channel = channel, durationMs = 0L)
+                        }
+                    } else {
+                        // 本地视频：取真实标题/时长
+                        var title = u.lastPathSegment ?: "本地视频"
+                        var dur = 0L
+                        var retriever: android.media.MediaMetadataRetriever? = null
+                        try {
+                            retriever = android.media.MediaMetadataRetriever()
+                            retriever.setDataSource(this, u)
+                            title = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
+                                ?.takeIf { it.isNotBlank() } ?: title
+                            dur = (retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                ?: "0").toLongOrNull() ?: 0L
+                        } catch (_: Exception) {
+                            // Some content providers do not expose metadata; playback can still proceed.
+                        } finally {
+                            runCatching { retriever?.release() }
+                        }
+                        meta = meta.copy(title = title, durationSec = dur / 1000)
+                        updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
+                    }
                 }
             }
 
@@ -1046,13 +1071,21 @@ class PlaybackService : MediaSessionService() {
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            // Keep non-YouTube media URLs and any signed query tokens out of Room cache keys.
+            // The same identity is reused for translated text, original ASR cues and ASR checkpoints.
+            val sourceIdentity = stableSourceCacheIdentity(key, videoId)
             val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
                 ?: if (!sourceImportedLines.isNullOrEmpty()) {
                     importedTranslationCacheKey(key, selectedTranslationId, sourceImportedLines)
                 } else {
-                    "$key|zh|$selectedTranslationId"
+                    "$sourceIdentity|zh|$selectedTranslationId"
                 }
-            val sourceSubtitleCacheKey = "$key|source|youtube"
+            // Preserve the established YouTube key so previous transcript caches remain usable.
+            val sourceSubtitleCacheKey = if (videoId != null) {
+                "$key|source|youtube"
+            } else {
+                "$sourceIdentity|source|media-v1"
+            }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
@@ -1103,7 +1136,7 @@ class PlaybackService : MediaSessionService() {
             }
 
             val sourceCached = if (
-                resumeState == null && videoId != null && sourceImportedLines.isNullOrEmpty()
+                resumeState == null && sourceImportedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
@@ -1185,16 +1218,19 @@ class PlaybackService : MediaSessionService() {
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
-            if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() && videoId != null) {
+            if (
+                resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
+                (videoId != null || restoredSourceLines != null)
+            ) {
                 if (restoredSourceLines != null) {
                     lines = restoredSourceLines
                     srcLang = restoredSourceLang
                         ?: detectLangFromText(restoredSourceLines.take(12).joinToString(" ") { it.text })
                     android.util.Log.i(
                         "PlaybackService",
-                        "Using cached/validated source subtitles for $videoId (${restoredSourceLines.size} cues)"
+                        "Using cached source subtitles for $sourceIdentity (${restoredSourceLines.size} cues)"
                     )
-                } else {
+                } else if (videoId != null) {
                     fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
                         lines = fetchedLines
                         srcLang = lang
@@ -1203,37 +1239,131 @@ class PlaybackService : MediaSessionService() {
             }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
+                val sourceUri = localUri
                 if (!io.translatetube.local.data.ModelFiles.asrReady(this)) {
-                    // 方案 B：转写模型未下载——优雅降级（原声播放 + 引导提示），不崩
-                    updateUiForSession(key) { it.copy(noModelHint = "该视频无字幕。下载「转写模型」后即可生成中文字幕与配音（设置 → 语音模型）") }
-                } else {
-                // ---- 2b. 无字幕 → 本地转写 ----
-                updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
-                val audioFile = if (videoId != null) {
-                    obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
-                } else {
-                    localUri ?: throw IllegalStateException("无音频源")
-                }
-                updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
-                val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                val pcmFile = withContext(Dispatchers.IO) {
-                    if (audioFile is File) {
-                        AudioExtract.decodeTo16kMonoFile(
-                            this@PlaybackService, null, audioFile,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
-                        )
+                    // A local video needs Whisper only when it has no reusable subtitle result.
+                    // Keep the video playable, but explain the exact next step needed for captions.
+                    val hint = if (sourceUri != null && !isHttpMediaUri(sourceUri)) {
+                        AsrAudioSourcePolicy.missingLocalAsrModelHint()
                     } else {
-                        AudioExtract.decodeTo16kMonoFile(
-                            this@PlaybackService, audioFile as Uri, null,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
+                        "该视频无可复用字幕。下载「转写模型」后即可识别语音、生成中文字幕与中文配音（设置 → 语音模型）。"
+                    }
+                    updateUiForSession(key) { state ->
+                        state.copy(
+                            noModelHint = hint,
+                            subtitleTrackStatus = if (sourceUri != null && !isHttpMediaUri(sourceUri)) {
+                                "本地视频尚未生成字幕：准备好转写模型后即可提取音轨并生成中文字幕。"
+                            } else state.subtitleTrackStatus,
                         )
                     }
+                } else {
+                    // ---- 2b. No reusable captions: extract/prepare audio, then Whisper → translation → TTS. ----
+                    updateUiForSession(key) {
+                        it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕缓存，准备语音转写…")
+                    }
+                    val audioFile: File?
+                    val audioUri: Uri?
+                    val isHttpSource = sourceUri?.let(::isHttpMediaUri) == true
+                    val inputMode = AsrAudioSourcePolicy.choose(
+                        hasYouTubeVideoId = videoId != null,
+                        sourceScheme = sourceUri?.scheme,
+                        shouldCacheRemoteAudio = isHttpSource &&
+                            sourceUri != null && !shouldStreamRemoteVideoForAsr(sourceUri, sourceMimeType),
+                    )
+                    when (inputMode) {
+                        AsrAudioSourcePolicy.Mode.YOUTUBE_AUDIO_CACHE -> {
+                            val id = videoId ?: throw IllegalStateException("缺少 YouTube 视频 ID")
+                            audioFile = obtainAsrAudioFile(id, key, "复用已下载音频，避免重复下载…")
+                            audioUri = null
+                        }
+                        AsrAudioSourcePolicy.Mode.REMOTE_AUDIO_CACHE -> {
+                            val remoteUri = sourceUri ?: throw IllegalStateException("缺少网页音频地址")
+                            // Direct audio and supported clear HLS/DASH VOD are cached/resumable.
+                            audioFile = obtainRemoteAsrAudioFile(
+                                url = remoteUri.toString(),
+                                cacheKey = key,
+                                sessionKey = key,
+                                headers = sourceHeaders,
+                                mimeType = sourceMimeType,
+                            )
+                            audioUri = null
+                        }
+                        AsrAudioSourcePolicy.Mode.MEDIA_EXTRACTOR -> {
+                            val mediaUri = sourceUri ?: throw IllegalStateException("本地视频或网页媒体源为空")
+                            // Local content:// and file:// videos come here too: extract their audio
+                            // track in-place through MediaExtractor; never upload or copy the video
+                            // itself. Only bounded 16 kHz mono PCM is spooled to the cache directory.
+                            audioFile = null
+                            audioUri = mediaUri
+                            if (isHttpMediaUri(mediaUri)) {
+                                updateUiForSession(key) {
+                                    it.copy(
+                                        phase = Phase.TRANSCRIBING,
+                                        progress = "正在直接读取网页视频音轨（不下载整部视频）…",
+                                    )
+                                }
+                            } else {
+                                extractedLocalAudioForAsr = true
+                                updateUiForSession(key) {
+                                    it.copy(
+                                        phase = Phase.DOWNLOADING_AUDIO,
+                                        progress = AsrAudioSourcePolicy.localExtractionProgress(),
+                                        subtitleTrackStatus = AsrAudioSourcePolicy.localSubtitleStatus(),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    updateUiForSession(key) {
+                        it.copy(
+                            phase = Phase.TRANSCRIBING,
+                            progress = when {
+                                audioUri != null && isHttpMediaUri(audioUri) ->
+                                    "正在直接读取网页视频音轨并转为 16 kHz 单声道 PCM…"
+                                audioUri != null ->
+                                    AsrAudioSourcePolicy.localExtractionProgress()
+                                else -> "正在解码已准备好的音频并转换为 16 kHz 单声道 PCM…"
+                            },
+                        )
+                    }
+                val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val pcmFile = withContext(Dispatchers.IO) {
+                    AudioExtract.decodeTo16kMonoFile(
+                        ctx = this@PlaybackService,
+                        src = audioUri,
+                        file = audioFile,
+                        checkActive = { pcmOwnerJob?.ensureActive() },
+                        headers = if (audioUri != null && isHttpMediaUri(audioUri)) sourceHeaders else emptyMap(),
+                        onProgress = { processedSamples, totalSamples ->
+                            val progress = if (totalSamples > 0L) {
+                                val percent = ((processedSamples * 100L) / totalSamples).toInt().coerceIn(0, 100)
+                                "解码音轨并转换 PCM $percent%"
+                            } else {
+                                "已转换 PCM " + (processedSamples / 16_000L) + " 秒"
+                            }
+                            updateUiForSession(key) { state ->
+                                if (state.key == key) state.copy(progress = progress) else state
+                            }
+                        },
+                    )
                 }
                 transientPcmFile = pcmFile
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) {
-                    vadSegmentsFromFile(this@PlaybackService, pcmFile)
+                    vadSegmentsFromFile(
+                        ctx = this@PlaybackService,
+                        pcmFile = pcmFile,
+                        checkActive = { pcmOwnerJob?.ensureActive() },
+                        onProgress = { processedSamples, totalSamples ->
+                            val percent = if (totalSamples > 0L) {
+                                ((processedSamples * 100L) / totalSamples).toInt().coerceIn(0, 100)
+                            } else 100
+                            updateUiForSession(key) { state ->
+                                if (state.key == key) state.copy(progress = "语音分段 $percent%") else state
+                            }
+                        },
+                    )
                 }
                 ensureCurrentSession(key)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
@@ -1243,7 +1373,7 @@ class PlaybackService : MediaSessionService() {
                 var restoredProcessedSegments = 0
                 var restoredAsrRows = emptyList<Triple<Long, Long, String>>()
                 var restoredAsrLanguage = ""
-                val storedPartialAsr = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                val storedPartialAsr = if (sourceImportedLines.isNullOrEmpty()) {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
                 if (storedPartialAsr != null) {
@@ -1331,7 +1461,7 @@ class PlaybackService : MediaSessionService() {
                             rows.addAll(chunkRows)
                             processed = chunkEnd
 
-                            if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                            if (sourceImportedLines.isNullOrEmpty()) {
                                 ensureCurrentSession(key)
                                 val rowsJson = org.json.JSONArray()
                                 rows.forEach { (startMs, endMs, text) ->
@@ -1382,12 +1512,9 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
-                // Only disposable local temporary files may be removed before the transcript checkpoint.
-                // YouTube audio remains cached until its ASR subtitles have been saved successfully.
-                if (audioFile is File && videoId == null) {
-                    audioFile.delete()
-                    if (transientAudio == audioFile) transientAudio = null
-                }
+                // Audio files downloaded for ASR stay in the bounded retry cache for reuse.
+                // Progressive webpage video is streamed directly instead; its timestamped source
+                // transcript is persisted below so translation retries do not repeat Whisper work.
                 val transcribedLines = asrLines
                     .mapNotNull { (startMs, endMs, text) ->
                         val normalized = text.trim()
@@ -1398,14 +1525,17 @@ class PlaybackService : MediaSessionService() {
                         SubLine(index, startMs, endMs, text)
                     }
                 if (transcribedLines.isEmpty()) {
-                    if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                    if (sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     }
                     throw IllegalStateException(
-                        if (videoId != null) {
-                            "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
-                        } else {
-                            "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
+                        when {
+                            videoId != null ->
+                                "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存。"
+                            localUri?.let(::isHttpMediaUri) == true ->
+                                "网页音轨已读取，但没有识别出有效语音字幕。请确认视频有人声、网页音轨可访问，或尝试更清晰的音源。"
+                            else ->
+                                "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
                         }
                     )
                 }
@@ -1416,7 +1546,7 @@ class PlaybackService : MediaSessionService() {
                 // source-audio cache is retained for retries and later speaker diarization, while
                 // this subtitle cache lets translation retry without running ASR again.
                 ensureCurrentSession(key)
-                if (videoId != null && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
+                if (sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for (line in transcribedLines) {
                         sourceArr.put(
@@ -1437,7 +1567,7 @@ class PlaybackService : MediaSessionService() {
                     db.subtitleCacheDao().delete(partialAsrCacheKey)
                     // Keep the bounded source-audio cache after ASR as well: user-triggered
                     // speaker diarization can reuse it without downloading the same media again.
-                    if (videoId != null && audioFile is File) {
+                    if (audioFile is File) {
                         audioFile.setLastModified(System.currentTimeMillis())
                         pruneAsrAudioCache(asrAudioCacheDirectory(), keep = audioFile)
                     }
@@ -1549,7 +1679,19 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key)
-                    pm.setUriSource(localUri!!, meta.title, "本地视频", null)
+                    val source = localUri ?: throw IllegalStateException("缺少视频媒体源")
+                    if (isHttpMediaUri(source)) {
+                        pm.setExternalMediaSource(
+                            uri = source,
+                            headers = sourceHeaders,
+                            mimeType = sourceMimeType,
+                            title = meta.title,
+                            artist = meta.channel.ifBlank { source.host.orEmpty() },
+                            artworkUrl = meta.thumbUrl,
+                        )
+                    } else {
+                        pm.setUriSource(source, meta.title, "本地视频", null)
+                    }
                 }
             }
 
@@ -1581,7 +1723,7 @@ class PlaybackService : MediaSessionService() {
                             throw e
                         }
                         val d = try {
-                            DubbingEngine(this, key, scope)
+                            DubbingEngine(this, stableDubbingCacheIdentity(key), scope)
                         } catch (e: Exception) {
                             runCatching { tts.close() }
                             throw e
@@ -1681,7 +1823,17 @@ class PlaybackService : MediaSessionService() {
             ensureCurrentSession(key)
             saveHistory(meta)
             ensureCurrentSession(key)
-            updateUiForSession(key) { it.copy(phase = Phase.READY, engineName = it.engineName.ifEmpty { "本地引擎" }) }
+            updateUiForSession(key) {
+                it.copy(
+                    phase = Phase.READY,
+                    engineName = it.engineName.ifEmpty { "本地引擎" },
+                    subtitleTrackStatus = if (extractedLocalAudioForAsr && finalLines.isNotEmpty()) {
+                        "本地音轨识别完成：已生成 ${finalLines.size} 条中文字幕，播放时会按时间轴同步显示。"
+                    } else {
+                        it.subtitleTrackStatus
+                    },
+                )
+            }
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
             val resumeSec = try {
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
@@ -1714,10 +1866,14 @@ class PlaybackService : MediaSessionService() {
                         error = e.message ?: "API 翻译失败",
                         muteOriginal = false,
                         noModelHint = null,
+                        subtitleTrackStatus = if (extractedLocalAudioForAsr) {
+                            "本地音轨已提取并识别字幕，但中文字幕翻译失败；请检查翻译引擎后点击重试。"
+                        } else it.subtitleTrackStatus,
                     )
                 }
             } else {
-            // A TTS constructor can fail before the subtitle list is published to UI.
+            // Keep source parsing/ASR errors distinct from actual TTS initialization failures.
+            // The dedicated selected-TTS initialization catch already supplies a TTS-specific hint.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
                 runCatching { pm.originalVolume = 1f }
@@ -1727,7 +1883,14 @@ class PlaybackService : MediaSessionService() {
                         progress = "",
                         error = e.message ?: "视频解析或配音初始化失败",
                         muteOriginal = false,
-                        noModelHint = "配音初始化失败，已恢复视频原声。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro 请检查模型文件是否完整。"
+                        noModelHint = null,
+                        subtitleTrackStatus = if (extractedLocalAudioForAsr) {
+                            if (it.lines.isNotEmpty()) {
+                                "本地音轨识别已完成，但后续处理失败；已保留字幕结果，点击重试可继续。"
+                            } else {
+                                "本地视频音轨提取或语音识别失败；请确认文件包含可读取的音轨。"
+                            }
+                        } else it.subtitleTrackStatus,
                     )
                 }
             } else {
@@ -2049,19 +2212,32 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /** Keep disk-backed synthesized speech reusable when a CDN refreshes signed URL parameters. */
+    private fun stableDubbingCacheIdentity(sessionKey: String): String {
+        val currentVideoId = this.videoId.takeIf { this.videoKey == sessionKey }
+        return stableSourceCacheIdentity(sessionKey, currentVideoId)
+    }
+
+    /** Stable cache IDs avoid persisting signed webpage URLs in subtitle cache keys. */
+    private fun stableSourceCacheIdentity(key: String, videoId: String?): String {
+        if (videoId != null) return key
+        // Signed CDN tokens often rotate between retries. Hash the canonical URL identity so
+        // the same media keeps its source-subtitle, partial-ASR and translation checkpoints.
+        return "media:${AsrAudioCacheIdentity.hash(key)}"
+    }
+
     private fun asrAudioCacheDirectory(): File =
         File(cacheDir, "asr_audio_retry").apply { mkdirs() }
 
     private fun asrAudioCacheFile(videoId: String): File {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(videoId.toByteArray(Charsets.UTF_8))
-        val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        return File(asrAudioCacheDirectory(), "$safeId.bin")
+        // The parameter is a YouTube ID or a media key (such as "webmedia:<url>").
+        // Use the same canonical identity as cache metadata to recover downloads after URL signing rotates.
+        return File(asrAudioCacheDirectory(), "${AsrAudioCacheIdentity.hash(videoId)}.bin")
     }
 
     /**
-     * Serialize the lookup/download per video so ASR and speaker recognition can never download
-     * the same source audio concurrently. The second caller rechecks the cache after acquiring it.
+     * Serialize source lookup/download per video. A completed cache wins, while a valid .part
+     * and its range metadata are deliberately retained for the downloader to resume safely.
      */
     private suspend fun obtainAsrAudioFile(
         videoId: String,
@@ -2078,129 +2254,363 @@ class PlaybackService : MediaSessionService() {
             }
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
-                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取音频流并准备分段缓存…")
                 } else state
             }
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
-            downloadAudio(stream.content, asrAudioCacheFile(videoId), sessionKey).also {
+            downloadAudio(stream.content, asrAudioCacheFile(videoId), videoId, sessionKey).also {
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
             }
         }
     }
 
-    /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
+    /** Download an externally selected webpage media URL through the same bounded cache. */
+    private suspend fun obtainRemoteAsrAudioFile(
+        url: String,
+        cacheKey: String,
+        sessionKey: String,
+        headers: Map<String, String>,
+        mimeType: String?,
+    ): File {
+        val mutex = asrAudioDownloadLocks.computeIfAbsent(cacheKey) { kotlinx.coroutines.sync.Mutex() }
+        return mutex.withLock {
+            reusableAsrAudioFile(cacheKey)?.let { cached ->
+                updateUiForSession(sessionKey) { state ->
+                    if (state.key == sessionKey) state.copy(progress = "复用已缓存音轨…") else state
+                }
+                return@withLock cached
+            }
+            updateUiForSession(sessionKey) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在读取网页媒体音轨…")
+                } else state
+            }
+            downloadAudio(
+                url = url,
+                destination = asrAudioCacheFile(cacheKey),
+                // Range sidecars persist across process death. Store the stable hash identity here,
+                // not a signed webpage URL that may contain session tokens or expiring credentials.
+                sourceKey = stableSourceCacheIdentity(cacheKey, videoId = null),
+                sessionKey = sessionKey,
+                headers = headers,
+                mimeType = mimeType,
+            ).also { pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it) }
+        }
+    }
+
+    private fun isHttpMediaUri(uri: Uri): Boolean =
+        uri.scheme.equals("http", true) || uri.scheme.equals("https", true)
+
+    /**
+     * Direct progressive video files can be opened by MediaExtractor without materializing the
+     * whole video. Audio-only files and HLS manifests use the segmented disk cache; DASH is kept
+     * out of this path because Android's extractor does not itself resolve an MPD manifest.
+     */
+    private fun shouldStreamRemoteVideoForAsr(uri: Uri, mimeType: String?): Boolean {
+        val mime = mimeType.orEmpty().substringBefore(';').trim().lowercase(java.util.Locale.ROOT)
+        if (mime.contains("mpegurl") || mime.contains("dash+xml") ||
+            mime.startsWith("audio/")
+        ) return false
+        if (mime.startsWith("video/")) return true
+        val path = uri.path.orEmpty().lowercase(java.util.Locale.ROOT)
+        return listOf(".mp4", ".m4v", ".mov", ".mkv", ".webm", ".ogv").any(path::endsWith)
+    }
+
+    private fun remoteMediaTitle(uri: Uri): String {
+        val fileName = uri.lastPathSegment.orEmpty().substringBeforeLast('.')
+            .replace(Regex("[_+-]+"), " ")
+            .trim()
+        return fileName.takeIf { it.isNotBlank() && it.length <= 80 } ?: uri.host.orEmpty().ifBlank { "网页视频" }
+    }
+
+    /** Reuse only a completed file. Partial downloads are checked against range metadata later. */
     private fun reusableAsrAudioFile(videoId: String): File? {
         val file = asrAudioCacheFile(videoId)
         val now = System.currentTimeMillis()
         if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
             file.setLastModified(now)
+            // A complete file supersedes any leftover partial from an earlier failed attempt.
+            File(file.parentFile, file.name + ".part").delete()
+            File(file.parentFile, file.name + ".part.meta").delete()
+            File(file.parentFile, file.name + ".part.meta.tmp").delete()
             file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
             return file
         }
         file.delete()
-        File(file.parentFile, file.name + ".part").delete()
+        // Do not delete ".part": the downloader verifies its source identity, validators, and
+        // range support before resuming. This avoids downloading tens of MB again after a timeout.
+        file.parentFile?.let {
+            pruneAsrAudioCache(it, keep = null, keepPart = File(it, file.name + ".part"))
+        }
         return null
     }
 
-    /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
-    private fun pruneAsrAudioCache(directory: File, keep: File?) {
+    /**
+     * Keep audio and partial segments under a shared cache budget. Interrupted partials survive
+     * for 24 hours, but stale/orphaned sidecars and least-recently-used audio are removed.
+     */
+    private fun pruneAsrAudioCache(directory: File, keep: File?, keepPart: File? = null) {
         val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
-        // A process killed during download may leave a large .part file. Remove abandoned partials
-        // after six hours; active downloads update their modification time as bytes are written.
+        val protectedComplete = keep?.absolutePath
+        val protectedPart = keepPart?.absolutePath
+        val partTtlMs = 24L * 60L * 60L * 1_000L
+
         allFiles.filter { file ->
             file.isFile && file.name.endsWith(".part") &&
-                (now - file.lastModified() > 6L * 60L * 60L * 1_000L)
-        }.forEach { it.delete() }
-        val files = allFiles.filter { it.isFile && it.name.endsWith(".bin") }
-        var totalBytes = 0L
+                file.absolutePath != protectedPart &&
+                (now < file.lastModified() || now - file.lastModified() > partTtlMs)
+        }.forEach { file ->
+            file.delete()
+            File(directory, file.name + ".meta").delete()
+            File(directory, file.name + ".meta.tmp").delete()
+        }
 
-        // Enforce TTL even when the folder is below its size budget; otherwise old videos
-        // could leave stale cache files on disk indefinitely.
-        files.forEach { file ->
-            val isKept = keep != null && file.absolutePath == keep.absolutePath
+        // A metadata .tmp is only a write-in-progress file, never a resumable checkpoint.
+        // Remove it only when it is orphaned or older than five minutes so a concurrent downloader
+        // is not interrupted while atomically publishing its sidecar.
+        allFiles.filter { file -> file.isFile && file.name.endsWith(".part.meta.tmp") }
+            .forEach { temp ->
+                val meta = File(directory, temp.name.removeSuffix(".tmp"))
+                val part = File(directory, temp.name.removeSuffix(".meta.tmp"))
+                val age = now - temp.lastModified()
+                if (age < 0L || age > SIDECAR_TEMP_TTL_MS) {
+                    temp.delete()
+                }
+            }
+
+        // Sidecar files are meaningful only while their paired partial file exists.
+        allFiles.filter { file -> file.isFile && file.name.endsWith(".part.meta") }
+            .forEach { meta ->
+                val part = File(directory, meta.name.removeSuffix(".meta"))
+                if (!part.isFile && meta.absolutePath != protectedPart) meta.delete()
+                if (now >= meta.lastModified() && now - meta.lastModified() > partTtlMs &&
+                    part.absolutePath != protectedPart
+                ) {
+                    meta.delete()
+                    part.delete()
+                }
+            }
+
+        val cacheFiles = directory.listFiles().orEmpty().filter { file ->
+            file.isFile && (file.name.endsWith(".bin") || file.name.endsWith(".part"))
+        }
+        var totalBytes = 0L
+        cacheFiles.forEach { file ->
+            val isProtected = file.absolutePath == protectedComplete || file.absolutePath == protectedPart
             val age = now - file.lastModified()
-            if (!isKept && (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)) {
+            val expired = if (file.name.endsWith(".part")) {
+                age < 0L || age > partTtlMs
+            } else {
+                age < 0L || age > AsrAudioCachePolicy.TTL_MS
+            }
+            if (!isProtected && (file.length() <= 0L || expired)) {
                 file.delete()
+                if (file.name.endsWith(".part")) {
+                    File(directory, file.name + ".meta").delete()
+                    File(directory, file.name + ".meta.tmp").delete()
+                }
             } else {
                 totalBytes += file.length()
             }
         }
 
         val budget = AsrAudioCachePolicy.CACHE_BUDGET_BYTES
-        for (file in files.sortedBy { it.lastModified() }) {
+        for (file in cacheFiles.sortedBy { it.lastModified() }) {
             if (totalBytes <= budget) break
-            if (keep != null && file.absolutePath == keep.absolutePath) continue
+            if (file.absolutePath == protectedComplete || file.absolutePath == protectedPart) continue
             val size = file.length()
-            if (file.delete()) totalBytes -= size
+            if (file.delete()) {
+                totalBytes -= size
+                if (file.name.endsWith(".part")) {
+                    File(directory, file.name + ".meta").delete()
+                    File(directory, file.name + ".meta.tmp").delete()
+                }
+            }
         }
     }
 
-    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String): File {
-        val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
-        target.parentFile?.mkdirs()
-        val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
-        if (destination != null) {
-            writeTarget.delete()
-            if (target.exists() && !target.delete()) {
-                throw IllegalStateException("无法替换旧的音频缓存文件")
-            }
+    /**
+     * Download direct media as validated byte ranges, or materialize clear HLS VOD into a
+     * disk-backed segment cache. HLS manifests must never be passed to MediaExtractor as if they
+     * were an audio file; the playlist is resolved and its media segments are assembled first.
+     */
+    private suspend fun downloadAudio(
+        url: String,
+        destination: File,
+        sourceKey: String,
+        sessionKey: String,
+        headers: Map<String, String> = emptyMap(),
+        mimeType: String? = null,
+    ): File {
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        val hlsCache = HlsAudioSegmentCache(cacheDir)
+        val dashCache = DashAudioSegmentCache(cacheDir)
+        if (looksLikeDashUrl(url) || mimeType?.contains("dash+xml", ignoreCase = true) == true) {
+            return downloadDashAudio(dashCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
         }
-        val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
-        val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
-        val req = Request.Builder().url(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0")
-            .build()
-        try {
-            withContext(Dispatchers.IO) {
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
-                    val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
-                    val total = body.contentLength()
-                    if (total > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                    body.byteStream().use { ins ->
-                        var got = 0L
-                        writeTarget.outputStream().buffered().use { out ->
-                            val buf = ByteArray(64 * 1024)
-                            while (true) {
-                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                val n = ins.read(buf)
-                                if (n < 0) break
-                                got += n
-                                if (got > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                                out.write(buf, 0, n)
-                                if (total > 0) {
-                                    val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))
-                                    updateUiForSession(sessionKey) { state ->
-                                        if (state.key == sessionKey) {
-                                            state.copy(progress = progress)
-                                        } else state
-                                    }
-                                }
+        if (looksLikeHlsUrl(url) || mimeType?.contains("mpegurl", ignoreCase = true) == true) {
+            return downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
+        }
+        var lastReportedPercent = -1
+        var lastReportedBytes = 0L
+        return withContext(Dispatchers.IO) {
+            try {
+                asrAudioSegmentDownloader.download(
+                    url = url,
+                    destination = destination,
+                    sourceKey = sourceKey,
+                    headers = headers,
+                    checkActive = { ownerJob?.ensureActive() },
+                    onProgress = { receivedBytes, totalBytes ->
+                        val percent = if (totalBytes > 0L) {
+                            ((receivedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                        } else -1
+                        val shouldPublish = if (percent >= 0) {
+                            percent != lastReportedPercent
+                        } else {
+                            receivedBytes - lastReportedBytes >= 512L * 1024L
+                        }
+                        if (shouldPublish) {
+                            lastReportedPercent = percent
+                            lastReportedBytes = receivedBytes
+                            val progress = if (percent >= 0) {
+                                "分段读取音频 $percent%"
+                            } else {
+                                "已读取音频 %.1f MB".format(receivedBytes / (1024f * 1024f))
                             }
-                            out.flush()
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) state.copy(progress = progress) else state
+                            }
                         }
-                        if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
-                            throw IllegalStateException(
-                                "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
-                            )
-                        }
-                    }
-                    if (!writeTarget.isFile || writeTarget.length() == 0L) {
-                        throw IllegalStateException("音频下载结果为空")
-                    }
+                    },
+                )
+            } catch (e: Exception) {
+                // Some servers expose an HLS manifest without a .m3u8 suffix or use an opaque URL.
+                // Fall back only when the response clearly looks like a playlist/non-audio payload;
+                // ordinary timeouts and HTTP failures are propagated without an extra request.
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                when {
+                    looksLikeDashFailure(e) ->
+                        downloadDashAudio(dashCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
+                    looksLikePlaylistFailure(e) ->
+                        downloadHlsAudio(hlsCache, url, destination, sourceKey, sessionKey, ownerJob, headers)
+                    else -> throw e
                 }
             }
-            if (destination == null) return writeTarget
-            if (!writeTarget.renameTo(target)) throw IllegalStateException("下载完成但无法保存音频缓存")
-            target.setLastModified(System.currentTimeMillis())
-            return target
-        } catch (e: Exception) {
-            writeTarget.delete()
-            throw e
         }
+    }
+
+    private suspend fun downloadDashAudio(
+        cache: DashAudioSegmentCache,
+        url: String,
+        destination: File,
+        sourceKey: String,
+        sessionKey: String,
+        ownerJob: Job?,
+        headers: Map<String, String>,
+    ): File = withContext(Dispatchers.IO) {
+        var lastPercent = -1
+        cache.download(
+            manifestUrl = url,
+            destination = destination,
+            sourceKey = sourceKey,
+            headers = headers,
+            checkActive = { ownerJob?.ensureActive() },
+            onProgress = { completed, total ->
+                if (total <= 0) return@download
+                val percent = ((completed * 100L) / total).toInt().coerceIn(0, 100)
+                if (percent != lastPercent) {
+                    lastPercent = percent
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(progress = "读取 DASH 音轨分段 $completed/$total（$percent%）")
+                        } else state
+                    }
+                }
+            },
+        )
+    }
+
+    private suspend fun downloadHlsAudio(
+        cache: HlsAudioSegmentCache,
+        url: String,
+        destination: File,
+        sourceKey: String,
+        sessionKey: String,
+        ownerJob: Job?,
+        headers: Map<String, String>,
+    ): File = withContext(Dispatchers.IO) {
+        var lastPercent = -1
+        cache.download(
+            playlistUrl = url,
+            destination = destination,
+            sourceKey = sourceKey,
+            headers = headers,
+            checkActive = { ownerJob?.ensureActive() },
+            onProgress = { completed, total ->
+                if (total <= 0) return@download
+                val percent = ((completed * 100L) / total).toInt().coerceIn(0, 100)
+                if (percent != lastPercent) {
+                    lastPercent = percent
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(progress = "读取 HLS 音轨分段 $completed/$total（$percent%）")
+                        } else state
+                    }
+                }
+            },
+        )
+    }
+
+    private fun looksLikeDashUrl(value: String): Boolean = runCatching {
+        val uri = Uri.parse(value)
+        val format = uri.getQueryParameter("format").orEmpty()
+        val type = uri.getQueryParameter("type").orEmpty()
+        uri.path.orEmpty().endsWith(".mpd", ignoreCase = true) ||
+            format.equals("mpd", ignoreCase = true) ||
+            format.equals("dash", ignoreCase = true) ||
+            format.equals("application/dash+xml", ignoreCase = true) ||
+            type.equals("mpd", ignoreCase = true) ||
+            type.equals("dash", ignoreCase = true) ||
+            type.equals("application/dash+xml", ignoreCase = true)
+    }.getOrDefault(false)
+
+    private fun looksLikeHlsUrl(value: String): Boolean = runCatching {
+        val uri = Uri.parse(value)
+        val format = uri.getQueryParameter("format").orEmpty()
+        val type = uri.getQueryParameter("type").orEmpty()
+        uri.path.orEmpty().endsWith(".m3u8", ignoreCase = true) ||
+            format.equals("m3u8", ignoreCase = true) ||
+            format.equals("hls", ignoreCase = true) ||
+            format.equals("application/x-mpegURL", ignoreCase = true) ||
+            format.equals("application/vnd.apple.mpegurl", ignoreCase = true) ||
+            type.equals("m3u8", ignoreCase = true) ||
+            type.equals("hls", ignoreCase = true) ||
+            type.equals("application/x-mpegURL", ignoreCase = true) ||
+            type.equals("application/vnd.apple.mpegurl", ignoreCase = true)
+    }.getOrDefault(false)
+
+    private fun looksLikeDashFailure(error: Throwable): Boolean {
+        val message = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase()
+        return message.contains("dash+xml") ||
+            message.contains("mpeg-dash") ||
+            message.contains("dash mpd")
+    }
+
+    private fun looksLikePlaylistFailure(error: Throwable): Boolean {
+        val message = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .joinToString(" ")
+            .lowercase()
+        return message.contains("mpegurl") ||
+            message.contains("播放清单") ||
+            message.contains("播放列表") ||
+            message.contains("不是音频数据")
     }
 
     private fun kokoroRuntimeReady(): Boolean = runCatching {
@@ -2568,7 +2978,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     if (!ttsWasPreflighted) runCatching { tts.close() }
                     throw e
@@ -2721,7 +3131,7 @@ class PlaybackService : MediaSessionService() {
 
                 val tts = pendingTts ?: makeTts(selectedTts)
                 val engine = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, stableDubbingCacheIdentity(sessionKey), scope)
                 } catch (e: Exception) {
                     if (pendingTts == null) runCatching { tts.close() }
                     throw e

@@ -9,13 +9,19 @@ import java.io.FileInputStream
 import java.io.InputStream
 
 /** silero VAD 语音分段：全片 PCM → [(startMs, endMs)] */
-fun vadSegments(ctx: Context, pcm: FloatArray, sr: Int = 16000): List<Pair<Long, Long>> {
+fun vadSegments(
+    ctx: Context,
+    pcm: FloatArray,
+    sr: Int = 16000,
+    checkActive: () -> Unit = {},
+): List<Pair<Long, Long>> {
     val vad = newVad(ctx, sr)
     val segments = mutableListOf<Pair<Long, Long>>()
     try {
         val window = 512
         var offset = 0
         while (offset + window <= pcm.size) {
+            checkActive()
             vad.acceptWaveform(pcm.copyOfRange(offset, offset + window))
             drainVad(vad, sr, segments)
             offset += window
@@ -33,6 +39,8 @@ fun vadSegmentsFromFile(
     ctx: Context,
     pcmFile: AudioExtract.PcmFile,
     sr: Int = 16000,
+    checkActive: () -> Unit = {},
+    onProgress: (processedSamples: Long, totalSamples: Long) -> Unit = { _, _ -> },
 ): List<Pair<Long, Long>> {
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
     val vad = newVad(ctx, sr)
@@ -42,7 +50,10 @@ fun vadSegmentsFromFile(
     try {
         BufferedInputStream(FileInputStream(pcmFile.file), 32 * 1024).use { input ->
             var remainingSamples = pcmFile.sampleCount
+            var processedSamples = 0L
+            var lastReportedSamples = 0L
             while (remainingSamples >= window) {
+                checkActive()
                 readFully(input, windowBytes)
                 val floats = FloatArray(window)
                 var byteIndex = 0
@@ -55,10 +66,17 @@ fun vadSegmentsFromFile(
                 vad.acceptWaveform(floats)
                 drainVad(vad, sr, segments)
                 remainingSamples -= window
+                processedSamples += window.toLong()
+                if (processedSamples - lastReportedSamples >= sr.toLong()) {
+                    onProgress(processedSamples.coerceAtMost(pcmFile.sampleCount), pcmFile.sampleCount)
+                    lastReportedSamples = processedSamples
+                }
             }
         }
+        checkActive()
         vad.flush()
         drainVad(vad, sr, segments)
+        onProgress(pcmFile.sampleCount, pcmFile.sampleCount)
     } finally {
         runCatching { vad.release() }
     }
@@ -102,16 +120,5 @@ private fun readFully(input: InputStream, target: ByteArray) {
     }
 }
 
-private fun mergeVadSegments(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
-    val merged = mutableListOf<Pair<Long, Long>>()
-    for ((start, end) in segments) {
-        if (end - start < 300) continue
-        val last = merged.lastOrNull()
-        if (last != null && start - last.second < 400) {
-            merged[merged.lastIndex] = last.first to end
-        } else {
-            merged += start to end
-        }
-    }
-    return merged
-}
+private fun mergeVadSegments(segments: List<Pair<Long, Long>>): List<Pair<Long, Long>> =
+    VadSegmentPolicy.merge(segments)
