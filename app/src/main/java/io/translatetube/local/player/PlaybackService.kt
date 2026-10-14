@@ -340,7 +340,8 @@ class PlaybackService : MediaSessionService() {
     private fun isDubbingPreparationIncomplete(state: PlayerUiState): Boolean {
         val engine = dubbing ?: return false
         if (!engine.isPreparing) return false
-        return state.totalLines <= 0 || state.preparedCount < state.totalLines
+        // A session with no subtitle cues has no synthesis work to wait for.
+        return state.totalLines > 0 && state.preparedCount < state.totalLines
     }
 
     private fun updateProcessingNotification(state: PlayerUiState) {
