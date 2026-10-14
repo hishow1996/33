@@ -2525,6 +2525,9 @@ class PlaybackService : MediaSessionService() {
     ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
+        // Capture the owning pipeline before switching to IO. SafeMediaHttp uses it to cancel
+        // the active socket read immediately when the user changes video or aborts transcription.
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         // Always write to a sibling temporary file. A process killed mid-download must never
         // leave a partial payload under the final .bin name where a later cache scan can reuse it.
         val writeTarget = File(target.parentFile, target.name + ".part")
@@ -2541,6 +2544,7 @@ class PlaybackService : MediaSessionService() {
                         // This operation needs the full track, not a Range captured from a WebView request.
                         requestHeaders = HlsAudioDownloader.headersWithoutInheritedRange(requestHeaders),
                         userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+                        ownerJob = ownerJob,
                     ).use { resp ->
                         SafeMediaHttp.validateCompleteGetResponse(resp.code, "音频文件")
                         val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
