@@ -20,8 +20,9 @@ internal class Pcm16StreamingResampler(
         ratio = sourceRate.toDouble() / targetRate
     }
 
-    fun process(input: ShortArray): ShortArray {
+    fun process(input: ShortArray, checkActive: () -> Unit = {}): ShortArray {
         check(!finished) { "重采样器已结束" }
+        checkActive()
         if (input.isEmpty()) return ShortArray(0)
 
         // Keep every unconsumed input sample from the next output's left interpolation point.
@@ -42,6 +43,7 @@ internal class Pcm16StreamingResampler(
         var produced = 0
 
         while (nextOutputSample < targetCountNow) {
+            if ((produced and 0x1fff) == 0) checkActive()
             val position = nextOutputSample.toDouble() * ratio
             val leftIndex = floor(position).toLong()
             val rightIndex = leftIndex + 1L
@@ -71,8 +73,9 @@ internal class Pcm16StreamingResampler(
         return output.copyOf(produced)
     }
 
-    fun finish(): ShortArray {
+    fun finish(checkActive: () -> Unit = {}): ShortArray {
         check(!finished) { "重采样器已结束" }
+        checkActive()
         finished = true
         if (inputSamples == 0L) return ShortArray(0)
 
@@ -84,6 +87,7 @@ internal class Pcm16StreamingResampler(
         val last = pendingSamples.lastOrNull()
             ?: error("重采样器缺少最后一个输入样本")
         for (i in tail.indices) {
+            if ((i and 0x1fff) == 0) checkActive()
             // Any deferred tail positions clamp to the final source sample, matching the old algorithm.
             tail[i] = last
             nextOutputSample++
