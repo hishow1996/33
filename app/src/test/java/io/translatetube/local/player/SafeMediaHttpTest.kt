@@ -57,4 +57,31 @@ class SafeMediaHttpTest {
         assertEquals(false, isAllowedRedirect("file", "https"))
     }
 
+
+    @Test
+    fun doesNotForwardCookieToDifferentPortOnTheSameHost() {
+        MockWebServer().use { source ->
+            MockWebServer().use { redirected ->
+                source.start()
+                redirected.start()
+                source.enqueue(
+                    MockResponse()
+                        .setResponseCode(302)
+                        .addHeader("Location", redirected.url("/audio.bin").toString())
+                )
+                redirected.enqueue(MockResponse().setBody("audio"))
+
+                SafeMediaHttp.execute(
+                    url = source.url("/start").toString(),
+                    requestHeaders = mapOf("Cookie" to "session=private"),
+                ).use { response ->
+                    assertTrue(response.isSuccessful)
+                }
+
+                assertEquals("session=private", source.takeRequest().getHeader("Cookie"))
+                assertNull(redirected.takeRequest().getHeader("Cookie"))
+            }
+        }
+    }
+
 }
