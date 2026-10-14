@@ -15,12 +15,16 @@ internal object AsrAudioSourcePolicy {
 
     fun choose(
         hasYouTubeVideoId: Boolean,
-        isHttpSource: Boolean,
+        sourceScheme: String?,
         shouldCacheRemoteAudio: Boolean,
-    ): Mode = when {
-        hasYouTubeVideoId -> Mode.YOUTUBE_AUDIO_CACHE
-        isHttpSource && shouldCacheRemoteAudio -> Mode.REMOTE_AUDIO_CACHE
-        else -> Mode.MEDIA_EXTRACTOR
+    ): Mode {
+        val isHttpSource = sourceScheme.equals("http", ignoreCase = true) ||
+            sourceScheme.equals("https", ignoreCase = true)
+        return when {
+            hasYouTubeVideoId -> Mode.YOUTUBE_AUDIO_CACHE
+            isHttpSource && shouldCacheRemoteAudio -> Mode.REMOTE_AUDIO_CACHE
+            else -> Mode.MEDIA_EXTRACTOR
+        }
     }
 
     fun localExtractionProgress(): String =
