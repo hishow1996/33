@@ -101,11 +101,7 @@ internal object HlsPlaylistParser {
                 it.first["DEFAULT"].equals("YES", true)
             }.thenByDescending {
                 it.first["AUTOSELECT"].equals("YES", true)
-            }.thenBy {
-                // For speech transcription, prefer English when no rendition is explicitly default.
-                if (it.first["LANGUAGE"].equals("en", true)) 0 else 1
-            }.thenBy { it.first["LANGUAGE"].orEmpty() }
-                .thenBy { it.first["NAME"].orEmpty() }
+            },
         )
 
         if (groupedVariant != null) {
