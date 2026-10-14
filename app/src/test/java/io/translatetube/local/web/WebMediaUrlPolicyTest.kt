@@ -25,6 +25,15 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
+    fun recognizesDirectMediaRequestsButIgnoresOrdinaryPageResources() {
+        assertEquals(true, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example/video.mp4?token=1"))
+        assertEquals(true, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example/master.m3u8"))
+        assertEquals(true, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example/stream.mpd"))
+        assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest("https://example.com/watch"))
+        assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest("blob:https://example.com/id"))
+    }
+
+    @Test
     fun givesSpecificReasonForUnsupportedMediaSources() {
         assertEquals(true, WebMediaUrlPolicy.unsupportedReason("blob:https://example.com/1")!!.contains("blob"))
         assertEquals(true, WebMediaUrlPolicy.unsupportedReason("https://cdn.example/index.m3u8")!!.contains("HLS/DASH"))
