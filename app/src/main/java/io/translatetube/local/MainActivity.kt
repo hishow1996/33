@@ -31,6 +31,7 @@ data class PlayRequest(
     val localUri: String? = null,
     val webPageUrl: String? = null,
     val mediaHeaders: Map<String, String> = emptyMap(),
+    val mediaMimeType: String? = null,
     val ts: Long = System.currentTimeMillis(), // 保证同视频重复点击也能触发
 ) {
     val key: String get() = when {
@@ -99,8 +100,12 @@ class MainActivity : ComponentActivity() {
                             Screen.WEB_SOURCE -> WebSourceScreen(
                                 pageUrl = req?.webPageUrl.orEmpty(),
                                 onBack = { screen = Screen.HOME },
-                                onUseMedia = { mediaUrl, headers ->
-                                    playReq.value = PlayRequest(localUri = mediaUrl, mediaHeaders = headers)
+                                onUseMedia = { mediaUrl, headers, mimeType ->
+                                    playReq.value = PlayRequest(
+                                        localUri = mediaUrl,
+                                        mediaHeaders = headers,
+                                        mediaMimeType = mimeType,
+                                    )
                                     screen = Screen.PLAYER
                                 },
                             )
@@ -108,6 +113,7 @@ class MainActivity : ComponentActivity() {
                                 videoId = req?.videoId,
                                 localUri = req?.localUri?.let(Uri::parse),
                                 remoteHeaders = req?.mediaHeaders.orEmpty(),
+                                remoteMimeType = req?.mediaMimeType,
                                 onBack = { screen = Screen.HOME },
                                 onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
                             )
