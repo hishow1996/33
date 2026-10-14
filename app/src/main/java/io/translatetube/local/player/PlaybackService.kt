@@ -111,18 +111,23 @@ class PlaybackService : MediaSessionService() {
     private lateinit var pm: PlayerManager
     @Volatile private var playerReady = false
     private var session: MediaSession? = null
-    private var dubbing: DubbingEngine? = null
+    @Volatile private var dubbing: DubbingEngine? = null
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
     private var whisper: WhisperEngine? = null
     // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
     private val whisperMutex = kotlinx.coroutines.sync.Mutex()
 
-    private fun retireCurrentDubbing() {
-        val previous = dubbing ?: return
-        dubbing = null
-        previous.release()
-        retiringDubbingEngines.add(previous)
+    private fun retireDubbing(engine: DubbingEngine?): DubbingEngine? {
+        if (engine == null) return null
+        // Register first: releaseAndJoin() is cancellable, but later tasks must still wait for
+        // this engine to finish blocking TTS/native work before initializing a replacement.
+        retiringDubbingEngines.addIfAbsent(engine)
+        if (dubbing === engine) dubbing = null
+        engine.release()
+        return engine
     }
+
+    private fun retireCurrentDubbing(): DubbingEngine? = retireDubbing(dubbing)
 
     private suspend fun awaitRetiredDubbingEngines() {
         while (true) {
@@ -161,10 +166,15 @@ class PlaybackService : MediaSessionService() {
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
     val isReady: Boolean get() = playerReady && ::pm.isInitialized
 
-    private fun ensureCurrentSession(sessionKey: String) {
-        if (videoKey != sessionKey || ui.value.key != sessionKey) {
-            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频处理任务")
-        }
+    private suspend fun ensureCurrentSession(sessionKey: String) {
+        // Extractor/JNI calls are sometimes synchronous. A canceled job may return from one
+        // without suspending, so explicitly check before publishing results or opening engines.
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        PlaybackSessionGuard.ensureCurrent(
+            sessionKey = sessionKey,
+            activeVideoKey = videoKey,
+            activeUiKey = ui.value.key,
+        )
     }
 
     /** 主线程把画面 TextureView 交给播放器 */
@@ -394,6 +404,28 @@ class PlaybackService : MediaSessionService() {
         return (current * 100f / total).toInt().coerceIn(0, 100)
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val phase = ui.value.phase
+        val isProcessing = phase in setOf(
+            Phase.PARSING,
+            Phase.DOWNLOADING_AUDIO,
+            Phase.TRANSCRIBING,
+            Phase.TRANSLATING,
+            Phase.SYNTHESIZING,
+        )
+        if (isProcessing) {
+            // The player is intentionally paused while subtitles, translation and TTS are prepared.
+            // The default recents-removal path can stop a paused service, so keep the current
+            // foreground processing task alive until it reaches READY or ERROR.
+            android.util.Log.i(
+                "PlaybackService",
+                "Keeping processing service alive after task removal: $phase",
+            )
+            return
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     /** Prevent a canceled pipeline from publishing progress/results into a newer video session. */
@@ -415,7 +447,9 @@ class PlaybackService : MediaSessionService() {
         dubCollectJob?.cancel()
         scope.cancel()
 
-        runCatching { dubbing?.release() }
+        runCatching { retireCurrentDubbing() }
+        // Previously retired engines have already received release(); their barriers remain
+        // registered until a live processing task can join them.
         if (activePipeline != null && !activePipeline.isCompleted) {
             // Cancellation is cooperative around blocking JNI calls. Close the recognizer only
             // after the owning pipeline has completed. Do cleanup off-main because older canceled
@@ -598,11 +632,17 @@ class PlaybackService : MediaSessionService() {
     fun importTranslatedSubtitles(uri: Uri) {
         val sessionKey = videoKey
         prepJob?.cancel()
+        prepJob = null
+        speakerJob?.cancel()
+        speakerJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
         dubCollectJob?.cancel()
         dubCollectJob = null
-        val previousDubbing = dubbing
-        previousDubbing?.release()
-        dubbing = null
+        retireCurrentDubbing()
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
             try {
@@ -641,7 +681,6 @@ class PlaybackService : MediaSessionService() {
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
-                previousDubbing?.releaseAndJoin()
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
                 val tts = makeTts()
@@ -662,13 +701,13 @@ class PlaybackService : MediaSessionService() {
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    d.releaseAndJoin()
+                    retireDubbing(d)
                     throw e
                 }
                 dubbing = d
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
-                    d.releaseAndJoin()
+                    retireDubbing(d)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
@@ -713,12 +752,17 @@ class PlaybackService : MediaSessionService() {
     fun importSubtitles(uri: Uri) {
         val sessionKey = videoKey
         prepJob?.cancel()
+        prepJob = null
+        speakerJob?.cancel()
+        speakerJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        qualityRecoveryAttempted = false
         dubCollectJob?.cancel()
         dubCollectJob = null
-        // Stop the previous voice immediately, but wait for its engine to close before replacement.
-        val previousDubbing = dubbing
-        previousDubbing?.release()
-        dubbing = null
+        retireCurrentDubbing()
         pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
         lastLineIdx = Int.MIN_VALUE
 
@@ -776,7 +820,6 @@ class PlaybackService : MediaSessionService() {
                         translateLines(sessionKey, parsedLines, srcLang, importedCacheKey)
                     }
                 )
-                previousDubbing?.releaseAndJoin()
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
                 val tts = makeTts()
@@ -797,13 +840,13 @@ class PlaybackService : MediaSessionService() {
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    d.releaseAndJoin()
+                    retireDubbing(d)
                     throw e
                 }
                 dubbing = d
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
-                    d.releaseAndJoin()
+                    retireDubbing(d)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕导入任务")
                 }
                 dubCollectJob = scope.launch {
@@ -1539,13 +1582,13 @@ class PlaybackService : MediaSessionService() {
                         try {
                             ensureCurrentSession(key)
                         } catch (e: kotlinx.coroutines.CancellationException) {
-                            d.releaseAndJoin()
+                            retireDubbing(d)
                             throw e
                         }
                         dubbing = d
                         if (videoKey != key || ui.value.key != key) {
                             if (dubbing === d) dubbing = null
-                            d.releaseAndJoin()
+                            retireDubbing(d)
                             throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频配音引擎")
                         }
                         dubCollectJob = scope.launch {
@@ -2492,11 +2535,9 @@ class PlaybackService : MediaSessionService() {
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
-                val previousDubbing = dubbing
-                previousDubbing?.release()
-                if (dubbing === previousDubbing) dubbing = null
+                val previousDubbing = retireCurrentDubbing()
                 oldEngineRetired = previousDubbing != null
-                previousDubbing?.releaseAndJoin()
+                awaitRetiredDubbingEngines()
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
@@ -2521,13 +2562,13 @@ class PlaybackService : MediaSessionService() {
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    d.releaseAndJoin()
+                    retireDubbing(d)
                     throw e
                 }
                 dubbing = d
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
-                    d.releaseAndJoin()
+                    retireDubbing(d)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
                 }
                 dubCollectJob?.cancel()
@@ -2643,11 +2684,9 @@ class PlaybackService : MediaSessionService() {
                 }
                 ensureCurrentSession(sessionKey)
 
-                previousDubbing = dubbing
-                previousDubbing?.release()
-                if (dubbing === previousDubbing) dubbing = null
+                previousDubbing = retireCurrentDubbing()
                 oldEngineRetired = previousDubbing != null
-                previousDubbing?.releaseAndJoin()
+                awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
 
                 saveSpeakerAssignments(updatedAssignments, sessionKey)
@@ -2674,11 +2713,17 @@ class PlaybackService : MediaSessionService() {
                 replacementDubbing = engine
                 registerDubbingFailureHandler(engine, tts, sessionKey)
                 engine.attach(tts, updated)
-                ensureCurrentSession(sessionKey)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(engine)
+                    replacementDubbing = null
+                    throw e
+                }
                 dubbing = engine
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === engine) dubbing = null
-                    engine.releaseAndJoin()
+                    retireDubbing(engine)
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
                 }
 
@@ -2729,7 +2774,8 @@ class PlaybackService : MediaSessionService() {
                 if (replacementDubbing != null && dubbing === replacementDubbing) {
                     dubbing = null
                 }
-                replacementDubbing?.releaseAndJoin()
+                replacementDubbing?.let { retireDubbing(it) }
+                awaitRetiredDubbingEngines()
                 if (assignmentsSaved && videoKey == sessionKey && ui.value.key == sessionKey) {
                     runCatching { saveSpeakerAssignments(assignmentSnapshot, sessionKey) }
                 }
