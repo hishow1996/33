@@ -36,20 +36,19 @@ class WebMediaCandidatePolicyTest {
                 mimeType = "video/mp4; codecs=avc1",
             )?.kind
         )
-        assertEquals(
-            WebMediaKind.MEDIA_ELEMENT,
-            WebMediaCandidatePolicy.classify(
-                "https://cdn.example.test/play?id=1",
-                mediaElement = "video",
-            )?.kind
+        val opaqueVideo = WebMediaCandidatePolicy.classify(
+            "https://cdn.example.test/play?id=1",
+            mediaElement = "video",
         )
-        assertEquals(
-            WebMediaKind.MEDIA_ELEMENT,
-            WebMediaCandidatePolicy.classify(
-                "https://cdn.example.test/sound?id=1",
-                mediaElement = "audio",
-            )?.kind
+        assertEquals(WebMediaKind.MEDIA_ELEMENT, opaqueVideo?.kind)
+        assertNull(opaqueVideo?.mimeType)
+
+        val opaqueAudio = WebMediaCandidatePolicy.classify(
+            "https://cdn.example.test/sound?id=1",
+            mediaElement = "audio",
         )
+        assertEquals(WebMediaKind.MEDIA_ELEMENT, opaqueAudio?.kind)
+        assertNull(opaqueAudio?.mimeType)
     }
 
     @Test
