@@ -31,6 +31,16 @@ internal class Pcm16StreamingResampler(
         checkActive()
         if (input.isEmpty()) return ShortArray(0)
 
+        // Reject an oversized upsampling request before allocating a combined input buffer.
+        val estimatedOutputCount = ceil(input.size.toDouble() / ratio)
+        if (!estimatedOutputCount.isFinite() ||
+            estimatedOutputCount > (MAX_OUTPUT_CHUNK_SAMPLES - 4).toDouble()
+        ) {
+            throw IllegalArgumentException(
+                "单个重采样输入块过大，预计输出超过 ${MAX_OUTPUT_CHUNK_SAMPLES} 个采样点；请拆分为更小的音频块"
+            )
+        }
+
         // Keep every unconsumed input sample from the next output's left interpolation point.
         // This handles tiny buffers where the first output cannot be emitted until later chunks.
         val chunkStart = inputSamples - pendingSamples.size
@@ -44,14 +54,6 @@ internal class Pcm16StreamingResampler(
         }
         val newInputCount = inputSamples + input.size
         val targetCountNow = (newInputCount.toDouble() / ratio).toInt().toLong()
-        val estimatedOutputCount = ceil(input.size.toDouble() / ratio)
-        if (!estimatedOutputCount.isFinite() ||
-            estimatedOutputCount > (MAX_OUTPUT_CHUNK_SAMPLES - 4).toDouble()
-        ) {
-            throw IllegalArgumentException(
-                "单个重采样输入块过大，预计输出超过 ${MAX_OUTPUT_CHUNK_SAMPLES} 个采样点；请拆分为更小的音频块"
-            )
-        }
         val initialCapacity = estimatedOutputCount.toInt().coerceAtLeast(1) + 4
         var output = ShortArray(initialCapacity)
         var produced = 0
@@ -70,7 +72,18 @@ internal class Pcm16StreamingResampler(
             val left = combined[leftOffset]
             val right = combined[rightOffset]
             val fraction = position - leftIndex
-            if (produced == output.size) output = output.copyOf(output.size * 2)
+            if (produced == output.size) {
+                if (output.size >= MAX_OUTPUT_CHUNK_SAMPLES) {
+                    throw IllegalArgumentException(
+                        "重采样输出超过单块 ${MAX_OUTPUT_CHUNK_SAMPLES} 个采样点安全上限"
+                    )
+                }
+                val nextCapacity = minOf(
+                    MAX_OUTPUT_CHUNK_SAMPLES,
+                    maxOf(output.size + 1, output.size * 2),
+                )
+                output = output.copyOf(nextCapacity)
+            }
             output[produced++] = (left + (right - left) * fraction).toInt().toShort()
             nextOutputSample++
         }
