@@ -270,7 +270,20 @@ class PlaybackService : MediaSessionService() {
             }
             scope.launch {
                 pm.errorSink.collect { err ->
-                    if (err == null) return@collect
+                    if (!PlaybackErrorPolicy.shouldHandle(
+                            error = err,
+                            videoId = videoId,
+                            hasCurrentYouTubeStreams = qualitySources.isNotEmpty(),
+                        )
+                    ) {
+                        if (!err.isNullOrBlank()) {
+                            android.util.Log.d(
+                                "PlaybackService",
+                                "Ignoring stale player error before the current YouTube streams are installed",
+                            )
+                        }
+                        return@collect
+                    }
                     val activeRecovery = qualityRecoveryJob?.takeIf { it.isActive }
                     if (activeRecovery != null) {
                         // An error after the one recovery attempt is a real failure; stop retrying.
@@ -468,6 +481,8 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
+        // Clear any previous media item's error before parsing the newly requested video.
+        pm.errorSink.value = null
         prepJob?.cancel()
         speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
