@@ -263,7 +263,7 @@ internal object HlsAudioDownloader {
         }
     }
 
-    private fun downloadSegment(
+    private suspend fun downloadSegment(
         url: String,
         destination: File,
         headers: Map<String, String>,
@@ -327,14 +327,7 @@ internal object HlsAudioDownloader {
                 lastError = error
                 if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
                 onRetry(attempt + 1)
-                try {
-                    Thread.sleep(250L * attempt)
-                } catch (interrupted: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw kotlinx.coroutines.CancellationException("等待音轨片段重试时被中断").apply {
-                        initCause(interrupted)
-                    }
-                }
+                kotlinx.coroutines.delay(250L * attempt)
             }
         }
         throw IllegalStateException("HLS 音轨片段下载失败。", lastError)
