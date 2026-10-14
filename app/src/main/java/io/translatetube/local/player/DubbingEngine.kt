@@ -404,6 +404,16 @@ class DubbingEngine(
                     bumpPrepared()
                 }
             }
+
+            // Close the empty-queue race: a cue can be enqueued after pollFirst() returned null
+            // but before this Job completes. Publish this worker as idle under the same lock used
+            // by startSynthLoop(), then restart if work arrived during that window.
+            val completedWorker = kotlinx.coroutines.currentCoroutineContext()[Job]
+            val shouldRestart = synchronized(synthStartLock) {
+                if (synthJob === completedWorker) synthJob = null
+                !released && pending.isNotEmpty()
+            }
+            if (shouldRestart) startSynthLoop()
             }
         }
     }
