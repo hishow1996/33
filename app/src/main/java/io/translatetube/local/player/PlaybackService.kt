@@ -1046,6 +1046,8 @@ class PlaybackService : MediaSessionService() {
                         sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
                     )
                 )
+                // A valid caption track supersedes any interrupted ASR transcript for this video.
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v1")
                 return fetchedLines to lang
             }
 
@@ -1071,6 +1073,11 @@ class PlaybackService : MediaSessionService() {
             var restoredSourceLang: String? = restoredSourceLines?.let {
                 sourceCached?.srcLang?.takeIf { lang -> lang.isNotBlank() }
                     ?: detectLangFromText(it.take(12).joinToString(" ") { cue -> cue.text })
+            }
+            if (sourceCached != null && restoredSourceLines != null) {
+                // The completed source cache is authoritative if a crash happened between its
+                // write and deletion of the partial-ASR checkpoint.
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v1")
             }
             if (sourceCached != null && restoredSourceLines == null) {
                 android.util.Log.w(
