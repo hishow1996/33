@@ -3,10 +3,19 @@ package io.translatetube.local.player
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.DisposableHandle
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.buffer
 import java.util.concurrent.TimeUnit
 
 /**
@@ -26,11 +35,13 @@ internal object SafeMediaHttp {
         .followSslRedirects(false)
         .build()
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     fun execute(
         url: String,
         requestHeaders: Map<String, String> = emptyMap(),
         allowedCookieOrigin: String? = null,
         userAgent: String = "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36",
+        ownerJob: Job? = null,
     ): Response {
         val initial = url.toHttpUrlOrNull()
             ?: throw IllegalArgumentException("媒体 URL 不是有效的 HTTP/HTTPS 地址。")
@@ -73,15 +84,43 @@ internal object SafeMediaHttp {
                 }
             }
 
-            val response = client.newCall(builder.build()).execute()
+            val call = client.newCall(builder.build())
+            val cancellationHandle = ownerJob?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is CancellationException) call.cancel()
+            }
+            val response = try {
+                call.execute()
+            } catch (error: IOException) {
+                cancellationHandle?.dispose()
+                if (ownerJob?.isCancelled == true) {
+                    throw CancellationException("网页视频音轨下载已取消").also { it.initCause(error) }
+                }
+                throw error
+            }
             val location = response.header("Location")
-            if (response.code !in redirectCodes || location.isNullOrBlank()) return response
+            if (response.code !in redirectCodes || location.isNullOrBlank()) {
+                val body = response.body
+                if (ownerJob == null || cancellationHandle == null || body == null) {
+                    cancellationHandle?.dispose()
+                    return response
+                }
+                // Keep the cancellation hook alive until the caller closes the response body.
+                // Cancelling while byteStream.read() is blocked now interrupts the socket read.
+                return response.newBuilder()
+                    .body(CancellableResponseBody(body, ownerJob, cancellationHandle))
+                    .build()
+            }
             if (redirectCount == MAX_REDIRECTS) {
                 response.close()
+                cancellationHandle?.dispose()
                 throw IOException("媒体地址重定向次数超过 $MAX_REDIRECTS 次。")
             }
             val next = response.request.url.resolve(location)
             response.close()
+            cancellationHandle?.dispose()
             if (next == null || next.scheme !in setOf("http", "https") ||
                 next.host.isBlank() || next.username.isNotEmpty() || next.password.isNotEmpty()
             ) {
@@ -98,6 +137,46 @@ internal object SafeMediaHttp {
     /** Require a complete response for GETs that intentionally do not request a byte range. */
     internal fun validateCompleteGetResponse(code: Int, resourceLabel: String) {
         if (code != 200) throw IllegalStateException(resourceLabel + "未返回完整响应（HTTP " + code + "）。")
+    }
+    
+    private class CancellableResponseBody(
+        private val delegate: ResponseBody,
+        private val ownerJob: Job,
+        private val cancellationHandle: DisposableHandle,
+    ) : ResponseBody() {
+        private val handleDisposed = AtomicBoolean(false)
+        private val wrappedSource: BufferedSource by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            object : ForwardingSource(delegate.source()) {
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    return try {
+                        super.read(sink, byteCount)
+                    } catch (error: IOException) {
+                        if (ownerJob.isCancelled) {
+                            throw CancellationException("网页视频音轨下载已取消").also {
+                                it.initCause(error)
+                            }
+                        }
+                        throw error
+                    }
+                }
+
+                override fun close() {
+                    try {
+                        super.close()
+                    } finally {
+                        disposeCancellationHandle()
+                    }
+                }
+            }.buffer()
+        }
+
+        override fun contentType() = delegate.contentType()
+        override fun contentLength(): Long = delegate.contentLength()
+        override fun source(): BufferedSource = wrappedSource
+
+        private fun disposeCancellationHandle() {
+            if (handleDisposed.compareAndSet(false, true)) cancellationHandle.dispose()
+        }
     }
 }
 
