@@ -64,6 +64,7 @@ import io.translatetube.local.player.Phase
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.yt.SubtitleTrackOption
+import io.translatetube.local.web.WebMediaCandidatePolicy
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
@@ -82,6 +83,17 @@ fun PlayerScreen(
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
+    // History/resume tasks persist the web media URL but not the transient picker MIME type.
+    // Re-classify the URL when MIME is absent so opaque ?format=m3u8/?format=mpd URLs still
+    // reach Media3's HLS/DASH source factories instead of being treated as progressive files.
+    val effectiveRemoteMimeType = remember(localUri, remoteMimeType) {
+        remoteMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
+            ?: localUri?.toString()?.let { value ->
+                if (value.startsWith("http://", true) || value.startsWith("https://", true)) {
+                    WebMediaCandidatePolicy.classify(value)?.mimeType
+                } else null
+            }
+    }
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
     var advancedMenuExpanded by remember { mutableStateOf(false) }
@@ -107,7 +119,7 @@ fun PlayerScreen(
                 key, videoId, localUri,
                 resumeState = current,
                 sourceHeaders = remoteHeaders,
-                sourceMimeType = remoteMimeType,
+                sourceMimeType = effectiveRemoteMimeType,
             )
         } else {
             retryNonce++
@@ -115,7 +127,7 @@ fun PlayerScreen(
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, remoteHeaders, remoteMimeType, retryNonce) {
+    LaunchedEffect(videoId, localUri, remoteHeaders, effectiveRemoteMimeType, retryNonce) {
         val key = playerRequestKey(videoId, localUri)
         val retryRequested = retryNonce != handledRetryNonce
         if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
@@ -163,7 +175,7 @@ fun PlayerScreen(
                         key, videoId, localUri,
                         resumeState = resumeExistingWork,
                         sourceHeaders = remoteHeaders,
-                        sourceMimeType = remoteMimeType,
+                        sourceMimeType = effectiveRemoteMimeType,
                     )
                 }
             } catch (e: Throwable) {
