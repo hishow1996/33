@@ -35,6 +35,7 @@ import io.translatetube.local.yt.SubtitleTrackOption
 import io.translatetube.local.yt.YouTubeAudioCandidate
 import io.translatetube.local.yt.YouTubeStreamSelector
 import io.translatetube.local.yt.YouTubeVideoCandidate
+import io.translatetube.local.yt.BoundedTextPayload
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -721,8 +722,18 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             try {
                 val text = withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                    val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取字幕文件")
+                    input.use {
+                        String(
+                            BoundedTextPayload.readBytes(
+                                it,
+                                maxBytes = 8L * 1024L * 1024L,
+                                resourceLabel = "导入的已翻译字幕文件",
+                            ),
+                            Charsets.UTF_8,
+                        )
+                    }
                 }
                 val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
                 ensureCurrentSession(sessionKey)
@@ -860,10 +871,18 @@ class PlaybackService : MediaSessionService() {
                 // Subtitle files can be large. Keep file I/O and parsing off the main thread so
                 // importing a long SRT/VTT/ASS file cannot freeze player controls.
                 val parsedLines = withContext(Dispatchers.IO) {
-                    val text = contentResolver.openInputStream(uri)
-                        ?.bufferedReader(Charsets.UTF_8)
-                        ?.use { it.readText() }
+                    val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取字幕文件")
+                    val text = input.use {
+                        String(
+                            BoundedTextPayload.readBytes(
+                                it,
+                                maxBytes = 8L * 1024L * 1024L,
+                                resourceLabel = "导入的字幕文件",
+                            ),
+                            Charsets.UTF_8,
+                        )
+                    }
                     SubtitleParsers.parseAuto(text)
                         .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
                         .mapIndexed { index, line -> line.copy(index = index) }
