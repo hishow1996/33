@@ -568,12 +568,9 @@ class DubbingEngine(
             return memoryAudio
         }
         if (!validCache(f)) {
-            // Cache files live under the app cache directory and can disappear after attach()
-            // validated them. Do not permanently classify a translated cue as silent: enqueue
-            // regeneration and keep the original video audio audible until it is ready again.
+            // Cache files can disappear after attach() validates them. Treat this as recoverable
+            // pending work, not a permanent silent cue; keep source audio audible while regenerating.
             f.delete()
-            // This is recoverable cache loss, not a permanent silent cue. Keep it pending so
-            // PlaybackService preserves source audio while fresh PCM is synthesized.
             readiness.markPending(idx)
             queueSynthesisRetry(idx)
             return null
@@ -600,10 +597,10 @@ class DubbingEngine(
                 samples to sr
             }
         } catch (e: Exception) {
-            // Corrupt cache data must not permanently disable dubbing for this translated cue.
-            // Remove it, keep the source audio as a safe fallback, and schedule fresh synthesis.
+            // A corrupt cache is recoverable too. Leave the cue pending so PlaybackService does not
+            // mistake this temporary read failure for a confirmed silent-TTS result.
             f.delete()
-            readiness.markPrepared(idx, hasAudio = false)
+            readiness.markPending(idx)
             queueSynthesisRetry(idx)
             null
         }
