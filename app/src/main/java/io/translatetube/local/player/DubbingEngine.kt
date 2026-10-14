@@ -80,8 +80,10 @@ class DubbingEngine(
     private var cacheInitJob: Job? = null
     private val cacheInitGeneration = AtomicInteger(0)
 
-    private val _preparedUntil = MutableStateFlow(0)   // 已合成到第几行（0-based 含义：前 N 行就绪）
+    private val _preparedUntil = MutableStateFlow(0)   // 连续就绪前缀长度，供需要有序处理的调用方使用
     val preparedUntil: StateFlow<Int> = _preparedUntil
+    private val _preparedCount = MutableStateFlow(0)      // 实际已就绪行数（允许快进优先合成）
+    val preparedCount: StateFlow<Int> = _preparedCount
     private val _totalLines = MutableStateFlow(0)
     val totalLines: StateFlow<Int> = _totalLines
     private val _currentLine = MutableStateFlow(-1)
@@ -96,6 +98,7 @@ class DubbingEngine(
         firstSynthesisReported.set(false)
         _totalLines.value = this.lines.size
         _preparedUntil.value = 0
+        _preparedCount.value = 0
         readiness.clear()
         pending.clear()
         priorityTarget = -1
@@ -360,10 +363,11 @@ class DubbingEngine(
     }
 
     private fun bumpPrepared() {
-        // The display remains a contiguous count, but playback readiness is tracked per line.
+        // Keep the contiguous prefix for ordered consumers, and separately publish actual work done.
         var n = _preparedUntil.value
         while (n < lines.size && readiness.isReady(n)) n++
         _preparedUntil.value = n
+        _preparedCount.value = readiness.preparedCount().coerceIn(0, lines.size)
     }
 
     /**

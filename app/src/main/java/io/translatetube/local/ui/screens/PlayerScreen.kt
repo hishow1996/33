@@ -657,7 +657,7 @@ private fun VideoParsingPage(
     val steps = listOf("获取视频信息", "解析视频资源", "下载或读取字幕", "翻译字幕", "生成配音")
     val fraction = when (state.phase) {
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
-            (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
@@ -1563,7 +1563,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             detail = state.progress.ifBlank { "按字幕顺序生成语音" }
             stageIndex = 4
             fraction = if (state.totalLines > 0) {
-                (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+                (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
             } else null
         }
         else -> {

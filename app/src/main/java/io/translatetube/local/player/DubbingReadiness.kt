@@ -25,6 +25,8 @@ internal class DubbingReadiness {
         prepared.add(index)
     }
 
+    fun preparedCount(): Int = prepared.size
+
     fun isReady(index: Int): Boolean = index >= 0 && index in prepared
 
     fun isPrepared(index: Int): Boolean = isReady(index) && index !in silent

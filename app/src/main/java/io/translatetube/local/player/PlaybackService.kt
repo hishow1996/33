@@ -76,6 +76,7 @@ data class PlayerUiState(
     val lines: List<SubLine> = emptyList(),
     val currentLine: Int = -1,
     val preparedUntil: Int = 0,
+    val preparedCount: Int = 0,
     val totalLines: Int = 0,
     val dubbingOn: Boolean = true,
     val muteOriginal: Boolean = true,
@@ -343,7 +344,7 @@ class PlaybackService : MediaSessionService() {
                 if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译"
             }
             Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
-                "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> if (state.isPlaying) "正在播放" to state.title.ifBlank { "视频配音已准备完成" } else "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
             Phase.ERROR -> "处理遇到问题" to (state.error ?: "打开应用查看详情")
@@ -362,7 +363,7 @@ class PlaybackService : MediaSessionService() {
                     (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } * 100f / state.totalLines).toInt().coerceIn(0, 100)
                 } else null
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
-                (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else ratioPercentFromProgress(state.progress)
             else -> null
         }
@@ -657,6 +658,7 @@ class PlaybackService : MediaSessionService() {
                         lines = translatedLines,
                         totalLines = translatedLines.size,
                         preparedUntil = 0,
+                        preparedCount = 0,
                         sourceLang = "zh",
                         error = null,
                         noModelHint = null,
@@ -695,6 +697,7 @@ class PlaybackService : MediaSessionService() {
                 }
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedUntil = n) } }
+                    d.preparedCount.collect { n -> updateUiForSession(sessionKey) { it.copy(preparedCount = n) } }
                 }
                 lastLineIdx = Int.MIN_VALUE
                 ensureCurrentSession(sessionKey)
@@ -709,6 +712,7 @@ class PlaybackService : MediaSessionService() {
                         lines = translatedLines,
                         totalLines = translatedLines.size,
                         preparedUntil = d.preparedUntil.value,
+                        preparedCount = d.preparedCount.value,
                         sourceLang = "zh",
                     )
                 }
@@ -1750,6 +1754,7 @@ class PlaybackService : MediaSessionService() {
                         }
                         dubCollectJob = scope.launch {
                             d.preparedUntil.collect { n -> updateUiForSession(key) { it.copy(preparedUntil = n) } }
+                            d.preparedCount.collect { n -> updateUiForSession(key) { it.copy(preparedCount = n) } }
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -2838,6 +2843,7 @@ class PlaybackService : MediaSessionService() {
                             phase = Phase.SYNTHESIZING,
                             totalLines = updated.size,
                             preparedUntil = 0,
+                        preparedCount = 0,
                             currentLine = -1,
                         )
                     } else state
@@ -2889,6 +2895,9 @@ class PlaybackService : MediaSessionService() {
                 dubCollectJob = scope.launch {
                     d.preparedUntil.collect { n ->
                         updateUiForSession(sessionKey) { state -> if (state.key == sessionKey) state.copy(preparedUntil = n) else state }
+                    }
+                    d.preparedCount.collect { n ->
+                        updateUiForSession(sessionKey) { state -> if (state.key == sessionKey) state.copy(preparedCount = n) else state }
                     }
                 }
                 val arr = org.json.JSONArray()
@@ -3011,6 +3020,7 @@ class PlaybackService : MediaSessionService() {
                     it.copy(
                         lines = updated,
                         preparedUntil = 0,
+                        preparedCount = 0,
                         totalLines = updated.size,
                         currentLine = -1,
                         phase = Phase.SYNTHESIZING,
