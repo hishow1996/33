@@ -2163,7 +2163,19 @@ class PlaybackService : MediaSessionService() {
             }
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
-            downloadAudio(stream.content, asrAudioCacheFile(videoId), sessionKey).also {
+            val destination = asrAudioCacheFile(videoId)
+            val downloaded = try {
+                downloadAudio(stream.content, destination, sessionKey)
+            } catch (manifest: HlsManifestPayloadException) {
+                HlsAudioDownloader.download(stream.content, destination) { detail ->
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                        } else state
+                    }
+                }
+            }
+            downloaded.also {
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
             }
         }
@@ -2318,9 +2330,12 @@ class PlaybackService : MediaSessionService() {
                                         val copyCount = minOf(n, payloadPrefix.size - payloadPrefixSize)
                                         System.arraycopy(buf, 0, payloadPrefix, payloadPrefixSize, copyCount)
                                         payloadPrefixSize += copyCount
+                                        if (isHlsManifestPayload(payloadPrefix, payloadPrefixSize)) {
+                                            throw HlsManifestPayloadException(url)
+                                        }
                                         if (isLikelyTextErrorPayload(payloadPrefix, payloadPrefixSize)) {
                                             throw IllegalStateException(
-                                                "服务器返回了登录页、错误页或文本清单，而不是音频数据；链接可能过期或需要登录。"
+                                                "服务器返回了登录页或错误文本，而不是音频数据；链接可能过期或需要登录。"
                                             )
                                         }
                                     }
