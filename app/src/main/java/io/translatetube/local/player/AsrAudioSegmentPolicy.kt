@@ -70,7 +70,7 @@ internal object AsrAudioSegmentPolicy {
         if (mime == "text/html" || mime == "application/xhtml+xml" ||
             mime == "application/json" || mime == "text/json" ||
             mime == "application/vnd.apple.mpegurl" || mime == "application/x-mpegurl" ||
-            mime == "audio/x-mpegurl"
+            mime == "audio/x-mpegurl" || mime == "application/dash+xml"
         ) return true
 
         if (prefix.isEmpty()) return false
@@ -80,7 +80,8 @@ internal object AsrAudioSegmentPolicy {
             .trimStart()
             .lowercase()
         if (text.startsWith("#extm3u") || text.startsWith("<!doctype html") ||
-            text.startsWith("<html") || text.startsWith("<?xml")
+            text.startsWith("<html") || text.startsWith("<?xml") ||
+            text.startsWith("<mpd") || text.startsWith("<:mpd")
         ) return true
         return text.startsWith("{") &&
             (text.contains("\"error\"") || text.contains("\"message\"") ||
