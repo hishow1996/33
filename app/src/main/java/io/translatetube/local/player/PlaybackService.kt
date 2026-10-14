@@ -2597,6 +2597,13 @@ class PlaybackService : MediaSessionService() {
                                         updatedAt = System.currentTimeMillis(),
                                     )
                                 )
+                                val oldSpeakerCacheKeys = subtitleCacheDao.speakerDiarizationCacheKeys()
+                                SpeakerDiarizationCachePolicy
+                                    .keysToEvict(
+                                        oldSpeakerCacheKeys,
+                                        keepKey = diarizationCacheKey,
+                                    )
+                                    .forEach { oldKey -> subtitleCacheDao.delete(oldKey) }
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 throw e
                             } catch (e: Exception) {
