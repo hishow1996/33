@@ -5,6 +5,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -21,6 +22,10 @@ internal object HlsAudioDownloader {
     private const val MAX_SEGMENTS = 10_000
     private const val MAX_MASTER_DEPTH = 4
     private const val MAX_BYTES = 160L * 1024L * 1024L
+
+    // Cache pruning is folder-wide. Serialize HLS downloads so one task cannot treat another
+    // task's in-progress segment directory as stale data and delete it during pruning.
+    private val downloadMutex = kotlinx.coroutines.sync.Mutex()
 
     private data class FetchedText(val finalUrl: String, val text: String)
     private data class Variant(val uri: String, val bandwidth: Long, val audioGroup: String?)
@@ -75,6 +80,15 @@ internal object HlsAudioDownloader {
         destination: File,
         requestHeaders: Map<String, String> = emptyMap(),
         onProgress: (String) -> Unit = {},
+    ): File = downloadMutex.withLock {
+        downloadLocked(playlistUrl, destination, requestHeaders, onProgress)
+    }
+
+    private suspend fun downloadLocked(
+        playlistUrl: String,
+        destination: File,
+        requestHeaders: Map<String, String>,
+        onProgress: (String) -> Unit,
     ): File {
         val ownerJob = currentCoroutineContext()[Job]
         val assemblyPart = File(destination.parentFile, destination.name + ".part")
