@@ -7,6 +7,11 @@ internal object WebMediaUrlPolicy {
     fun normalizePageUrl(input: String): String? {
         val raw = input.trim()
         if (raw.isEmpty()) return null
+        val explicitScheme = Regex("^[A-Za-z][A-Za-z0-9+.-]*:").find(raw)?.value
+        if (explicitScheme != null &&
+            !raw.startsWith("https://", ignoreCase = true) &&
+            !raw.startsWith("http://", ignoreCase = true)
+        ) return null
         val normalized = when {
             raw.startsWith("https://", ignoreCase = true) ||
                 raw.startsWith("http://", ignoreCase = true) -> raw
