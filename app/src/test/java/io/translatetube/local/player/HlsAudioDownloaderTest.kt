@@ -105,4 +105,46 @@ class HlsAudioDownloaderTest {
         )
     }
 
+
+    @Test
+    fun rejectsEncryptionIfAnyKeyRotationUsesAnEncryptedMethod() {
+        val playlist = """
+            #EXTM3U
+            #EXT-X-KEY:METHOD=NONE
+            #EXTINF:6.0,
+            seg-1.ts
+            #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+            #EXTINF:6.0,
+            seg-2.ts
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.ensurePlaylistIsUnencrypted(playlist)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("加密"))
+    }
+
+    @Test
+    fun rejectsMissingSegmentsThatWouldShiftSubtitleTimestamps() {
+        val playlist = """
+            #EXTM3U
+            #EXTINF:6.0,
+            seg-1.ts
+            #EXT-X-GAP
+            #EXTINF:6.0,
+            seg-2.ts
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.validateNoMissingSegments(playlist)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("时间轴"))
+    }
+
 }
