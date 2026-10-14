@@ -74,11 +74,20 @@ internal object SafeMediaHttp {
             ) {
                 throw IOException("媒体地址跳转到了无效或不允许的 URL。")
             }
+            if (!isAllowedRedirect(current.scheme, next.scheme)) {
+                throw IOException("媒体地址试图从 HTTPS 降级到 HTTP，已阻止跳转以保护会话数据。")
+            }
             current = next
         }
         throw IOException("媒体地址重定向失败。")
     }
 }
+
+/** Refuse insecure redirects after a secure request; never downgrade session media URLs. */
+internal fun isAllowedRedirect(fromScheme: String, toScheme: String): Boolean =
+    fromScheme in setOf("http", "https") &&
+        toScheme in setOf("http", "https") &&
+        !(fromScheme == "https" && toScheme == "http")
 
 /** Identifies common error pages/API payloads accidentally returned in place of media bytes. */
 internal fun isHtmlOrJsonContentType(contentType: String?): Boolean {
