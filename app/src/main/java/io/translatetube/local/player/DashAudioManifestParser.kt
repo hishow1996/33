@@ -461,10 +461,5 @@ internal object DashAudioManifestParser {
         return listOf(".m4a", ".mp3", ".aac", ".ogg", ".opus", ".flac", ".wav").any(path::endsWith)
     }
 
-    private fun ceilDiv(numerator: Long, denominator: Long): Long {
-        if (numerator <= 0L || denominator <= 0L) return 0L
-        return numerator / denominator + if (numerator % denominator == 0L) 0L else 1L
-    }
-
     private const val PREFERRED_MAX_AUDIO_BANDWIDTH = 320_000L
 }
