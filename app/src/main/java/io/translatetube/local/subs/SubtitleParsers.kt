@@ -361,7 +361,9 @@ object SubtitleParsers {
         val sec = bits[2].toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 && it < 60.0 }
             ?: throw IllegalArgumentException("ASS 秒字段无效")
         val totalMs = h.toDouble() * 3_600_000.0 + m.toDouble() * 60_000.0 + sec * 1_000.0
-        require(totalMs.isFinite() && totalMs <= Long.MAX_VALUE.toDouble()) { "ASS 时间戳超出范围" }
+        // Long.MAX_VALUE rounds up to 2^63 as a Double. Reject that boundary too,
+        // otherwise an out-of-range timestamp can saturate to Long.MAX_VALUE on conversion.
+        require(totalMs.isFinite() && totalMs < Long.MAX_VALUE.toDouble()) { "ASS 时间戳超出范围" }
         return totalMs.toLong()
     }
 }
