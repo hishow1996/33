@@ -97,9 +97,9 @@ object SubtitleParsers {
 
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
     fun parseTimedTextXml(src: String): List<SubLine> {
-        if (!src.contains("<transcript")) return emptyList()
+        if (!src.contains("<transcript", ignoreCase = true)) return emptyList()
         val out = mutableListOf<SubLine>()
-        val re = Regex("""<text\b([^>]*)>(.*?)</text\s*>""", RegexOption.DOT_MATCHES_ALL)
+        val re = timedTextCueRegex
         re.findAll(src).forEach { match ->
             val timing = parseTimedTextTiming(match.groupValues[1]) ?: return@forEach
             val rawText = match.groupValues[2]
@@ -115,6 +115,7 @@ object SubtitleParsers {
         return normalizeTimeline(out)
     }
 
+    private val timedTextCueRegex = Regex("""<text\b([^>]*)>(.*?)</text\s*>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
     private val timedTextAttributeRegex = Regex("""([A-Za-z_:][\w:.-]*)\s*=\s*["']([^"']*)["']""")
 
     /** Parse start/dur by attribute name, regardless of XML attribute order or quote style. */

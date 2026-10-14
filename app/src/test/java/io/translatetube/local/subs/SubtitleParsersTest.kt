@@ -132,4 +132,20 @@ class SubtitleParsersTest {
         assertEquals(listOf("2026", "123"), SubtitleParsers.parseSrt(srt).map { it.text })
     }
 
+    @Test
+    fun timedTextXmlTagAndAttributeMatchingIsCaseInsensitive() {
+        val source = """
+            <Transcript>
+              <Text Start="1.0" Dur="2.0">upper case cue</Text>
+            </Transcript>
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseTimedTextXml(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("upper case cue", parsed.single().text)
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(3_000L, parsed.single().endMs)
+    }
+
 }
