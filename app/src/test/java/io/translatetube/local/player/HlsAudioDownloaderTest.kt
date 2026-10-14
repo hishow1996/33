@@ -183,6 +183,21 @@ class HlsAudioDownloaderTest {
     }
 
     @Test
+    fun rejectsPartialManifestResponseWithoutARangeRequest() {
+        val error = runCatching {
+            HlsAudioDownloader.validateManifestResponseStatus(206)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("完整 HLS 清单"))
+    }
+
+    @Test
+    fun acceptsCompleteManifestResponse() {
+        HlsAudioDownloader.validateManifestResponseStatus(200)
+    }
+
+    @Test
     fun rejectsPartialHttpResponseWhenNoByteRangeWasRequested() {
         val error = runCatching {
             HlsAudioDownloader.validateSegmentResponse(206, null, null, "bytes 0-99/1000")

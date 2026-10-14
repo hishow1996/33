@@ -55,6 +55,10 @@ internal object HlsAudioDownloader {
     internal fun headersWithoutInheritedRange(headers: Map<String, String>): Map<String, String> =
         headers.filterKeys { !it.equals("Range", ignoreCase = true) }
 
+    /** Manifest fetches do not request byte ranges, so partial responses cannot be treated as complete. */
+    internal fun validateManifestResponseStatus(code: Int) {
+        if (code != 200) throw IllegalStateException("服务器未返回完整 HLS 清单（HTTP " + code + "）。")
+    }
     /** Validate that un-ranged segments are whole responses and ranged segments match exactly. */
     internal fun validateSegmentResponse(
         code: Int,
@@ -632,9 +636,7 @@ internal object HlsAudioDownloader {
             requestHeaders = headers,
             allowedCookieOrigin = rootOrigin,
         ).use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("读取 HLS 清单失败（HTTP ${response.code}）。")
-            }
+            validateManifestResponseStatus(response.code)
             val body = response.body ?: throw IllegalStateException("HLS 清单响应为空。")
             if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
                 throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 清单；链接可能过期或需要登录。")
