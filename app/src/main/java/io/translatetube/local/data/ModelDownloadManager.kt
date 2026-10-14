@@ -39,9 +39,7 @@ object ModelFiles {
     private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
         file.isFile && file.length() >= minBytes
 
-    fun ttsReady(ctx: Context) =
-        validModel(File(ttsDir(ctx), "model.int8.onnx")) &&
-            validModel(File(ttsDir(ctx), "voices.bin"))
+    fun ttsReady(ctx: Context): Boolean = ModelAssetReadiness.isTtsReady(ttsDir(ctx))
 
     fun asrCoreReady(ctx: Context) =
         validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
@@ -444,17 +442,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
 
             // 不完整或伪造的压缩包不能覆盖已经可用的模型。
-            val required = if (destDir.name == "tts") {
-                listOf("model.int8.onnx", "voices.bin")
+            val assetsReady = if (destDir.name == "tts") {
+                ModelAssetReadiness.isTtsReady(staging)
             } else {
-                listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx")
-            }
-            if (required.any { name ->
+                listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx").all { name ->
                     val file = File(staging, name)
-                    // 这些模型文件正常体积均远大于 1 MB；过小通常意味着下载/解压不完整。
-                    !file.isFile || file.length() < 1L * 1024 * 1024
-                }) {
-                throw java.io.IOException("模型包缺少必要文件或文件体积异常，已取消安装")
+                    file.isFile && file.length() >= 1L * 1024 * 1024
+                }
+            }
+            if (!assetsReady) {
+                throw java.io.IOException(
+                    if (destDir.name == "tts")
+                        "Kokoro 模型包缺少必要的模型、tokens、词典或发音规则文件，已取消安装"
+                    else
+                        "Whisper 模型包缺少必要文件或文件体积异常，已取消安装"
+                )
             }
 
             val old = File(parent, destDir.name + ".old")
