@@ -1266,7 +1266,7 @@ class PlaybackService : MediaSessionService() {
                     val isHttpSource = sourceUri?.let(::isHttpMediaUri) == true
                     val inputMode = AsrAudioSourcePolicy.choose(
                         hasYouTubeVideoId = videoId != null,
-                        isHttpSource = isHttpSource,
+                        sourceScheme = sourceUri?.scheme,
                         shouldCacheRemoteAudio = isHttpSource &&
                             sourceUri != null && !shouldStreamRemoteVideoForAsr(sourceUri, sourceMimeType),
                     )
