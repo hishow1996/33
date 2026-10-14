@@ -20,5 +20,7 @@ internal object AsrAudioCachePolicy {
     /** Unknown content length is allowed, but a known length must match the received bytes. */
     fun isCompleteDownload(expectedBytes: Long, actualBytes: Long): Boolean =
         actualBytes in 1L..MAX_AUDIO_BYTES &&
-            (expectedBytes <= 0L || expectedBytes == actualBytes)
+            // OkHttp reports -1 for unknown length. A declared zero is a real length,
+            // not an unknown value, and must not validate a non-empty response.
+            (expectedBytes < 0L || expectedBytes == actualBytes)
 }
