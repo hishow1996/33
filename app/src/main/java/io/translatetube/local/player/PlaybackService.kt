@@ -156,7 +156,7 @@ class PlaybackService : MediaSessionService() {
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
-    private var subtitleDownloadJob: Job? = null
+    @Volatile private var subtitleDownloadJob: Job? = null
     private val asrAudioDownloadLocks = KeyedMutex<String>()
     // Do not evict downloaded audio while MediaExtractor is actively reading it.
     private val activeAsrAudioPaths = ActiveFileLeaseRegistry()
