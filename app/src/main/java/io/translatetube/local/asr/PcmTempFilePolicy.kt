@@ -12,7 +12,7 @@ internal object PcmTempFilePolicy {
 
     /** True only when a PCM16 scratch file physically contains its declared sample range. */
     fun hasCompletePcm16Payload(file: File, sampleCount: Long): Boolean {
-        if (sampleCount < 0L || sampleCount > Long.MAX_VALUE / 2L || !file.isFile) return false
+        if (sampleCount <= 0L || sampleCount > Long.MAX_VALUE / 2L || !file.isFile) return false
         return file.length() >= sampleCount * 2L
     }
 
