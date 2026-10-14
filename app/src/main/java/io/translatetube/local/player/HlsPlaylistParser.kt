@@ -267,13 +267,17 @@ internal object HlsPlaylistParser {
     private fun isClearlyAudioOnly(codecs: String?): Boolean {
         if (codecs.isNullOrBlank()) return false
         val parts = codecs.split(',').map { it.trim().lowercase(Locale.ROOT) }
-        val videoPrefixes = listOf("avc", "hev", "hvc", "vp9", "vp09", "av01", "theora", "dvh")
+        val videoPrefixes = listOf(
+            "avc", "hev", "hvc", "vp8", "vp08", "vp9", "vp09", "av01",
+            "theora", "dvh", "dva", "mp4v", "mpeg", "mp2v",
+        )
         val hasVideo = parts.any { codec -> videoPrefixes.any(codec::startsWith) }
         val hasAudio = parts.any { codec ->
             codec.startsWith("mp4a") || codec.startsWith("ac-3") ||
                 codec.startsWith("ec-3") || codec.startsWith("opus") ||
                 codec.startsWith("vorbis") || codec.startsWith("flac") ||
-                codec.startsWith("alac")
+                codec.startsWith("alac") || codec.startsWith("mp3") ||
+                codec.startsWith("dts") || codec.startsWith("dca")
         }
         return hasAudio && !hasVideo
     }
