@@ -1257,9 +1257,14 @@ class PlaybackService : MediaSessionService() {
                     ?.absolutePath
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                // A prompt cancellation can discard a successful withContext result before its
+                // caller receives it. Keep a temporary ownership reference so that PCM file can
+                // still be deleted in that narrow race instead of lingering until stale cleanup.
+                val decodedPcmHolder =
+                    java.util.concurrent.atomic.AtomicReference<AudioExtract.PcmFile?>(null)
                 val pcmFile = try {
                     withContext(Dispatchers.IO) {
-                        if (audioFile is File) {
+                        val decoded = if (audioFile is File) {
                             AudioExtract.decodeTo16kMonoFile(
                                 this@PlaybackService, null, audioFile,
                                 checkActive = { pcmOwnerJob?.ensureActive() },
@@ -1270,11 +1275,15 @@ class PlaybackService : MediaSessionService() {
                                 checkActive = { pcmOwnerJob?.ensureActive() },
                             )
                         }
+                        decodedPcmHolder.set(decoded)
+                        decoded
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    decodedPcmHolder.getAndSet(null)?.file?.delete()
                     // Cancellation is not evidence of a corrupt download; keep it for resumption.
                     throw cancelled
                 } catch (error: Exception) {
+                    decodedPcmHolder.getAndSet(null)?.file?.delete()
                     // A remote download that the platform cannot decode must not stay in the cache
                     // forever. Otherwise every user retry reuses the same unusable bytes and fails
                     // before ASR can start. Successful decodes still retain audio for ASR retries.
@@ -1300,6 +1309,10 @@ class PlaybackService : MediaSessionService() {
                 } finally {
                     releaseActiveAsrAudio(leasedAudioPath)
                 }
+                // Claim ownership before any further suspension point; the outer finally block
+                // now cleans this file if HLS-cache cleanup or later ASR work is cancelled.
+                transientPcmFile = pcmFile
+                decodedPcmHolder.set(null)
                 // Keep HLS parts when decoding fails so the next attempt can reuse downloaded
                 // segments. Once MediaExtractor has accepted the merged file, discard the copies.
                 if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
@@ -1307,7 +1320,6 @@ class PlaybackService : MediaSessionService() {
                         HlsAudioDownloader.cleanupSegmentCache(audioFile)
                     }
                 }
-                transientPcmFile = pcmFile
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) {
