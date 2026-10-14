@@ -983,7 +983,7 @@ class PlaybackService : MediaSessionService() {
         return normalized.startsWith("zh") || normalized == "cmn" || normalized.startsWith("yue")
     }
 
-    /** Reject corrupt translation caches containing progress/status text rather than translated rows. */
+    /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */
     private fun isUsableTranslationCache(linesJson: String): Boolean = try {
         val rows = org.json.JSONArray(linesJson)
         if (rows.length() == 0) {
@@ -991,8 +991,15 @@ class PlaybackService : MediaSessionService() {
         } else {
             var validTranslations = 0
             var hasProgressPlaceholder = false
+            val timelineRows = ArrayList<Triple<Long, Long, String>>(rows.length())
             for (i in 0 until rows.length()) {
-                val row = rows.optJSONObject(i) ?: continue
+                val row = rows.optJSONObject(i)
+                    ?: throw IllegalArgumentException("字幕缓存第 ${i + 1} 行不是对象")
+                val startMs = row.optLong("s", Long.MIN_VALUE)
+                val endMs = row.optLong("e", Long.MIN_VALUE)
+                val originalText = row.optString("t").trim()
+                timelineRows += Triple(startMs, endMs, originalText)
+
                 val translation = row.optString("zh")
                 if (SubtitleParsers.isPlaceholderTranslation(translation)) {
                     hasProgressPlaceholder = true
@@ -1001,11 +1008,14 @@ class PlaybackService : MediaSessionService() {
                     validTranslations++
                 }
             }
+            if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
+                throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")
+            }
             // Partial caches are intentional checkpoints. Retry should only translate missing rows.
             !hasProgressPlaceholder && validTranslations > 0
         }
     } catch (e: Exception) {
-        android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON", e)
+        android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON or timeline", e)
         false
     }
 
