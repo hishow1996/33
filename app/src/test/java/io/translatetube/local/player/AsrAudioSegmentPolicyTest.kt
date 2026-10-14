@@ -73,6 +73,10 @@ class AsrAudioSegmentPolicyTest {
         assertTrue(AsrAudioSegmentPolicy.isClearlyNotAudio("application/json", byteArrayOf()))
         assertTrue(AsrAudioSegmentPolicy.isClearlyNotAudio(null, "#EXTM3U\n#EXTINF:4".toByteArray()))
         assertTrue(AsrAudioSegmentPolicy.isClearlyNotAudio(null, "<!doctype html><html>".toByteArray()))
+        assertTrue(AsrAudioSegmentPolicy.isDashManifest("application/dash+xml", byteArrayOf()))
+        assertTrue(AsrAudioSegmentPolicy.isDashManifest("application/xml", "<MPD type=\"static\">".toByteArray()))
+        assertTrue(AsrAudioSegmentPolicy.isDashManifest("text/xml", "<?xml version=\"1.0\"?><MPD>".toByteArray()))
+        assertFalse(AsrAudioSegmentPolicy.isDashManifest("application/xml", "<html><body>Login</body>".toByteArray()))
         assertFalse(AsrAudioSegmentPolicy.isClearlyNotAudio("audio/mp4", byteArrayOf(0, 0, 0, 24, 102, 116, 121, 112)))
         assertFalse(AsrAudioSegmentPolicy.isClearlyNotAudio("application/octet-stream", byteArrayOf(0, 1, 2, 3)))
     }
