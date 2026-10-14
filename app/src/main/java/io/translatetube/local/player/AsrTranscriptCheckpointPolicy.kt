@@ -17,6 +17,13 @@ internal object AsrTranscriptCheckpointPolicy {
             sampleBuffer.putInt(pcmSamples[index].toRawBits())
             digest.update(sampleBuffer.array())
         }
+        // The stride may not land on the final frame. Include it explicitly so a changed tail
+        // cannot incorrectly reuse ASR progress from a different same-length audio stream.
+        if (pcmSamples.isNotEmpty() && pcmSamples.lastIndex % stride != 0) {
+            sampleBuffer.clear()
+            sampleBuffer.putInt(pcmSamples.last().toRawBits())
+            digest.update(sampleBuffer.array())
+        }
         segments.forEach { (start, end) ->
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }

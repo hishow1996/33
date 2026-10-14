@@ -1173,15 +1173,69 @@ class PlaybackService : MediaSessionService() {
                 } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
+                var audioCacheHit = false
                 val audioFile = if (videoId != null) {
-                    obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
+                    obtainAsrAudioFile(
+                        videoId,
+                        key,
+                        "复用已下载音频，避免重复下载…",
+                        onCacheHit = { audioCacheHit = it },
+                    )
                 } else {
                     localUri ?: throw IllegalStateException("无音频源")
                 }
+                // Retain the current usable download for later speaker-recognition reuse, and
+                // replace this reference if a stale cache entry must be refreshed.
+                var cachedAudioToKeep: File? =
+                    if (videoId != null) (audioFile as? File) else null
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
-                val pcm = withContext(Dispatchers.IO) {
-                    if (audioFile is File) AudioExtract.decodeTo16kMono(this@PlaybackService, null, audioFile)
-                    else AudioExtract.decodeTo16kMono(this@PlaybackService, audioFile as Uri, null)
+                val pcm = try {
+                    withContext(Dispatchers.IO) {
+                        if (audioFile is File) AudioExtract.decodeTo16kMono(this@PlaybackService, null, audioFile)
+                        else AudioExtract.decodeTo16kMono(this@PlaybackService, audioFile as Uri, null)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val failedCachedFile = audioFile as? File
+                    val failedVideoId = videoId
+                    // A non-empty cache can still contain an expired URL's error page or a
+                    // truncated media container from an older version. Do not let that bad file
+                    // poison every later retry: refresh metadata and redownload only on a cache hit.
+                    if (failedVideoId == null || !audioCacheHit || failedCachedFile == null) throw e
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Cached ASR audio could not be decoded for $failedVideoId; refreshing it once",
+                        e,
+                    )
+                    failedCachedFile.delete()
+                    File(failedCachedFile.parentFile, failedCachedFile.name + ".part").delete()
+                    NewPipeRepo.invalidate(failedVideoId)
+                    updateUiForSession(key) {
+                        it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "缓存音频无效，正在刷新播放地址并重新获取…")
+                    }
+                    val refreshedAudio = obtainAsrAudioFile(
+                        failedVideoId,
+                        key,
+                        "已更新音频缓存，正在解码…",
+                    )
+                    try {
+                        val recovered = withContext(Dispatchers.IO) {
+                            AudioExtract.decodeTo16kMono(this@PlaybackService, null, refreshedAudio)
+                        }
+                        cachedAudioToKeep = refreshedAudio
+                        recovered
+                    } catch (retryError: Exception) {
+                        if (retryError is kotlinx.coroutines.CancellationException) throw retryError
+                        // The newly downloaded asset is also not decodable on this device. Delete
+                        // it so it cannot be mistaken for a healthy cache on the next retry.
+                        refreshedAudio.delete()
+                        File(refreshedAudio.parentFile, refreshedAudio.name + ".part").delete()
+                        throw IllegalStateException(
+                            "视频音频缓存无法解码，刷新地址并重新下载后仍失败：${retryError.message ?: retryError.javaClass.simpleName}",
+                            retryError,
+                        )
+                    }
                 }
                 ensureCurrentSession(key)
                 updateUiForSession(key) { it.copy(progress = "语音分段…") }
@@ -1380,9 +1434,9 @@ class PlaybackService : MediaSessionService() {
                     db.subtitleCacheDao().delete(partialAsrCacheKey)
                     // Keep the bounded source-audio cache after ASR as well: user-triggered
                     // speaker diarization can reuse it without downloading the same media again.
-                    if (videoId != null && audioFile is File) {
-                        audioFile.setLastModified(System.currentTimeMillis())
-                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = audioFile)
+                    cachedAudioToKeep?.let { retainedAudio ->
+                        retainedAudio.setLastModified(System.currentTimeMillis())
+                        pruneAsrAudioCache(asrAudioCacheDirectory(), keep = retainedAudio)
                     }
                     android.util.Log.i(
                         "PlaybackService",
@@ -2009,15 +2063,18 @@ class PlaybackService : MediaSessionService() {
         videoId: String,
         sessionKey: String,
         cacheHitProgress: String,
+        onCacheHit: ((Boolean) -> Unit)? = null,
     ): File {
         val mutex = asrAudioDownloadLocks.computeIfAbsent(videoId) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
             reusableAsrAudioFile(videoId)?.let { cached ->
+                onCacheHit?.invoke(true)
                 updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cached
             }
+            onCacheHit?.invoke(false)
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")

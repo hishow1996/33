@@ -42,4 +42,14 @@ class AsrTranscriptCheckpointPolicyTest {
         assertFalse(AsrTranscriptCheckpointPolicy.canResume(signature, signature, 2, 2, 3))
         assertFalse(AsrTranscriptCheckpointPolicy.canResume("", signature, 2, 2, 1))
     }
+    @Test
+    fun signatureIncludesFinalPcmSampleWhenStrideDoesNotReachIt() {
+        val pcm = FloatArray(4_098) { index -> (index % 37) / 37f }
+        val segments = listOf(0L to 900L, 1_200L to 2_400L)
+        val original = AsrTranscriptCheckpointPolicy.signature(pcm, segments)
+        val changedTail = pcm.copyOf().also { it[it.lastIndex] = -0.875f }
+
+        assertFalse(original == AsrTranscriptCheckpointPolicy.signature(changedTail, segments))
+    }
+
 }
