@@ -825,28 +825,34 @@ class DubbingEngine(
         }
     }
 
-    /** Update the active voice without changing the selected TTS engine or its cached PCM. */
+    /**
+     * Re-plan the active cue when video speed changes. Merely changing AudioTrack's playback rate
+     * is insufficient: at a new rate the remaining subtitle window also changes, so the old PCM
+     * slice could still be cut short or run into the next cue. Restart from the latest media cursor
+     * and reuse cached PCM; if track creation is still pending, update activePlayerSpeed in place.
+     */
     fun updatePlayerSpeed(speed: Float) {
         val normalized = DubbingTiming.normalizePlayerSpeed(speed)
         if (kotlin.math.abs(normalized - activePlayerSpeed) < 0.01f) return
-        activePlayerSpeed = normalized
-        val rate = (activeSyncRate * normalized).coerceIn(0.5f, 4.0f)
-        if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
-        activePlaybackRate = rate
-        val active = track ?: return
-        try {
-            audioExec.execute {
-                if (!released && track === active) {
-                    runCatching {
-                        active.setPlaybackParams(PlaybackParams().setSpeed(rate).setPitch(1.0f))
-                    }.onFailure {
-                        android.util.Log.w("DubbingEngine", "Could not update active voice playback speed", it)
-                    }
-                }
-            }
-        } catch (_: java.util.concurrent.RejectedExecutionException) {
-            // Service is shutting down.
+
+        val lineIndex = _currentLine.value
+        val cursor = latestTimelineCursor
+        val active = track
+        if (active != null && lineIndex >= 0 &&
+            cursor.lineIndex == lineIndex && cursor.positionMs >= 0L
+        ) {
+            playAt(
+                idx = lineIndex,
+                volume = activeVolume,
+                positionMs = cursor.positionMs,
+                playerSpeed = normalized,
+            )
+            return
         }
+
+        // Synthesis/PCM load may still be queued and have no AudioTrack yet. Its startup reads
+        // activePlayerSpeed after cache loading, so just publish the new value for that path.
+        activePlayerSpeed = normalized
     }
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
     fun isPrepared(idx: Int): Boolean = readiness.isPrepared(idx)
