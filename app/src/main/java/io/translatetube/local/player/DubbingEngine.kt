@@ -514,34 +514,36 @@ class DubbingEngine(
     private fun pruneOldDubbingCaches() {
         val root = cacheRootDir
         if (!root.isDirectory) return
-        val nowMs = System.currentTimeMillis()
-        val staleTemps = root.walkTopDown()
-            .filter { file ->
-                isStalePcmTemp(file, nowMs) &&
-                    file.parentFile?.absolutePath != cacheDir.absolutePath
-            }
-            .toList()
+        // Cache publication and eviction must share one process-wide lock. Otherwise an eviction
+        // decision based on an old file listing can delete a freshly installed replacement.
         synchronized(cacheInstallLock) {
+            val nowMs = System.currentTimeMillis()
+            val staleTemps = root.walkTopDown()
+                .filter { file ->
+                    isStalePcmTemp(file, nowMs) &&
+                        file.parentFile?.absolutePath != cacheDir.absolutePath
+                }
+                .toList()
             staleTemps.forEach { temp ->
                 if (temp.delete()) temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
             }
-        }
 
-        val pcmFiles = root.walkTopDown()
-            .filter { it.isFile && it.name.endsWith(".pcm") }
-            .toList()
-        val entries = pcmFiles.map { file ->
-            DubbingCacheEntry(
-                path = file.absolutePath,
-                bytes = file.length(),
-                lastModified = file.lastModified(),
-                isCurrentVideo = file.parentFile?.absolutePath == cacheDir.absolutePath,
-            )
-        }
-        for (entry in DubbingCachePolicy.filesToEvict(entries)) {
-            val file = File(entry.path)
-            if (file.delete()) {
-                file.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+            val pcmFiles = root.walkTopDown()
+                .filter { it.isFile && it.name.endsWith(".pcm") }
+                .toList()
+            val entries = pcmFiles.map { file ->
+                DubbingCacheEntry(
+                    path = file.absolutePath,
+                    bytes = file.length(),
+                    lastModified = file.lastModified(),
+                    isCurrentVideo = file.parentFile?.absolutePath == cacheDir.absolutePath,
+                )
+            }
+            for (entry in DubbingCachePolicy.filesToEvict(entries)) {
+                val file = File(entry.path)
+                if (file.delete()) {
+                    file.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
+                }
             }
         }
     }
