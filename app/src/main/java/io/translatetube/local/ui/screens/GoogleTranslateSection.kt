@@ -1,6 +1,9 @@
 package io.translatetube.local.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -55,6 +58,7 @@ fun GoogleTranslateSection() {
     var states by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var downloading by remember { mutableStateOf<String?>(null) }
     var downloadMessage by remember { mutableStateOf("") }
+    var offlinePacksExpanded by remember { mutableStateOf(false) }
 
     suspend fun packIsReady(pack: OfflineTranslationPack): Boolean {
         val manager = com.google.mlkit.common.model.RemoteModelManager.getInstance()
@@ -84,67 +88,100 @@ fun GoogleTranslateSection() {
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("离线语言包", color = OnBg, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.weight(1f))
-            val readyCount = states.values.count { it == "ready" }
-            Text("${readyCount}/7", color = BrandBright, style = MaterialTheme.typography.labelLarge)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("离线语言包", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                val readyCount = states.values.count { it == "ready" }
+                val checking = states.isEmpty() || states.values.any { it == "unknown" }
+                Text(
+                    if (checking) "正在检查已安装的语言包…" else "$readyCount/7 已就绪 · 需要时手动下载",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            IconButton(onClick = { offlinePacksExpanded = !offlinePacksExpanded }) {
+                Icon(
+                    imageVector = if (offlinePacksExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (offlinePacksExpanded) "收起离线语言包" else "展开离线语言包",
+                    tint = BrandBright,
+                )
+            }
         }
-        Text(
-            "语言包需手动下载；已下载的语言可在无网络时使用。",
-            color = SubText,
-            style = MaterialTheme.typography.bodySmall,
-        )
-
-        packs.forEachIndexed { index, pack ->
-            val state = states[pack.source] ?: "checking"
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                .padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(34.dp).clip(RoundedCornerShape(9.dp)).background(SurfaceDark),
-                    contentAlignment = Alignment.Center) {
-                    Text(pack.badge, color = BrandBright, style = MaterialTheme.typography.labelLarge)
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(pack.title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+        if (offlinePacksExpanded) {
+            Text(
+                "语言包需手动下载；已下载的语言可在无网络时使用。",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            packs.forEachIndexed { index, pack ->
+                val state = states[pack.source] ?: "checking"
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(34.dp).clip(RoundedCornerShape(9.dp)).background(SurfaceDark),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(pack.badge, color = BrandBright, style = MaterialTheme.typography.labelLarge)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(pack.title, color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                        when (state) {
+                            "ready" -> Text("已下载", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+                            "downloading" -> Text("正在下载…", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+                            "failed" -> Text("下载失败", color = DangerRed, style = MaterialTheme.typography.labelMedium)
+                            "checking" -> Text("检查中…", color = SubText, style = MaterialTheme.typography.labelMedium)
+                            else -> Unit
+                        }
+                    }
                     when (state) {
-                        "ready" -> Text("已下载", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-                        "downloading" -> Text("正在下载…", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-                        "failed" -> Text("下载失败", color = DangerRed, style = MaterialTheme.typography.labelMedium)
-                        "checking" -> Text("检查中…", color = SubText, style = MaterialTheme.typography.labelMedium)
+                        "ready" -> Text("✓", color = BrandBright, style = MaterialTheme.typography.titleLarge)
+                        "downloading", "checking" -> CircularProgressIndicator(
+                            modifier = Modifier.size(23.dp), strokeWidth = 2.5.dp, color = BrandBright,
+                        )
+                        else -> TextButton(
+                            enabled = downloading == null,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            onClick = {
+                                if (state == "ready" || downloading != null) return@TextButton
+                                downloading = pack.source
+                                downloadMessage = ""
+                                states = states + (pack.source to "downloading")
+                                scope.launch {
+                                    try {
+                                        MlKitModelCoordinator.downloadLanguage(pack.source)
+                                        if (pack.target != pack.source) {
+                                            MlKitModelCoordinator.downloadLanguage(pack.target)
+                                        }
+                                        if (!packIsReady(pack)) throw IllegalStateException("语言包安装校验未通过")
+                                        states = states + (pack.source to "ready")
+                                        downloadMessage = ""
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        states = states + (pack.source to "failed")
+                                        downloadMessage = "${pack.title}下载失败：${e.message ?: "请检查网络后重试"}"
+                                    } finally {
+                                        downloading = null
+                                    }
+                                }
+                            },
+                        ) {
+                            Text(if (state == "failed") "重试" else "下载", color = BrandBright)
+                        }
                     }
                 }
-                when (state) {
-                    "ready" -> Text("✓", color = BrandBright, style = MaterialTheme.typography.titleLarge)
-                    "downloading", "checking" -> CircularProgressIndicator(
-                        modifier = Modifier.size(23.dp), strokeWidth = 2.5.dp, color = BrandBright)
-                    else -> TextButton(
-                        enabled = downloading == null,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        onClick = {
-                            if (state == "ready" || downloading != null) return@TextButton
-                            downloading = pack.source
-                            downloadMessage = ""
-                            states = states + (pack.source to "downloading")
-                            scope.launch {
-                                try {
-                                    MlKitModelCoordinator.downloadLanguage(pack.source)
-                                    if (pack.target != pack.source) MlKitModelCoordinator.downloadLanguage(pack.target)
-                                    if (!packIsReady(pack)) throw IllegalStateException("语言包安装校验未通过")
-                                    states = states + (pack.source to "ready")
-                                    downloadMessage = ""
-                                } catch (e: Exception) {
-                                    states = states + (pack.source to "failed")
-                                    downloadMessage = "${pack.title}下载失败：${e.message ?: "请检查网络后重试"}"
-                                } finally {
-                                    downloading = null
-                                }
-                            }
-                        }) { Text(if (state == "failed") "重试" else "下载", color = BrandBright) }
-                }
+                if (index < packs.lastIndex) HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
             }
-            if (index < packs.lastIndex) HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
         }
-        if (downloadMessage.isNotBlank()) Text(downloadMessage, color = DangerRed, style = MaterialTheme.typography.bodyMedium)
+        if (downloadMessage.isNotBlank()) {
+            Text(downloadMessage, color = DangerRed, style = MaterialTheme.typography.bodyMedium)
+        }
     }
 }
