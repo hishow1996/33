@@ -24,6 +24,7 @@ import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.subs.TranslatedSubtitleImportPolicy
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.translate.EngineFactory
+import io.translatetube.local.translate.FreeModelDefaults
 import io.translatetube.local.translate.LangMap
 import io.translatetube.local.translate.MlKitEngine
 import io.translatetube.local.translate.GoogleHybridEngine
