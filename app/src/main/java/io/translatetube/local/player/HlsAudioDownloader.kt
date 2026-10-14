@@ -5,8 +5,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -23,11 +21,6 @@ internal object HlsAudioDownloader {
     private const val MAX_MASTER_DEPTH = 4
     private const val MAX_BYTES = 160L * 1024L * 1024L
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .build()
 
     private data class FetchedText(val finalUrl: String, val text: String)
     private data class Variant(val uri: String, val bandwidth: Long, val audioGroup: String?)
@@ -159,12 +152,17 @@ internal object HlsAudioDownloader {
         if (lines.any { it.startsWith("#EXT-X-SESSION-KEY:", ignoreCase = true) }) {
             throw IllegalStateException("该 HLS 声明了加密会话密钥；为避免处理受保护音轨，暂不读取。")
         }
-        val encryptedKey = lines.firstOrNull { it.startsWith("#EXT-X-KEY:", ignoreCase = true) }
-        if (encryptedKey != null) {
-            val method = parseAttributes(encryptedKey.substringAfter(':'))["METHOD"]
-            if (!method.equals("NONE", ignoreCase = true)) {
-                throw IllegalStateException("该 HLS 音轨使用加密密钥；当前仅处理未加密清单，不会尝试解密受保护内容。")
-            }
+        val hasEncryptedKey = lines
+            .filter { it.startsWith("#EXT-X-KEY:", ignoreCase = true) }
+            .any { line -> !parseAttributes(line.substringAfter(':'))["METHOD"].equals("NONE", ignoreCase = true) }
+        if (hasEncryptedKey) {
+            throw IllegalStateException("该 HLS 音轨使用加密密钥；当前仅处理未加密清单，不会尝试解密受保护内容。")
+        }
+        if (lines.any {
+                it.equals("#EXT-X-DISCONTINUITY", ignoreCase = true) ||
+                    it.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:", ignoreCase = true)
+            }) {
+            throw IllegalStateException("该 HLS 含有时间轴切换标记，当前版本不能安全地拼接这些片段。")
         }
 
         var initSegment: String? = null
@@ -180,7 +178,11 @@ internal object HlsAudioDownloader {
                     }
                     val path = attributes["URI"]
                         ?: throw IllegalStateException("HLS 初始化片段缺少 URI。")
-                    initSegment = resolveUrl(baseUrl, path)
+                    val resolvedInit = resolveUrl(baseUrl, path)
+                    if (initSegment != null && initSegment != resolvedInit) {
+                        throw IllegalStateException("该 HLS 使用多个不同的初始化片段，当前版本无法安全拼接。")
+                    }
+                    initSegment = resolvedInit
                 }
                 line.startsWith("#") -> Unit
                 else -> {
@@ -204,7 +206,11 @@ internal object HlsAudioDownloader {
         rootHost: String,
         ownerJob: Job?,
     ): FetchedText {
-        client.newCall(requestBuilder(url, headers, rootHost).build()).execute().use { response ->
+        SafeMediaHttp.execute(
+            url = url,
+            requestHeaders = headers,
+            allowedCookieHost = rootHost,
+        ).use { response ->
             if (!response.isSuccessful) {
                 throw IllegalStateException("读取 HLS 清单失败（HTTP ${response.code}）。")
             }
@@ -238,7 +244,11 @@ internal object HlsAudioDownloader {
         ownerJob: Job?,
     ): Long {
         var received = previousBytes
-        client.newCall(requestBuilder(url, headers, rootHost).build()).execute().use { response ->
+        SafeMediaHttp.execute(
+            url = url,
+            requestHeaders = headers,
+            allowedCookieHost = rootHost,
+        ).use { response ->
             if (!response.isSuccessful) {
                 throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
             }
@@ -261,22 +271,6 @@ internal object HlsAudioDownloader {
             }
         }
         return received
-    }
-
-    private fun requestBuilder(url: String, headers: Map<String, String>, rootHost: String): Request.Builder {
-        val builder = Request.Builder()
-            .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36")
-        val targetHost = runCatching { URI(url).host }.getOrNull()
-        headers.forEach { (name, value) ->
-            if (value.isBlank()) return@forEach
-            when {
-                name.equals("Referer", ignoreCase = true) -> builder.header("Referer", value)
-                name.equals("Cookie", ignoreCase = true) && targetHost.equals(rootHost, ignoreCase = true) ->
-                    builder.header("Cookie", value)
-            }
-        }
-        return builder
     }
 
     private fun parseAttributes(input: String): Map<String, String> {
