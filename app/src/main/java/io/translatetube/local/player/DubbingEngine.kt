@@ -1121,7 +1121,10 @@ class DubbingEngine(
         tts = null
         cacheInitGeneration.incrementAndGet()
         cacheInitJob?.cancel()
-        val activeSynthesis = synthJob
+        // Serialize the task snapshot with startSynthLoop(). Without this lock, release()
+        // could read a null/old Job while a new worker is being installed, then close the native
+        // TTS engine underneath that just-started synthesis call.
+        val activeSynthesis = synchronized(synthStartLock) { synthJob }
         activeSynthesis?.cancel()
         when {
             oldTts == null -> ttsCloseSignal.complete(Unit)
