@@ -614,22 +614,13 @@ class PlaybackService : MediaSessionService() {
                     contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
                         ?: throw IllegalStateException("无法读取字幕文件")
                 }
-                val parsed = SubtitleParsers.parseAuto(text).filter { it.startMs >= 0L && it.endMs > it.startMs }
+                val parsed = SubtitleParsers.parseAuto(text)
                 ensureCurrentSession(sessionKey)
-                if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
-                val chinesePattern = Regex("[\\u4e00-\\u9fff]")
-                val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
-                    val parts = line.text.lines().map { it.trim() }.filter { it.isNotBlank() }
-                    val translation = parts.lastOrNull { chinesePattern.containsMatchIn(it) }
-                        ?: parts.lastOrNull()
-                        ?: line.text.trim()
-                    val original = parts.filter { it != translation }.joinToString("\n").ifBlank { translation }
-                    line.copy(
-                        index = index,
-                        text = original,
-                        zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
-                    )
-                })
+                val translatedRows = TranslatedSubtitleImportPolicy.prepare(parsed)
+                if (translatedRows.isEmpty()) {
+                    throw IllegalStateException("没有有效的已翻译字幕：请检查文件时间轴和中文译文是否为空")
+                }
+                val translatedLines = applySavedLineOverrides(translatedRows)
                 ensureCurrentSession(sessionKey)
                 // The source remains audible until each translated cue's PCM is ready.
                 // tick() applies the normal/ducked/muted mix at the moment dubbing can play.
