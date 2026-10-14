@@ -142,6 +142,7 @@ class PlaybackService : MediaSessionService() {
     private var videoId: String? = null
     private var localUri: Uri? = null
     @Volatile private var sourceHeaders: Map<String, String> = emptyMap()
+    @Volatile private var sourceMimeType: String? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var qualityRecoveryAttempted = false
@@ -484,6 +485,7 @@ class PlaybackService : MediaSessionService() {
         importedLines: List<SubLine>? = null,
         resumeState: PlayerUiState? = null,
         sourceHeaders: Map<String, String> = emptyMap(),
+        sourceMimeType: String? = null,
     ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
@@ -500,6 +502,7 @@ class PlaybackService : MediaSessionService() {
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         val safeSourceHeaders = WebMediaCandidatePolicy.safeHeaders(sourceHeaders)
         this.sourceHeaders = safeSourceHeaders
+        this.sourceMimeType = sourceMimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() }
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -538,7 +541,7 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, safeSourceHeaders)
+            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, safeSourceHeaders, this.sourceMimeType)
         }
     }
 
@@ -964,6 +967,7 @@ class PlaybackService : MediaSessionService() {
         resumeState: PlayerUiState? = null,
         sourceImportedLines: List<SubLine>? = null,
         sourceHeaders: Map<String, String> = emptyMap(),
+        sourceMimeType: String? = null,
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
@@ -1001,20 +1005,35 @@ class PlaybackService : MediaSessionService() {
                 updateUiForSession(key) { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
             } else if (resumeState == null) {
                 localUri?.let { u ->
-                    // 本地视频：取真实标题/时长
-                    var title = u.lastPathSegment ?: "本地视频"
-                    var dur = 0L
-                    try {
-                        val mmr = android.media.MediaMetadataRetriever()
-                        mmr.setDataSource(this, u)
-                        title = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
-                            ?.takeIf { it.isNotBlank() } ?: title
-                        dur = (mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                            ?: "0").toLongOrNull() ?: 0L
-                        mmr.release()
-                    } catch (_: Exception) {}
-                    meta = meta.copy(title = title, durationSec = dur / 1000)
-                    updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
+                    if (isHttpMediaUri(u)) {
+                        // Do not run MediaMetadataRetriever against remote web streams; many servers
+                        // reject its request headers and it can block before the audio pipeline starts.
+                        val title = remoteMediaTitle(u)
+                        val channel = u.host.orEmpty()
+                        meta = meta.copy(title = title, channel = channel)
+                        updateUiForSession(key) {
+                            it.copy(title = title, channel = channel, durationMs = 0L)
+                        }
+                    } else {
+                        // 本地视频：取真实标题/时长
+                        var title = u.lastPathSegment ?: "本地视频"
+                        var dur = 0L
+                        var retriever: android.media.MediaMetadataRetriever? = null
+                        try {
+                            retriever = android.media.MediaMetadataRetriever()
+                            retriever.setDataSource(this, u)
+                            title = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)
+                                ?.takeIf { it.isNotBlank() } ?: title
+                            dur = (retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                ?: "0").toLongOrNull() ?: 0L
+                        } catch (_: Exception) {
+                            // Some content providers do not expose metadata; playback can still proceed.
+                        } finally {
+                            runCatching { retriever?.release() }
+                        }
+                        meta = meta.copy(title = title, durationSec = dur / 1000)
+                        updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
+                    }
                 }
             }
 
@@ -1563,7 +1582,19 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(key)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key)
-                    pm.setUriSource(localUri!!, meta.title, "本地视频", null)
+                    val source = localUri ?: throw IllegalStateException("缺少视频媒体源")
+                    if (isHttpMediaUri(source)) {
+                        pm.setExternalMediaSource(
+                            uri = source,
+                            headers = sourceHeaders,
+                            mimeType = sourceMimeType,
+                            title = meta.title,
+                            artist = meta.channel.ifBlank { source.host.orEmpty() },
+                            artworkUrl = meta.thumbUrl,
+                        )
+                    } else {
+                        pm.setUriSource(source, meta.title, "本地视频", null)
+                    }
                 }
             }
 
