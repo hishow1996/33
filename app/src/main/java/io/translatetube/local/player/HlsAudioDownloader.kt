@@ -184,8 +184,7 @@ internal object HlsAudioDownloader {
                     throw IllegalStateException("无法替换旧的 HLS 音频缓存。")
                 }
                 if (!assemblyPart.renameTo(destination)) {
-                    assemblyPart.copyTo(destination, overwrite = true)
-                    assemblyPart.delete()
+                    throw IllegalStateException("音轨已合并，但无法原子保存缓存文件；重试时会复用已下载的分段。")
                 }
                 destination.setLastModified(System.currentTimeMillis())
                 cacheDirectory.deleteRecursively()
