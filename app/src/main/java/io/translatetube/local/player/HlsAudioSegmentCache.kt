@@ -65,7 +65,9 @@ internal class HlsAudioSegmentCache(
         var depth = 0
         while (true) {
             checkActive()
-            playlistText = fetchPlaylist(currentPlaylistUrl, headers, credentialOrigin, checkActive)
+            val fetched = fetchPlaylist(currentPlaylistUrl, headers, credentialOrigin, checkActive)
+            currentPlaylistUrl = fetched.first
+            playlistText = fetched.second
             val next = HlsPlaylistParser.selectPlaylistUrl(currentPlaylistUrl, playlistText)
                 ?: break
             if (++depth > MAX_MANIFEST_DEPTH) {
@@ -226,7 +228,7 @@ internal class HlsAudioSegmentCache(
         headers: Map<String, String>,
         credentialOrigin: String,
         checkActive: () -> Unit,
-    ): String {
+    ): Pair<String, String> {
         val request = buildRequest(url, headersForTarget(url, headers, credentialOrigin))
             .header("Accept", "application/vnd.apple.mpegurl, application/x-mpegURL, */*")
             .build()
@@ -256,7 +258,7 @@ internal class HlsAudioSegmentCache(
             if (!text.trimStart().startsWith("#EXTM3U", ignoreCase = true)) {
                 throw IOException("该链接没有返回 HLS 播放清单")
             }
-            return text
+            return response.request.url.toString() to text
         }
     }
 
