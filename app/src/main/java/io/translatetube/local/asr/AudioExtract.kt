@@ -270,14 +270,14 @@ object AudioExtract {
                                 throw IllegalStateException("音频解码格式在处理中途改变，无法安全转换")
                             }
                             // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
-                            val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
+                            val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels, checkActive)
                             val converted = activeResampler.process(monoChunk, checkActive)
                             if (!PcmTempFilePolicy.canAppendSamples(outputBytes, converted.size)) {
                                 throw IllegalStateException(
                                     "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
                                 )
                             }
-                            writePcm16Le(output, converted)
+                            writePcm16Le(output, converted, checkActive)
                             outputBytes += converted.size.toLong() * 2L
                             outputSamples += converted.size
                         }
@@ -327,7 +327,7 @@ object AudioExtract {
                         "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
                     )
                 }
-                writePcm16Le(output, tail)
+                writePcm16Le(output, tail, checkActive)
                 outputBytes += tail.size.toLong() * 2L
                 outputSamples += tail.size
                 output.flush()
@@ -344,15 +344,22 @@ object AudioExtract {
         }
     }
 
-    private fun writePcm16Le(output: BufferedOutputStream, samples: ShortArray) {
+    private fun writePcm16Le(
+        output: BufferedOutputStream,
+        samples: ShortArray,
+        checkActive: () -> Unit = {},
+    ) {
         if (samples.isEmpty()) return
+        checkActive()
         val bytes = ByteArray(samples.size * 2)
         var byteIndex = 0
-        samples.forEach { sample ->
+        samples.forEachIndexed { index, sample ->
+            if ((index and 0x1fff) == 0) checkActive()
             val value = sample.toInt()
             bytes[byteIndex++] = (value and 0xff).toByte()
             bytes[byteIndex++] = ((value shr 8) and 0xff).toByte()
         }
+        checkActive()
         output.write(bytes)
     }
 
