@@ -79,3 +79,14 @@ internal object SafeMediaHttp {
         throw IOException("媒体地址重定向失败。")
     }
 }
+
+/** Identifies common error pages/API payloads accidentally returned in place of media bytes. */
+internal fun isHtmlOrJsonContentType(contentType: String?): Boolean {
+    val value = contentType?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT) ?: return false
+    return value == "text/html" ||
+        value == "application/json" ||
+        value == "text/json" ||
+        value == "application/xml" ||
+        value == "text/xml" ||
+        value.endsWith("+json")
+}
