@@ -50,6 +50,7 @@ import kotlinx.coroutines.ensureActive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
@@ -1069,13 +1070,20 @@ class PlaybackService : MediaSessionService() {
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            // Keep signed media URLs out of subtitle-cache keys. The playback/history identity
+            // remains unchanged so the original page can still be resumed from local history.
+            val cacheKeyBase = remoteMediaUrl?.let(::remoteCacheIdentity) ?: key
             val translationCacheKey = resumeState?.translationCacheKey?.takeIf { it.isNotBlank() }
                 ?: if (!sourceImportedLines.isNullOrEmpty()) {
-                    importedTranslationCacheKey(key, selectedTranslationId, sourceImportedLines)
+                    importedTranslationCacheKey(cacheKeyBase, selectedTranslationId, sourceImportedLines)
                 } else {
-                    "$key|zh|$selectedTranslationId"
+                    "$cacheKeyBase|zh|$selectedTranslationId"
                 }
-            val sourceSubtitleCacheKey = when { videoId != null -> "$key|source|youtube"; remoteMediaUrl != null -> "$key|source|remote-asr-v1"; else -> "$key|source|local-asr-v1" }
+            val sourceSubtitleCacheKey = when {
+                videoId != null -> "$key|source|youtube"
+                remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
+                else -> "$key|source|local-asr-v1"
+            }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
@@ -1432,10 +1440,13 @@ class PlaybackService : MediaSessionService() {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
                     }
                     throw IllegalStateException(
-                        if (videoId != null) {
-                            "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
-                        } else {
-                            "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
+                        when {
+                            videoId != null ->
+                                "语音识别没有生成有效字幕；已保留下载的音频，重试时会复用缓存，不会再次下载。"
+                            remoteMediaUrl != null ->
+                                "网页视频语音识别没有生成有效字幕。请确认媒体源包含可读取的语音音轨；加密或不完整的分片流暂不支持。"
+                            else ->
+                                "语音识别没有生成有效字幕，请检查本地视频是否包含可识别语音。"
                         }
                     )
                 }
@@ -2132,8 +2143,17 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /** Stable cache identity: signed media URL query strings do not belong in cache keys. */
+    private fun remoteCacheIdentity(url: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(url.toByteArray(Charsets.UTF_8))
+        val hex = digest.joinToString("") { byte ->
+            (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+        }
+        return "remote-sha256:$hex"
+    }
+
     /**
-     * Download a direct, unencrypted webpage media URL into a bounded cache for Whisper.
+     * Download a direct or finite HLS webpage media URL into a bounded cache for Whisper.
      * The referrer/cookie are obtained from the current WebView session and are never persisted.
      */
     private suspend fun obtainRemoteMediaAsrFile(
@@ -2162,7 +2182,19 @@ class PlaybackService : MediaSessionService() {
                     ?.let { put("Referer", it) }
                 cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             }
-            downloadAudio(mediaUrl, asrAudioCacheFile(identity), sessionKey, headers).also {
+            val destination = asrAudioCacheFile(identity)
+            val cachedAudio = if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
+                HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
+                    updateUiForSession(sessionKey) { state ->
+                        if (state.key == sessionKey) {
+                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                        } else state
+                    }
+                }
+            } else {
+                downloadAudio(mediaUrl, destination, sessionKey, headers)
+            }
+            cachedAudio.also {
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
             }
         }
