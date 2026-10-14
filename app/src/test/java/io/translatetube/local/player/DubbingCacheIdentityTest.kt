@@ -39,4 +39,11 @@ class DubbingCacheIdentityTest {
     fun identicalSynthesisInputsHaveDeterministicCacheNames() {
         assertEquals(key(), key())
     }
+    @Test
+    fun synthesisContentVersionInvalidatesOlderPcmCacheNames() {
+        val current = key()
+        assertNotEquals(current, current.replace("v8-speed-", "v7-speed-"))
+        assertNotEquals(current, key(cueDurationMs = 1_401L))
+    }
+
 }
