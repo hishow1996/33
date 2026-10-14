@@ -265,8 +265,13 @@ class SystemTts(context: Context) : TtsEngine {
         }
     }
 
-    private fun contextCacheDir(): java.io.File =
-        java.io.File(appCtx.cacheDir, "tts_tmp").apply { mkdirs() }
+    private val tempWavDirectory: java.io.File by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        java.io.File(appCtx.cacheDir, "tts_tmp").apply {
+            if (mkdirs() || isDirectory) TtsTempFilePolicy.cleanupStale(this)
+        }
+    }
+
+    private fun contextCacheDir(): java.io.File = tempWavDirectory
 
     private fun readWav(file: java.io.File): TtsAudio = SystemTtsWavDecoder.decode(file)
 
