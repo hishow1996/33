@@ -18,4 +18,30 @@ internal object TranslationCacheIdentity {
         val signature = digest.take(12).joinToString("") { "%02x".format(it.toInt() and 0xff) }
         return "$key|zh|$activeId|imported-$signature"
     }
+
+    /**
+     * Keeps the source fingerprint for imported subtitles while assigning the cache to the
+     * provider actually selected for this processing session. Ordinary resume keys are rebuilt
+     * from baseKey so a retry cannot overwrite another provider's translation cache.
+     */
+    fun forProvider(
+        baseKey: String,
+        activeId: Long,
+        importedLines: List<SubLine>?,
+        previousKey: String? = null,
+    ): String {
+        if (!importedLines.isNullOrEmpty()) return importedKey(baseKey, activeId, importedLines)
+
+        val previous = previousKey?.takeIf { it.contains("|imported-") }
+            ?: return "$baseKey|zh|$activeId"
+        val marker = "|imported-"
+        val markerIndex = previous.lastIndexOf(marker)
+        val hash = previous.substring(markerIndex + marker.length)
+        val zhIndex = previous.lastIndexOf("|zh|", markerIndex)
+        if (zhIndex <= 0 || hash.length != 24 || hash.any { it !in '0'..'9' && it !in 'a'..'f' }) {
+            return "$baseKey|zh|$activeId"
+        }
+        val stableSourceKey = previous.substring(0, zhIndex)
+        return "$stableSourceKey|zh|$activeId|imported-$hash"
+    }
 }
