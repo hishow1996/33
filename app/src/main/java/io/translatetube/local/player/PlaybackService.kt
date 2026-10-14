@@ -2343,12 +2343,11 @@ class PlaybackService : MediaSessionService() {
                 withContext(Dispatchers.IO) {
                     SafeMediaHttp.execute(
                         url = url,
-                        requestHeaders = requestHeaders,
+                        // This operation needs the full track, not a Range captured from a WebView request.
+                        requestHeaders = HlsAudioDownloader.headersWithoutInheritedRange(requestHeaders),
                         userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
                     ).use { resp ->
-                        if (!resp.isSuccessful) {
-                            throw IllegalStateException("音频下载失败 ${resp.code}")
-                        }
+                        SafeMediaHttp.validateCompleteGetResponse(resp.code, "音频文件")
                         val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
                         if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
                             throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")

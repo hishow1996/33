@@ -64,6 +64,17 @@ class SafeMediaHttpTest {
     }
 
     @Test
+    fun rejectsPartialSuccessForRequestsThatNeedACompleteFile() {
+        SafeMediaHttp.validateCompleteGetResponse(200, "音频文件")
+        val error = runCatching {
+            SafeMediaHttp.validateCompleteGetResponse(206, "音频文件")
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("完整响应"))
+    }
+
+    @Test
     fun recognizesCommonHtmlAndJsonErrorPayloads() {
         assertTrue(isHtmlOrJsonContentType("text/html; charset=utf-8"))
         assertTrue(isHtmlOrJsonContentType("application/problem+json"))

@@ -92,6 +92,11 @@ internal object SafeMediaHttp {
     }
 }
 
+/** Require a complete response for GETs that intentionally do not request a byte range. */
+internal fun validateCompleteGetResponse(code: Int, resourceLabel: String) {
+    if (code != 200) throw IllegalStateException(resourceLabel + "未返回完整响应（HTTP " + code + "）。")
+}
+
 /** Refuse insecure redirects after a secure request; never downgrade session media URLs. */
 internal fun isAllowedRedirect(fromScheme: String, toScheme: String): Boolean =
     fromScheme in setOf("http", "https") &&

@@ -189,7 +189,7 @@ class HlsAudioDownloaderTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("完整 HLS 清单"))
+        assertTrue(error?.message.orEmpty().contains("完整响应"))
     }
 
     @Test
@@ -204,7 +204,7 @@ class HlsAudioDownloaderTest {
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("完整 HLS 片段"))
+        assertTrue(error?.message.orEmpty().contains("完整响应"))
     }
 
     @Test
