@@ -281,8 +281,12 @@ fun WebSourceScreen(
                                 }
                                 notice = when {
                                     sawEncrypted -> "网页报告该媒体可能使用 DRM/加密保护；本应用不会尝试绕过保护。"
-                                    sawBlob -> "检测到 blob 媒体地址。blob/MSE 通常不是可直接下载的文件；若网络分片没有公开可访问地址，暂时无法提取。"
-                                    candidates.isNotEmpty() -> "已更新媒体列表。选择一个可访问的媒体源后，将由原生播放器读取音轨。"
+                                    candidates.isNotEmpty() && sawBlob ->
+                                        "播放器使用了 blob/MSE，但同时发现公开的媒体清单或音轨地址；请优先选择 HLS/DASH 清单，而不是 blob 地址。"
+                                    candidates.isNotEmpty() ->
+                                        "已更新媒体列表。选择一个可访问的媒体源后，将由原生播放器读取音轨。"
+                                    sawBlob ->
+                                        "检测到 blob 媒体地址。正在使用网页公开的网络资源清单寻找可访问的音轨；如果没有公开清单，可能无法提取。"
                                     else -> "网页没有暴露可直接读取的媒体地址；可尝试先点网页播放器播放后再检查。"
                                 }
                             }
@@ -367,4 +371,4 @@ private const val ANDROID_WEBVIEW_UA =
 private const val PAUSE_MEDIA_JS =
     "Array.from(document.querySelectorAll('video,audio')).forEach(function(e){try{e.pause();e.muted=true;}catch(x){}});"
 
-private const val EXTRACT_MEDIA_JS = """(function(){return JSON.stringify(Array.from(document.querySelectorAll('video,audio')).map(function(e){return {url:e.currentSrc||e.src||'',tag:e.tagName.toLowerCase(),mime:e.currentSrcType||e.type||'',encrypted:!!e.mediaKeys};}).filter(function(x){return !!x.url;}));})()"""
+private const val EXTRACT_MEDIA_JS = """(function(){var media=Array.from(document.querySelectorAll('video,audio')).reduce(function(all,e){all.push({url:e.currentSrc||e.src||'',tag:e.tagName.toLowerCase(),mime:e.type||'',encrypted:!!e.mediaKeys});Array.from(e.querySelectorAll('source')).forEach(function(s){all.push({url:s.src||'',tag:e.tagName.toLowerCase(),mime:s.type||'',encrypted:!!e.mediaKeys});});return all;},[]);var resources=[];try{resources=performance.getEntriesByType('resource').map(function(e){return e.name;}).filter(function(url){return /\\.(m3u8|mpd)(?:[?#]|$)/i.test(url);}).map(function(url){return {url:url,tag:'resource',mime:'',encrypted:false};});}catch(e){}var seen={};return JSON.stringify(media.concat(resources).filter(function(x){if(!x.url||seen[x.url])return false;seen[x.url]=true;return true;}));})()"""
