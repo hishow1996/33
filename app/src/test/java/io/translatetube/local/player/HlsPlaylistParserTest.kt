@@ -64,6 +64,26 @@ class HlsPlaylistParserTest {
     }
 
     @Test
+    fun prefersDeclaredVideoAudioGroupOverUnrelatedStandaloneAudioVariant() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="main",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="audio/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="avc1.42e01e,mp4a.40.2",AUDIO="main"
+            video/main.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"
+            audio/commentary-only.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://media.example.test/path/audio/en.m3u8",
+            HlsPlaylistParser.selectPlaylistUrl(
+                "https://media.example.test/path/master.m3u8",
+                master,
+            ),
+        )
+    }
+
+    @Test
     fun keepsVariantWhenItsPreferredAudioIsInBandAndOtherGroupsHaveExternalUris() {
         val master = """
             #EXTM3U
