@@ -782,7 +782,14 @@ class PlaybackService : MediaSessionService() {
                     if (isChineseLanguage(srcLang)) {
                         parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
                     } else {
-                        translateLines(sessionKey, parsedLines, srcLang, importedCacheKey)
+                        translateLines(
+                            sessionKey,
+                            parsedLines,
+                            srcLang,
+                            importedCacheKey,
+                            activeTranslationId,
+                            translationProfileIdentity,
+                        )
                     }
                 )
                 previousDubbing?.releaseAndJoin()
@@ -1535,14 +1542,20 @@ class PlaybackService : MediaSessionService() {
                             progress = "继续翻译缓存中尚未完成的字幕…",
                         )
                     }
-                    lines = translateLines(key, restored, srcLang, translationCacheKey)
+                    lines = translateLines(
+                        key, restored, srcLang, translationCacheKey,
+                        selectedTranslationId, translationProfileIdentity,
+                    )
                 }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
-                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey)
+                    translatedLines = translateLines(
+                        key, translatedLines, srcLang, translationCacheKey,
+                        selectedTranslationId, translationProfileIdentity,
+                    )
                 } else if (translatedLines.isNotEmpty()) {
                     // Already-Chinese source subtitles are the Chinese display track; publish immutable copies.
                     translatedLines = translatedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
@@ -1811,12 +1824,28 @@ class PlaybackService : MediaSessionService() {
         lines: List<SubLine>,
         srcLang: String,
         cacheKeyOverride: String? = null,
+        expectedTranslationId: Long? = null,
+        expectedProfileIdentity: String? = null,
     ): List<SubLine> {
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         var updatedLines: List<SubLine> = lines.toList()
         val db = AppDatabase.get(this)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val activeId = prefs.getLong("active_api_id", -1L)
+        if (expectedTranslationId != null && activeId != expectedTranslationId) {
+            throw TranslationFailureException(
+                "翻译配置在任务准备期间发生了变化。为避免混用不同模型的译文，本次翻译已停止，请重试。",
+                IllegalStateException("Selected translation engine changed from $expectedTranslationId to $activeId"),
+            )
+        }
+        if (expectedProfileIdentity != null &&
+            translationEngineCacheIdentity(activeId) != expectedProfileIdentity
+        ) {
+            throw TranslationFailureException(
+                "API 配置在任务准备期间发生了变化。为避免把新旧模型的结果写入同一缓存，本次翻译已停止，请重试。",
+                IllegalStateException("Translation API profile changed while preparing translation"),
+            )
+        }
         val profiles = db.apiProfileDao().enabled()
         val tgt = "zh"
         val plain = lines.map { it.text }
