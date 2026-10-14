@@ -21,14 +21,14 @@ import java.util.concurrent.TimeUnit
 /** Reads provider keys from encrypted SharedPreferences values written by SettingsScreen. */
 object CloudTranscriptionSettings {
     fun apiKey(context: Context, provider: String): String {
-        if (provider != "elevenlabs" && provider != "cartesia") return ""
+        if (provider != "elevenlabs" && provider != "cartesia" && provider != "kawa") return ""
         val stored = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
             .getString("asr_" + provider + "_key", "").orEmpty()
         return Crypto.decrypt(stored).trim()
     }
 }
 
-/** Batch cloud transcription for ElevenLabs Scribe and Cartesia Ink. Call from Dispatchers.IO. */
+/** Batch cloud transcription for ElevenLabs Scribe, Cartesia Ink, and Kawa. Call from Dispatchers.IO. */
 object CloudTranscription {
     data class Result(
         val cues: List<Triple<Long, Long, String>>,
@@ -99,10 +99,11 @@ object CloudTranscription {
         durationMs: Long,
         checkActive: () -> Unit = {},
     ): Result {
-        require(provider == "elevenlabs" || provider == "cartesia") { "未知云端转写服务" }
+        require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
         require(wavFile.isFile && wavFile.length() > 44L) { "待转写音频为空" }
         checkActive()
+        if (provider == "kawa") return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive)
 
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -197,6 +198,114 @@ object CloudTranscription {
             }
         }
         return Result(cues, language)
+    }
+
+
+    /** Kawa limits uploads to 10 MB. Split PCM WAV into 8 MiB chunks and restore global timestamps. */
+    private fun transcribeKawa(
+        apiKey: String,
+        language: String,
+        wavFile: File,
+        durationMs: Long,
+        checkActive: () -> Unit,
+    ): Result {
+        val pcmBytes = wavFile.length() - 44L
+        if (pcmBytes <= 0L) throw IOException("待转写 WAV 音频为空")
+        val chunkPcmBytes = 8L * 1024L * 1024L
+        val chunks = ArrayList<Pair<Long, File>>()
+        var offsetBytes = 0L
+        try {
+            java.io.RandomAccessFile(wavFile, "r").use { input ->
+                while (offsetBytes < pcmBytes) {
+                    checkActive()
+                    val size = minOf(chunkPcmBytes, pcmBytes - offsetBytes)
+                    val chunk = File.createTempFile("asr-kawa-", ".wav", wavFile.parentFile)
+                    try {
+                        val header = ByteArray(44)
+                        input.seek(0L); input.readFully(header)
+                        val little = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                        little.putInt(4, (36L + size).toInt())
+                        little.putInt(40, size.toInt())
+                        FileOutputStream(chunk).use { output ->
+                            output.write(header)
+                            input.seek(44L + offsetBytes)
+                            val buffer = ByteArray(64 * 1024)
+                            var remaining = size
+                            while (remaining > 0L) {
+                                checkActive()
+                                val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                                if (n < 0) throw IOException("Kawa 分段音频读取不完整")
+                                if (n > 0) { output.write(buffer, 0, n); remaining -= n }
+                            }
+                        }
+                    } catch (error: Exception) { chunk.delete(); throw error }
+                    chunks += (offsetBytes / 32L) to chunk
+                    offsetBytes += size
+                }
+            }
+            val cues = ArrayList<Triple<Long, Long, String>>()
+            var detectedLanguage = language
+            for ((offsetMs, chunk) in chunks) {
+                checkActive()
+                val form = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart("file", chunk.name, chunk.asRequestBody("audio/wav".toMediaType()))
+                    .apply { if (language.isNotBlank() && language != "auto") addFormDataPart("language", language) }
+                    .build()
+                val create = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions")
+                    .header("Authorization", "Bearer $apiKey").post(form).build()
+                val jobId = client.newCall(create).execute().use { response ->
+                    val body = response.body?.string().orEmpty(); checkActive()
+                    if (!response.isSuccessful) {
+                        val message = runCatching { JSONObject(body).optJSONObject("error")?.optString("message") }.getOrNull()
+                        val advice = when (response.code) {
+                            401, 403 -> "Kawa API Key 无效或没有访问权限"
+                            413 -> "Kawa 单次上传上限为 10 MB"
+                            415 -> "Kawa 只接受 MP3 或 WAV 音频"
+                            429 -> "Kawa 每月免费转写额度已用完"
+                            else -> message?.takeIf { it.isNotBlank() }?.take(200) ?: "请检查网络和 Kawa 账户"
+                        }
+                        throw IOException("Kawa 云端转写失败（HTTP ${response.code}）：$advice")
+                    }
+                    JSONObject(body).optString("job_id").takeIf { it.isNotBlank() }
+                        ?: throw IOException("Kawa 没有返回转写任务编号")
+                }
+                var result: JSONObject? = null
+                var attempts = 0
+                while (attempts++ < 180) {
+                    checkActive()
+                    val poll = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions/$jobId")
+                        .header("Authorization", "Bearer $apiKey").get().build()
+                    val status = client.newCall(poll).execute().use { response ->
+                        val body = response.body?.string().orEmpty(); checkActive()
+                        if (!response.isSuccessful) throw IOException("Kawa 查询转写状态失败（HTTP ${response.code}）")
+                        JSONObject(body)
+                    }
+                    when (status.optString("status")) {
+                        "succeeded" -> { result = status.optJSONObject("result"); break }
+                        "failed" -> throw IOException("Kawa 转写任务失败：" +
+                            status.optJSONObject("error")?.optString("message").orEmpty().ifBlank { "服务端处理失败" }.take(200))
+                    }
+                    Thread.sleep(2_000L)
+                }
+                val obj = result ?: throw IOException("Kawa 转写等待超时，请稍后重试")
+                obj.optString("language").takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
+                val transcript = obj.optJSONArray("transcript") ?: throw IOException("Kawa 返回结果缺少分段时间戳")
+                for (i in 0 until transcript.length()) {
+                    checkActive()
+                    val item = transcript.optJSONObject(i) ?: continue
+                    val text = item.optString("text").trim()
+                    val start = item.optDouble("time_start", Double.NaN)
+                    val end = item.optDouble("time_end", Double.NaN)
+                    if (text.isBlank() || !start.isFinite() || !end.isFinite() || end <= start) continue
+                    val safeDuration = durationMs.coerceAtLeast(1L)
+                    val startMs = (offsetMs + (start * 1000.0).toLong()).coerceIn(0L, safeDuration - 1L)
+                    val endMs = (offsetMs + (end * 1000.0).toLong()).coerceIn(startMs + 1L, safeDuration)
+                    cues += Triple(startMs, endMs, text)
+                }
+            }
+            if (cues.isEmpty()) throw IOException("Kawa 没有返回有效字幕时间轴；可切回本地 Whisper 重试")
+            return Result(cues.sortedBy { it.first }, detectedLanguage)
+        } finally { chunks.forEach { it.second.delete() } }
     }
 
     private fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {
