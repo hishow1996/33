@@ -35,6 +35,7 @@ import io.translatetube.local.yt.SubtitleTrackOption
 import io.translatetube.local.yt.YouTubeAudioCandidate
 import io.translatetube.local.yt.YouTubeStreamSelector
 import io.translatetube.local.yt.YouTubeVideoCandidate
+import io.translatetube.local.web.WebMediaCandidatePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -140,6 +141,7 @@ class PlaybackService : MediaSessionService() {
     private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
+    @Volatile private var sourceHeaders: Map<String, String> = emptyMap()
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var qualityRecoveryAttempted = false
@@ -481,6 +483,7 @@ class PlaybackService : MediaSessionService() {
         localUri: Uri?,
         importedLines: List<SubLine>? = null,
         resumeState: PlayerUiState? = null,
+        sourceHeaders: Map<String, String> = emptyMap(),
     ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
@@ -495,6 +498,8 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
+        val safeSourceHeaders = WebMediaCandidatePolicy.safeHeaders(sourceHeaders)
+        this.sourceHeaders = safeSourceHeaders
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
@@ -533,7 +538,7 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot)
+            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, safeSourceHeaders)
         }
     }
 
@@ -958,6 +963,7 @@ class PlaybackService : MediaSessionService() {
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
         sourceImportedLines: List<SubLine>? = null,
+        sourceHeaders: Map<String, String> = emptyMap(),
     ) {
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
