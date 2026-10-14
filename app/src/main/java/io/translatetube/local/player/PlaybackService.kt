@@ -2265,6 +2265,9 @@ class PlaybackService : MediaSessionService() {
                 ).use { resp ->
                     if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
                     val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
+                    if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
+                        throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
+                    }
                     val total = body.contentLength()
                     if (total > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
                     body.byteStream().use { ins ->
