@@ -27,6 +27,11 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 private class DubbingPcmLimitException(message: String) : IllegalStateException(message)
 
+private data class DubbingCacheInspection(
+    val hasAudio: Boolean?,
+    val stamp: DubbingCacheFileStamp?,
+)
+
 class DubbingEngine(
     ctx: Context,
     private val videoKey: String,
@@ -167,21 +172,22 @@ class DubbingEngine(
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         if (released || generation != cacheInitGeneration.get()) return@launch
                         val file = cacheFile(i)
-                        val cacheHasAudio = inspectCache(file, ::checkCacheInitActive)
+                        val cacheInspection = inspectCache(file, ::checkCacheInitActive)
+                        val cacheHasAudio = cacheInspection.hasAudio
                         val blankTranslation = this@DubbingEngine.lines[i].zh.isNullOrBlank()
                         when {
                             blankTranslation && cacheHasAudio == false ->
                                 readiness.markPrepared(i, hasAudio = false)
                             blankTranslation && cacheHasAudio == true -> {
                                 // A blank translation must never reuse a non-empty cache entry.
-                                file.delete()
+                                deleteCacheIfUnchanged(file, cacheInspection.stamp)
                                 pending.offerLast(i)
                             }
                             !blankTranslation && cacheHasAudio == true ->
                                 readiness.markPrepared(i, hasAudio = true)
                             !blankTranslation && cacheHasAudio == false -> {
                                 // Empty PCM from a failed old run isn't a successful cache hit.
-                                file.delete()
+                                deleteCacheIfUnchanged(file, cacheInspection.stamp)
                                 pending.offerLast(i)
                             }
                             else -> pending.offerLast(i)
@@ -566,24 +572,38 @@ class DubbingEngine(
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
     /**
-     * Return true for a valid non-empty PCM cache, false for a valid empty marker,
-     * and null when the entry is missing/corrupt and should be synthesized again.
+     * Delete only if the path still points to the exact file version we inspected.
+     * The stamp check and deletion share the publication lock so an atomic replacement
+     * cannot be removed by a stale reader.
+     */
+    private fun deleteCacheIfUnchanged(file: File, stamp: DubbingCacheFileStamp?): Boolean {
+        if (stamp == null) return false
+        return synchronized(cacheInstallLock) {
+            if (!stamp.stillMatches(file)) false else file.delete()
+        }
+    }
+
+    /**
+     * Validate a PCM cache and retain its fingerprint for any follow-up cleanup. Never
+     * remove a path based only on an older file descriptor: a different engine may have
+     * atomically installed a replacement while this stream was being checked.
      */
     private fun inspectCache(
         file: File,
         checkActive: () -> Unit = {},
-    ): Boolean? {
-        if (!file.isFile) return null
-        if (file.length() < 8L) {
-            file.delete()
-            return null
+    ): DubbingCacheInspection {
+        val stamp = DubbingCacheFileStamp.capture(file)
+            ?: return DubbingCacheInspection(null, null)
+        if (stamp.length < 8L) {
+            deleteCacheIfUnchanged(file, stamp)
+            return DubbingCacheInspection(null, stamp)
         }
         return try {
             java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(file))).use { input ->
                 val sampleRate = input.readInt()
                 val sampleCount = input.readInt()
                 if (sampleRate !in 8_000..192_000 || sampleCount < 0 || sampleCount > DubbingPcmValidation.MAX_SAMPLE_COUNT ||
-                    file.length() != 8L + sampleCount.toLong() * 4L
+                    stamp.length != 8L + sampleCount.toLong() * 4L
                 ) {
                     throw java.io.IOException("PCM 缓存头或长度无效")
                 }
@@ -601,16 +621,16 @@ class DubbingEngine(
                     if (DubbingPcmValidation.isAudibleSample(sample)) hasAudibleSample = true
                 }
                 when {
-                    sampleCount == 0 -> false // Valid explicit empty marker.
-                    hasAudibleSample -> true
+                    sampleCount == 0 -> DubbingCacheInspection(false, stamp) // Valid explicit empty marker.
+                    hasAudibleSample -> DubbingCacheInspection(true, stamp)
                     else -> throw java.io.IOException("PCM 缓存只有静音采样")
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            file.delete()
-            null
+            deleteCacheIfUnchanged(file, stamp)
+            DubbingCacheInspection(null, stamp)
         }
     }
 
@@ -630,7 +650,7 @@ class DubbingEngine(
             checkActive()
             return true
         }
-        return inspectCache(cacheFile(idx), checkActive)
+        return inspectCache(cacheFile(idx), checkActive).hasAudio
     }
 
     /**
@@ -713,12 +733,13 @@ class DubbingEngine(
             touchCacheFile(f)
             return memoryAudio
         }
+        val cacheStamp = DubbingCacheFileStamp.capture(f)
         if (!validCache(f)) {
             // A newer seek/session owns the player now; do not delete or requeue a cache on its behalf.
             if (!isCurrent()) return null
             // Cache files can disappear after attach() validates them. Treat this as recoverable
             // pending work, not a permanent silent cue; keep source audio audible while regenerating.
-            f.delete()
+            deleteCacheIfUnchanged(f, cacheStamp)
             markCuePending(idx)
             queueSynthesisRetry(idx)
             return null
@@ -768,7 +789,7 @@ class DubbingEngine(
             if (!isCurrent()) return null
             // A corrupt cache is recoverable too. Roll back displayed progress and leave the cue
             // pending so it can be synthesized again instead of being treated as permanently silent.
-            f.delete()
+            deleteCacheIfUnchanged(f, cacheStamp)
             markCuePending(idx)
             queueSynthesisRetry(idx)
             null
