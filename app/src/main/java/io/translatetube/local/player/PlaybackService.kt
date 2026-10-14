@@ -1731,7 +1731,6 @@ class PlaybackService : MediaSessionService() {
                 updateUiForSession(key) {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },
-                        selectedQuality = defaultQuality.label,
                     )
                 }
                 ensureCurrentSession(key)
@@ -1748,6 +1747,7 @@ class PlaybackService : MediaSessionService() {
                     if (!accepted) {
                         throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
                     }
+                    updateUiForSession(key) { it.copy(selectedQuality = defaultQuality.label) }
                 }
             } else {
                 ensureCurrentSession(key)
@@ -2235,7 +2235,6 @@ class PlaybackService : MediaSessionService() {
                         progress = "正在尝试兼容清晰度 ${fallback.label}…",
                         error = null,
                         qualityOptions = choices.sources.map { it.label },
-                        selectedQuality = fallback.label,
                     )
                 }
                 val accepted = pm.setYouTubeQuality(
@@ -2251,6 +2250,14 @@ class PlaybackService : MediaSessionService() {
                 }
                 pm.seekTo(position)
                 if (shouldResume) pm.play() else pm.pause()
+                updateUiForSession(sessionKey) { state ->
+                    if (state.key == sessionKey) state.copy(
+                        phase = Phase.READY,
+                        progress = "",
+                        error = null,
+                        selectedQuality = fallback.label,
+                    ) else state
+                }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
