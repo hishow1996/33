@@ -104,9 +104,9 @@ internal object HlsPlaylistParser {
             }
         }.orEmpty()
         fun preferredRendition(
-            renditions: List<Pair<Map<String, String>, String>>
+            renditions: List<Pair<Map<String, String>, String?>>
         ): String? = renditions.sortedWith(
-            compareByDescending<Pair<Map<String, String>, String>> {
+            compareByDescending<Pair<Map<String, String>, String?>> {
                 it.first["DEFAULT"].equals("YES", true)
             }.thenByDescending {
                 it.first["AUTOSELECT"].equals("YES", true)
