@@ -624,10 +624,15 @@ class DubbingEngine(
     }
 
     /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。 */
-    private fun load(idx: Int): Pair<FloatArray, Int>? {
+    private fun load(
+        idx: Int,
+        isCurrent: () -> Boolean = { true },
+    ): Pair<FloatArray, Int>? {
+        if (!isCurrent()) return null
         val f = cacheFile(idx)
         val memoryAudio = synchronized(mem) { mem[idx] }
         if (memoryAudio != null) {
+            if (!isCurrent()) return null
             // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
             // mtime aligned when playback hits memory so frequently reused PCM isn't evicted as
             // if it had not been used since the original synthesis.
@@ -635,6 +640,8 @@ class DubbingEngine(
             return memoryAudio
         }
         if (!validCache(f)) {
+            // A newer seek/session owns the player now; do not delete or requeue a cache on its behalf.
+            if (!isCurrent()) return null
             // Cache files can disappear after attach() validates them. Treat this as recoverable
             // pending work, not a permanent silent cue; keep source audio audible while regenerating.
             f.delete()
@@ -650,7 +657,14 @@ class DubbingEngine(
                     f.length() != 8L + n.toLong() * 4L) {
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
-                val samples = FloatArray(n) { d.readFloat() }
+                val samples = FloatArray(n)
+                for (sampleIndex in 0 until n) {
+                    // PCM may contain millions of samples. Cancel stale playback loads in bounded
+                    // chunks so a seek doesn't wait for an entire large file to be materialized.
+                    if ((sampleIndex and 0x1fff) == 0 && !isCurrent()) return null
+                    samples[sampleIndex] = d.readFloat()
+                }
+                if (!isCurrent()) return null
                 if (n > 0 && !DubbingPcmValidation.isValidAudio(sr, samples)) {
                     throw java.io.IOException("PCM 缓存包含静音或无效音频")
                 }
@@ -663,7 +677,12 @@ class DubbingEngine(
                 f.setLastModified(System.currentTimeMillis())
                 samples to sr
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
+            // A seek can invalidate the reader while the file is being read. That is not cache
+            // corruption; leave the file untouched and let the next playAt() load its own cue.
+            if (!isCurrent()) return null
             // A corrupt cache is recoverable too. Roll back displayed progress and leave the cue
             // pending so it can be synthesized again instead of being treated as permanently silent.
             f.delete()
@@ -777,7 +796,9 @@ class DubbingEngine(
             audioExec.execute {
                 var created: AudioTrack? = null
                 try {
-                    val (samples, sr) = load(idx) ?: return@execute
+                    val (samples, sr) = load(idx) {
+                        !released && playbackGeneration.get() == generation
+                    } ?: return@execute
                     if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
 
                     val position = DubbingStartPositionPolicy.choose(
