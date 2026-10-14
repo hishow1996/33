@@ -143,9 +143,6 @@ object SubtitleParsers {
         }
         val out = mutableListOf<SubLine>()
         val cueRegex = ttmlCueRegex
-            "<p\\b([^>]*)>(.*?)</p\\s*>",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-        )
         val attributeRegex = ttmlAttributeRegex
         cueRegex.findAll(src).forEach { match ->
             val attrs = attributeRegex.findAll(match.groupValues[1])
@@ -159,8 +156,6 @@ object SubtitleParsers {
             } ?: return@forEach
             if (end <= start) return@forEach
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
-                Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n"
-            )
             val text = android.text.Html.fromHtml(
                 body,
                 android.text.Html.FROM_HTML_MODE_LEGACY,
