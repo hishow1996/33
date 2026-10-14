@@ -34,6 +34,44 @@ class TranslationCacheIdentityTest {
     }
 
     @Test
+    fun reselectingProviderRekeysImportedCacheWithoutLosingSourceFingerprint() {
+        val originalKey = TranslationCacheIdentity.importedKey("video-key", 42L, source)
+        val expectedFingerprint = originalKey.substringAfterLast("|imported-")
+
+        val rekeyed = TranslationCacheIdentity.forProvider(
+            baseKey = "unused-new-base",
+            activeId = 43L,
+            importedLines = null,
+            previousKey = originalKey,
+        )
+
+        assertEquals("video-key|zh|43|imported-$expectedFingerprint", rekeyed)
+    }
+
+    @Test
+    fun providerSnapshotUsesSelectedIdForOrdinaryResume() {
+        val rekeyed = TranslationCacheIdentity.forProvider(
+            baseKey = "video-key",
+            activeId = 43L,
+            importedLines = null,
+            previousKey = "video-key|zh|42",
+        )
+        assertEquals("video-key|zh|43", rekeyed)
+    }
+
+    @Test
+    fun explicitImportedLinesTakePrecedenceAndChangeFingerprint() {
+        val changed = source.mapIndexed { i, line -> if (i == 0) line.copy(text = "Hi") else line }
+        val rekeyed = TranslationCacheIdentity.forProvider(
+            baseKey = "video-key",
+            activeId = 43L,
+            importedLines = changed,
+            previousKey = TranslationCacheIdentity.importedKey("video-key", 42L, source),
+        )
+        assertEquals(TranslationCacheIdentity.importedKey("video-key", 43L, changed), rekeyed)
+    }
+
+    @Test
     fun translationProfileAndVideoKeyArePartOfIdentity() {
         val key = TranslationCacheIdentity.importedKey("video-key", 42L, source)
         assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 43L, source))
