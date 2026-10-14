@@ -5,6 +5,16 @@ import org.junit.Test
 
 class SubtitleParsersTest {
     @Test
+    fun skipsAssCueWhoseTimestampRoundsPastLongRange() {
+        val source = """
+            [Events]
+            Dialogue: 0,2562047788015:12:55.808,2562047788015:12:56.000,Default,,0,0,0,,overflowing timestamp
+        """.trimIndent()
+
+        assertEquals(emptyList<SubLine>(), SubtitleParsers.parseAss(source))
+    }
+
+    @Test
     fun skipsMalformedAssCueWithoutDiscardingValidCues() {
         val source = """
             [Events]
