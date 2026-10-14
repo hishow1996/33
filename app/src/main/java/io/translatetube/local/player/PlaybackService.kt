@@ -155,6 +155,8 @@ class PlaybackService : MediaSessionService() {
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
     private val asrAudioDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    // Do not evict downloaded audio while MediaExtractor is actively reading it.
+    private val activeAsrAudioPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -1250,6 +1252,10 @@ class PlaybackService : MediaSessionService() {
                     )
                     else -> localUri ?: throw IllegalStateException("无音频源")
                 }
+                val leasedAudioPath = (audioFile as? File)
+                    ?.takeIf { videoId != null || remoteMediaUrl != null }
+                    ?.absolutePath
+                leasedAudioPath?.let(activeAsrAudioPaths::add)
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val pcmFile = try {
@@ -1292,6 +1298,8 @@ class PlaybackService : MediaSessionService() {
                         )
                     }
                     throw error
+                } finally {
+                    leasedAudioPath?.let(activeAsrAudioPaths::remove)
                 }
                 transientPcmFile = pcmFile
                 ensureCurrentSession(key)
@@ -2278,10 +2286,14 @@ class PlaybackService : MediaSessionService() {
         // could leave stale cache files on disk indefinitely.
         files.forEach { file ->
             val isKept = keep != null && file.absolutePath == keep.absolutePath
+            val isActive = activeAsrAudioPaths.contains(file.absolutePath)
             val age = now - file.lastModified()
-            if (!isKept && (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)) {
+            if (!isKept && !isActive &&
+                (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)
+            ) {
                 file.delete()
             } else {
+                // Active files still count toward the budget, but must not be deleted mid-decode.
                 totalBytes += file.length()
             }
         }
@@ -2290,6 +2302,7 @@ class PlaybackService : MediaSessionService() {
         for (file in files.sortedBy { it.lastModified() }) {
             if (totalBytes <= budget) break
             if (keep != null && file.absolutePath == keep.absolutePath) continue
+            if (activeAsrAudioPaths.contains(file.absolutePath)) continue
             val size = file.length()
             if (file.delete()) totalBytes -= size
         }
@@ -2685,7 +2698,18 @@ class PlaybackService : MediaSessionService() {
                         sourceFile = null
                         sourceUri = sessionLocalUri ?: throw IllegalStateException("找不到当前视频文件")
                     }
-                    AudioExtract.decodeTo16kMono(this@PlaybackService, sourceUri, sourceFile, maxDurationMs = 3 * 60 * 1000L)
+                    val leasedPath = sourceFile?.absolutePath
+                    leasedPath?.let(activeAsrAudioPaths::add)
+                    try {
+                        AudioExtract.decodeTo16kMono(
+                            this@PlaybackService,
+                            sourceUri,
+                            sourceFile,
+                            maxDurationMs = 3 * 60 * 1000L,
+                        )
+                    } finally {
+                        leasedPath?.let(activeAsrAudioPaths::remove)
+                    }
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
                     updateUiForSession(sessionKey) { state ->
