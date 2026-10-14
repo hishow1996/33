@@ -8,6 +8,12 @@ internal class Pcm16StreamingResampler(
     private val sourceRate: Int,
     private val targetRate: Int,
 ) {
+    // Keep a single output chunk bounded; the caller streams subsequent chunks to disk.
+    // Eight million PCM16 samples require 16 MiB, already a large temporary allocation.
+    private companion object {
+        const val MAX_OUTPUT_CHUNK_SAMPLES = 8 * 1024 * 1024
+    }
+
     private val ratio: Double
     private var inputSamples = 0L
     private var nextOutputSample = 0L
@@ -38,8 +44,16 @@ internal class Pcm16StreamingResampler(
         }
         val newInputCount = inputSamples + input.size
         val targetCountNow = (newInputCount.toDouble() / ratio).toInt().toLong()
-        val estimatedOutputCount = ceil(input.size.toDouble() / ratio).toInt().coerceAtLeast(1) + 4
-        var output = ShortArray(estimatedOutputCount)
+        val estimatedOutputCount = ceil(input.size.toDouble() / ratio)
+        if (!estimatedOutputCount.isFinite() ||
+            estimatedOutputCount > (MAX_OUTPUT_CHUNK_SAMPLES - 4).toDouble()
+        ) {
+            throw IllegalArgumentException(
+                "单个重采样输入块过大，预计输出超过 ${MAX_OUTPUT_CHUNK_SAMPLES} 个采样点；请拆分为更小的音频块"
+            )
+        }
+        val initialCapacity = estimatedOutputCount.toInt().coerceAtLeast(1) + 4
+        var output = ShortArray(initialCapacity)
         var produced = 0
 
         while (nextOutputSample < targetCountNow) {
