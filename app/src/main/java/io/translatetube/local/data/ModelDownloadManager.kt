@@ -129,6 +129,39 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
+    /**
+     * OkHttp's synchronous execute/read calls can block a worker even after its coroutine is
+     * cancelled. Attach to the Job's cancelling transition so cancellation closes the socket
+     * immediately instead of waiting for the 60-second read timeout.
+     */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    private suspend fun <T> executeCancellable(
+        call: okhttp3.Call,
+        consume: suspend (okhttp3.Response) -> T,
+    ): T = withContext(Dispatchers.IO) {
+        val activeJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        val cancellationHandle = activeJob?.invokeOnCompletion(
+            onCancelling = true,
+            invokeImmediately = true,
+        ) { cause ->
+            if (cause is java.util.concurrent.CancellationException) call.cancel()
+        }
+        try {
+            call.execute().use { response -> consume(response) }
+        } catch (error: Exception) {
+            if (activeJob?.isCancelled == true &&
+                error !is kotlinx.coroutines.CancellationException
+            ) {
+                throw kotlinx.coroutines.CancellationException("模型下载已取消").also {
+                    it.initCause(error)
+                }
+            }
+            throw error
+        } finally {
+            cancellationHandle?.dispose()
+        }
+    }
+
     private val ttsUrls = listOf(
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2",
         "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2",
@@ -232,7 +265,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             try {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
-                    http.newCall(req).execute().use { resp ->
+                    executeCancellable(http.newCall(req)) { resp ->
                         if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                         val body = resp.body ?: throw IllegalStateException("空响应")
                         val total = body.contentLength().takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
@@ -404,7 +437,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         temp.delete()
         try {
             val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
-            http.newCall(req).execute().use { resp ->
+            executeCancellable(http.newCall(req)) { resp ->
                 if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                 val body = resp.body ?: throw IllegalStateException("下载响应为空")
                 val maxBytes = 16L * 1024 * 1024
