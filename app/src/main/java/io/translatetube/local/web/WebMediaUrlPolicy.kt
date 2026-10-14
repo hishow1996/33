@@ -56,8 +56,8 @@ internal object WebMediaUrlPolicy {
             return "该媒体地址不是可独立访问的 HTTP/HTTPS 视频流。"
         }
         val path = runCatching { URI(raw).rawPath.orEmpty().lowercase() }.getOrDefault("")
-        if (path.endsWith(".m3u8") || path.endsWith(".mpd")) {
-            return "检测到 HLS/DASH 分片清单；当前音轨缓存流程尚未支持这种清单格式。"
+        if (path.endsWith(".mpd")) {
+            return "检测到 DASH 分片清单；当前版本暂不支持 DASH 音轨缓存。"
         }
         val uri = runCatching { URI(raw) }.getOrNull()
         if (uri == null || uri.scheme?.lowercase() !in setOf("http", "https") ||
