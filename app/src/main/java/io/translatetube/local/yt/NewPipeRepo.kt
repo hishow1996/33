@@ -270,7 +270,12 @@ object NewPipeRepo {
         val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
         newPipeHttpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("字幕下载失败 ${resp.code}")
-            return resp.body?.string() ?: ""
+            val body = resp.body ?: return ""
+            if (body.contentLength() > BoundedTextPayload.MAX_BYTES) {
+                throw IllegalStateException("字幕响应超过 16 MB 限制，已停止读取以保护设备内存。")
+            }
+            val bytes = body.byteStream().use { input -> BoundedTextPayload.readBytes(input) }
+            return String(bytes, Charsets.UTF_8)
         }
     }
 
