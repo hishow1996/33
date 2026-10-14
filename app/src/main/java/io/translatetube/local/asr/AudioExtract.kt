@@ -86,6 +86,7 @@ object AudioExtract {
         maxDurationMs: Long = Long.MAX_VALUE,
         checkActive: () -> Unit = {},
     ): PcmFile {
+        PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
         val destination = File.createTempFile("translate-pcm-", ".s16le", ctx.cacheDir)
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
@@ -204,7 +205,8 @@ object AudioExtract {
                                 codec.releaseOutputBuffer(outBufferIndex, false)
                                 throw IllegalStateException("音频解码格式在处理中途改变，无法安全转换")
                             }
-                            val monoChunk = PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
+                            // decodedChunk is newly allocated and not reused; avoid a redundant full copy for mono input.
+                            val monoChunk = if (sourceChannels == 1) decodedChunk else PcmChannelMixer.downmixChunk(decodedChunk, sourceChannels)
                             val converted = activeResampler.process(monoChunk)
                             writePcm16Le(output, converted)
                             outputSamples += converted.size
