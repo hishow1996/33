@@ -687,6 +687,9 @@ class DubbingEngine(
                     f.length() != 8L + n.toLong() * 4L) {
                     throw java.io.IOException("PCM 缓存格式或采样率无效")
                 }
+                // A seek/session replacement may happen while opening and validating the
+                // cache header. Recheck before reserving up to 64 MB for stale PCM.
+                if (!isCurrent()) return null
                 val samples = FloatArray(n)
                 var hasAudibleSample = false
                 for (sampleIndex in 0 until n) {
