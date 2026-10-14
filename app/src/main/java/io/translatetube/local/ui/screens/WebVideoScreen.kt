@@ -87,11 +87,21 @@ fun WebVideoScreen(
                     }.distinctBy { it.url }
                 }.getOrDefault(emptyList())
                 mainHandler.post {
-                    candidatesState.value = found
-                    status = if (found.isEmpty()) {
-                        "网页已加载，但暂未检测到可读取的 HTML5 视频。DRM、blob/MSE 或封闭式播放器可能无法提取。"
+                    val merged = (candidatesState.value + found)
+                        .groupBy { it.url }
+                        .map { (_, group) ->
+                            val first = group.first()
+                            first.copy(
+                                title = group.firstOrNull { it.title.isNotBlank() }?.title.orEmpty(),
+                                drmProtected = group.any { it.drmProtected },
+                                durationSeconds = group.maxOfOrNull { it.durationSeconds } ?: first.durationSeconds,
+                            )
+                        }
+                    candidatesState.value = merged
+                    status = if (merged.isEmpty()) {
+                        "网页已加载，但暂未检测到媒体地址。DRM、blob/MSE 或封闭式播放器可能无法提取。"
                     } else {
-                        "发现 ${found.size} 个视频源；选择可独立访问的媒体地址后即可进入配音流程。"
+                        "发现 ${merged.size} 个媒体地址；选择可直接访问且未受 DRM 保护的源即可继续。"
                     }
                 }
             }
@@ -175,6 +185,28 @@ fun WebVideoScreen(
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
                                 view.evaluateJavascript(PROBE_SCRIPT, null)
+                            }
+
+                            override fun shouldInterceptRequest(
+                                view: WebView,
+                                request: WebResourceRequest,
+                            ): android.webkit.WebResourceResponse? {
+                                val resourceUrl = request.url.toString()
+                                if (WebMediaUrlPolicy.looksLikeMediaRequest(resourceUrl)) {
+                                    mainHandler.post {
+                                        val candidate = WebVideoCandidate(
+                                            url = resourceUrl,
+                                            title = view.title.orEmpty(),
+                                            poster = "",
+                                            durationSeconds = 0.0,
+                                            drmProtected = false,
+                                        )
+                                        candidatesState.value = (candidatesState.value + candidate)
+                                            .distinctBy { it.url }
+                                        status = "已从网页网络请求中检测到媒体资源。"
+                                    }
+                                }
+                                return super.shouldInterceptRequest(view, request)
                             }
 
                             override fun onReceivedError(
