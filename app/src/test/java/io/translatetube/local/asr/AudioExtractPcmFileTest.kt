@@ -18,6 +18,23 @@ class AudioExtractPcmFileTest {
         org.junit.Assert.assertEquals(expected, pcm.durationMs)
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsPcmFileWhosePhysicalLengthCannotCoverRequestedSamples() {
+        val truncated = File.createTempFile("pcm-truncated-test", ".s16le")
+        try {
+            truncated.writeBytes(byteArrayOf(1, 0))
+            AudioExtract.PcmFile(
+                file = truncated,
+                sampleCount = 3L,
+            ).readFloatSamples(
+                startSample = 0L,
+                count = 3,
+            )
+        } finally {
+            truncated.delete()
+        }
+    }
+
     @Test(expected = java.util.concurrent.CancellationException::class)
     fun checksCancellationBeforeAllocatingLargeFloatArrayOrOpeningFile() {
         val sampleCount = 32 * 1024 * 1024 / 4
