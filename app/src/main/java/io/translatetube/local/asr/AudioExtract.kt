@@ -131,13 +131,12 @@ object AudioExtract {
             }
             validateOutputFormat(sourceRate, sourceChannels)
 
-            val rawMaxSourceSamples = if (maxDurationMs == Long.MAX_VALUE) {
-                Int.MAX_VALUE.toLong()
-            } else {
-                (sourceRate.toLong() * sourceChannels * maxDurationMs / 1000L)
-                    .coerceAtLeast(sourceChannels.toLong())
-            }
-            val maxSourceSamples = rawMaxSourceSamples - rawMaxSourceSamples % sourceChannels
+            // Recompute this bound if Android 9 reports the decoder's actual PCM format later.
+            var maxSourceSamples = PcmDecodeLimitPolicy.maxSourceSamples(
+                sourceRate,
+                sourceChannels,
+                maxDurationMs,
+            )
             var decodedSourceSamples = 0L
             var outputSamples = 0L
             var outputBytes = 0L
@@ -236,6 +235,13 @@ object AudioExtract {
                             (sourceRate != resamplerRate || sourceChannels != resamplerChannels)
                         ) {
                             throw IllegalStateException("音频解码格式在处理中途改变，无法安全转换")
+                        }
+                        if (resampler == null && decodedSourceSamples == 0L) {
+                            maxSourceSamples = PcmDecodeLimitPolicy.maxSourceSamples(
+                                sourceRate,
+                                sourceChannels,
+                                maxDurationMs,
+                            )
                         }
                     }
                 }
