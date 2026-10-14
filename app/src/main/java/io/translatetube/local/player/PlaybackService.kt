@@ -47,10 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
 private data class PartialAsrTranscript(
@@ -153,6 +150,7 @@ class PlaybackService : MediaSessionService() {
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
     private val asrAudioDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val asrAudioSegmentDownloader = AsrAudioSegmentDownloader()
 
     companion object {
         @Volatile var instance: PlaybackService? = null
@@ -2060,8 +2058,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
-     * Serialize the lookup/download per video so ASR and speaker recognition can never download
-     * the same source audio concurrently. The second caller rechecks the cache after acquiring it.
+     * Serialize source lookup/download per video. A completed cache wins, while a valid .part
+     * and its range metadata are deliberately retained for the downloader to resume safely.
      */
     private suspend fun obtainAsrAudioFile(
         videoId: String,
@@ -2078,128 +2076,143 @@ class PlaybackService : MediaSessionService() {
             }
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
-                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取音频流并准备分段缓存…")
                 } else state
             }
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
-            downloadAudio(stream.content, asrAudioCacheFile(videoId), sessionKey).also {
+            downloadAudio(stream.content, asrAudioCacheFile(videoId), videoId, sessionKey).also {
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = it)
             }
         }
     }
 
-    /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
+    /** Reuse only a completed file. Partial downloads are checked against range metadata later. */
     private fun reusableAsrAudioFile(videoId: String): File? {
         val file = asrAudioCacheFile(videoId)
         val now = System.currentTimeMillis()
         if (AsrAudioCachePolicy.canReuse(file.isFile, file.length(), file.lastModified(), now)) {
             file.setLastModified(now)
+            // A complete file supersedes any leftover partial from an earlier failed attempt.
+            File(file.parentFile, file.name + ".part").delete()
+            File(file.parentFile, file.name + ".part.meta").delete()
             file.parentFile?.let { pruneAsrAudioCache(it, keep = file) }
             return file
         }
         file.delete()
-        File(file.parentFile, file.name + ".part").delete()
+        // Do not delete ".part": the downloader verifies its source identity, validators, and
+        // range support before resuming. This avoids downloading tens of MB again after a timeout.
+        file.parentFile?.let {
+            pruneAsrAudioCache(it, keep = null, keepPart = File(it, file.name + ".part"))
+        }
         return null
     }
 
-    /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
-    private fun pruneAsrAudioCache(directory: File, keep: File?) {
+    /**
+     * Keep audio and partial segments under a shared cache budget. Interrupted partials survive
+     * for 24 hours, but stale/orphaned sidecars and least-recently-used audio are removed.
+     */
+    private fun pruneAsrAudioCache(directory: File, keep: File?, keepPart: File? = null) {
         val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
-        // A process killed during download may leave a large .part file. Remove abandoned partials
-        // after six hours; active downloads update their modification time as bytes are written.
+        val protectedComplete = keep?.absolutePath
+        val protectedPart = keepPart?.absolutePath
+        val partTtlMs = 24L * 60L * 60L * 1_000L
+
         allFiles.filter { file ->
             file.isFile && file.name.endsWith(".part") &&
-                (now - file.lastModified() > 6L * 60L * 60L * 1_000L)
-        }.forEach { it.delete() }
-        val files = allFiles.filter { it.isFile && it.name.endsWith(".bin") }
-        var totalBytes = 0L
+                file.absolutePath != protectedPart &&
+                (now < file.lastModified() || now - file.lastModified() > partTtlMs)
+        }.forEach { file ->
+            file.delete()
+            File(directory, file.name + ".meta").delete()
+            File(directory, file.name + ".meta.tmp").delete()
+        }
 
-        // Enforce TTL even when the folder is below its size budget; otherwise old videos
-        // could leave stale cache files on disk indefinitely.
-        files.forEach { file ->
-            val isKept = keep != null && file.absolutePath == keep.absolutePath
+        // Sidecar files are meaningful only while their paired partial file exists.
+        allFiles.filter { file -> file.isFile && file.name.endsWith(".part.meta") }
+            .forEach { meta ->
+                val part = File(directory, meta.name.removeSuffix(".meta"))
+                if (!part.isFile && meta.absolutePath != protectedPart) meta.delete()
+                if (now >= meta.lastModified() && now - meta.lastModified() > partTtlMs &&
+                    part.absolutePath != protectedPart
+                ) {
+                    meta.delete()
+                    part.delete()
+                }
+            }
+
+        val cacheFiles = directory.listFiles().orEmpty().filter { file ->
+            file.isFile && (file.name.endsWith(".bin") || file.name.endsWith(".part"))
+        }
+        var totalBytes = 0L
+        cacheFiles.forEach { file ->
+            val isProtected = file.absolutePath == protectedComplete || file.absolutePath == protectedPart
             val age = now - file.lastModified()
-            if (!isKept && (file.length() <= 0L || age < 0L || age > AsrAudioCachePolicy.TTL_MS)) {
+            val expired = if (file.name.endsWith(".part")) {
+                age < 0L || age > partTtlMs
+            } else {
+                age < 0L || age > AsrAudioCachePolicy.TTL_MS
+            }
+            if (!isProtected && (file.length() <= 0L || expired)) {
                 file.delete()
+                if (file.name.endsWith(".part")) File(directory, file.name + ".meta").delete()
             } else {
                 totalBytes += file.length()
             }
         }
 
         val budget = AsrAudioCachePolicy.CACHE_BUDGET_BYTES
-        for (file in files.sortedBy { it.lastModified() }) {
+        for (file in cacheFiles.sortedBy { it.lastModified() }) {
             if (totalBytes <= budget) break
-            if (keep != null && file.absolutePath == keep.absolutePath) continue
+            if (file.absolutePath == protectedComplete || file.absolutePath == protectedPart) continue
             val size = file.length()
-            if (file.delete()) totalBytes -= size
+            if (file.delete()) {
+                totalBytes -= size
+                if (file.name.endsWith(".part")) File(directory, file.name + ".meta").delete()
+            }
         }
     }
 
-    private suspend fun downloadAudio(url: String, destination: File? = null, sessionKey: String): File {
-        val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
-        target.parentFile?.mkdirs()
-        val writeTarget = if (destination == null) target else File(target.parentFile, target.name + ".part")
-        if (destination != null) {
-            writeTarget.delete()
-            if (target.exists() && !target.delete()) {
-                throw IllegalStateException("无法替换旧的音频缓存文件")
-            }
-        }
-        val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
-        val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
-        val req = Request.Builder().url(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0")
-            .build()
-        try {
-            withContext(Dispatchers.IO) {
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) throw IllegalStateException("音频下载失败 ${resp.code}")
-                    val body = resp.body ?: throw IllegalStateException("音频下载响应为空")
-                    val total = body.contentLength()
-                    if (total > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                    body.byteStream().use { ins ->
-                        var got = 0L
-                        writeTarget.outputStream().buffered().use { out ->
-                            val buf = ByteArray(64 * 1024)
-                            while (true) {
-                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                val n = ins.read(buf)
-                                if (n < 0) break
-                                got += n
-                                if (got > maxBytes) throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                                out.write(buf, 0, n)
-                                if (total > 0) {
-                                    val progress = "下载音频 %.0f%%".format((got * 100f / total).coerceIn(0f, 100f))
-                                    updateUiForSession(sessionKey) { state ->
-                                        if (state.key == sessionKey) {
-                                            state.copy(progress = progress)
-                                        } else state
-                                    }
-                                }
-                            }
-                            out.flush()
+    /** Download bounded HTTP ranges to disk; progress is reported from real received bytes. */
+    private suspend fun downloadAudio(
+        url: String,
+        destination: File,
+        sourceKey: String,
+        sessionKey: String,
+    ): File {
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        var lastReportedPercent = -1
+        var lastReportedBytes = 0L
+        return withContext(Dispatchers.IO) {
+            asrAudioSegmentDownloader.download(
+                url = url,
+                destination = destination,
+                sourceKey = sourceKey,
+                checkActive = { ownerJob?.ensureActive() },
+                onProgress = { receivedBytes, totalBytes ->
+                    val percent = if (totalBytes > 0L) {
+                        ((receivedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                    } else -1
+                    val shouldPublish = if (percent >= 0) {
+                        percent != lastReportedPercent
+                    } else {
+                        receivedBytes - lastReportedBytes >= 512L * 1024L
+                    }
+                    if (shouldPublish) {
+                        lastReportedPercent = percent
+                        lastReportedBytes = receivedBytes
+                        val progress = if (percent >= 0) {
+                            "分段读取音频 $percent%"
+                        } else {
+                            "已读取音频 %.1f MB".format(receivedBytes / (1024f * 1024f))
                         }
-                        if (!AsrAudioCachePolicy.isCompleteDownload(total, got)) {
-                            throw IllegalStateException(
-                                "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
-                            )
+                        updateUiForSession(sessionKey) { state ->
+                            if (state.key == sessionKey) state.copy(progress = progress) else state
                         }
                     }
-                    if (!writeTarget.isFile || writeTarget.length() == 0L) {
-                        throw IllegalStateException("音频下载结果为空")
-                    }
-                }
-            }
-            if (destination == null) return writeTarget
-            if (!writeTarget.renameTo(target)) throw IllegalStateException("下载完成但无法保存音频缓存")
-            target.setLastModified(System.currentTimeMillis())
-            return target
-        } catch (e: Exception) {
-            writeTarget.delete()
-            throw e
+                },
+            )
         }
     }
 
