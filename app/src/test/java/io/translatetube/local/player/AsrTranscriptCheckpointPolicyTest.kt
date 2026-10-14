@@ -32,6 +32,41 @@ class AsrTranscriptCheckpointPolicyTest {
     }
 
     @Test
+    fun restoredRowsMustBelongToCompletedSegmentsAndBeUnique() {
+        val completed = listOf(0L to 1_000L, 1_500L to 2_500L, 3_000L to 4_000L)
+        assertTrue(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(0L, 1_000L, "hello"), Triple(3_000L, 4_000L, "world")),
+                completed,
+            )
+        )
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(0L, 1_000L, "hello"), Triple(0L, 1_000L, "duplicate")),
+                completed,
+            )
+        )
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(0L, 1_000L, "hello"), Triple(2_000L, 2_500L, "wrong segment")),
+                completed,
+            )
+        )
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(3_000L, 4_000L, "later"), Triple(0L, 1_000L, "out of order")),
+                completed,
+            )
+        )
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(0L, 1_000L, "  ")),
+                completed,
+            )
+        )
+    }
+
+    @Test
     fun onlyResumesMatchingCheckpointWithValidProcessedCount() {
         val pcm = FloatArray(128_000) { index -> ((index % 113) - 56) / 56f }
         val signature = AsrTranscriptCheckpointPolicy.signature(
