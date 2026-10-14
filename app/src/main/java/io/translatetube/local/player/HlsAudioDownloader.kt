@@ -117,21 +117,40 @@ internal object HlsAudioDownloader {
                 prepareSegmentCache(cacheDirectory, sources)
                 pruneSegmentCaches(cacheParent, keep = cacheDirectory)
 
-                val cachedSegments = mutableListOf<File>()
+                val segmentFiles = sources.indices.map { index ->
+                    File(cacheDirectory, index.toString().padStart(5, '0') + ".seg")
+                }
+                val reusableSegments = BooleanArray(sources.size)
                 var cachedBytes = 0L
-                sources.forEachIndexed { index, segmentUrl ->
-                    ownerJob?.ensureActive()
-                    val segmentFile = File(cacheDirectory, index.toString().padStart(5, '0') + ".seg")
+                segmentFiles.forEachIndexed { index, segmentFile ->
                     val age = System.currentTimeMillis() - segmentFile.lastModified()
                     val reusable = segmentFile.isFile &&
                         segmentFile.lastModified() > 0L &&
                         age in 0L..AsrAudioCachePolicy.TTL_MS &&
                         AsrAudioCachePolicy.isCompleteDownload(-1L, segmentFile.length())
-                    if (!reusable) {
+                    reusableSegments[index] = reusable
+                    if (reusable) {
+                        cachedBytes += segmentFile.length()
+                    } else {
                         segmentFile.delete()
                         File(segmentFile.parentFile, segmentFile.name + ".part").delete()
                     }
+                }
 
+                // The total must include valid segments at later indexes too, otherwise a missing
+                // early segment could grow the cache beyond its budget before those files are seen.
+                if (cachedBytes > MAX_BYTES) {
+                    segmentFiles.forEach { it.delete() }
+                    reusableSegments.fill(false)
+                    cachedBytes = 0L
+                }
+
+                val cachedSegments = mutableListOf<File>()
+                var totalCachedBytes = cachedBytes
+                sources.forEachIndexed { index, segmentUrl ->
+                    ownerJob?.ensureActive()
+                    val segmentFile = segmentFiles[index]
+                    val reusable = reusableSegments[index]
                     val segment = if (reusable) {
                         segmentFile.setLastModified(System.currentTimeMillis())
                         segmentFile
@@ -142,16 +161,16 @@ internal object HlsAudioDownloader {
                             destination = segmentFile,
                             headers = requestHeaders,
                             rootHost = rootHost,
-                            cachedBytes = cachedBytes,
+                            cachedBytes = totalCachedBytes,
                             ownerJob = ownerJob,
                             onRetry = { attempt ->
                                 onProgress("网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）")
                             },
-                        )
+                        ).also { totalCachedBytes += it.length() }
                     }
-                    cachedBytes += segment.length()
-                    if (cachedBytes > MAX_BYTES) {
-                        throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
+                    if (totalCachedBytes > MAX_BYTES) {
+                        segmentCacheDirectory?.deleteRecursively()
+                        throw IllegalStateException("网页音轨缓存总量超过 160 MB 限制，已清理旧分段以保护手机存储。")
                     }
                     cachedSegments += segment
                     segmentFile.parentFile?.setLastModified(System.currentTimeMillis())
