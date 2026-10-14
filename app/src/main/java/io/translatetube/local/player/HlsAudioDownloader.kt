@@ -292,11 +292,11 @@ internal object HlsAudioDownloader {
                 if (!AsrAudioCachePolicy.isCompleteDownload(-1L, assemblyPart.length())) {
                     throw IllegalStateException("HLS 音频缓存为空或超过 160 MB 限制。")
                 }
-                if (destination.exists() && !destination.delete()) {
-                    throw IllegalStateException("无法替换旧的 HLS 音频缓存。")
-                }
+                // assemblyPart is complete and resides beside destination. Replace the old
+                // regular file with a same-directory rename so a failed install cannot erase a
+                // previously usable audio cache.
                 if (!assemblyPart.renameTo(destination)) {
-                    throw IllegalStateException("音轨已合并，但无法原子保存缓存文件；重试时会复用已下载的分段。")
+                    throw IllegalStateException("音轨已合并，但无法原子替换缓存文件；旧缓存仍保留，重试时会复用已下载的分段。")
                 }
                 destination.setLastModified(System.currentTimeMillis())
                 // Keep complete segments until MediaExtractor accepts the merged file. The caller
