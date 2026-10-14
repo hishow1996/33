@@ -24,6 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * 后台按字幕顺序逐行合成 PCM 并缓存（内存 LRU + 文件），
  * 播放侧 playAt(index) 用 AudioTrack 即时切行。
  */
+private class DubbingPcmLimitException(message: String) : IllegalStateException(message)
+
 class DubbingEngine(
     ctx: Context,
     private val videoKey: String,
@@ -323,6 +325,11 @@ class DubbingEngine(
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
+                            if (generated.samples.size > DubbingPcmValidation.MAX_SAMPLE_COUNT) {
+                                throw DubbingPcmLimitException(
+                                    "单句配音样本数超过 ${DubbingPcmValidation.MAX_SAMPLE_COUNT} 上限；为保护设备内存，已跳过重复合成"
+                                )
+                            }
                             if (!DubbingPcmValidation.isValidAudio(
                                     generated.sampleRate,
                                     generated.samples,
@@ -343,7 +350,7 @@ class DubbingEngine(
                             throw e
                         } catch (e: Exception) {
                             lastFailure = e
-                            if (attempt == 0 && !released) {
+                            if (attempt == 0 && !released && e !is DubbingPcmLimitException) {
                                 android.util.Log.w(
                                     "DubbingEngine",
                                     "TTS line ${idx + 1} failed once; retrying with the same selected engine",
