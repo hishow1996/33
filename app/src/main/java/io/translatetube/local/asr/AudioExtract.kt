@@ -130,7 +130,7 @@ object AudioExtract {
             decoder = null
 
             if (collected.isEmpty()) throw IllegalStateException("音频轨没有可解码的 PCM 数据")
-            val mono = PcmChannelMixer.downmixToMono(collected, srcChannels)
+            var mono = PcmChannelMixer.downmixToMono(collected, srcChannels)
             // Release decoded multichannel blocks before resampling/float conversion.
             collected.clear()
             var resampled = resample(mono, srcRate, 16000)

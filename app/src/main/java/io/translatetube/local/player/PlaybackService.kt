@@ -404,28 +404,6 @@ class PlaybackService : MediaSessionService() {
         return (current * 100f / total).toInt().coerceIn(0, 100)
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        val phase = ui.value.phase
-        val isProcessing = phase in setOf(
-            Phase.PARSING,
-            Phase.DOWNLOADING_AUDIO,
-            Phase.TRANSCRIBING,
-            Phase.TRANSLATING,
-            Phase.SYNTHESIZING,
-        )
-        if (isProcessing) {
-            // The player is intentionally paused while subtitles, translation and TTS are prepared.
-            // The default recents-removal path can stop a paused service, so keep the current
-            // foreground processing task alive until it reaches READY or ERROR.
-            android.util.Log.i(
-                "PlaybackService",
-                "Keeping processing service alive after task removal: $phase",
-            )
-            return
-        }
-        super.onTaskRemoved(rootIntent)
-    }
-
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     /** Prevent a canceled pipeline from publishing progress/results into a newer video session. */
@@ -2888,6 +2866,24 @@ class PlaybackService : MediaSessionService() {
     fun duration(): Long = pm.duration()
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        val phase = ui.value.phase
+        val isProcessing = phase in setOf(
+            Phase.PARSING,
+            Phase.DOWNLOADING_AUDIO,
+            Phase.TRANSCRIBING,
+            Phase.TRANSLATING,
+            Phase.SYNTHESIZING,
+        )
+        if (isProcessing) {
+            // The player is intentionally paused while subtitles, translation and TTS are prepared.
+            // The default recents-removal path can stop a paused service, so keep the current
+            // foreground processing task alive until it reaches READY or ERROR.
+            android.util.Log.i(
+                "PlaybackService",
+                "Keeping processing service alive after task removal: $phase",
+            )
+            return
+        }
         super.onTaskRemoved(rootIntent)
     }
 }
