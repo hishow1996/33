@@ -2213,6 +2213,7 @@ class PlaybackService : MediaSessionService() {
                 val downloaded = try {
                     downloadStream(stream.content)
                 } catch (firstError: Exception) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (!MediaDownloadRetryPolicy.shouldRefreshSignedStream(firstError)) throw firstError
                     // StreamInfo caches expiring signed URLs. Invalidate and extract once before
                     // asking the user to retry the same stale URL again.
