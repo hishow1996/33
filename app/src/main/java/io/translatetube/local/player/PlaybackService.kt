@@ -2628,7 +2628,15 @@ class PlaybackService : MediaSessionService() {
                     d.updatePlayerSpeed(pm.playbackSpeed())
                     d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
                 }
-                pm.originalVolume = if (st.muteOriginal) 0f else 0.15f
+                // Synthesis readiness is not playback readiness: AudioTrack may still be
+                // loading PCM or initializing on older devices. Keep source audio audible until
+                // the dubbed track actually starts, then apply the user's mute/duck preference.
+                val voiceStarted = d.hasStartedPlaybackFor(dubLine)
+                pm.originalVolume = when {
+                    !voiceStarted -> 1f
+                    st.muteOriginal -> 0f
+                    else -> 0.15f
+                }
             } else if (dubLine >= 0) {
                 // Prioritize the current cue after a seek or when synthesis is lagging.
                 d.prioritizeAround(dubLine)
