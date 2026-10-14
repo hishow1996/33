@@ -81,6 +81,18 @@ internal class AsrAudioSegmentDownloader(
             metadata = null
         }
 
+        // Recover a crash that happened after the final range was synced but before rename.
+        // Only trust the completed byte count for the exact same URL/source; a refreshed signed
+        // URL must still be checked by the server using If-Range before these bytes are published.
+        if (existingPartSize > 0L &&
+            metadata?.rangeSupported == true &&
+            metadata?.totalBytes == existingPartSize &&
+            metadata?.urlHash == currentUrlHash &&
+            metadata?.sourceKey == sourceKey
+        ) {
+            return publish(part, destination, metaFile, contentType = null)
+        }
+
         var retryOffset = -1L
         var retriesAtOffset = 0
         try {
@@ -285,6 +297,7 @@ internal class AsrAudioSegmentDownloader(
         onProgress: (Long) -> Unit,
     ): Long {
         var written = 0L
+        val existingBytes = if (append && part.isFile) part.length() else 0L
         FileOutputStream(part, append).use { fileOut ->
             java.io.BufferedOutputStream(fileOut, IO_BUFFER_BYTES).use { out ->
                 val buffer = ByteArray(IO_BUFFER_BYTES)
@@ -296,7 +309,7 @@ internal class AsrAudioSegmentDownloader(
                     val count = input.read(buffer, 0, requested)
                     if (count < 0) break
                     if (count == 0) continue
-                    if (part.length() + count.toLong() > maxBytes) {
+                    if (existingBytes + written + count.toLong() > maxBytes) {
                         throw IOException("音频文件超过 ${maxBytes / (1024L * 1024L)} MB 限制")
                     }
                     out.write(buffer, 0, count)
