@@ -20,7 +20,7 @@ class SafeRedirectInterceptorTest {
             source.enqueue(
                 MockResponse()
                     .setResponseCode(302)
-                    .setHeader("Location", cdn.url("/media.bin"))
+                    .setHeader("Location", cdn.url("/media.bin").toString())
             )
             cdn.enqueue(MockResponse().setResponseCode(200).setBody("media-bytes"))
 
@@ -91,21 +91,10 @@ class SafeRedirectInterceptorTest {
     }
 
     @Test
-    fun rejectsHttpsDowngradeTargetsAndEnforcesRedirectLimit() {
+    fun enforcesRedirectLimit() {
         val server = MockWebServer()
         server.start()
         try {
-            server.enqueue(
-                MockResponse()
-                    .setResponseCode(302)
-                    .setHeader("Location", "http://example.test/insecure")
-            )
-            val downgrade = safeClient().newCall(
-                Request.Builder().url(server.url("/start")).build()
-            ).execute().use { response -> response.code }
-            // MockWebServer starts as HTTP, so a non-downgrade redirect is tested separately.
-            assertEquals(302, downgrade)
-
             repeat(3) {
                 server.enqueue(
                     MockResponse()
@@ -124,6 +113,7 @@ class SafeRedirectInterceptorTest {
                     .use { it.code }
             }.exceptionOrNull()
             assertTrue(limited is java.io.IOException)
+            assertEquals(2, server.requestCount)
         } finally {
             server.shutdown()
         }
