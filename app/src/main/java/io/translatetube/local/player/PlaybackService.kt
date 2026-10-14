@@ -627,7 +627,7 @@ class PlaybackService : MediaSessionService() {
                 // setYouTubeQuality can reject a stream without throwing. Restore the last known
                 // working stream and playback position rather than leaving a half-switched player.
                 if (previousSource != null) {
-                    runCatching {
+                    try {
                         withContext(Dispatchers.Main) {
                             if (ui.value.key == sessionKey && videoId == sessionVideoId) {
                                 val restored = pm.setYouTubeQuality(
@@ -649,8 +649,10 @@ class PlaybackService : MediaSessionService() {
                                 }
                             }
                         }
-                    }.onFailure {
-                        android.util.Log.w("PlaybackService", "Quality-switch rollback failed", it)
+                    } catch (rollbackCancellation: kotlinx.coroutines.CancellationException) {
+                        throw rollbackCancellation
+                    } catch (rollbackError: Exception) {
+                        android.util.Log.w("PlaybackService", "Quality-switch rollback failed", rollbackError)
                     }
                 }
                 updateUiForSession(sessionKey) {
