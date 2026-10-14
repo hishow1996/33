@@ -3,6 +3,7 @@ package io.translatetube.local.ui.screens
 import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -31,17 +32,26 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.web.WebMediaUrlPolicy
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONArray
+
+private const val TAG_WEB = "WebVideoScreen"
 
 private data class WebVideoCandidate(
     val url: String,
@@ -66,6 +76,57 @@ fun WebVideoScreen(
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
+    val appCtx = LocalContext.current.applicationContext
+    val ytScope = rememberCoroutineScope()
+    var ytDlpBusy by remember(initialUrl) { mutableStateOf(false) }
+    var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
+    var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
+
+    fun runYtDlp(target: String) {
+        if (ytDlpBusy) return
+        if (!io.translatetube.local.yt.YtDlpRepo.isEligible(target)) {
+            ytDlpHint = "yt-dlp 仅适用于 http/https 非 YouTube 链接"
+            return
+        }
+        ytDlpBusy = true
+        ytDlpHint = null
+        status = "正在用 yt-dlp 解析该网站视频（首次使用需解包运行时，请稍候）…"
+        ytScope.launch(Dispatchers.IO) {
+            try {
+                val media = io.translatetube.local.yt.YtDlpRepo.resolve(appCtx, target)
+                mainHandler.post {
+                    ytDlpBusy = false
+                    status = "yt-dlp 解析成功：${media.title}"
+                    onOpenMedia(
+                        media.mediaUrl,
+                        media.title.ifBlank { pageTitle },
+                        media.referrer,
+                        media.cookie.takeIf { it.isNotBlank() },
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
+                mainHandler.post {
+                    ytDlpBusy = false
+                    ytDlpHint = io.translatetube.local.yt.YtDlpRepo.failureHint(e)
+                    status = "yt-dlp 解析未成功；可稍后重试或改用其他链接。"
+                }
+            }
+        }
+    }
+
+    // 页面加载后仍无任何候选媒体时，自动尝试一次 yt-dlp 解析。
+    LaunchedEffect(currentPage) {
+        delay(5000)
+        if (candidatesState.value.isEmpty() && !ytDlpBusy && ytDlpAutoAttempts == 0) {
+            ytDlpAutoAttempts = 1
+            runYtDlp(currentPage)
+        }
+    }
 
     val bridge = remember {
         object {
@@ -230,6 +291,29 @@ fun WebVideoScreen(
             )
 
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (ytDlpHint != null) {
+                Text(
+                    ytDlpHint.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (candidatesState.value.isEmpty() && WebMediaUrlPolicy.normalizePageUrl(currentPage) != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        enabled = !ytDlpBusy,
+                        onClick = { runYtDlp(currentPage) },
+                    ) {
+                        Text(if (ytDlpBusy) "yt-dlp 解析中…" else "用 yt-dlp 解析本页视频")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "支持B站、TikTok、Twitter 等上千个网站；YouTube 无需此步骤",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             if (candidatesState.value.isNotEmpty()) {
                 Text("检测到的视频", style = MaterialTheme.typography.titleMedium)
                 LazyColumn(
