@@ -1,0 +1,18 @@
+package io.translatetube.local.asr
+
+import java.io.File
+import org.junit.Test
+
+class AudioExtractPcmFileTest {
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsFloatReadsThatCouldAllocateMoreThan32MiB() {
+        val sampleCount = (32L * 1024L * 1024L / 4L) + 1L
+        AudioExtract.PcmFile(
+            file = File("pcm-read-limit-test-does-not-need-to-exist"),
+            sampleCount = sampleCount,
+        ).readFloatSamples(
+            startSample = 0L,
+            count = sampleCount.toInt(),
+        )
+    }
+}
