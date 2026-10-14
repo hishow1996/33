@@ -87,8 +87,8 @@ internal object HlsAudioDownloader {
         try {
             withContext(Dispatchers.IO) {
                 val rootUri = parseHttpUrl(playlistUrl)
-                val rootHost = URI(rootUri).host
-                var fetched = fetchText(rootUri, requestHeaders, rootHost, ownerJob)
+                val rootOrigin = rootUri
+                var fetched = fetchText(rootUri, requestHeaders, rootOrigin, ownerJob)
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
 
@@ -99,7 +99,7 @@ internal object HlsAudioDownloader {
                     if (masterDepth > MAX_MASTER_DEPTH) {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
-                    fetched = fetchText(parseHttpUrl(next), requestHeaders, rootHost, ownerJob)
+                    fetched = fetchText(parseHttpUrl(next), requestHeaders, rootOrigin, ownerJob)
                     ensurePlaylistIsUnencrypted(fetched.text)
                 }
 
@@ -160,7 +160,7 @@ internal object HlsAudioDownloader {
                             url = segmentUrl,
                             destination = segmentFile,
                             headers = requestHeaders,
-                            rootHost = rootHost,
+                            rootOrigin = rootOrigin,
                             cachedBytes = totalCachedBytes,
                             ownerJob = ownerJob,
                             onRetry = { attempt ->
@@ -286,7 +286,7 @@ internal object HlsAudioDownloader {
         url: String,
         destination: File,
         headers: Map<String, String>,
-        rootHost: String,
+        rootOrigin: String,
         cachedBytes: Long,
         ownerJob: Job?,
         onRetry: (attemptNumber: Int) -> Unit,
@@ -300,7 +300,7 @@ internal object HlsAudioDownloader {
                 SafeMediaHttp.execute(
                     url = url,
                     requestHeaders = headers,
-                    allowedCookieHost = rootHost,
+                    allowedCookieOrigin = rootOrigin,
                 ).use { response ->
                     if (!response.isSuccessful) {
                         throw IllegalStateException("下载 HLS 片段失败（HTTP ${response.code}）。")
@@ -436,13 +436,13 @@ internal object HlsAudioDownloader {
     private fun fetchText(
         url: String,
         headers: Map<String, String>,
-        rootHost: String,
+        rootOrigin: String,
         ownerJob: Job?,
     ): FetchedText {
         SafeMediaHttp.execute(
             url = url,
             requestHeaders = headers,
-            allowedCookieHost = rootHost,
+            allowedCookieOrigin = rootOrigin,
         ).use { response ->
             if (!response.isSuccessful) {
                 throw IllegalStateException("读取 HLS 清单失败（HTTP ${response.code}）。")
