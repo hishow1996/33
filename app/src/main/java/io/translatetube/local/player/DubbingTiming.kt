@@ -37,12 +37,15 @@ internal object DubbingTiming {
         maxSyncRate: Float = MAX_SYNC_RATE,
     ): DubbingPlaybackPlan {
         val safePlayerSpeed = normalizePlayerSpeed(playerSpeed)
-        if (sampleCount <= 0 || sampleRate <= 0 || lineEndMs <= lineStartMs) {
+        if (sampleCount <= 0 || sampleRate <= 0 || lineStartMs < 0L || lineEndMs <= lineStartMs) {
             return DubbingPlaybackPlan(0, 0, 1.0f, safePlayerSpeed, false)
         }
 
+        // Media timestamps are non-negative. Normalize hostile/extreme caller values before
+        // subtraction so malformed data cannot overflow the elapsed-time calculation.
         val lineDurationMs = lineEndMs - lineStartMs
-        val elapsedMs = (positionMs - lineStartMs).coerceIn(0L, lineDurationMs)
+        val safePositionMs = positionMs.coerceAtLeast(0L)
+        val elapsedMs = (safePositionMs - lineStartMs).coerceIn(0L, lineDurationMs)
         val remainingMs = lineDurationMs - elapsedMs
         if (remainingMs < MIN_REMAINING_WINDOW_MS) {
             // A tiny late fragment is usually unintelligible; skip it instead of playing a
@@ -80,7 +83,9 @@ internal object DubbingTiming {
     ): Int {
         if (availableSampleCount <= 0 || sampleRate <= 0) return 0
         val safeSyncRate = syncRate.takeIf { it.isFinite() && it > 0.0f } ?: 1.0f
-        val elapsedMs = (currentPositionMs - preparedAtMs).coerceAtLeast(0L)
+        val prepared = preparedAtMs.coerceAtLeast(0L)
+        val current = currentPositionMs.coerceAtLeast(0L)
+        val elapsedMs = (current - prepared).coerceAtLeast(0L)
         val samplesToSkip = floor(
             elapsedMs.toDouble() * safeSyncRate.toDouble() * sampleRate.toDouble() / 1000.0
         ).toInt()
