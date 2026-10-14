@@ -48,6 +48,28 @@ internal object AsrTranscriptCheckpointPolicy {
         return digest.digest().take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
+    /**
+     * Checkpoint rows are written once per processed speech segment, and only non-empty results
+     * are stored. Validate exact segment bounds, ordering and uniqueness in linear time so a
+     * malformed cache cannot inject duplicate captions or make recovery quadratic on long tracks.
+     */
+    fun areRowsValid(
+        rows: List<Triple<Long, Long, String>>,
+        processedSegments: List<Pair<Long, Long>>,
+    ): Boolean {
+        if (rows.size > processedSegments.size) return false
+        val allowedSegments = processedSegments.toHashSet()
+        val seenSegments = HashSet<Pair<Long, Long>>(rows.size)
+        var previousStart = -1L
+        for ((start, end, text) in rows) {
+            if (start < 0L || end <= start || text.isBlank() || start < previousStart) return false
+            val bounds = start to end
+            if (bounds !in allowedSegments || !seenSegments.add(bounds)) return false
+            previousStart = start
+        }
+        return true
+    }
+
     fun canResume(
         savedSignature: String,
         expectedSignature: String,
