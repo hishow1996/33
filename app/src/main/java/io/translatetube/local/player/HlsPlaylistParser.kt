@@ -138,7 +138,13 @@ internal object HlsPlaylistParser {
                     }
                     val mapPath = attrs["URI"]?.takeIf { it.isNotBlank() }
                         ?: throw IllegalArgumentException("HLS 初始化片段缺少 URI")
-                    initMapUrl = resolveHttpUrl(playlistUrl, mapPath)
+                    val resolvedMapUrl = resolveHttpUrl(playlistUrl, mapPath)
+                    if (initMapUrl != null && initMapUrl != resolvedMapUrl) {
+                        throw UnsupportedOperationException(
+                            "该 HLS 点播列表中途更换了初始化片段，当前版本不会将不兼容的媒体段错误拼接"
+                        )
+                    }
+                    initMapUrl = resolvedMapUrl
                 }
                 line.startsWith("#EXTINF:", true) -> {
                     val seconds = line.substringAfter(':').substringBefore(',').trim().toDoubleOrNull()
