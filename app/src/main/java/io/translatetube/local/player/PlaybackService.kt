@@ -337,11 +337,11 @@ class PlaybackService : MediaSessionService() {
                 if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译"
             }
             Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
-                "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> when {
                 dubbing?.isPreparing == true -> (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
-                    "已准备 ${state.preparedUntil.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                    "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
                 } else state.progress.ifBlank { "正在生成中文配音" }
                 state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
                 else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
@@ -363,10 +363,10 @@ class PlaybackService : MediaSessionService() {
                     (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } * 100f / state.totalLines).toInt().coerceIn(0, 100)
                 } else null
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
-                (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else ratioPercentFromProgress(state.progress)
             Phase.READY -> if (dubbing?.isPreparing == true && state.totalLines > 0) {
-                (state.preparedUntil.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else null
             else -> null
         }
