@@ -2705,6 +2705,13 @@ class PlaybackService : MediaSessionService() {
                 }
                 KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
             }
+            "piper" -> {
+                val modelId = prefs.getString("piper_model", "en_us_amy_low") ?: "en_us_amy_low"
+                if (!io.translatetube.local.tts.PiperModels.modelReady(this, modelId)) {
+                    throw IllegalStateException("已选择 Piper，但所选语种模型尚未下载，请在设置中下载")
+                }
+                io.translatetube.local.tts.PiperTts(this, modelId)
+            }
             else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
         }
     }

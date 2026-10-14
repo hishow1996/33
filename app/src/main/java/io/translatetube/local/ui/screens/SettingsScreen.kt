@@ -26,6 +26,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.floating.FloatingManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
@@ -97,21 +100,30 @@ Section("配音设置") {
                 prefs.edit().putString("tts_engine", e).apply()
             }
             HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
+            EngineOption("piper", "Piper 多语种 · 按语种下载", ttsEngine) { e ->
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
+            HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
             Text(
-                if (ttsEngine == "system") "直接使用手机已安装的语音；不会要求下载 Kokoro 配音模型。"
-                else "使用本地 Kokoro 模型生成配音；首次使用前需下载模型。",
+                when (ttsEngine) {
+                    "system" -> "直接使用手机已安装的语音；不会要求下载 Kokoro 配音模型。"
+                    "piper" -> "Piper 补足 Kokoro 覆盖不到的语种（法/德/西/俄/意等）；请在下方模型管理中下载对应语种模型。"
+                    else -> "使用本地 Kokoro 模型生成配音；首次使用前需下载模型。"
+                },
                 color = SubText,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(start = 8.dp, top = 2.dp),
             )
             if (ttsEngine == "kokoro") {
                 Spacer(Modifier.height(8.dp))
+                var previewing by remember { mutableStateOf(false) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("中文音色", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                    Text("音色（0–53 · 覆盖中/英/日等多语种）", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.weight(1f))
                     Text("${speaker.toInt()}", color = BrandBright, style = MaterialTheme.typography.labelLarge)
                 }
@@ -121,6 +133,25 @@ Section("配音设置") {
                     valueRange = 0f..53f,
                     colors = SliderDefaults.colors(thumbColor = BrandBright, activeTrackColor = Brand),
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "不同编号对应不同语种与音色，拖动后试听确定",
+                        color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = ttsReady && !previewing,
+                        onClick = { previewing = true },
+                    ) { Text(if (previewing) "合成中…" else "试听") }
+                }
+                if (previewing) {
+                    KokoroVoicePreview(
+                        speaker = speaker.toInt(),
+                        onDone = { previewing = false },
+                    )
+                }
+            }
+            if (ttsEngine == "piper") {
+                PiperModelSection()
             }
         }
 
@@ -316,6 +347,140 @@ private fun Section(
                 }
             }
         }
+    }
+}
+
+/**
+ * Kokoro 音色试听：按当前音色编号合成一句中英混合短句并播放。
+ * 每次试听独立实例化引擎（模型加载需数秒），结束后释放。
+ */
+@Composable
+private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
+    val appCtx = LocalContext.current.applicationContext
+    LaunchedEffect(speaker) {
+        withContext(Dispatchers.IO) {
+            var tts: io.translatetube.local.tts.KokoroTts? = null
+            var track: android.media.AudioTrack? = null
+            try {
+                tts = io.translatetube.local.tts.KokoroTts(appCtx, speakerId = speaker)
+                val audio = tts.synth("你好，这是配音音色试听。Hello, this is a voice preview.")
+                val minBuf = android.media.AudioTrack.getMinBufferSize(
+                    audio.sampleRate,
+                    android.media.AudioFormat.CHANNEL_OUT_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_FLOAT,
+                )
+                track = android.media.AudioTrack(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                    android.media.AudioFormat.Builder()
+                        .setSampleRate(audio.sampleRate)
+                        .setEncoding(android.media.AudioFormat.ENCODING_PCM_FLOAT)
+                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                    maxOf(minBuf, audio.samples.size * 4),
+                    android.media.AudioTrack.MODE_STATIC,
+                    0, // AUDIO_SESSION_ID_GENERATE
+                )
+                track.write(audio.samples, 0, audio.samples.size, android.media.AudioTrack.WRITE_BLOCKING)
+                track.play()
+                val playMs = audio.samples.size * 1000L / audio.sampleRate
+                Thread.sleep(playMs + 150)
+            } catch (e: Exception) {
+                android.util.Log.w("SettingsScreen", "音色试听失败", e)
+            } finally {
+                try { track?.stop() } catch (_: Exception) {}
+                try { track?.release() } catch (_: Exception) {}
+                try { tts?.close() } catch (_: Exception) {}
+            }
+        }
+        onDone()
+    }
+}
+
+/** Piper 多语种模型管理：下载状态 + 语种清单 + 使用中标记。 */
+@Composable
+private fun PiperModelSection() {
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences("settings", 0) }
+    var selected by remember { mutableStateOf(prefs.getString("piper_model", "en_us_amy_low") ?: "en_us_amy_low") }
+    val installed by io.translatetube.local.tts.PiperModels.installed.collectAsState()
+    val scope = rememberCoroutineScope()
+    var busyId by remember { mutableStateOf<String?>(null) }
+    var progress by remember { mutableStateOf(0f) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { io.translatetube.local.tts.PiperModels.refreshInstalled(ctx.applicationContext) }
+
+    Text(
+        "选择要下载的语种；下载后点击行设为当前配音模型。",
+        color = SubText, style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(start = 8.dp, top = 4.dp),
+    )
+    error?.let {
+        Text(
+            it, color = Color(0xFFC0392B),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    io.translatetube.local.tts.PiperModels.catalog.forEach { def ->
+        val isInstalled = installed.contains(def.id)
+        Row(
+            Modifier.fillMaxWidth()
+                .clickable(enabled = isInstalled) {
+                    selected = def.id
+                    prefs.edit().putString("piper_model", def.id).apply()
+                }
+                .padding(vertical = 6.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(
+                selected = selected == def.id,
+                onClick = {
+                    if (isInstalled) {
+                        selected = def.id
+                        prefs.edit().putString("piper_model", def.id).apply()
+                    }
+                },
+                enabled = isInstalled,
+                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+            )
+            Column(Modifier.weight(1f)) {
+                Text("${def.label} · ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                when {
+                    busyId == def.id -> {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                            color = BrandBright,
+                        )
+                    }
+                    isInstalled -> Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+                    else -> Text("未下载", color = SubText, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (!isInstalled && busyId == null) {
+                TextButton(onClick = {
+                    busyId = def.id
+                    progress = 0f
+                    error = null
+                    scope.launch {
+                        try {
+                            io.translatetube.local.tts.PiperModels.download(ctx.applicationContext, def.id) { p ->
+                                progress = p
+                            }
+                        } catch (e: Exception) {
+                            error = "${def.label}下载失败：${e.message ?: "未知错误"}"
+                        } finally {
+                            busyId = null
+                        }
+                    }
+                }) { Text("下载") }
+            }
+        }
+        HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
     }
 }
 
