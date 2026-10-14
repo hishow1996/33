@@ -369,7 +369,12 @@ object AudioExtract {
         require(toRate in 1_000..384_000) { "不支持的目标采样率：${toRate}" }
         if (input.isEmpty() || fromRate == toRate) return input
         val ratio = fromRate.toDouble() / toRate
-        val outputLength = (input.size / ratio).toInt()
+        val outputLengthDouble = input.size.toDouble() / ratio
+        val maxOutputSamples = MAX_FLOAT_ARRAY_BYTES / 2L
+        if (!outputLengthDouble.isFinite() || outputLengthDouble > maxOutputSamples.toDouble()) {
+            throw IllegalStateException("重采样后音频过长，无法安全地一次性分配内存；请使用流式重采样")
+        }
+        val outputLength = outputLengthDouble.toInt()
         val output = ShortArray(outputLength)
         for (index in 0 until outputLength) {
             val position = index * ratio
