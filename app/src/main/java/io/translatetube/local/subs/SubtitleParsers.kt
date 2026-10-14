@@ -78,21 +78,43 @@ object SubtitleParsers {
     fun parseTimedTextXml(src: String): List<SubLine> {
         if (!src.contains("<transcript")) return emptyList()
         val out = mutableListOf<SubLine>()
-        val re = Regex("""<text[^>]*start="([\d.]+)"[^>]*(?:dur="([\d.]+)")?[^>]*>(.*?)</text>""", RegexOption.DOT_MATCHES_ALL)
-        re.findAll(src).forEachIndexed { i, m ->
-            val startSeconds = m.groupValues[1].toDoubleOrNull() ?: 0.0
-            val durationSeconds = m.groupValues[2].toDoubleOrNull() ?: 3.0
-            if (!startSeconds.isFinite() || !durationSeconds.isFinite() ||
-                startSeconds < 0.0 || durationSeconds <= 0.0
-            ) return@forEachIndexed
-            val start = (startSeconds * 1000.0).toLong()
-            val dur = (durationSeconds * 1000.0).toLong()
-            if (dur <= 0L || start > Long.MAX_VALUE - dur) return@forEachIndexed
-            val end = start + dur
-            val text = android.text.Html.fromHtml(m.groupValues[3], android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
-            if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
+        val re = Regex("""<text\b([^>]*)>(.*?)</text\s*>""", RegexOption.DOT_MATCHES_ALL)
+        re.findAll(src).forEach { match ->
+            val timing = parseTimedTextTiming(match.groupValues[1]) ?: return@forEach
+            val rawText = match.groupValues[2]
+            // Plain text needs no Android Html conversion; escaped entities and markup still do.
+            val decodedText = if (rawText.contains('&') || rawText.contains('<')) {
+                android.text.Html.fromHtml(rawText, android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+            } else {
+                rawText
+            }
+            val text = decodedText.trim()
+            if (text.isNotEmpty()) out += SubLine(out.size, timing.first, timing.second, text)
         }
         return normalizeTimeline(out)
+    }
+
+    private val timedTextAttributeRegex = Regex("""([A-Za-z_:][\w:.-]*)\s*=\s*["']([^"']*)["']""")
+
+    /** Parse start/dur by attribute name, regardless of XML attribute order or quote style. */
+    internal fun parseTimedTextTiming(attributes: String): Pair<Long, Long>? {
+        val attrs = timedTextAttributeRegex.findAll(attributes)
+            .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+        val startSeconds = attrs["start"]?.toDoubleOrNull() ?: return null
+        val durationSeconds = attrs["dur"]?.toDoubleOrNull() ?: 3.0
+        if (!startSeconds.isFinite() || !durationSeconds.isFinite() ||
+            startSeconds < 0.0 || durationSeconds <= 0.0
+        ) return null
+
+        val startMsDouble = startSeconds * 1000.0
+        val durationMsDouble = durationSeconds * 1000.0
+        if (!startMsDouble.isFinite() || !durationMsDouble.isFinite() ||
+            startMsDouble >= Long.MAX_VALUE.toDouble() || durationMsDouble >= Long.MAX_VALUE.toDouble()
+        ) return null
+        val startMs = startMsDouble.toLong()
+        val durationMs = durationMsDouble.toLong()
+        if (durationMs <= 0L || startMs > Long.MAX_VALUE - durationMs) return null
+        return startMs to (startMs + durationMs)
     }
 
     /** YouTube/NewPipe TTML：从 p 标签提取 begin/end/dur。 */
@@ -242,6 +264,7 @@ object SubtitleParsers {
         mergeDuplicate(lines.sortedBy { it.startMs }).mapIndexed { index, line ->
             line.copy(index = index)
         }
+
     private fun mergeDuplicate(lines: List<SubLine>): List<SubLine> {
         // YouTube 自动字幕常见同一句重复多时间片：相同文本且首尾相接 → 合并
         val out = mutableListOf<SubLine>()

@@ -40,6 +40,7 @@ class SubtitleParsersTest {
         assertEquals(0L, parsed.single().startMs)
         assertEquals(1_000L, parsed.single().endMs)
     }
+
     @Test
     fun sortsOutOfOrderWebVttCuesBeforeAssigningTimelineIndices() {
         val source = """
@@ -76,4 +77,20 @@ class SubtitleParsersTest {
         assertEquals(listOf(1_000L, 2_000L, 3_000L), parsed.map { it.startMs })
         assertEquals(listOf(0, 1, 2), parsed.map { it.index })
     }
+    @Test
+    fun timedTextXmlHonorsDurationRegardlessOfAttributeOrderOrQuoteStyle() {
+        val source = """
+            <transcript>
+              <text start="2.5" dur="1.25">later cue</text>
+              <text dur='0.5' start='1.25'>earlier cue</text>
+            </transcript>
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseTimedTextXml(source)
+
+        assertEquals(listOf("earlier cue", "later cue"), parsed.map { it.text })
+        assertEquals(listOf(1_250L, 2_500L), parsed.map { it.startMs })
+        assertEquals(listOf(1_750L, 3_750L), parsed.map { it.endMs })
+    }
+
 }
