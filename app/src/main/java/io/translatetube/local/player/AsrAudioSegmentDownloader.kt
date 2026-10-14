@@ -48,10 +48,10 @@ internal class AsrAudioSegmentDownloader(
         require(sourceKey.isNotBlank()) { "音频缓存缺少来源标识" }
         require(maxBytes > 0L && chunkBytes > 0L) { "音频分段参数无效" }
 
-        destination.parentFile?.mkdirs()
-            ?: throw IOException("无法创建音频缓存目录")
-        val part = File(destination.parentFile, destination.name + ".part")
-        val metaFile = File(destination.parentFile, destination.name + ".part.meta")
+        val parent = destination.parentFile ?: throw IOException("音频缓存没有父目录")
+        if (!parent.isDirectory && !parent.mkdirs()) throw IOException("无法创建音频缓存目录")
+        val part = File(parent, destination.name + ".part")
+        val metaFile = File(parent, destination.name + ".part.meta")
         val currentUrlHash = sha256(url)
         var metadata = readMetadata(metaFile)
 
@@ -81,10 +81,16 @@ internal class AsrAudioSegmentDownloader(
             metadata = null
         }
 
+        var retryOffset = -1L
+        var retriesAtOffset = 0
         try {
             while (true) {
                 checkActive()
                 val offset = if (part.isFile) part.length() else 0L
+                if (offset != retryOffset) {
+                    retryOffset = offset
+                    retriesAtOffset = 0
+                }
                 if (offset > maxBytes) throw IOException("音频文件超过 ${maxBytes / (1024L * 1024L)} MB 限制")
                 if (metadata?.totalBytes?.let { it > 0L && offset > it } == true) {
                     discard(part, metaFile)
@@ -110,6 +116,13 @@ internal class AsrAudioSegmentDownloader(
                         200 -> {
                             // The server ignored Range or If-Range did not match. This response
                             // contains a fresh full representation; never append it to old bytes.
+                            // Drop old partial bytes before validating the new response so a bad
+                            // URL cannot leave a misleading resumable cache behind.
+                            if (offset > 0L) {
+                                part.delete()
+                                metaFile.delete()
+                                metadata = null
+                            }
                             val body = response.body ?: throw IOException("音频响应内容为空")
                             val total = body.contentLength()
                             validateDeclaredResponse(response, total)
@@ -148,11 +161,16 @@ internal class AsrAudioSegmentDownloader(
                             }
                             val responseEtag = response.header("ETag")?.takeIf { it.isNotBlank() }
                             val responseModified = response.header("Last-Modified")?.takeIf { it.isNotBlank() }
-                            val oldValidator = metadata?.etag ?: metadata?.lastModified
-                            val newValidator = responseEtag ?: responseModified
-                            if (offset > 0L && !oldValidator.isNullOrBlank() &&
-                                !newValidator.isNullOrBlank() && oldValidator != newValidator
-                            ) {
+                            val etagMismatch = offset > 0L &&
+                                !metadata?.etag.isNullOrBlank() &&
+                                !responseEtag.isNullOrBlank() &&
+                                metadata?.etag != responseEtag
+                            val modifiedMismatch = offset > 0L &&
+                                metadata?.etag.isNullOrBlank() &&
+                                !metadata?.lastModified.isNullOrBlank() &&
+                                !responseModified.isNullOrBlank() &&
+                                metadata?.lastModified != responseModified
+                            if (etagMismatch || modifiedMismatch) {
                                 discard(part, metaFile)
                                 metadata = null
                                 throw IOException("音频源已变化，已清理旧断点缓存；请重试")
@@ -208,6 +226,24 @@ internal class AsrAudioSegmentDownloader(
 
                         else -> throw IOException("音频读取失败：HTTP ${response.code}")
                     }
+                } catch (e: IOException) {
+                    // Retry a failed range a few times without discarding confirmed partial bytes.
+                    // If the connection died after writing part of a segment, the next request
+                    // starts at the actual file length and therefore does not duplicate bytes.
+                    if (readMetadata(metaFile)?.rangeSupported == true &&
+                        retriesAtOffset < MAX_RANGE_RETRIES
+                    ) {
+                        retriesAtOffset++
+                        checkActive()
+                        try {
+                            Thread.sleep(RETRY_DELAY_MS * retriesAtOffset)
+                        } catch (interrupted: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            throw IOException("音频下载已中断", interrupted)
+                        }
+                        continue
+                    }
+                    throw e
                 }
             }
         } catch (e: Exception) {
@@ -378,6 +414,8 @@ internal class AsrAudioSegmentDownloader(
     companion object {
         private const val IO_BUFFER_BYTES = 64 * 1024
         private const val MAX_METADATA_BYTES = 16L * 1024L
+        private const val MAX_RANGE_RETRIES = 3
+        private const val RETRY_DELAY_MS = 250L
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
     }
