@@ -20,6 +20,8 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -112,7 +114,7 @@ object CloudTranscription {
      * transient network/HTTP failures; authentication and task/schema errors should fail promptly.
      */
     internal fun shouldRetryKawaPoll(error: Throwable): Boolean {
-        val chain = generateSequence(error) { it.cause }.toList()
+        val chain = causeChain(error)
         if (chain.any { it is java.util.concurrent.CancellationException }) return false
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
         val statusCode = Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
@@ -121,6 +123,18 @@ object CloudTranscription {
             return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
         }
         return chain.any { it is IOException }
+    }
+
+    /** Throwable cause chains should be linear, but defensive handling avoids hangs on cyclic wrappers. */
+    private fun causeChain(error: Throwable): List<Throwable> {
+        val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        val chain = ArrayList<Throwable>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current)) {
+            chain += current
+            current = current.cause
+        }
+        return chain
     }
 
     /** Read UTF-8 response data with a hard byte limit and cooperative cancellation checks. */
@@ -184,6 +198,9 @@ object CloudTranscription {
         output: File,
         checkActive: () -> Unit = {},
     ) {
+        require(pcmFile.file.canonicalFile != output.canonicalFile) {
+            "WAV 输出不能覆盖输入 PCM 缓存"
+        }
         require(pcmFile.sampleRate == 16_000) { "云端转写需要 16kHz PCM 音频" }
         val dataBytes = pcmFile.sampleCount * 2L
         require(dataBytes in 2L..(0xffff_ffffL - 36L)) { "音频太大，无法安全创建 WAV 文件" }

@@ -62,7 +62,10 @@ object SpeakerDiarizer {
             }
             val segmentation = File(dir, "segmentation.onnx")
             val embedding = File(dir, "embedding.onnx")
-            if (!segmentation.isFile || segmentation.length() < 1_000_000L) {
+            if (!SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(
+                    segmentation.isFile, segmentation.length(),
+                )
+            ) {
                 val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
                 try {
                     checkActive()
@@ -74,7 +77,10 @@ object SpeakerDiarizer {
                     archive.delete()
                 }
             }
-            if (!embedding.isFile || embedding.length() < 5_000_000L) {
+            if (!SpeakerModelDownloadPolicy.isValidCachedEmbeddingModel(
+                    embedding.isFile, embedding.length(),
+                )
+            ) {
                 val temp = File(dir, "embedding.onnx.download")
                 try {
                     checkActive()

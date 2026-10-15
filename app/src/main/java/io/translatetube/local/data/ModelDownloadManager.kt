@@ -454,7 +454,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                 val body = resp.body ?: throw IllegalStateException("下载响应为空")
                 val maxBytes = 16L * 1024 * 1024
-                if (body.contentLength() > maxBytes) throw IllegalStateException("附属模型超过大小限制")
+                val expectedBytes = body.contentLength()
+                if (expectedBytes != -1L && expectedBytes !in 1L..maxBytes) {
+                    throw IllegalStateException("附属模型响应声明的文件大小无效或超过限制")
+                }
                 var written = 0L
                 body.byteStream().use { input ->
                     FileOutputStream(temp).use { output ->
@@ -471,6 +474,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     }
                 }
                 if (written == 0L) throw IllegalStateException("下载文件为空")
+                if (expectedBytes > 0L && written != expectedBytes) {
+                    throw java.io.IOException(
+                        "附属模型下载不完整：预期 ${expectedBytes} 字节，实际收到 ${written} 字节"
+                    )
+                }
             }
             val checksumJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             if (expectedSha256 != null &&

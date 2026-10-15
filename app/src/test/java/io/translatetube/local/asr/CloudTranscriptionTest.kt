@@ -44,6 +44,15 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun cyclicKawaPollErrorCausesDoNotHangRetryDetection() {
+        val first = IOException("HTTP 503: transient")
+        val second = IllegalStateException("wrapped poll error")
+        first.initCause(second)
+        second.initCause(first)
+        assertEquals(true, CloudTranscription.shouldRetryKawaPoll(first))
+    }
+
+    @Test
     fun kawaLanguageTreatsAutoCaseInsensitivelyAsLanguageDetection() {
         assertEquals("zh", CloudTranscription.kawaLanguageCode(" zh "))
         assertEquals(null, CloudTranscription.kawaLanguageCode("auto"))
@@ -187,6 +196,25 @@ class CloudTranscriptionTest {
             assertTrue(error is java.util.concurrent.CancellationException)
             assertEquals(previous.toList(), wav.readBytes().toList())
             assertEquals(listOf("output.wav", "source.pcm"), directory.listFiles()!!.map { it.name }.sorted())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun wavExportCannotOverwriteItsOwnPcmSource() {
+        val directory = createTempDir(prefix = "cloud-wav-same-path")
+        try {
+            val pcm = File(directory, "source.pcm").apply {
+                writeBytes(byteArrayOf(1, 2, 3, 4))
+            }
+            val original = pcm.readBytes()
+            val error = runCatching {
+                CloudTranscription.writeWavFile(AudioExtract.PcmFile(pcm, sampleCount = 2L), pcm)
+            }.exceptionOrNull()
+
+            assertTrue(error is IllegalArgumentException)
+            assertEquals(original.toList(), pcm.readBytes().toList())
         } finally {
             directory.deleteRecursively()
         }

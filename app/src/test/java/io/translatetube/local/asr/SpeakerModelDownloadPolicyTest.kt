@@ -6,6 +6,30 @@ import org.junit.Test
 
 class SpeakerModelDownloadPolicyTest {
     @Test
+    fun cachedModelFilesRequirePlausibleLowerAndUpperBounds() {
+        assertTrue(SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(true, 1_000_000L))
+        assertTrue(
+            SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(
+                true, SpeakerModelDownloadPolicy.MAX_SEGMENTATION_MODEL_BYTES,
+            )
+        )
+        assertFalse(SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(false, 2_000_000L))
+        assertFalse(SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(true, 999_999L))
+        assertFalse(
+            SpeakerModelDownloadPolicy.isValidCachedSegmentationModel(
+                true, SpeakerModelDownloadPolicy.MAX_SEGMENTATION_MODEL_BYTES + 1L,
+            )
+        )
+        assertTrue(SpeakerModelDownloadPolicy.isValidCachedEmbeddingModel(true, 5_000_000L))
+        assertFalse(SpeakerModelDownloadPolicy.isValidCachedEmbeddingModel(true, 4_999_999L))
+        assertFalse(
+            SpeakerModelDownloadPolicy.isValidCachedEmbeddingModel(
+                true, SpeakerModelDownloadPolicy.MAX_EMBEDDING_MODEL_BYTES + 1L,
+            )
+        )
+    }
+
+    @Test
     fun onlyFullModelResponsesAreAccepted() {
         assertTrue(SpeakerModelDownloadPolicy.isFullResponse(200))
         assertFalse(SpeakerModelDownloadPolicy.isFullResponse(206))

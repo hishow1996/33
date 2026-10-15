@@ -2,7 +2,16 @@ package io.translatetube.local.asr
 
 /** Integrity checks for remotely downloaded speaker-diarization model assets. */
 internal object SpeakerModelDownloadPolicy {
+    const val MIN_SEGMENTATION_MODEL_BYTES = 1_000_000L
     const val MAX_SEGMENTATION_MODEL_BYTES = 30L * 1024L * 1024L
+    const val MIN_EMBEDDING_MODEL_BYTES = 5_000_000L
+    const val MAX_EMBEDDING_MODEL_BYTES = 100L * 1024L * 1024L
+
+    fun isValidCachedSegmentationModel(isFile: Boolean, sizeBytes: Long): Boolean =
+        isFile && sizeBytes in MIN_SEGMENTATION_MODEL_BYTES..MAX_SEGMENTATION_MODEL_BYTES
+
+    fun isValidCachedEmbeddingModel(isFile: Boolean, sizeBytes: Long): Boolean =
+        isFile && sizeBytes in MIN_EMBEDDING_MODEL_BYTES..MAX_EMBEDDING_MODEL_BYTES
 
     /** These model endpoints do not send Range requests; 206 must not be installed as a full asset. */
     fun isFullResponse(statusCode: Int): Boolean = statusCode == 200
