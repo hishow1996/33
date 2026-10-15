@@ -338,9 +338,9 @@ class SubtitleParsersTest {
     @Test
     fun autoDetectsIndentedLowercaseAssDialogueLines() {
         val source = """
-                dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,lowercase cue
-                DIALOGUE: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,uppercase cue
-        """.trimIndent()
+            |    dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,lowercase cue
+            |DIALOGUE: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,uppercase cue
+        """.trimMargin()
 
         val parsed = SubtitleParsers.parseAuto(source)
 
