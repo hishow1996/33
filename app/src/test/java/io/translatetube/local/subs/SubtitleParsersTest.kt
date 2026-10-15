@@ -325,9 +325,7 @@ class SubtitleParsersTest {
 
     @Test
     fun assParserAcceptsIndentedCaseInsensitiveDialogueKeywords() {
-        val source = """
-              dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,lowercase cue
-        """.trimIndent()
+        val source = "    dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,lowercase cue"
 
         val parsed = SubtitleParsers.parseAss(source)
 
