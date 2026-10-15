@@ -127,6 +127,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     private var ttsJob: Job? = null
     private var asrJob: Job? = null
 
+    // A shared pause gate lets the notification pause either or both active model tasks.
+    private val pauseLock = Any()
+    @Volatile private var resumeSignal: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    val isPaused: Boolean get() = synchronized(pauseLock) { resumeSignal != null }
+
     private val http = okhttp3.OkHttpClient.Builder()
         .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
@@ -245,6 +250,66 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             ModelKind.TTS -> { ttsJob?.cancel(); _tts.value = ModelState(status = ModelStatus.FAILED, error = "已取消") }
             ModelKind.ASR -> { asrJob?.cancel(); _asr.value = ModelState(status = ModelStatus.FAILED, error = "已取消") }
         }
+        clearPauseIfIdle()
+    }
+
+    /** Toggle pause/resume for all active model downloads from the foreground notification. */
+    fun togglePauseAll() {
+        val active = ttsJob?.isActive == true || asrJob?.isActive == true ||
+            isActiveModelState(_tts.value) || isActiveModelState(_asr.value)
+        if (!active) return
+        synchronized(pauseLock) {
+            val current = resumeSignal
+            if (current == null) {
+                resumeSignal = kotlinx.coroutines.CompletableDeferred()
+            } else {
+                current.complete(Unit)
+                resumeSignal = null
+            }
+        }
+    }
+
+    /** Cancel all active model tasks and release any paused coroutine before cancelling jobs. */
+    fun cancelAll() {
+        resumeDownloads()
+        if (ttsJob?.isActive == true || isActiveModelState(_tts.value)) cancel(ModelKind.TTS)
+        if (asrJob?.isActive == true || isActiveModelState(_asr.value)) cancel(ModelKind.ASR)
+    }
+
+    private fun isActiveModelState(state: ModelState): Boolean =
+        state.status == ModelStatus.DOWNLOADING || state.status == ModelStatus.EXTRACTING
+
+    private fun resumeDownloads() {
+        synchronized(pauseLock) {
+            resumeSignal?.complete(Unit)
+            resumeSignal = null
+        }
+    }
+
+    private fun clearPauseIfIdle() {
+        if (!isActiveModelState(_tts.value) && !isActiveModelState(_asr.value) &&
+            ttsJob?.isActive != true && asrJob?.isActive != true
+        ) {
+            resumeDownloads()
+        }
+    }
+
+    /** Suspension checkpoint used by network reads and other suspendable stages. */
+    private suspend fun awaitDownloadsResumed() {
+        while (true) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val signal = synchronized(pauseLock) { resumeSignal } ?: return
+            signal.await()
+        }
+    }
+
+    /** Blocking checkpoint for the synchronous archive decoder and checksum reader. */
+    private fun awaitDownloadsResumedBlocking(job: Job?) {
+        while (true) {
+            job?.ensureActive()
+            val signal = synchronized(pauseLock) { resumeSignal } ?: return
+            kotlinx.coroutines.runBlocking { signal.await() }
+        }
     }
 
     private suspend fun runDownload(
@@ -257,6 +322,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val pkg = File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp")
         var lastError: String? = null
         for ((sourceIndex, url) in urls.withIndex()) {
+            awaitDownloadsResumed()
             // Reset the phase before every fallback source. Otherwise an extraction error leaves
             // the UI stuck on "installing" while the manager is downloading the next mirror.
             state.value = ModelState(
@@ -287,6 +353,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                     throw IllegalStateException("模型压缩包超过大小限制")
                                 }
                                 while (true) {
+                                    awaitDownloadsResumed()
                                     if (state.value.status == ModelStatus.FAILED) throw kotlinx.coroutines.CancellationException("用户取消")
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                                     val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
@@ -316,6 +383,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         }
                     }
                 }
+                awaitDownloadsResumed()
                 state.value = state.value.copy(progress = 99, stageMessage = "正在校验模型压缩包…")
                 // TTS 压缩包有 GitHub Release API 公布的 SHA-256；镜像下载也必须通过相同校验。
                 // Whisper 压缩包当前上游没有提供可直接核验的 asset digest，因此仍依赖 HTTPS、大小限制和解压结构校验。
@@ -326,7 +394,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (expectedArchiveSha256 != null) {
                     withContext(Dispatchers.IO) {
                         val checksumJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                        val actual = sha256(pkg) { checksumJob?.ensureActive() }
+                        val actual = sha256(pkg) { awaitDownloadsResumedBlocking(checksumJob) }
                         if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
                             throw java.io.IOException("模型压缩包 SHA-256 校验失败")
                         }
@@ -335,6 +403,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
                 // 解压（原子：先解到 .extract 再整体 rename 内容）。定期更新状态，避免大模型
                 // 解压时看起来像完全卡住。
+                awaitDownloadsResumed()
                 state.value = state.value.copy(
                     status = ModelStatus.EXTRACTING,
                     progress = 0,
@@ -346,7 +415,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     extractTarBz2(
                         pkg = pkg,
                         destDir = destDir,
-                        checkActive = { extractionJob?.ensureActive() },
+                        checkActive = { awaitDownloadsResumedBlocking(extractionJob) },
                         onProgress = { extractedBytes ->
                             val handledMB = extractedBytes / (1024L * 1024L)
                             state.value = state.value.copy(
@@ -460,6 +529,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val temp = File(parent, dest.name + ".download")
         temp.delete()
         try {
+            awaitDownloadsResumed()
             val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
             executeCancellable(http.newCall(req)) { resp ->
                 if (!HttpDownloadResponsePolicy.isCompleteGetResponse(resp.code)) {
@@ -476,6 +546,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(32 * 1024)
                         while (true) {
+                            awaitDownloadsResumed()
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                             if (count < 0) break
