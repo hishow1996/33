@@ -945,7 +945,7 @@ class PlaybackService : MediaSessionService() {
                 // Use immutable copies so StateFlow/Compose sees translated subtitle text.
                 val translatedLines = applySavedLineOverrides(
                     if (isChineseLanguage(srcLang)) {
-                        parsedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
+                        SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(parsedLines)
                     } else {
                         translateLines(sessionKey, parsedLines, srcLang, importedCacheKey)
                     }
