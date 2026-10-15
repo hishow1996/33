@@ -41,6 +41,36 @@ class PlayerQualityPolicyTest {
     }
 
     @Test
+    fun skipsBlankAndExceptionThrowingUrlCandidatesWithoutAbortingSelection() {
+        val streams = listOf(
+            "   " to 360,
+            "throws" to 720,
+            "https://media.example/240" to 240,
+        )
+        val selected = PlayerQualityPolicy.chooseDefault(streams, { url ->
+            if (url == "throws") throw IllegalArgumentException("malformed candidate")
+            url.startsWith("https://")
+        })
+        assertEquals("https://media.example/240" to 240, selected)
+    }
+
+    @Test
+    fun preflightTreatsBlankOrExceptionThrowingUrlsAsUnusable() {
+        assertEquals(
+            false,
+            PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxedUrl = "throws",
+                adaptiveVideoUrl = "https://media.example/video",
+                audioUrl = "throws",
+                isValidUrl = { url ->
+                    if (url == "throws") throw IllegalArgumentException("bad URL")
+                    url.startsWith("https://")
+                },
+            ),
+        )
+    }
+
+    @Test
     fun sourcePreflightRequiresUsableMuxedOrCompleteAdaptivePair() {
         val validUrl: (String) -> Boolean = { it.startsWith("https://") }
 

@@ -12,6 +12,11 @@ class WebMediaUrlPolicyTest {
         assertNull(WebMediaUrlPolicy.normalizePageUrl("javascript:alert(1)"))
         assertNull(WebMediaUrlPolicy.normalizePageUrl("file:///etc/passwd"))
         assertNull(WebMediaUrlPolicy.normalizePageUrl("https://user:pass@example.com/video"))
+        // Common bare host:port input must not be misread as an unsupported URI scheme.
+        assertEquals("https://example.com:8080/watch", WebMediaUrlPolicy.normalizePageUrl("example.com:8080/watch"))
+        assertEquals("https://localhost:3000", WebMediaUrlPolicy.normalizePageUrl("localhost:3000"))
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("https://example.com:99999/watch"))
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("https://example.com:0/watch"))
     }
 
     @Test
@@ -23,6 +28,8 @@ class WebMediaUrlPolicyTest {
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("blob:https://example.com/abc"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/stream.mpd"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("data:video/mp4;base64,abc"))
+        assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example:99999/video.mp4"))
+        assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example:0/video.mp4"))
     }
 
     @Test
@@ -32,6 +39,9 @@ class WebMediaUrlPolicyTest {
         assertEquals(true, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example/stream.mpd"))
         assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest("https://example.com/watch"))
         assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest("blob:https://example.com/id"))
+        assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example:99999/video.mp4"))
+        assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest("https://user:pass@cdn.example/video.mp4"))
+        assertEquals(true, WebMediaUrlPolicy.unsupportedReason("https://cdn.example:99999/video.mp4") != null)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import java.io.IOException
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 
 /** Shared bounded retry policy for remote audio and HLS segment downloads. */
@@ -19,7 +20,8 @@ internal object MediaDownloadRetryPolicy {
             ?.getOrNull(1)
             ?.toIntOrNull()
         if (statusCode != null && statusCode in setOf(401, 403, 404, 410)) return true
-        val normalized = messages.lowercase()
+        // Protocol/error tokens must not depend on the device's default language.
+        val normalized = messages.lowercase(Locale.ROOT)
         return messages.contains("过期") ||
             messages.contains("签名无效") ||
             normalized.contains("signature has expired") ||

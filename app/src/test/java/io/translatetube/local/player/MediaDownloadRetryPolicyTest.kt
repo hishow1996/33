@@ -30,6 +30,21 @@ class MediaDownloadRetryPolicyTest {
     }
 
     @Test
+    fun signedStreamRefreshDetectionIsIndependentOfDeviceLocale() {
+        val previous = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("tr", "TR"))
+            assertTrue(
+                MediaDownloadRetryPolicy.shouldRefreshSignedStream(
+                    IllegalStateException("SIGNATURE HAS EXPIRED"),
+                ),
+            )
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
+
+    @Test
     fun wrappedCancellationIsNeverRetriedOrRefreshed() {
         val wrapped = IOException("download wrapper", CancellationException("obsolete task"))
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(wrapped))

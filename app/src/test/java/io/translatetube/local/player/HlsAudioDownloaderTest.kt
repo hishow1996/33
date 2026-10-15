@@ -255,6 +255,9 @@ class HlsAudioDownloaderTest {
     fun detectsSignedHlsManifestUrlByItsPath() {
         assertEquals(true, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8?token=private"))
         assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example/video.mp4?token=private"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("file:///private/playlist.m3u8"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example:99999/playlist.m3u8"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("https://user:pass@cdn.example/playlist.m3u8"))
     }
 
 

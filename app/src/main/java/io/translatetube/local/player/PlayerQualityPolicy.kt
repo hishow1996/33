@@ -13,7 +13,9 @@ internal object PlayerQualityPolicy {
         preferredHeight: Int = DEFAULT_HEIGHT,
     ): Pair<String, Int>? {
         require(preferredHeight > 0) { "Preferred video height must be positive" }
-        val valid = streams.filter { (url, height) -> height > 0 && isValidUrl(url) }
+        val valid = streams.filter { (url, height) ->
+            height > 0 && isCandidateUrlValid(url, isValidUrl)
+        }
         return valid.filter { it.second <= preferredHeight }.maxByOrNull { it.second }
             ?: valid.minByOrNull { it.second }
     }
@@ -25,9 +27,22 @@ internal object PlayerQualityPolicy {
         audioUrl: String,
         isValidUrl: (String) -> Boolean,
     ): Boolean {
-        val hasMuxed = !muxedUrl.isNullOrBlank() && isValidUrl(muxedUrl)
-        val hasAdaptive = !adaptiveVideoUrl.isNullOrBlank() &&
-            isValidUrl(adaptiveVideoUrl) && isValidUrl(audioUrl)
+        val hasMuxed = isCandidateUrlValid(muxedUrl, isValidUrl)
+        val hasAdaptive = isCandidateUrlValid(adaptiveVideoUrl, isValidUrl) &&
+            isCandidateUrlValid(audioUrl, isValidUrl)
         return hasMuxed || hasAdaptive
+    }
+
+    /** A malformed extractor candidate must be skipped rather than aborting all quality discovery. */
+    private fun isCandidateUrlValid(
+        url: String?,
+        isValidUrl: (String) -> Boolean,
+    ): Boolean {
+        if (url.isNullOrBlank()) return false
+        return try {
+            isValidUrl(url.trim())
+        } catch (_: Exception) {
+            false
+        }
     }
 }

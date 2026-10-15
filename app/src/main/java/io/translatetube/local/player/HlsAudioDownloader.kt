@@ -94,7 +94,15 @@ internal object HlsAudioDownloader {
     }
 
     fun isManifestUrl(value: String): Boolean = runCatching {
-        URI(value.trim()).rawPath.orEmpty().endsWith(".m3u8", ignoreCase = true)
+        val uri = URI(value.trim())
+        val scheme = uri.scheme?.lowercase(java.util.Locale.ROOT)
+        val port = uri.port
+        scheme in setOf("http", "https") &&
+            !uri.host.isNullOrBlank() &&
+            uri.userInfo == null &&
+            !uri.rawAuthority.orEmpty().endsWith(":") &&
+            (port == -1 || port in 1..65535) &&
+            uri.rawPath.orEmpty().endsWith(".m3u8", ignoreCase = true)
     }.getOrDefault(false)
 
     /**
