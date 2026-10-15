@@ -58,8 +58,8 @@ object CloudTranscription {
     /** Bound JSON allocation on memory-constrained phones when a provider returns malformed data. */
     internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
 
-    // A force-stop can bypass writeWavFile's finally block. Keep only this writer's stale
-    // staging files eligible for cleanup; recently modified work from another active job survives.
+    // A force-stop can bypass finally cleanup for both staging and request WAV files.
+    // Match only our own filename prefixes and leave recently modified work untouched.
     internal const val STAGED_WAV_MAX_AGE_MS = 24L * 60L * 60L * 1_000L
 
     internal fun cleanupStaleWavStages(
