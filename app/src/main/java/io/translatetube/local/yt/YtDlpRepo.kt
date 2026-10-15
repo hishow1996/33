@@ -111,6 +111,9 @@ object YtDlpRepo {
         // 强制路径 / 本进程已 init：以运行时真实版本为准
         _updateState.value = _updateState.value.copy(checking = true)
         try {
+            // 手动点击“检查更新”时也要先初始化本机运行时；否则 YoutubeDL.version()
+            // 在尚未 init 的冷启动进程中会失败，造成“已获取最新版但无法读取本机版本”。
+            if (force) ensureReady(appCtx)
             val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
             val latestKnown = fetchLatestReleaseTag() ?: run {
                 _updateState.value = _updateState.value.copy(checking = false)
