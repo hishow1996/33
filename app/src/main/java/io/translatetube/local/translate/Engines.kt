@@ -58,7 +58,7 @@ private val JSON = "application/json; charset=utf-8".toMediaType()
  * plain one-translation-per-line output; treating that as an all-empty batch caused a false
  * "status placeholder" error even though the model returned translations.
  */
-private fun parseModelTranslations(content: String, size: Int): List<String> {
+internal fun parseModelTranslations(content: String, size: Int): List<String> {
     if (size <= 0) return emptyList()
 
     val normalized = content
@@ -76,19 +76,34 @@ private fun parseModelTranslations(content: String, size: Int): List<String> {
     // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
     val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d{1,4})(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
     val indexed = linkedMapOf<Int, String>()
+    var duplicateIndex = false
     normalized.lines().forEach { raw ->
         val line = raw.trim().trim('`').trim()
         val match = indexedLine.matchEntire(line) ?: return@forEach
         val index = match.groupValues[1].toIntOrNull() ?: return@forEach
         if (index in 0..size) {
             val value = match.groupValues[2].trim().removePrefix("**").removeSuffix("**").trim()
-            if (value.isNotBlank()) indexed[index] = value
+            if (indexed.containsKey(index)) {
+                duplicateIndex = true
+            } else {
+                // Empty numbered rows are valid for empty subtitle cues; keep their index.
+                indexed[index] = value
+            }
         }
     }
     if (indexed.isNotEmpty()) {
+        if (duplicateIndex) {
+            throw IllegalStateException("翻译服务重复返回字幕编号，已拒绝错位译文")
+        }
         // If numbering begins at 1 and no zero row exists, accept the common one-based format.
         val base = if (0 !in indexed.keys && indexed.keys.minOrNull() == 1) 1 else 0
-        return List(size) { i -> indexed[i + base].orEmpty() }
+        if (base == 0 && size in indexed.keys) {
+            throw IllegalStateException("翻译服务返回了超出本批范围的字幕编号")
+        }
+        if ((0 until size).any { (it + base) !in indexed.keys }) {
+            throw IllegalStateException("翻译服务返回的字幕编号不完整，已拒绝可能错位的译文")
+        }
+        return List(size) { i -> indexed.getValue(i + base) }
     }
 
     // Fall back to positional output only when each input row has exactly one output row.
@@ -237,6 +252,7 @@ class MlKitEngine : TranslationEngine {
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (lines.isEmpty()) return emptyList()
         // 源语言未知时按英语兜底（最常见外文视频）
         val s = LangMap.mlkit(if (srcLang.isBlank()) "en" else srcLang)
         val t = LangMap.mlkit(tgtLang)
