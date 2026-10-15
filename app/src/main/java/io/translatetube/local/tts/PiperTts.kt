@@ -1,5 +1,7 @@
 package io.translatetube.local.tts
 
+import io.translatetube.local.util.HttpDownloadResponsePolicy
+
 import android.content.Context
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
@@ -301,13 +303,13 @@ object PiperModels {
             val request = Request.Builder().url("$BASE/${def.archive}").build()
             val ownerJob = currentCoroutineContext()[Job]
             executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
-                if (!response.isSuccessful) {
-                    throw java.io.IOException("模型下载失败：HTTP ${response.code}")
+                if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
+                    throw java.io.IOException("Piper 模型下载需要完整 HTTP 200 响应，收到 HTTP ${response.code}")
                 }
                 val body = response.body ?: throw java.io.IOException("模型下载失败：空响应")
                 val total = body.contentLength()
-                if (total > MAX_ARCHIVE_BYTES) {
-                    throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
+                if (!HttpDownloadResponsePolicy.isValidExpectedLength(total, MAX_ARCHIVE_BYTES)) {
+                    throw java.io.IOException("Piper 模型压缩包响应声明的大小无效或超过 256 MB 安全上限")
                 }
                 var done = 0L
                 body.byteStream().use { input ->
@@ -330,8 +332,8 @@ object PiperModels {
                         output.fd.sync()
                     }
                 }
-                if (done == 0L || (total >= 0L && done != total)) {
-                    throw java.io.IOException("Piper 模型下载不完整：预期 ${total} 字节，实际 ${done} 字节")
+                if (!HttpDownloadResponsePolicy.isCompletePayload(total, done, MAX_ARCHIVE_BYTES)) {
+                    throw java.io.IOException("Piper 模型下载不完整或大小异常：预期 ${total} 字节，实际 ${done} 字节")
                 }
             }
 

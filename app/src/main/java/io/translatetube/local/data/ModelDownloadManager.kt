@@ -1,5 +1,7 @@
 package io.translatetube.local.data
 
+import io.translatetube.local.util.HttpDownloadResponsePolicy
+
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -266,16 +268,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
                     executeCancellable(http.newCall(req)) { resp ->
-                        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                        if (!HttpDownloadResponsePolicy.isCompleteGetResponse(resp.code)) {
+                            throw IllegalStateException("模型下载需要完整 HTTP 200 响应，收到 HTTP ${resp.code}")
+                        }
                         val body = resp.body ?: throw IllegalStateException("空响应")
+                        val maxArchiveBytes = 512L * 1024 * 1024
                         val expectedBytes = body.contentLength()
+                        if (!HttpDownloadResponsePolicy.isValidExpectedLength(expectedBytes, maxArchiveBytes)) {
+                            throw IllegalStateException("模型压缩包响应声明的文件大小无效或超过限制")
+                        }
                         val total = expectedBytes.takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
                         body.byteStream().use { ins ->
                             FileOutputStream(pkg).use { out ->
                                 val buf = ByteArray(128 * 1024)
                                 var got = 0L
-                                val maxArchiveBytes = 512L * 1024 * 1024
-                                if (expectedBytes > maxArchiveBytes || total > maxArchiveBytes) {
+                                if (total > maxArchiveBytes) {
                                     throw IllegalStateException("模型压缩包超过大小限制")
                                 }
                                 while (true) {
@@ -294,9 +301,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                         stageMessage = "正在下载模型包…",
                                     )
                                 }
-                                if (expectedBytes > 0L && got != expectedBytes) {
+                                if (!HttpDownloadResponsePolicy.isCompletePayload(
+                                        expectedBytes, got, maxArchiveBytes
+                                    )
+                                ) {
                                     throw java.io.IOException(
-                                        "模型压缩包下载不完整：预期 ${expectedBytes} 字节，实际收到 ${got} 字节"
+                                        "模型压缩包下载不完整或大小异常：预期 ${expectedBytes} 字节，实际收到 ${got} 字节"
                                     )
                                 }
                                 out.flush()
@@ -451,11 +461,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         try {
             val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
             executeCancellable(http.newCall(req)) { resp ->
-                if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                if (!HttpDownloadResponsePolicy.isCompleteGetResponse(resp.code)) {
+                    throw IllegalStateException("附属模型下载需要完整 HTTP 200 响应，收到 HTTP ${resp.code}")
+                }
                 val body = resp.body ?: throw IllegalStateException("下载响应为空")
                 val maxBytes = 16L * 1024 * 1024
                 val expectedBytes = body.contentLength()
-                if (expectedBytes != -1L && expectedBytes !in 1L..maxBytes) {
+                if (!HttpDownloadResponsePolicy.isValidExpectedLength(expectedBytes, maxBytes)) {
                     throw IllegalStateException("附属模型响应声明的文件大小无效或超过限制")
                 }
                 var written = 0L
@@ -473,10 +485,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         output.fd.sync()
                     }
                 }
-                if (written == 0L) throw IllegalStateException("下载文件为空")
-                if (expectedBytes > 0L && written != expectedBytes) {
+                if (!HttpDownloadResponsePolicy.isCompletePayload(expectedBytes, written, maxBytes)) {
                     throw java.io.IOException(
-                        "附属模型下载不完整：预期 ${expectedBytes} 字节，实际收到 ${written} 字节"
+                        "附属模型下载不完整或大小异常：预期 ${expectedBytes} 字节，实际收到 ${written} 字节"
                     )
                 }
             }
