@@ -10,6 +10,11 @@ on:
       - app/src/main/java/io/translatetube/local/ui/screens/WebVideoScreen.kt
       - app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
       - app/src/main/java/io/translatetube/local/player/PlaybackService.kt
+      - app/src/main/java/io/translatetube/local/player/HlsAudioDownloader.kt
+      - app/src/main/java/io/translatetube/local/yt/YtDlpRepo.kt
+      - app/src/main/java/io/translatetube/local/data/ModelDownloadManager.kt
+      - app/src/main/java/io/translatetube/local/data/ModelDownloadForegroundService.kt
+      - app/src/test/java/io/translatetube/local/player/HlsAudioDownloaderTest.kt
 
 permissions:
   contents: read
