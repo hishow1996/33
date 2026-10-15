@@ -219,47 +219,60 @@ object YtDlpRepo {
         if (parent == null || dest.name.endsWith(".part")) {
             throw IllegalArgumentException("下载目标路径不合法")
         }
-        val request = YoutubeDLRequest(pageUrl.trim()).apply {
-            // 纯音频优先；仅音频不可得时回落 combined（大文件但保底可用）
-            addOption("-f", "bestaudio/best")
-            addOption("--no-playlist")
-            addOption("--socket-timeout", "20")
-            addOption("--retries", "3")
-            // 上限防护：纯音频通常 5~60MB，300M 足够宽容且防爆盘
-            addOption("--max-filesize", "160M")
-            // 分片并发下载提速（HLS/dash 音轨常见分段）
-            addOption("-N", "4")
-            // 逐行刷新进度（外部程序解析标准做法，避免单行 \r 刷新吞进度）
-            addOption("--newline")
-            addOption("-o", dest.absolutePath)
-            cookieHeader?.takeIf { it.isNotBlank() }?.let {
-                addOption("--add-headers", "Cookie:$it")
-            }
-        }
+        // yt-dlp can leave partial files after cancellation or process failure. Keep all output
+        // in an isolated staging directory and publish only one validated, complete media file.
+        val stagingDir = File(parent, ".${dest.nameWithoutExtension}.ytdlp-${System.nanoTime()}")
+        if (!stagingDir.mkdirs()) throw java.io.IOException("无法创建 yt-dlp 音频暂存目录")
+        val outputTemplate = File(stagingDir, "audio.%(ext)s").absolutePath
         try {
-            YoutubeDL.execute(request) { percent, _, _ ->
-                if (percent >= 0f) onProgress(percent.toInt().coerceIn(0, 100))
+            val request = YoutubeDLRequest(pageUrl.trim()).apply {
+                addOption("-f", "bestaudio/best")
+                addOption("--no-playlist")
+                addOption("--socket-timeout", "20")
+                addOption("--retries", "3")
+                addOption("--max-filesize", "160M")
+                addOption("-N", "4")
+                addOption("--newline")
+                addOption("-o", outputTemplate)
+                cookieHeader?.takeIf { it.isNotBlank() }?.let {
+                    addOption("--add-headers", "Cookie:$it")
+                }
             }
-        } catch (e: java.io.InterruptedIOException) {
-            // Do not turn coroutine cancellation into an ordinary download error: callers would
-            // otherwise continue into the expensive HLS fallback after the user already cancelled.
+            try {
+                YoutubeDL.execute(request) { percent, _, _ ->
+                    if (percent >= 0f) onProgress(percent.toInt().coerceIn(0, 100))
+                }
+            } catch (e: java.io.InterruptedIOException) {
+                // Preserve cooperative cancellation so no fallback download starts after cancel.
+                currentCoroutineContext().ensureActive()
+                throw IllegalStateException("yt-dlp 下载被中断", e)
+            }
             currentCoroutineContext().ensureActive()
-            throw IllegalStateException("yt-dlp 下载被中断", e)
-        }
-        // Short valid clips can produce audio below 1 MB; only reject empty or oversized output.
-        // Keep the yt-dlp direct path within the same cache bound as the HTTP/HLS fallbacks.
-        val downloadedBytes = dest.length()
-        if (!YtDlpAudioPolicy.isValidDownload(dest.isFile, downloadedBytes)) {
-            dest.delete()
-            val reason = when {
-                downloadedBytes <= 0L -> "yt-dlp 音频下载结果为空"
-                downloadedBytes > YtDlpAudioPolicy.MAX_AUDIO_BYTES ->
-                    "yt-dlp 音频超过 160 MB 限制，正在回落至受限的流式下载"
-                else -> "yt-dlp 音频下载结果异常"
+            val outputs = stagingDir.listFiles().orEmpty()
+                .filter { it.isFile && YtDlpAudioPolicy.isCandidateOutput(it.name) }
+            val downloaded = outputs.singleOrNull()
+                ?: throw IllegalStateException("yt-dlp 没有生成唯一的完整音频文件")
+            val downloadedBytes = downloaded.length()
+            if (!YtDlpAudioPolicy.isValidDownload(downloaded.isFile, downloadedBytes)) {
+                val reason = when {
+                    downloadedBytes <= 0L -> "yt-dlp 音频下载结果为空"
+                    downloadedBytes > YtDlpAudioPolicy.MAX_AUDIO_BYTES ->
+                        "yt-dlp 音频超过 160 MB 限制，正在回落至受限的流式下载"
+                    else -> "yt-dlp 音频下载结果异常"
+                }
+                throw IllegalStateException(reason)
             }
-            throw IllegalStateException(reason)
+            currentCoroutineContext().ensureActive()
+            // The staging folder is created below the cache parent, so publication stays on the
+            // same filesystem. If rename fails, keep any previous valid cache untouched.
+            if (!downloaded.renameTo(dest)) {
+                throw IllegalStateException("yt-dlp 音频已下载，但无法原子保存缓存；旧缓存仍保留")
+            }
+            dest.setLastModified(System.currentTimeMillis())
+            dest
+        } finally {
+            runCatching { stagingDir.deleteRecursively() }
         }
-        dest
     }
 
     /** 是否为适合 yt-dlp 处理的 URL（http/https 均可；主入口 YouTube 仍走 NewPipe，此处含 YouTube 作为风控兜底）。 */

@@ -6,6 +6,16 @@ import org.junit.Test
 
 class YtDlpAudioPolicyTest {
     @Test
+    fun excludesPartialControlAndSidecarFilesFromPublishCandidates() {
+        assertTrue(YtDlpAudioPolicy.isCandidateOutput("audio.webm"))
+        assertTrue(YtDlpAudioPolicy.isCandidateOutput("audio.m4a"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.webm.part"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.webm.ytdl"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.json"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.description"))
+    }
+
+    @Test
     fun acceptsShortNonEmptyClips() {
         assertTrue(YtDlpAudioPolicy.isValidDownload(true, 8_192L))
         assertTrue(YtDlpAudioPolicy.isValidDownload(true, 999_999L))
