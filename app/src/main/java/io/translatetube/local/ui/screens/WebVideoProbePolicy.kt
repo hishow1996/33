@@ -13,6 +13,9 @@ internal object WebVideoProbePolicy {
         payload.length in 2..MAX_PAYLOAD_CHARS
 
     fun acceptsMediaUrl(url: String): Boolean {
+        // The page bridge is untrusted input. Reject controls before trim() so a trailing
+        // newline cannot be normalized into a different, accepted media URL.
+        if (url.isBlank() || url.any { Character.isISOControl(it) }) return false
         val raw = url.trim()
         if (raw.isEmpty() || raw.equals("null", ignoreCase = true) ||
             raw.length > MAX_MEDIA_URL_CHARS ||
