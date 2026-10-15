@@ -15,9 +15,15 @@ internal data class YtDlpFormatCandidate(
 internal object YtDlpMediaPolicy {
     /** Reject HTTP control characters before a Cookie header reaches the native downloader. */
     fun isSafeCookieHeader(value: String?): Boolean =
-        value == null || value.none { it.code < 0x20 || it.code == 0x7f }
+        value == null || (
+            value.length <= 8 * 1024 &&
+                value.none { Character.isISOControl(it) }
+            )
 
     fun isSafeHttpUrl(value: String): Boolean {
+        // Validate before trim(): otherwise a leading/trailing control character is silently
+        // removed and an unsafe input can be accepted as a different URL.
+        if (value.isBlank() || value.any { Character.isISOControl(it) }) return false
         val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return false
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         return scheme in setOf("http", "https") &&
