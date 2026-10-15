@@ -51,6 +51,9 @@ private fun buildContextUserPrompt(
 }
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
+private val translationHeaderRegex = Regex(
+    "(?i)^(here are (the )?translations?:?|translations?:?|translation results?:?|译文如下[:：]?)$",
+)
 
 /**
  * Be tolerant of common model formatting variations while preserving subtitle row alignment.
@@ -110,10 +113,8 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
     val plainLines = normalized.lines()
         .map { it.trim().removePrefix("- ").removePrefix("* ").trim().removeSurrounding("**").trim() }
         .filter { it.isNotBlank() }
-        .filterNot {
-            Regex("(?i)^(here are (the )?translations?:?|translations?:?|translation results?:?|译文如下[:：]?)$")
-                .matches(it)
-        }
+        // The response can contain many rows; share this pattern instead of compiling it per row.
+        .filterNot { translationHeaderRegex.matches(it) }
     if (plainLines.size == size) return plainLines
 
     // Single-row probes occasionally return a sentence without any index or wrapper.
