@@ -114,6 +114,12 @@ fun WebVideoScreen(
         fullScreenCallback.value = null
     }
 
+    // Physical/system back should dismiss fullscreen first; it must not leave the Activity trapped
+    // inside the site's custom player view.
+    BackHandler(enabled = fullScreenContainer.value != null) {
+        hideFullScreenView()
+    }
+
     fun handleWebPlayerBack() {
         val view = webViewState.value
         if (view == null) {
