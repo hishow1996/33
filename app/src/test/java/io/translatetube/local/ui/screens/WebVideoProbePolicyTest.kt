@@ -20,7 +20,7 @@ class WebVideoProbePolicyTest {
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("x".repeat(WebVideoProbePolicy.MAX_MEDIA_URL_CHARS + 1)))
         assertTrue(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.m3u8"))
         assertEquals(WebVideoProbePolicy.MAX_TITLE_CHARS, WebVideoProbePolicy.normalizeTitle("t".repeat(2000)).length)
-        assertEquals(WebVideoProbePolicy.MAX_POSTER_CHARS, WebVideoProbePolicy.normalizePoster("p".repeat(5000)).length)
+        assertEquals("", WebVideoProbePolicy.normalizePoster("p".repeat(5000)))
     }
 
     @Test
@@ -30,7 +30,7 @@ class WebVideoProbePolicyTest {
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("file:///sdcard/private.mp4"))
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://user:pass@cdn.example/video.mp4"))
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example:99999/video.mp4"))
-        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.mp4\\r\\nX: yes"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.mp4" + 13.toChar() + 10.toChar() + "X: yes"))
     }
 
     @Test
