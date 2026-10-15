@@ -2635,18 +2635,21 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 if (ytdlpOrigin != null) {
                     try {
                         val directAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
-                            applicationContext, ytdlpOrigin.pageUrl, destination,
+                            applicationContext,
+                            ytdlpOrigin.pageUrl,
+                            destination,
+                            onProgress = { percent ->
+                                updateUiForSession(sessionKey) { state ->
+                                    if (state.key == sessionKey) {
+                                        state.copy(
+                                            phase = Phase.DOWNLOADING_AUDIO,
+                                            progress = "yt-dlp 正在下载音频 $percent%",
+                                        )
+                                    } else state
+                                }
+                            },
                             cookieHeader = ytdlpOrigin.cookie,
-                        ) { percent ->
-                            updateUiForSession(sessionKey) { state ->
-                                if (state.key == sessionKey) {
-                                    state.copy(
-                                        phase = Phase.DOWNLOADING_AUDIO,
-                                        progress = "yt-dlp 正在下载音频 $percent%",
-                                    )
-                                } else state
-                            }
-                        }
+                        )
                         pruneAsrAudioCache(asrAudioCacheDirectory(), keep = directAudio)
                         leaseTransferred = true
                         return@withLock directAudio

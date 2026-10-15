@@ -157,7 +157,7 @@ class DubbingEngine(
                         val nowMs = System.currentTimeMillis()
                         val existing = cacheDir.listFiles().orEmpty()
                         for (file in existing) {
-                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            checkCacheInitActive()
                             if (released || generation != cacheInitGeneration.get()) return@launch
                             when {
                                 file.name.endsWith(".pcm") && file.name !in expectedCacheNames ->
@@ -838,9 +838,12 @@ class DubbingEngine(
         )
 
     private fun writeFully(track: AudioTrack, samples: ShortArray): Int =
-        AudioTrackWritePolicy.writeFully(samples.size) { offset, remaining ->
-            track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
-        }
+        AudioTrackWritePolicy.writeFully(
+            sampleCount = samples.size,
+            write = { offset, remaining ->
+                track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+            },
+        )
 
     /**
      * Float PCM is preferred for fidelity, but some OEM audio stacks fail to initialize or write
