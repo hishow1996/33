@@ -20,6 +20,20 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun retriesTransientKawaStatusErrorsButNotAuthOrCancellation() {
+        assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 429）")))
+        assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 503）")))
+        assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("unexpected EOF")))
+        assertEquals(false, CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 401）")))
+        assertEquals(
+            false,
+            CloudTranscription.shouldRetryKawaPoll(
+                IOException("request cancelled", java.util.concurrent.CancellationException("cancelled"))
+            ),
+        )
+    }
+
+    @Test
     fun kawaLanguageTreatsAutoCaseInsensitivelyAsLanguageDetection() {
         assertEquals("zh", CloudTranscription.kawaLanguageCode(" zh "))
         assertEquals(null, CloudTranscription.kawaLanguageCode("auto"))

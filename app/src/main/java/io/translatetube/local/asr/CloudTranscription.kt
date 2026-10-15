@@ -72,6 +72,26 @@ object CloudTranscription {
     internal fun kawaLanguageCode(language: String): String? =
         language.trim().takeIf { it.isNotEmpty() && !it.equals("auto", ignoreCase = true) }
 
+    /**
+     * Kawa's asynchronous job endpoint can be briefly rate-limited or unavailable. Retry only
+     * transient network/HTTP failures; authentication and task/schema errors should fail promptly.
+     */
+    internal fun shouldRetryKawaPoll(error: Throwable): Boolean {
+        val chain = generateSequence(error) { it.cause }.toList()
+        if (chain.any {
+                it is kotlinx.coroutines.CancellationException ||
+                    it is java.util.concurrent.CancellationException
+            }
+        ) return false
+        val messages = chain.mapNotNull { it.message }.joinToString(" ")
+        val statusCode = Regex("""HTTP\\s*(\\d{3})""", RegexOption.IGNORE_CASE)
+            .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (statusCode != null) {
+            return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
+        }
+        return chain.any { it is IOException }
+    }
+
     /** Read UTF-8 response data with a hard byte limit and cooperative cancellation checks. */
     internal fun readBoundedUtf8(
         input: InputStream,
@@ -367,13 +387,23 @@ object CloudTranscription {
                             .header("Authorization", "Bearer " + apiKey)
                             .get()
                             .build()
-                        val status = executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
-                            val body = readResponseBody(response.body, checkActive)
-                            checkActive()
-                            if (!response.isSuccessful) {
-                                throw IOException("Kawa 查询转写状态失败（HTTP " + response.code + "）")
+                        val status = try {
+                            executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
+                                val body = readResponseBody(response.body, checkActive)
+                                checkActive()
+                                if (!response.isSuccessful) {
+                                    throw IOException("Kawa 查询转写状态失败（HTTP " + response.code + "）")
+                                }
+                                JSONObject(body)
                             }
-                            JSONObject(body)
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (error: IOException) {
+                            if (attempts >= 180 || !shouldRetryKawaPoll(error)) throw error
+                            // Keep the remote task alive through brief rate limits/transient outages,
+                            // while bounding extra polling traffic and preserving prompt cancellation.
+                            delay((500L + attempts.toLong() * 250L).coerceAtMost(5_000L))
+                            continue
                         }
                         when (val stateName = status.optString("status")) {
                             "succeeded" -> {

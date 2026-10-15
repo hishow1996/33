@@ -350,7 +350,13 @@ object NewPipeRepo {
             if (body.contentLength() > BoundedTextPayload.MAX_BYTES) {
                 throw IllegalStateException("字幕响应超过 16 MB 限制，已停止读取以保护设备内存。")
             }
-            val bytes = body.byteStream().use { input -> BoundedTextPayload.readBytes(input) }
+            val bytes = body.byteStream().use { input ->
+                BoundedTextPayload.readBytes(
+                    input,
+                    resourceLabel = "YouTube 字幕响应",
+                    checkActive = { ownerJob?.ensureActive() },
+                )
+            }
             String(bytes, Charsets.UTF_8)
         }
     }
