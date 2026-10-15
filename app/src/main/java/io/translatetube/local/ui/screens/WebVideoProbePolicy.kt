@@ -51,6 +51,7 @@ internal object WebVideoProbePolicy {
 
     /** Page-controlled poster values may only cause remote HTTP(S) images to be loaded. */
     fun normalizePoster(value: String): String {
+        if (value.isBlank() || value.any { Character.isISOControl(it) }) return ""
         val raw = value.trim()
         if (raw.isEmpty() || raw.length > MAX_POSTER_CHARS ||
             raw.any { it.code <= 0x20 || it.code == 0x7f }
