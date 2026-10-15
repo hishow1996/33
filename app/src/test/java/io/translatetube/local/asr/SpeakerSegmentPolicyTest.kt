@@ -9,8 +9,8 @@ class SpeakerSegmentPolicyTest {
     fun clipsSegmentEndToMediaDuration() {
         val segment = SpeakerSegmentPolicy.normalize(1f, 20f, 0, 0.8f, 10f)
 
-        assertEquals(1f, segment?.startSec)
-        assertEquals(10f, segment?.endSec)
+        assertEquals(1f, segment!!.startSec, 0f)
+        assertEquals(10f, segment!!.endSec, 0f)
     }
 
     @Test
@@ -36,8 +36,8 @@ class SpeakerSegmentPolicyTest {
 
     @Test
     fun clampsConfidenceAndUsesUnknownSentinelForInvalidValues() {
-        assertEquals(1f, SpeakerSegmentPolicy.normalize(0f, 1f, 0, 2f, 10f)?.confidence)
-        assertEquals(0f, SpeakerSegmentPolicy.normalize(0f, 1f, 0, 0f, 10f)?.confidence)
+        assertEquals(1f, SpeakerSegmentPolicy.normalize(0f, 1f, 0, 2f, 10f)!!.confidence, 0f)
+        assertEquals(0f, SpeakerSegmentPolicy.normalize(0f, 1f, 0, 0f, 10f)!!.confidence, 0f)
         assertEquals(
             SpeakerSegmentPolicy.UNKNOWN_CONFIDENCE,
             SpeakerSegmentPolicy.normalize(0f, 1f, 0, Float.NaN, 10f)?.confidence,
