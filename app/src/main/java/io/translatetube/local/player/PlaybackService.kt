@@ -3110,15 +3110,20 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 // retiring the current dubbing engine. If TTS setup fails, playback remains intact.
                 val preflightEngine = makeTts(selectedTts)
                 pendingTts = preflightEngine
-                if (preflightEngine is io.translatetube.local.tts.SystemTts &&
-                    !preflightEngine.supportsMultipleChineseVoices
+                val systemChineseVoiceCount =
+                    (preflightEngine as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
+                if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
+                        .supportsDistinctVoices(selectedTts, systemChineseVoiceCount)
                 ) {
+                    val message = when (selectedTts) {
+                        "piper" ->
+                            "当前 Piper 中文模型为单人音色，不能为不同人物分配不同声音。已取消人物识别；普通 Piper 配音仍可使用。请切换到 Kokoro 或支持多种中文音色的系统 TTS。"
+                        "system" ->
+                            "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
+                        else -> "当前选择的配音引擎不支持多人物音色分配。"
+                    }
                     updateUiForSession(sessionKey) {
-                        it.copy(
-                            phase = Phase.READY,
-                            progress = "",
-                            error = "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
-                        )
+                        it.copy(phase = Phase.READY, progress = "", error = message)
                     }
                     return@launch
                 }
@@ -3401,14 +3406,20 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 // offers only one Chinese system voice cannot perform manual multi-speaker changes;
                 // in that case the existing dub keeps playing unchanged.
                 pendingTts = makeTts(selectedTts)
-                if (pendingTts is io.translatetube.local.tts.SystemTts &&
-                    !pendingTts.supportsMultipleChineseVoices
+                val systemChineseVoiceCount =
+                    (pendingTts as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
+                if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
+                        .supportsDistinctVoices(selectedTts, systemChineseVoiceCount)
                 ) {
+                    val message = when (selectedTts) {
+                        "piper" ->
+                            "当前 Piper 中文模型为单人音色，人物音色未更改。若要多人物使用不同声音，请切换到 Kokoro 或支持多种中文音色的系统 TTS。"
+                        "system" ->
+                            "手机系统 TTS 只提供一个可用中文音色，当前人物音色未更改；普通系统配音仍可使用。"
+                        else -> "当前选择的配音引擎不支持多人物音色分配，人物音色未更改。"
+                    }
                     updateUiForSession(sessionKey) {
-                        it.copy(
-                            progress = "",
-                            error = "手机系统 TTS 只提供一个可用中文音色，当前人物音色未更改；普通系统配音仍可使用。"
-                        )
+                        it.copy(progress = "", error = message)
                     }
                     return@launch
                 }
