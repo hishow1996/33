@@ -2854,50 +2854,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (mediaError is kotlinx.coroutines.CancellationException) throw mediaError
 
-                    // HTML/JSON responses usually mean the player page handed us an advertising
-                    // MP3, stale signed URL, or a media endpoint that now requires a session.
-                    // Refresh the audio from the original webpage instead of failing a video that
-                    // this same extractor has successfully processed before.
-                    if (!RemoteMediaRetryPolicy.shouldRefreshFromPage(mediaError) ||
-                        !io.translatetube.local.yt.YtDlpRepo.isEligible(referrer)
-                    ) throw mediaError
-
-                    updateUiForSession(sessionKey) { state ->
-                        if (state.key == sessionKey) state.copy(
-                            phase = Phase.DOWNLOADING_AUDIO,
-                            progress = "临时音轨地址失效，正在从原网页重新获取音轨…",
-                            error = null,
-                        ) else state
-                    }
-                    val pageCookie = runCatching {
-                        android.webkit.CookieManager.getInstance().getCookie(referrer)
-                    }.getOrNull().takeIf { !it.isNullOrBlank() } ?: cookie
-                    try {
-                        io.translatetube.local.yt.YtDlpRepo.downloadAudio(
-                            applicationContext,
-                            referrer,
-                            destination,
-                            onProgress = { percent ->
-                                kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey) }
-                                updateUiForSession(sessionKey) { state ->
-                                    if (state.key == sessionKey) state.copy(
-                                        phase = Phase.DOWNLOADING_AUDIO,
-                                        progress = "正在重新提取网页音轨 $percent%",
-                                        error = null,
-                                    ) else state
-                                }
-                            },
-                            cookieHeader = pageCookie,
-                        )
-                    } catch (refreshError: Exception) {
-                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        if (refreshError is kotlinx.coroutines.CancellationException) throw refreshError
-                        refreshError.addSuppressed(mediaError)
-                        throw IllegalStateException(
-                            "网页临时音轨地址已失效，已尝试重新获取，但仍失败：${io.translatetube.local.yt.YtDlpRepo.failureHint(refreshError)}",
-                            refreshError,
-                        )
-                    }
+                    throw mediaError
                 }
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = cachedAudio)
                 leaseTransferred = true
