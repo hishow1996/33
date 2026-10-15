@@ -1,6 +1,8 @@
 package io.translatetube.local.tts
 
 import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 
 /**
  * Small, bounded RIFF/WAVE decoder for Android system-TTS output.
@@ -18,10 +20,35 @@ internal object SystemTtsWavDecoder {
         if (size !in MIN_WAV_BYTES..MAX_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件大小异常：$size 字节")
         }
-        return decode(file.readBytes())
+        val bytes = FileInputStream(file).use { readExactBoundedBytes(it, size) }
+        return decode(bytes)
     }
 
-    fun decode(bytes: ByteArray): TtsAudio {
+    /** Read exactly the previously validated size and detect truncation or concurrent growth. */
+    internal fun readExactBoundedBytes(input: InputStream, expectedSize: Long): ByteArray {
+        if (expectedSize !in MIN_WAV_BYTES..MAX_WAV_BYTES) {
+            throw IllegalStateException("系统 TTS WAV 文件大小异常：$expectedSize 字节")
+        }
+        val bytes = ByteArray(expectedSize.toInt())
+        var offset = 0
+        while (offset < bytes.size) {
+            val count = input.read(bytes, offset, bytes.size - offset)
+            if (count < 0) throw IllegalStateException("系统 TTS WAV 文件在读取时被截断")
+            if (count == 0) {
+                val single = input.read()
+                if (single < 0) throw IllegalStateException("系统 TTS WAV 文件在读取时被截断")
+                bytes[offset++] = single.toByte()
+            } else {
+                offset += count
+            }
+        }
+        if (input.read() >= 0) {
+            throw IllegalStateException("系统 TTS WAV 文件在读取时发生变化，已拒绝不完整音频")
+        }
+        return bytes
+    }
+
+    fun decode(bytes: ByteArray) {
         if (bytes.size < MIN_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件过短")
         }
@@ -40,6 +67,8 @@ internal object SystemTtsWavDecoder {
         var bitsPerSample = 16
         var dataStart = -1
         var dataLen = 0
+        var sawFormatChunk = false
+        var sawDataChunk = false
 
         fun u16(p: Int): Int =
             (bytes[p].toInt() and 0xFF) or ((bytes[p + 1].toInt() and 0xFF) shl 8)
@@ -75,13 +104,24 @@ internal object SystemTtsWavDecoder {
                 throw IllegalStateException("系统 TTS WAV 数据不完整（$id 块）")
             }
             when (id) {
-                "fmt " -> if (chunkSize >= 16) {
+                "fmt " -> {
+                    if (sawFormatChunk) {
+                        throw IllegalStateException("系统 TTS WAV 包含重复 fmt 音频格式块")
+                    }
+                    if (chunkSize < 16) {
+                        throw IllegalStateException("系统 TTS WAV fmt 音频格式块过短")
+                    }
+                    sawFormatChunk = true
                     formatCode = u16(chunkDataStart)
                     channels = u16(chunkDataStart + 2)
                     sampleRate = i32(chunkDataStart + 4)
                     bitsPerSample = u16(chunkDataStart + 14)
                 }
                 "data" -> {
+                    if (sawDataChunk) {
+                        throw IllegalStateException("系统 TTS WAV 包含重复 data 音频数据块")
+                    }
+                    sawDataChunk = true
                     dataStart = chunkDataStart
                     dataLen = chunkSize
                 }
