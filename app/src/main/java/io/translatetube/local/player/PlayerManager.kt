@@ -290,6 +290,7 @@ class PlayerManager(private val ctx: Context) {
         artworkUrl: String? = null,
         requestHeaders: Map<String, String> = emptyMap(),
     ) {
+        errorSink.value = null
         val item = MediaItem.Builder()
             .setUri(uri)
             .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
