@@ -17,4 +17,17 @@ internal object PlayerQualityPolicy {
         return valid.filter { it.second <= preferredHeight }.maxByOrNull { it.second }
             ?: valid.minByOrNull { it.second }
     }
+
+    /** Preflight legacy source switching so an unusable result cannot stop the current video. */
+    fun hasUsableSourceCandidate(
+        muxedUrl: String?,
+        adaptiveVideoUrl: String?,
+        audioUrl: String,
+        isValidUrl: (String) -> Boolean,
+    ): Boolean {
+        val hasMuxed = !muxedUrl.isNullOrBlank() && isValidUrl(muxedUrl)
+        val hasAdaptive = !adaptiveVideoUrl.isNullOrBlank() &&
+            isValidUrl(adaptiveVideoUrl) && isValidUrl(audioUrl)
+        return hasMuxed || hasAdaptive
+    }
 }
