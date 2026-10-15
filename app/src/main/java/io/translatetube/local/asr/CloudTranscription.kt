@@ -191,8 +191,8 @@ object CloudTranscription {
                         }
                         checkActive()
                         dest.flush()
+                        fileOutput.fd.sync()
                     }
-                    fileOutput.fd.sync()
                 }
             }
             checkActive()
