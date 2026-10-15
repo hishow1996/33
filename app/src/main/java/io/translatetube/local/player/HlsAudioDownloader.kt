@@ -106,7 +106,8 @@ internal object HlsAudioDownloader {
             !uri.rawAuthority.orEmpty().endsWith(":") &&
             (port == -1 || port in 1..65535) &&
             uri.rawPath.orEmpty().endsWith(".m3u8", ignoreCase = true)
-    }.getOrDefault(false)
+        }.getOrDefault(false)
+    }
 
     /**
      * Returns the preferred audio rendition, or the lowest-bandwidth variant if audio is muxed.
