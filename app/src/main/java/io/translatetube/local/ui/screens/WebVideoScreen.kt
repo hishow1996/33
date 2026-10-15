@@ -615,8 +615,9 @@ private val PROBE_SCRIPT = """
           el.style.setProperty('touch-action', 'manipulation', 'important');
           el.style.setProperty('-webkit-tap-highlight-color', 'transparent', 'important');
           el.style.setProperty('box-sizing', 'border-box', 'important');
-          if (rect.width < 42) el.style.setProperty('min-width', '42px', 'important');
-          if (rect.height < 42) el.style.setProperty('min-height', '42px', 'important');
+          // Do not enlarge control boxes: adjacent overlay buttons can overlap on compact players.
+          // Keep the original hit boxes and only improve touch handling without changing layout.
+          el.style.setProperty('pointer-events', 'auto', 'important');
           el.__elephantTouchTargetPatched = true;
         }
         // Same-origin frames can be enhanced; cross-origin frames remain protected by WebView.
