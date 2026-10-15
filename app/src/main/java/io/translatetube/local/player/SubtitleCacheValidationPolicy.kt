@@ -34,5 +34,5 @@ internal object SubtitleCacheValidationPolicy {
      * from their source text rather than leaving blank or stale placeholder translations visible.
      */
     fun restoreChineseSourceTranslations(rows: List<SubLine>): List<SubLine> =
-        rows.map { line -> line.copy(zh = SubtitleParsers.cleanTranslatedText(line.text)) }
+        rows.map { line -> line.copy(zh = line.text.takeIf { it.isNotBlank() }) }
 }

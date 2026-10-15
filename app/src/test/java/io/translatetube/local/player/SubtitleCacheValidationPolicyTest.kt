@@ -39,11 +39,13 @@ class SubtitleCacheValidationPolicyTest {
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "你好", "正在翻译"),
             io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "世界", null),
             io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "继续", "旧的错误译文"),
+            io.translatetube.local.subs.SubLine(3, 3_000L, 4_000L, "哈哈哈哈", "旧的错误译文"),
+            io.translatetube.local.subs.SubLine(4, 4_000L, 5_000L, "正在翻译", null),
         )
 
         val restored = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(rows)
 
-        assertTrue(restored.map { it.zh } == listOf("你好", "世界", "继续"))
+        assertTrue(restored.map { it.zh } == listOf("你好", "世界", "继续", "哈哈哈哈", "正在翻译"))
         assertTrue(restored.map { it.text } == rows.map { it.text })
     }
 

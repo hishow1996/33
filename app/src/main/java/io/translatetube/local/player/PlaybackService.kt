@@ -1859,8 +1859,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
                     translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId)
                 } else if (translatedLines.isNotEmpty()) {
-                    // Already-Chinese source subtitles are the Chinese display track; publish immutable copies.
-                    translatedLines = translatedLines.map { it.copy(zh = SubtitleParsers.cleanTranslatedText(it.text)) }
+                    // Source captions are not translator output: preserve repeated words and text that
+                    // happens to resemble a progress label instead of running translation cleanup on it.
+                    translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
                 }
                 lines = translatedLines
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
