@@ -313,6 +313,8 @@ fun PlayerScreen(
                 state = state,
                 onBack = { exitFloating(); PlaybackService.instance?.saveProgress(); onBack() },
                 onRetry = { retryCurrentTask() },
+                onTogglePause = { PlaybackService.instance?.toggleProcessingPause() },
+                onCancel = { PlaybackService.instance?.cancelProcessing() },
                 onImportSubtitles = { subPicker.launch(arrayOf("*/*")) },
                 onImportTranslatedSubtitles = { translatedSubPicker.launch(arrayOf("*/*")) },
                 onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
@@ -670,6 +672,8 @@ private fun VideoParsingPage(
     state: PlayerUiState,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    onTogglePause: () -> Unit,
+    onCancel: () -> Unit,
     onImportSubtitles: () -> Unit,
     onImportTranslatedSubtitles: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
@@ -689,8 +693,9 @@ private fun VideoParsingPage(
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
-    val mainTitle = when (state.phase) {
-        Phase.ERROR -> "视频处理失败"
+    val mainTitle = when {
+        state.isProcessingPaused -> "处理已暂停"
+        state.phase == Phase.ERROR -> "视频处理失败"
         Phase.PARSING -> "正在处理视频"
         Phase.DOWNLOADING_AUDIO -> "正在准备视频资源"
         Phase.TRANSCRIBING -> "正在获取或识别字幕"
@@ -698,7 +703,7 @@ private fun VideoParsingPage(
         Phase.SYNTHESIZING -> "正在生成配音"
         else -> "正在准备视频"
     }
-    val detail = state.progress.ifBlank {
+    val detail = if (state.isProcessingPaused) "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复下载或解析" } else state.progress.ifBlank {
         when (state.phase) {
             Phase.ERROR -> state.error ?: "处理失败，请重试或导入字幕文件"
             Phase.PARSING -> "正在获取视频信息和可用字幕"
@@ -772,6 +777,34 @@ private fun VideoParsingPage(
                     color = SubText,
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                if (state.phase in setOf(
+                        Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING,
+                        Phase.TRANSLATING, Phase.SYNTHESIZING,
+                    )
+                ) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = onTogglePause,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Text(if (state.isProcessingPaused) "继续处理" else "暂停处理")
+                        }
+                        Button(
+                            onClick = onCancel,
+                            modifier = Modifier.weight(1f).height(46.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DangerRed,
+                                contentColor = Color.White,
+                            ),
+                        ) { Text("取消处理") }
+                    }
+                }
             }
         }
 
