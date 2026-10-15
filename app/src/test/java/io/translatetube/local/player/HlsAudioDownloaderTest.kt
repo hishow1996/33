@@ -55,7 +55,9 @@ class HlsAudioDownloaderTest {
             })
             assertEquals(false, matching.exists())
             assertEquals(true, unrelated.exists())
-            assertEquals(true, HlsAudioDownloader.cleanupSegmentCache(destination))
+            assertEquals(true, kotlinx.coroutines.runBlocking {
+                HlsAudioDownloader.cleanupSegmentCache(destination)
+            })
         } finally {
             parent.deleteRecursively()
         }
