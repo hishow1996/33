@@ -134,13 +134,24 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
  * Show the actual response URL in connection errors so endpoint/redirect problems can be
  * diagnosed. Never include API keys or access tokens from query parameters in user-visible errors.
  */
-private fun safeDiagnosticUrl(url: okhttp3.HttpUrl): String {
-    val sensitive = setOf("key", "api_key", "apikey", "token", "access_token")
+internal fun safeDiagnosticUrl(url: okhttp3.HttpUrl): String {
     val builder = url.newBuilder()
     url.queryParameterNames
-        .filter { it.lowercase(java.util.Locale.ROOT) in sensitive }
+        .filter(::isSensitiveDiagnosticParameter)
         .forEach { name -> builder.setQueryParameter(name, "[redacted]") }
     return builder.build().toString()
+}
+
+/** Query-parameter aliases vary between providers; redact credentials before showing request routes. */
+private fun isSensitiveDiagnosticParameter(name: String): Boolean {
+    val normalized = name.trim().lowercase(java.util.Locale.ROOT).replace('-', '_')
+    return normalized in setOf(
+        "key", "api_key", "apikey", "token", "access_token", "auth", "authorization",
+        "password", "secret", "client_secret", "signature", "sig",
+    ) || normalized.endsWith("_key") ||
+        normalized.endsWith("_token") ||
+        normalized.endsWith("_secret") ||
+        normalized.endsWith("_password")
 }
 
 private fun responseRoute(response: okhttp3.Response): String {
