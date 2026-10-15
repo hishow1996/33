@@ -72,6 +72,85 @@ class TranslationCacheIdentityTest {
     }
 
     @Test
+    fun providerConfigurationChangesInvalidateCacheEvenWhenProfileIdStaysTheSame() {
+        fun fingerprint(
+            model: String = "model-a",
+            baseUrl: String = "https://api.example/v1",
+            apiKey: String = "secret-a",
+        ) = TranslationCacheIdentity.providerFingerprint(
+            activeId = 42L,
+            providerKind = "api-profile",
+            type = "OPENAI",
+            baseUrl = baseUrl,
+            apiKey = apiKey,
+            model = model,
+            region = "jp-east",
+        )
+
+        val original = fingerprint()
+        assertEquals(original, fingerprint())
+        assertNotEquals(original, fingerprint(model = "model-b"))
+        assertNotEquals(original, fingerprint(baseUrl = "https://other.example/v1"))
+        assertNotEquals(original, fingerprint(apiKey = "secret-b"))
+    }
+
+    @Test
+    fun providerFingerprintNeverContainsTheApiKey() {
+        val secret = "private-api-key-never-store"
+        val fingerprint = TranslationCacheIdentity.providerFingerprint(
+            activeId = 42L,
+            providerKind = "api-profile",
+            type = "OPENAI",
+            baseUrl = "https://api.example/v1",
+            apiKey = secret,
+            model = "model-a",
+        )
+        assertNotEquals(secret, fingerprint)
+        assertTrue(!fingerprint.contains(secret))
+    }
+
+    @Test
+    fun reselectingProviderKeepsImportedSourceFingerprintButChangesProviderIdentity() {
+        val originalProvider = TranslationCacheIdentity.providerFingerprint(
+            42L, "api-profile", type = "OPENAI", baseUrl = "https://api.example/v1", model = "a",
+        )
+        val updatedProvider = TranslationCacheIdentity.providerFingerprint(
+            42L, "api-profile", type = "OPENAI", baseUrl = "https://api.example/v1", model = "b",
+        )
+        val original = TranslationCacheIdentity.importedKey("video-key", 42L, source, originalProvider)
+        val expectedSourceFingerprint = original.substringAfterLast("|imported-")
+
+        val rekeyed = TranslationCacheIdentity.forProvider(
+            baseKey = "unused-new-base",
+            activeId = 42L,
+            importedLines = null,
+            previousKey = original,
+            providerFingerprint = updatedProvider,
+        )
+
+        assertEquals(
+            "video-key|zh|42|provider-$updatedProvider|imported-$expectedSourceFingerprint",
+            rekeyed,
+        )
+        assertNotEquals(original, rekeyed)
+    }
+
+    @Test
+    fun ordinaryResumeKeyIncludesTheCurrentProviderFingerprint() {
+        val provider = TranslationCacheIdentity.providerFingerprint(43L, "google-hybrid")
+        assertEquals(
+            "video-key|zh|43|provider-$provider",
+            TranslationCacheIdentity.forProvider(
+                baseKey = "video-key",
+                activeId = 43L,
+                importedLines = null,
+                previousKey = "video-key|zh|42",
+                providerFingerprint = provider,
+            ),
+        )
+    }
+
+    @Test
     fun translationProfileAndVideoKeyArePartOfIdentity() {
         val key = TranslationCacheIdentity.importedKey("video-key", 42L, source)
         assertNotEquals(key, TranslationCacheIdentity.importedKey("video-key", 43L, source))

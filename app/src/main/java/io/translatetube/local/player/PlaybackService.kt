@@ -931,7 +931,13 @@ class PlaybackService : MediaSessionService() {
                 val srcLang = detectLangFromText(parsedLines.take(12).joinToString(" ") { it.text })
                 val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
                     .getLong("active_api_id", -1L)
-                val importedCacheKey = importedTranslationCacheKey(sessionKey, activeTranslationId, parsedLines)
+                val providerFingerprint = translationProviderFingerprint(activeTranslationId)
+                val importedCacheKey = importedTranslationCacheKey(
+                    sessionKey,
+                    activeTranslationId,
+                    parsedLines,
+                    providerFingerprint,
+                )
                 ensureCurrentSession(sessionKey)
                 // Preserve the imported source identity if this translation is later retried.
                 updateUiForSession(sessionKey) { state ->
@@ -1083,9 +1089,34 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** Imported subtitles get their own translation cache key so they cannot overwrite YouTube source captions. */
-    private fun importedTranslationCacheKey(key: String, activeId: Long, lines: List<SubLine>): String =
-        TranslationCacheIdentity.importedKey(key, activeId, lines)
+    /** Snapshot all fields that can change translation output, without exposing the API key in cache names. */
+    private suspend fun translationProviderFingerprint(activeId: Long): String {
+        val profiles = AppDatabase.get(this).apiProfileDao().enabled()
+        val active = profiles.firstOrNull { it.id == activeId }
+        val providerKind = when (activeId) {
+            -1L, -2L -> "google-hybrid"
+            EngineFactory.ID_FREE_GEMINI -> "free-gemini"
+            EngineFactory.ID_FREE_DEEPSEEK -> "free-deepseek"
+            else -> if (active != null) "api-profile" else "local-fallback"
+        }
+        return TranslationCacheIdentity.providerFingerprint(
+            activeId = activeId,
+            providerKind = providerKind,
+            type = active?.type.orEmpty(),
+            baseUrl = active?.baseUrl.orEmpty(),
+            apiKey = active?.apiKey.orEmpty(),
+            model = active?.model.orEmpty(),
+            region = active?.region.orEmpty(),
+        )
+    }
+
+    /** Imported subtitles get their own source fingerprint and active-provider identity. */
+    private fun importedTranslationCacheKey(
+        key: String,
+        activeId: Long,
+        lines: List<SubLine>,
+        providerFingerprint: String? = null,
+    ): String = TranslationCacheIdentity.importedKey(key, activeId, lines, providerFingerprint)
 
     /** Compare source text and timing before trusting a legacy video-level translation cache. */
     private fun translationCacheMatchesSource(linesJson: String, sourceLines: List<SubLine>): Boolean = try {
@@ -1266,11 +1297,13 @@ class PlaybackService : MediaSessionService() {
             val cacheKeyBase = remoteMediaUrl?.let {
                 MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
             } ?: key
+            val providerFingerprint = translationProviderFingerprint(selectedTranslationId)
             val translationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
                 activeId = selectedTranslationId,
                 importedLines = sourceImportedLines,
                 previousKey = resumeState?.translationCacheKey,
+                providerFingerprint = providerFingerprint,
             )
             updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
