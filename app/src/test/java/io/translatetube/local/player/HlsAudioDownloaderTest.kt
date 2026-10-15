@@ -144,8 +144,10 @@ class HlsAudioDownloaderTest {
         val playlist = """
             #EXTM3U
             #EXT-X-TARGETDURATION:6
+            #EXTINF:1.0,
             #EXT-X-BYTERANGE:4@0
             media.bin
+            #EXTINF:1.0,
             #EXT-X-BYTERANGE:4
             media.bin
             #EXT-X-ENDLIST
@@ -170,8 +172,10 @@ class HlsAudioDownloaderTest {
         val playlist = """
             #EXTM3U
             #EXT-X-MAP:URI="media.mp4",BYTERANGE="16@0"
+            #EXTINF:1.0,
             #EXT-X-BYTERANGE:8@16
             media.mp4
+            #EXTINF:1.0,
             #EXT-X-BYTERANGE:8
             media.mp4
             #EXT-X-ENDLIST
@@ -196,6 +200,7 @@ class HlsAudioDownloaderTest {
     fun rejectsImplicitByteRangeWithoutAnImmediatelyPrecedingRangeOfTheSameResource() {
         val playlist = """
             #EXTM3U
+            #EXTINF:1.0,
             #EXT-X-BYTERANGE:4
             media.bin
             #EXT-X-ENDLIST
@@ -336,4 +341,89 @@ class HlsAudioDownloaderTest {
         assertTrue(error?.message.orEmpty().contains("时间轴"))
     }
 
+
+    @Test
+    fun skipsVariantsWithMissingOrNonPositiveBandwidth() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=0
+            invalid/zero.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=450000
+            valid/360.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://cdn.example/path/valid/360.m3u8",
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master),
+        )
+    }
+
+    @Test
+    fun rejectsDuplicateOrMalformedMasterPlaylistAttributes() {
+        val duplicate = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,BANDWIDTH=450000
+            video/index.m3u8
+        """.trimIndent()
+        val malformed = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,not-an-attribute
+            video/index.m3u8
+        """.trimIndent()
+
+        assertTrue(runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/master.m3u8", duplicate)
+        }.exceptionOrNull()?.message.orEmpty().contains("属性"))
+        assertTrue(runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/master.m3u8", malformed)
+        }.exceptionOrNull()?.message.orEmpty().contains("属性"))
+    }
+
+    @Test
+    fun rejectsMediaSegmentsAfterEndList() {
+        val playlist = """
+            #EXTM3U
+            #EXTINF:6.0,
+            seg-1.ts
+            #EXT-X-ENDLIST
+            #EXTINF:6.0,
+            seg-2.ts
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.parseMediaPlaylist("https://cdn.example/index.m3u8", playlist)
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("ENDLIST"))
+    }
+
+    @Test
+    fun rejectsMissingOrInvalidSegmentDurationAndLateInitializationMap() {
+        val noDuration = """
+            #EXTM3U
+            seg-1.ts
+            #EXT-X-ENDLIST
+        """.trimIndent()
+        val invalidDuration = """
+            #EXTM3U
+            #EXTINF:NaN,
+            seg-1.ts
+            #EXT-X-ENDLIST
+        """.trimIndent()
+        val lateMap = """
+            #EXTM3U
+            #EXTINF:6.0,
+            seg-1.m4s
+            #EXT-X-MAP:URI="init.mp4"
+            #EXTINF:6.0,
+            seg-2.m4s
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        listOf(noDuration, invalidDuration, lateMap).forEach { playlist ->
+            assertTrue(runCatching {
+                HlsAudioDownloader.parseMediaPlaylist("https://cdn.example/index.m3u8", playlist)
+            }.exceptionOrNull() is IllegalStateException)
+        }
+    }
 }

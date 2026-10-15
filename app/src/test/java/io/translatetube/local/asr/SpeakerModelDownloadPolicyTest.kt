@@ -62,4 +62,13 @@ class SpeakerModelDownloadPolicyTest {
         assertFalse(SpeakerModelDownloadPolicy.isCompleteArchiveEntry(31_000_000L, 31_000_000L, 30_000_000L))
         assertFalse(SpeakerModelDownloadPolicy.isCompleteArchiveEntry(-1L, 1_000_000L, 30_000_000L))
     }
+
+    @Test
+    fun archiveEntryCountIsBoundedIncludingInvalidNegativeCounts() {
+        assertEquals(true, ArchiveEntryLimitPolicy.isWithinLimit(0))
+        assertEquals(true, ArchiveEntryLimitPolicy.isWithinLimit(1))
+        assertEquals(true, ArchiveEntryLimitPolicy.isWithinLimit(ArchiveEntryLimitPolicy.MAX_ENTRIES))
+        assertEquals(false, ArchiveEntryLimitPolicy.isWithinLimit(ArchiveEntryLimitPolicy.MAX_ENTRIES + 1))
+        assertEquals(false, ArchiveEntryLimitPolicy.isWithinLimit(-1))
+    }
 }

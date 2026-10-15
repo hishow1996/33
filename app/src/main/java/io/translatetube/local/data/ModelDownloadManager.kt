@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import io.translatetube.local.tts.KokoroRuntimeFilePolicy
 import io.translatetube.local.asr.AtomicFileInstaller
+import io.translatetube.local.asr.ArchiveEntryLimitPolicy
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.File
@@ -533,11 +534,17 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val progressStep = 8L * 1024 * 1024
         var nextProgressAt = progressStep
 
+        val seenRegularFiles = HashSet<String>()
+        var archiveEntryCount = 0
         try {
             TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
                 while (true) {
                     checkActive()
                     val entry = tar.nextTarEntry ?: break
+                    archiveEntryCount++
+                    if (!ArchiveEntryLimitPolicy.isWithinLimit(archiveEntryCount)) {
+                        throw java.io.IOException("模型压缩包条目数量超过安全上限")
+                    }
                     if (entry.isSymbolicLink || entry.isLink) {
                         throw java.io.IOException("模型压缩包包含链接条目")
                     }
@@ -560,6 +567,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     }
                     if (!entry.isFile || entry.size < 0L) {
                         throw java.io.IOException("模型压缩包包含不支持的条目")
+                    }
+                    if (!seenRegularFiles.add(relative)) {
+                        throw java.io.IOException("模型压缩包重复包含同一路径的文件：$relative")
                     }
                     // Subtract the already-bounded total instead of adding an untrusted tar
                     // entry size, which could overflow Long before the limit comparison.

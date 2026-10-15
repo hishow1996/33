@@ -222,11 +222,16 @@ object SpeakerDiarizer {
         val temp = File(destination.parentFile, destination.name + ".part")
         temp.delete()
         var found = false
+        var archiveEntryCount = 0
         try {
             TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(archive))).use { tar ->
                 while (true) {
                     checkActive()
                     val entry = tar.nextTarEntry ?: break
+                    archiveEntryCount++
+                    if (!ArchiveEntryLimitPolicy.isWithinLimit(archiveEntryCount)) {
+                        throw java.io.IOException("人物识别模型压缩包条目数量超过安全上限")
+                    }
                     if (entry.isSymbolicLink || entry.isLink) throw java.io.IOException("模型包包含不安全的链接")
                     if (entry.isDirectory || !entry.name.replace("\\", "/").endsWith("/model.onnx") &&
                         entry.name != "model.onnx") continue

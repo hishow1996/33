@@ -128,8 +128,8 @@ internal object HlsAudioDownloader {
                 nextVariant = parseAttributes(line.substringAfter(':'))
             } else if (!line.startsWith("#") && nextVariant != null) {
                 val attrs = nextVariant
-                val bandwidth = attrs["AVERAGE-BANDWIDTH"]?.toLongOrNull()
-                    ?: attrs["BANDWIDTH"]?.toLongOrNull()
+                val bandwidth = attrs["AVERAGE-BANDWIDTH"]?.toLongOrNull()?.takeIf { it > 0L }
+                    ?: attrs["BANDWIDTH"]?.toLongOrNull()?.takeIf { it > 0L }
                     ?: Long.MAX_VALUE
                 variants += Variant(line, bandwidth, attrs["AUDIO"])
                 nextVariant = null
@@ -592,16 +592,37 @@ internal object HlsAudioDownloader {
         var pendingByteRange: ByteRangeSpec? = null
         var previousRangeUrl: String? = null
         var previousRangeEndExclusive: Long? = null
+        var pendingDurationSeconds: Double? = null
+        var mediaSegmentSeen = false
         var endList = false
         for (line in lines) {
             when {
                 line.equals("#EXT-X-ENDLIST", ignoreCase = true) -> {
+                    if (endList) throw IllegalStateException("HLS 清单重复声明 ENDLIST。")
                     if (pendingByteRange != null) {
                         throw IllegalStateException("HLS BYTERANGE 后缺少对应的媒体片段。")
                     }
+                    if (pendingDurationSeconds != null) {
+                        throw IllegalStateException("HLS EXTINF 后缺少对应的媒体片段。")
+                    }
                     endList = true
                 }
+                line.startsWith("#EXTINF:", ignoreCase = true) -> {
+                    if (endList) throw IllegalStateException("HLS ENDLIST 后不能继续声明媒体片段。")
+                    if (pendingDurationSeconds != null) {
+                        throw IllegalStateException("HLS 同一媒体片段前出现了多个 EXTINF。")
+                    }
+                    val durationText = line.substringAfter(':').substringBefore(',').trim()
+                    val duration = durationText.toDoubleOrNull()
+                    if (duration == null || !duration.isFinite() || duration <= 0.0) {
+                        throw IllegalStateException("HLS EXTINF 时长无效。")
+                    }
+                    pendingDurationSeconds = duration
+                }
                 line.startsWith("#EXT-X-MAP:", ignoreCase = true) -> {
+                    if (mediaSegmentSeen) {
+                        throw IllegalStateException("HLS 初始化片段必须出现在媒体片段之前；不支持中途切换初始化片段。")
+                    }
                     val attributes = parseAttributes(line.substringAfter(':'))
                     val path = attributes["URI"]
                         ?: throw IllegalStateException("HLS 初始化片段缺少 URI。")
@@ -631,6 +652,10 @@ internal object HlsAudioDownloader {
                 }
                 line.startsWith("#") -> Unit
                 else -> {
+                    if (endList) throw IllegalStateException("HLS ENDLIST 后出现了额外媒体片段，已拒绝不完整/错序清单。")
+                    if (pendingDurationSeconds == null) {
+                        throw IllegalStateException("HLS 媒体片段缺少有效的 EXTINF 时长。")
+                    }
                     val resolved = resolveUrl(baseUrl, line)
                     val range = pendingByteRange
                     val source = if (range == null) {
@@ -644,6 +669,8 @@ internal object HlsAudioDownloader {
                         SegmentSource(resolved, start, range.length)
                     }
                     segments += source
+                    mediaSegmentSeen = true
+                    pendingDurationSeconds = null
                     if (range != null) {
                         previousRangeUrl = resolved
                         previousRangeEndExclusive = source.byteRangeStart!! + range.length
@@ -658,6 +685,8 @@ internal object HlsAudioDownloader {
                 }
             }
         }
+        if (pendingByteRange != null) throw IllegalStateException("HLS BYTERANGE 后缺少对应的媒体片段。")
+        if (pendingDurationSeconds != null) throw IllegalStateException("HLS EXTINF 后缺少对应的媒体片段。")
         if (!endList) {
             throw IllegalStateException("该 HLS 是直播或尚未结束的动态清单；当前只缓存完整视频，不会误把直播片段当成完整视频。")
         }
@@ -721,10 +750,70 @@ internal object HlsAudioDownloader {
 
     private fun parseAttributes(input: String): Map<String, String> {
         val result = linkedMapOf<String, String>()
-        val regex = Regex("""([A-Z0-9-]+)=(?:"([^"]*)"|([^,]*))""", RegexOption.IGNORE_CASE)
-        regex.findAll(input).forEach { match ->
-            result[match.groupValues[1].uppercase()] =
-                (match.groupValues[2].ifEmpty { match.groupValues[3] }).trim()
+        var cursor = 0
+
+        fun skipWhitespace() {
+            while (cursor < input.length && input[cursor].isWhitespace()) cursor++
+        }
+
+        fun malformed(): Nothing =
+            throw IllegalStateException("HLS 属性列表格式无效或包含重复属性。")
+
+        while (cursor < input.length) {
+            skipWhitespace()
+            if (cursor >= input.length) break
+
+            val keyStart = cursor
+            while (cursor < input.length &&
+                (input[cursor].isLetterOrDigit() || input[cursor] == '-')
+            ) {
+                cursor++
+            }
+            if (cursor == keyStart) malformed()
+            val key = input.substring(keyStart, cursor).uppercase(java.util.Locale.ROOT)
+
+            skipWhitespace()
+            if (cursor >= input.length || input[cursor] != '=') malformed()
+            cursor++
+            skipWhitespace()
+            if (cursor >= input.length) malformed()
+
+            val value: String
+            if (input[cursor] == '"') {
+                cursor++
+                val parsed = StringBuilder()
+                var closed = false
+                while (cursor < input.length) {
+                    val char = input[cursor++]
+                    when {
+                        char == '"' -> {
+                            closed = true
+                            break
+                        }
+                        char == '\\' && cursor < input.length -> parsed.append(input[cursor++])
+                        else -> parsed.append(char)
+                    }
+                }
+                if (!closed) malformed()
+                value = parsed.toString()
+                skipWhitespace()
+                if (cursor < input.length && input[cursor] != ',') malformed()
+            } else {
+                val valueStart = cursor
+                while (cursor < input.length && input[cursor] != ',') {
+                    if (input[cursor] == '"') malformed()
+                    cursor++
+                }
+                value = input.substring(valueStart, cursor).trim()
+                if (value.isEmpty()) malformed()
+            }
+
+            if (result.putIfAbsent(key, value) != null) malformed()
+            if (cursor < input.length) {
+                if (input[cursor] != ',') malformed()
+                cursor++
+                if (cursor >= input.length) malformed()
+            }
         }
         return result
     }
