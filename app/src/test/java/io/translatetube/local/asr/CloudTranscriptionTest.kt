@@ -91,6 +91,51 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun wavExportDoesNotPublishPartialFileWhenCancelled() {
+        val directory = createTempDir(prefix = "cloud-wav-cancel")
+        try {
+            val pcm = File(directory, "source.pcm").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+            val wav = File(directory, "output.wav")
+            val error = runCatching {
+                CloudTranscription.writeWavFile(
+                    AudioExtract.PcmFile(pcm, sampleCount = 2L),
+                    wav,
+                    checkActive = { throw java.util.concurrent.CancellationException("cancelled") },
+                )
+            }.exceptionOrNull()
+
+            assertTrue(error is java.util.concurrent.CancellationException)
+            assertTrue(!wav.exists())
+            assertEquals(listOf("source.pcm"), directory.listFiles()!!.map { it.name }.sorted())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun wavExportPreservesPreviousOutputWhenNewCopyFails() {
+        val directory = createTempDir(prefix = "cloud-wav-preserve")
+        try {
+            val pcm = File(directory, "source.pcm").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+            val wav = File(directory, "output.wav").apply { writeBytes(byteArrayOf(9, 8, 7)) }
+            val previous = wav.readBytes()
+            val error = runCatching {
+                CloudTranscription.writeWavFile(
+                    AudioExtract.PcmFile(pcm, sampleCount = 2L),
+                    wav,
+                    checkActive = { throw java.util.concurrent.CancellationException("cancelled") },
+                )
+            }.exceptionOrNull()
+
+            assertTrue(error is java.util.concurrent.CancellationException)
+            assertEquals(previous.toList(), wav.readBytes().toList())
+            assertEquals(listOf("output.wav", "source.pcm"), directory.listFiles()!!.map { it.name }.sorted())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun wavExportRejectsPcmFilesWhosePhysicalSizeDiffersFromDeclaredSamples() {
         val directory = createTempDir(prefix = "cloud-wav-length")
         try {
