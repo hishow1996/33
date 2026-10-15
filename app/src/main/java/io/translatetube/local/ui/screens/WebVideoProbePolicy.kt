@@ -29,7 +29,14 @@ internal object WebVideoProbePolicy {
             return isSafeHttpUri(inner)
         }
         val uri = runCatching { java.net.URI(raw) }.getOrNull() ?: return false
-        return isSafeHttpUri(uri)
+        if (!isSafeHttpUri(uri)) return false
+
+        // Some sites place a QR/ad beacon in a hidden HTML5 audio element. It is not the
+        // programme audio and commonly returns JSON/HTML when reopened from the media picker.
+        val fileName = uri.rawPath.orEmpty().substringAfterLast('/').lowercase(java.util.Locale.ROOT)
+        if (fileName == "scan_qr.mp3") return false
+
+        return true
     }
 
     private fun isSafeHttpUri(uri: java.net.URI): Boolean {
