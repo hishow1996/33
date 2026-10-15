@@ -64,7 +64,7 @@ class DubbingEngine(
     private val firstSynthesisReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
-    private var speed = 1.0f
+    @Volatile private var speed = 1.0f
     /** Latest player position; async PCM loading must not start speech at an old timestamp. */
     @Volatile private var latestTimelineCursor = DubbingTimelineCursor()
     @Volatile private var track: AudioTrack? = null
