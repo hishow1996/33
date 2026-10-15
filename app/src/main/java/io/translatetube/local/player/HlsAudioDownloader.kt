@@ -155,8 +155,9 @@ internal object HlsAudioDownloader {
         requestHeaders: Map<String, String> = emptyMap(),
         awaitResume: suspend () -> Unit = {},
         onProgress: (String) -> Unit = {},
+        userAgent: String? = null,
     ): File = downloadMutex.withLock {
-        downloadLocked(playlistUrl, destination, requestHeaders, awaitResume, onProgress)
+        downloadLocked(playlistUrl, destination, requestHeaders, awaitResume, onProgress, userAgent)
     }
 
     private suspend fun downloadLocked(
@@ -165,6 +166,7 @@ internal object HlsAudioDownloader {
         requestHeaders: Map<String, String>,
         awaitResume: suspend () -> Unit,
         onProgress: (String) -> Unit,
+        userAgent: String?,
     ): File {
         val ownerJob = currentCoroutineContext()[Job]
         // A captured WebView Range belongs to its original request. Do not reuse it for a
@@ -182,7 +184,7 @@ internal object HlsAudioDownloader {
                 awaitResume()
                 val rootUri = parseHttpUrl(playlistUrl)
                 val rootOrigin = rootUri
-                var fetched = fetchText(rootUri, mediaHeaders, rootOrigin, ownerJob)
+                var fetched = fetchText(rootUri, mediaHeaders, rootOrigin, ownerJob, userAgent)
                 awaitResume()
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
@@ -195,7 +197,7 @@ internal object HlsAudioDownloader {
                     if (masterDepth > MAX_MASTER_DEPTH) {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
-                    fetched = fetchText(parseHttpUrl(next), mediaHeaders, rootOrigin, ownerJob)
+                    fetched = fetchText(parseHttpUrl(next), mediaHeaders, rootOrigin, ownerJob, userAgent)
                     awaitResume()
                     ensurePlaylistIsUnencrypted(fetched.text)
                 }
@@ -271,6 +273,7 @@ internal object HlsAudioDownloader {
                             cachedBytes = totalCachedBytes,
                             ownerJob = ownerJob,
                             awaitResume = awaitResume,
+                            userAgent = userAgent,
                             onRetry = { attempt ->
                                 onProgress("网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）")
                             },
@@ -411,6 +414,7 @@ internal object HlsAudioDownloader {
         ownerJob: Job?,
         awaitResume: suspend () -> Unit,
         onRetry: (attemptNumber: Int) -> Unit,
+        userAgent: String?,
     ): File {
         val part = File(destination.parentFile, destination.name + ".part")
         val byteRangeEnd = if (byteRangeStart != null && byteRangeLength != null &&
@@ -443,6 +447,7 @@ internal object HlsAudioDownloader {
                     url = url,
                     requestHeaders = segmentHeaders,
                     allowedCookieOrigin = rootOrigin,
+                    userAgent = userAgent ?: SafeMediaHttp.DEFAULT_USER_AGENT,
                     ownerJob = ownerJob,
                 ).use { response ->
                     validateSegmentResponse(
@@ -714,11 +719,13 @@ internal object HlsAudioDownloader {
         headers: Map<String, String>,
         rootOrigin: String,
         ownerJob: Job?,
+        userAgent: String?,
     ): FetchedText {
         SafeMediaHttp.execute(
             url = url,
             requestHeaders = headers,
             allowedCookieOrigin = rootOrigin,
+            userAgent = userAgent ?: SafeMediaHttp.DEFAULT_USER_AGENT,
             ownerJob = ownerJob,
         ).use { response ->
             validateManifestResponseStatus(response.code)

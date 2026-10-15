@@ -56,7 +56,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.web.WebMediaUrlPolicy
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -69,6 +71,8 @@ internal data class WebVideoCandidate(
     val poster: String,
     val durationSeconds: Double,
     val drmProtected: Boolean,
+    /** 后台 HEAD/Range 校验确认是可访问的视频流（Content-Type 判定） */
+    val verified: Boolean = false,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,6 +99,60 @@ fun WebVideoScreen(
     var ytDlpJob by remember(initialUrl) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     // 自动「更新规则后重试」是否已用过（每次页面导航只自动自救一次，防循环）
     var rulesUpdatedForRetry by remember(initialUrl) { mutableStateOf(false) }
+    // ---- 候选验证（参考 VBrowser 思路）：后台 HEAD/Range 请求确认候选真的是视频流，
+    // 过滤广告/接口/失效地址，验证通过的 m3u8 自动进入播放。 ----
+    var verifiedUrls by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    val verifierScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
+    var manualChose by remember(initialUrl) { mutableStateOf(false) }
+    var autoPlayedUrl by remember(initialUrl) { mutableStateOf<String?>(null) }
+    val verifyClient = remember(initialUrl) { WebCandidateVerifier.buildClient() }
+
+    DisposableEffect(Unit) {
+        onDispose { verifierScope.cancel() }
+    }
+
+    // 监听候选变化，对未验证的候选后台校验
+    LaunchedEffect(candidatesState.value) {
+        val pending = candidatesState.value
+            .map { it.url }
+            .filter { WebMediaUrlPolicy.normalizeMediaUrl(it) != null && it !in verifiedUrls }
+        pending.forEach { candidateUrl ->
+            verifierScope.launch {
+                val ok = runCatching {
+                    WebCandidateVerifier.verify(
+                        client = verifyClient,
+                        url = candidateUrl,
+                        referer = currentPage,
+                        cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
+                        userAgent = webViewState.value?.settings?.userAgentString,
+                    )
+                }.getOrDefault(false)
+                if (ok) mainHandler.post { verifiedUrls = verifiedUrls + candidateUrl }
+            }
+        }
+    }
+
+    // 唯一验证通过的流清单（m3u8/mpd）自动进入播放；用户手动选择后不再自动
+    LaunchedEffect(verifiedUrls, manualChose) {
+        if (manualChose || autoPlayedUrl != null) return@LaunchedEffect
+        val manifest = candidatesState.value.firstOrNull {
+            it.url in verifiedUrls && WebVideoProbePolicy.candidateRank(it.url) > 0
+        } ?: return@LaunchedEffect
+        delay(2500L)
+        if (manualChose) return@LaunchedEffect
+        autoPlayedUrl = manifest.url
+        val normalized = WebMediaUrlPolicy.normalizeMediaUrl(manifest.url)
+        if (normalized != null && screenActive.get()) {
+            val cookie = runCatching { CookieManager.getInstance().getCookie(normalized) }.getOrNull()
+            onOpenMedia(
+                normalized,
+                manifest.title.ifBlank { pageTitle },
+                currentPage,
+                cookie,
+                webViewState.value?.settings?.userAgentString,
+            )
+        }
+    }
 
     // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
     val appCtx = LocalContext.current.applicationContext
@@ -604,11 +662,22 @@ fun WebVideoScreen(
             }
             if (candidatesState.value.isNotEmpty()) {
                 Text("检测到的视频", style = MaterialTheme.typography.titleMedium)
+                // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
+                val displayCandidates = remember(candidatesState.value, verifiedUrls) {
+                    candidatesState.value
+                        .mapIndexed { index, c -> Triple(c, index) }
+                        .sortedWith(
+                            compareByDescending<Triple<WebVideoCandidate, Int>> { it.first.url in verifiedUrls }
+                                .thenByDescending { WebVideoProbePolicy.candidateRank(it.first.url) }
+                                .thenBy { it.second },
+                        )
+                        .map { it.first }
+                }
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().height(170.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    items(candidatesState.value, key = { it.url }) { candidate ->
+                    items(displayCandidates, key = { it.url }) { candidate ->
                         val reason = when {
                             candidate.drmProtected -> "检测到 EME/DRM 标记，不能提取或绕过受保护的媒体音轨。"
                             else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
@@ -618,12 +687,22 @@ fun WebVideoScreen(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                         ) {
                             Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
-                                    style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (candidate.url in verifiedUrls) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "已验证",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
                                 Text(candidate.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 if (reason != null) {
                                     Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -631,6 +710,7 @@ fun WebVideoScreen(
                                 Button(
                                     enabled = reason == null,
                                     onClick = {
+                                        manualChose = true
                                         val mediaUrl = WebMediaUrlPolicy.normalizeMediaUrl(candidate.url)
                                         if (mediaUrl == null) {
                                             status = WebMediaUrlPolicy.unsupportedReason(candidate.url)
@@ -673,9 +753,97 @@ private fun Context.findActivity(): Activity? {
 
 private val NET_HOOK_SCRIPT = """
 (function(){
-$body
+  // 站点视频地址常藏在 XHR/fetch 接口响应里（yfsp/nnyy 等），URL 拦截看不到响应体，
+  // 必须在页面 JS 内部抓取；播放器还常被放进同源 iframe，需对每个 frame 分别安装。
+  function installHook(target) {
+    try {
+      if (!target || target.__elephantNetHooked) return;
+      target.__elephantNetHooked = true;
+      target.__elephantNetMedia = target.__elephantNetMedia || {};
+      var MEDIA_RE = /https?:\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv|m4a|aac)[^"'\s\\<>]*/g;
+      var MEDIA_RE_PROTOCOL_REL = /\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv)[^"'\s\\<>]*/g;
+      var reportNet = function(text) {
+        try {
+          if (!text) return;
+          var text2 = String(text);
+          if (text2.length > 2097152) return;
+          var found = text2.match(MEDIA_RE) || [];
+          var rel = text2.match(MEDIA_RE_PROTOCOL_REL) || [];
+          if (!found.length && !rel.length) return;
+          var added = false;
+          var addUrl = function(u) {
+            if (u.indexOf('//') === 0) u = target.location.protocol + u;
+            if (!target.__elephantNetMedia[u]) {
+              target.__elephantNetMedia[u] = true;
+              added = true;
+            }
+          };
+          for (var i = 0; i < found.length && i < 50; i++) addUrl(found[i]);
+          for (var j = 0; j < rel.length && j < 20; j++) addUrl(rel[j]);
+          if (added && target.ElephantVideoBridge) {
+            var rows = [];
+            for (var url in target.__elephantNetMedia) {
+              if (Object.prototype.hasOwnProperty.call(target.__elephantNetMedia, url) && rows.length < 100) {
+                rows.push({ url: url, title: (document.title || '').slice(0, 512), poster: '', duration: 0, drm: false });
+              }
+            }
+            target.ElephantVideoBridge.reportVideos(JSON.stringify(rows));
+          }
+        } catch (ignored) {}
+      };
+      try {
+        var XHR = target.XMLHttpRequest;
+        if (XHR && XHR.prototype) {
+          var origOpen = XHR.prototype.open;
+          var origSend = XHR.prototype.send;
+          XHR.prototype.open = function(method, url) {
+            this.__elephantUrl = url;
+            return origOpen.apply(this, arguments);
+          };
+          XHR.prototype.send = function() {
+            var xhr = this;
+            this.addEventListener('load', function() {
+              try {
+                var type = xhr.responseType;
+                if (!type || type === 'text' || type === 'json') {
+                  reportNet(type === 'json' ? JSON.stringify(xhr.response) : xhr.responseText);
+                }
+              } catch (ignored) {}
+            });
+            return origSend.apply(this, arguments);
+          };
+        }
+      } catch (ignored) {}
+      try {
+        var origFetch = target.fetch;
+        if (origFetch) {
+          target.fetch = function() {
+            return origFetch.apply(this, arguments).then(function(resp) {
+              try {
+                resp.clone().text().then(reportNet).catch(function() {});
+              } catch (ignored) {}
+              return resp;
+            });
+          };
+        }
+      } catch (ignored) {}
+    } catch (ignored) {}
+  }
+  installHook(window);
+  // 周期扫描同源 iframe（跨域 iframe 访问其属性会抛异常，逐帧隔离捕获）
+  try {
+    setInterval(function() {
+      try {
+        var frames = document.querySelectorAll('iframe');
+        for (var i = 0; i < frames.length && i < 20; i++) {
+          try { installHook(frames[i].contentWindow); } catch (ignored) {}
+        }
+      } catch (ignored) {}
+    }, 2000);
+  } catch (ignored) {}
 })();
 """.trimIndent()
+
 
 private val PROBE_SCRIPT = """
 (function() {
@@ -761,75 +929,6 @@ private val PROBE_SCRIPT = """
         }).filter(function(row) { return !!row && !!row.url; });
         if (window.ElephantVideoBridge) {
           window.ElephantVideoBridge.reportVideos(JSON.stringify(rows));
-        }
-      } catch (ignored) {}
-    }
-    // ---- 网络 hook：很多站点（yfsp/nnyy 等）的视频地址藏在 XHR/fetch 接口响应里，
-    // URL 拦截只能看到接口地址看不到响应体，必须在页面 JS 内部抓取响应内容。 ----
-    if (!window.__elephantNetHooked) {
-      window.__elephantNetHooked = true;
-      window.__elephantNetMedia = window.__elephantNetMedia || {};
-      var MEDIA_RE = /https?:\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv|m4a|aac)[^"'\s\\<>]*/g;
-      var MEDIA_RE_PROTOCOL_REL = /\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv)[^"'\s\\<>]*/g;
-      var reportNet = function(text) {
-        try {
-          if (!text || text.length > 2097152) return;
-          var text2 = String(text);
-          var found = text2.match(MEDIA_RE) || [];
-          var rel = text2.match(MEDIA_RE_PROTOCOL_REL) || [];
-          if ((!found || !found.length) && (!rel || !rel.length)) return;
-          var added = false;
-          var addUrl = function(u) {
-            if (u.indexOf('//') === 0) u = location.protocol + u;
-            if (!window.__elephantNetMedia[u]) {
-              window.__elephantNetMedia[u] = true;
-              added = true;
-            }
-          };
-          for (var i = 0; i < found.length && i < 50; i++) addUrl(found[i]);
-          for (var j = 0; j < rel.length && j < 20; j++) addUrl(rel[j]);
-          if (added && window.ElephantVideoBridge) {
-            var rows = [];
-            for (var url in window.__elephantNetMedia) {
-              if (Object.prototype.hasOwnProperty.call(window.__elephantNetMedia, url) && rows.length < 100) {
-                rows.push({ url: url, title: (document.title || '').slice(0, 512), poster: '', duration: 0, drm: false });
-              }
-            }
-            window.ElephantVideoBridge.reportVideos(JSON.stringify(rows));
-          }
-        } catch (ignored) {}
-      };
-      try {
-        var origOpen = XMLHttpRequest.prototype.open;
-        var origSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(method, url) {
-          this.__elephantUrl = url;
-          return origOpen.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function() {
-          var xhr = this;
-          this.addEventListener('load', function() {
-            try {
-              var type = xhr.responseType;
-              if (!type || type === 'text' || type === 'json') {
-                reportNet(type === 'json' ? JSON.stringify(xhr.response) : xhr.responseText);
-              }
-            } catch (ignored) {}
-          });
-          return origSend.apply(this, arguments);
-        };
-      } catch (ignored) {}
-      try {
-        var origFetch = window.fetch;
-        if (origFetch) {
-          window.fetch = function() {
-            return origFetch.apply(this, arguments).then(function(resp) {
-              try {
-                resp.clone().text().then(reportNet).catch(function() {});
-              } catch (ignored) {}
-              return resp;
-            });
-          };
         }
       } catch (ignored) {}
     }

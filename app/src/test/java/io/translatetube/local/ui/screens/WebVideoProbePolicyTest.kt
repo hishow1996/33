@@ -52,6 +52,14 @@ class WebVideoProbePolicyTest {
     }
 
     @Test
+    fun prioritizesManifestStreamsOverPlainFiles() {
+        val merged = WebVideoProbePolicy.mergeCandidates(
+            existing = listOf(WebVideoCandidate("https://cdn.example/ad.mp4", "ad", "", 5.0, false)),
+            incoming = listOf(WebVideoCandidate("https://cdn.example/index.m3u8", "", "", 0.0, false)),
+        )
+        assertEquals("https://cdn.example/index.m3u8", merged.first().url)
+    }
+
     fun mergesDuplicateUrlsAndCapsTheRetainedCandidateList() {
         val base = WebVideoCandidate("https://cdn.example/video.mp4", "", "", 0.0, false)
         val update = WebVideoCandidate("https://cdn.example/video.mp4", "Video", "poster", 12.0, true)

@@ -100,5 +100,18 @@ internal object WebVideoProbePolicy {
                         ?: 0.0,
                 )
             }
+            .sortedByDescending { candidateRank(it.url) }
             .take(MAX_RETAINED_CANDIDATES)
 }
+
+/**
+ * 候选展示优先级：m3u8/mpd 流清单（网络 hook 从接口响应里抓到的真实流）最可靠，
+ * 排最前让用户一眼可辨；广告类直链文件最后。稳定排序保持同优先级的新地址在前。
+ */
+internal fun candidateRank(url: String): Int =
+    when {
+        url.substringBefore('?').endsWith(".m3u8", ignoreCase = true) ||
+            url.substringBefore('?').endsWith(".mpd", ignoreCase = true) -> 100
+        else -> 0
+    }
+

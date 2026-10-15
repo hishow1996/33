@@ -26,6 +26,11 @@ import java.util.concurrent.TimeUnit
  * headers across host changes; this helper intentionally does not.
  */
 internal object SafeMediaHttp {
+
+    /** 兜底 UA；网页视频源的请求优先使用 WebView 的 UA（站点防护凭证与其绑定）。 */
+    const val DEFAULT_USER_AGENT: String =
+        "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36"
+
     private const val MAX_REDIRECTS = 5
     private val redirectCodes = setOf(301, 302, 303, 307, 308)
     private val client = OkHttpClient.Builder()
@@ -40,7 +45,7 @@ internal object SafeMediaHttp {
         url: String,
         requestHeaders: Map<String, String> = emptyMap(),
         allowedCookieOrigin: String? = null,
-        userAgent: String = "Mozilla/5.0 (Linux; Android 9) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36",
+        userAgent: String = DEFAULT_USER_AGENT,
         ownerJob: Job? = null,
     ): Response {
         val initial = url.toHttpUrlOrNull()

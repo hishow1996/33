@@ -2719,7 +2719,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             suspend fun downloadStream(url: String): File = try {
                 downloadAudio(url, destination, sessionKey)
             } catch (manifest: HlsManifestPayloadException) {
-                HlsAudioDownloader.download(url, destination, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
+                HlsAudioDownloader.download(url, destination, awaitResume = { awaitProcessingResumed(sessionKey) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
                     updateUiForSession(sessionKey) { state ->
                         if (state.key == sessionKey) {
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
@@ -2770,6 +2770,83 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
      * Download a direct or finite HLS webpage media URL into a bounded cache for Whisper.
      * The referrer/cookie are obtained from the current WebView session and are never persisted.
      */
+    /**
+     * 直链视频流式抽轨：MediaExtractor 以带请求头的 http 源直接读取（系统层自带
+     * Range 分块拉流），选音频轨经 MediaMuxer 写成独立音频文件——视频数据全程
+     * 不落盘，缓存里只有音频（几十 MB 视频换几 MB 音轨）。
+     */
+    private suspend fun extractAudioTrackStreaming(
+        mediaUrl: String,
+        destination: File,
+        headers: Map<String, String>,
+    ): File {
+        val work = File(destination.parentFile, destination.name + ".part")
+        val extractor = android.media.MediaExtractor()
+        var muxer: android.media.MediaMuxer? = null
+        try {
+            val streamHeaders = buildMap {
+                putAll(headers)
+                remoteMediaUserAgent.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
+            }
+            withContext(Dispatchers.IO) {
+                extractor.setDataSource(mediaUrl, streamHeaders, null)
+            }
+            var chosen = -1
+            var bestChannels = -1
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (!mime.startsWith("audio/")) continue
+                val channels = runCatching {
+                    fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+                }.getOrDefault(1)
+                if (channels > bestChannels) {
+                    bestChannels = channels
+                    chosen = i
+                }
+            }
+            if (chosen < 0) throw IllegalStateException("该视频流中没有可提取的音频轨")
+            val trackFormat = extractor.getTrackFormat(chosen)
+            val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+            val outputFormat = when {
+                trackMime.contains("vorbis") || trackMime.contains("opus") ->
+                    android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+                else -> android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            }
+            muxer = android.media.MediaMuxer(work.absolutePath, outputFormat)
+            val muxerTrack = muxer.addTrack(trackFormat)
+            muxer.start()
+            extractor.selectTrack(chosen)
+            val buffer = java.nio.ByteBuffer.allocateDirect(2 * 1024 * 1024)
+            val info = android.media.MediaCodec.BufferInfo()
+            withContext(Dispatchers.IO) {
+                while (true) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    val size = extractor.readSampleData(buffer, 0)
+                    if (size < 0) break
+                    info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
+                    muxer.writeSampleData(muxerTrack, buffer, info)
+                    extractor.advance()
+                }
+            }
+            muxer.stop()
+            muxer.release()
+            muxer = null
+            if (work.length() <= 0L) throw IllegalStateException("流式提取没有产出音频数据")
+            if (!work.renameTo(destination)) {
+                work.copyTo(destination, overwrite = true)
+                work.delete()
+            }
+            destination
+        } catch (t: Throwable) {
+            runCatching { muxer?.release() }
+            runCatching { work.delete() }
+            throw t
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
     private suspend fun obtainRemoteMediaAsrFile(
         mediaUrl: String,
         referrer: String,
@@ -2846,7 +2923,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 }
                 val cachedAudio = try {
                     if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
-                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
+                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
                             updateUiForSession(sessionKey) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
@@ -2854,9 +2931,26 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             }
                         }
                     } else {
+                        // 直链视频优先「流式抽轨」：系统 MediaExtractor 直接读取带请求头的
+                        // http 源，边拉边把音频轨写进 m4a/webm，不把整个视频下载到本地。
                         try {
-                            downloadAudio(mediaUrl, destination, sessionKey, headers)
-                        } catch (manifest: HlsManifestPayloadException) {
+                            extractAudioTrackStreaming(mediaUrl, destination, headers)
+                        } catch (streamingError: Exception) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            if (streamingError is kotlinx.coroutines.CancellationException) throw streamingError
+                            android.util.Log.w(
+                                "PlaybackService",
+                                "流式音轨提取失败，回落整文件音频下载",
+                                streamingError,
+                            )
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(progress = "流式提取不可用，改为下载音频数据…")
+                                } else state
+                            }
+                            try {
+                                downloadAudio(mediaUrl, destination, sessionKey, headers)
+                            } catch (manifest: HlsManifestPayloadException) {
                             // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
                             // Detect the response body, then re-open through the bounded HLS segment path.
                             HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
@@ -2867,6 +2961,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 }
                             }
                         }
+                            }
                     }
                 } catch (mediaError: Exception) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -2985,7 +3080,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         url = url,
                         // This operation needs the full track, not a Range captured from a WebView request.
                         requestHeaders = HlsAudioDownloader.headersWithoutInheritedRange(requestHeaders),
-                        userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+                        // 站点防护（Cloudflare 等）的 Cookie 与 WebView 的 UA 绑定，
+                        // 音频提取必须沿用同一 UA，否则会被判无效返回挑战页。
+                        userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                            ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
                         ownerJob = ownerJob,
                     ).use { resp ->
                         SafeMediaHttp.validateCompleteGetResponse(resp.code, "音频文件")
