@@ -26,6 +26,13 @@ class SubtitleFileDecoderTest {
     }
 
     @Test
+    fun detectsUtf16WithoutBomFromTimestampText() {
+        val text = "1\\r\\n00:00:00,000 --> 00:00:01,000\\r\\n字幕"
+        assertEquals(text, SubtitleFileDecoder.decode(text.toByteArray(StandardCharsets.UTF_16LE)))
+        assertEquals(text, SubtitleFileDecoder.decode(text.toByteArray(StandardCharsets.UTF_16BE)))
+    }
+
+    @Test
     fun fallsBackToGb18030ForLegacyChineseSubtitleFiles() {
         val text = "1\n00:00:00,000 --> 00:00:01,000\n中文字幕"
         val bytes = text.toByteArray(Charset.forName("GB18030"))
