@@ -528,7 +528,7 @@ fun WebVideoScreen(
                         .align(Alignment.TopStart)
                         .padding(start = 3.dp, top = 3.dp)
                         .size(24.dp)
-                        .background(Color.Black.copy(alpha = 0.82f), CircleShape)
+                        .background(Color.Black, CircleShape)
                         .clickable { handleWebPlayerBack() },
                     contentAlignment = Alignment.Center,
                 ) {
