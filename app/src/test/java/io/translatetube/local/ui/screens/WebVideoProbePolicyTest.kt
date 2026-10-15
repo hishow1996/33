@@ -31,6 +31,9 @@ class WebVideoProbePolicyTest {
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://user:pass@cdn.example/video.mp4"))
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example:99999/video.mp4"))
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.mp4" + 13.toChar() + 10.toChar() + "X: yes"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("\nhttps://cdn.example/video.mp4"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.mp4\n"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.mp4" + 0x85.toChar()))
     }
 
     @Test
