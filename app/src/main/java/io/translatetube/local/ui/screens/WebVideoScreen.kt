@@ -18,12 +18,10 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.webkit.CookieManager
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -121,27 +119,6 @@ fun WebVideoScreen(
     // inside the site's custom player view.
     BackHandler(enabled = fullScreenContainer.value != null) {
         hideFullScreenView()
-    }
-
-    fun handleWebPlayerBack() {
-        val view = webViewState.value
-        if (view == null) {
-            onBack()
-            return
-        }
-        runCatching {
-            view.evaluateJavascript(WEB_PLAYER_BACK_SCRIPT) { result ->
-                if (!screenActive.get()) return@evaluateJavascript
-                if (result != "true") {
-                    // The page may be a direct entry with no internal history. Fall back to the
-                    // WebView stack, then to the app page, rather than leaving a dead-looking icon.
-                    if (view.canGoBack()) view.goBack() else onBack()
-                }
-            }
-        }.onFailure {
-            Log.w(TAG_WEB, "Could not invoke the embedded player's back control", it)
-            if (view.canGoBack()) view.goBack() else onBack()
-        }
     }
 
     fun cancelYtDlp() {
@@ -519,27 +496,6 @@ fun WebVideoScreen(
                 update = { },
             )
 
-            // Real native hit target for the embedded player header. It invokes the site's own
-            // back control when possible; if the DOM has no such control, normal WebView/app back
-            // navigation is used instead. This avoids relying on fragile third-party CSS layers.
-            if (currentPage.contains("/play", ignoreCase = true)) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 3.dp, top = 3.dp)
-                        .size(24.dp)
-                        .background(Color.Black, CircleShape)
-                        .clickable { handleWebPlayerBack() },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.ArrowBack,
-                        contentDescription = "返回视频详情",
-                        tint = Color.White,
-                        modifier = Modifier.size(19.dp),
-                    )
-                }
-            }
             }
 
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -678,48 +634,6 @@ private fun Context.findActivity(): Activity? {
         current = next
     }
 }
-
-private val WEB_PLAYER_BACK_SCRIPT = """
-(function() {
-  try {
-    var selectors = 'button,a,[role="button"],[onclick],[aria-label],[title],[tabindex],[class*="back"],[class*="Back"],[class*="fanhui"],[class*="return"],[class*="Return"],[class*="arrow"],[class*="Arrow"],[class*="left"],[class*="Left"],[class*="icon"],[class*="Icon"]';
-    var nodes = Array.prototype.slice.call(document.querySelectorAll(selectors), 0, 500);
-    var candidates = [];
-    for (var i = 0; i < nodes.length; i++) {
-      var el = nodes[i];
-      if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
-      var rect = el.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0 || rect.top < -5 || rect.top > 130 || rect.left < -5 || rect.left > 130) continue;
-      var descriptor = String(el.className || '') + ' ' + String(el.id || '') + ' ' +
-        String(el.title || '') + ' ' + String(el.getAttribute('aria-label') || '') + ' ' +
-        String(el.textContent || '').slice(0, 60);
-      var parent = el.parentElement;
-      for (var depth = 0; parent && depth < 4; depth++, parent = parent.parentElement) {
-        descriptor += ' ' + String(parent.className || '') + ' ' + String(parent.id || '') +
-          ' ' + String(parent.getAttribute('aria-label') || '') + ' ' + String(parent.title || '');
-      }
-      if (!/(back|return|prev|previous|fanhui|jiantou|chevron|返回|上一页|上一级|返回列表|返回详情|返回剧集)/i.test(descriptor)) continue;
-      var score = 0;
-      if (/(back|return|prev|previous|fanhui|jiantou|chevron|返回|上一页|上一级|返回列表|返回详情|返回剧集)/i.test(
-        String(el.className || '') + ' ' + String(el.id || '') + ' ' + String(el.title || '') + ' ' +
-        String(el.getAttribute('aria-label') || '')
-      )) score += 10;
-      score -= Math.max(0, rect.top) / 100 + Math.max(0, rect.left) / 100;
-      candidates.push({el: el, score: score});
-    }
-    candidates.sort(function(a,b) { return b.score-a.score; });
-    if (candidates.length) {
-      candidates[0].el.click();
-      return true;
-    }
-    if (window.history && window.history.length > 1) {
-      window.history.back();
-      return true;
-    }
-    return false;
-  } catch (ignored) { return false; }
-})();
-""".trimIndent()
 
 private val PROBE_SCRIPT = """
 (function() {
