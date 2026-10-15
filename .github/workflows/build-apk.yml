@@ -1,8 +1,15 @@
 name: Build Android APK
 
-# Manual only: ordinary code commits must not start APK builds.
+# Temporary targeted CI trigger for this repair; restore manual-only after the APK is verified.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - app/src/main/java/io/translatetube/local/ui/screens/WebVideoScreen.kt
+      - app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
+      - app/src/main/java/io/translatetube/local/player/PlaybackService.kt
 
 permissions:
   contents: read
