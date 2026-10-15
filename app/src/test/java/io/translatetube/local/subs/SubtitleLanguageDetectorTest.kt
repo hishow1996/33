@@ -31,4 +31,17 @@ class SubtitleLanguageDetectorTest {
         assertEquals("auto", SubtitleLanguageDetector.detect("Hello, welcome to this video."))
         assertEquals("auto", SubtitleLanguageDetector.detect("   "))
     }
+
+    @Test
+    fun anOccasionalChineseWordDoesNotMisclassifyAnOtherwiseForeignSubtitleTrack() {
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.detect("This English caption mentions 你好 but the sentence is otherwise English."),
+        )
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.detect("Bonjour, bienvenue. This clip briefly mentions 中国."),
+        )
+        assertEquals("zh", SubtitleLanguageDetector.detect("你好，欢迎观看今天的视频。"))
+    }
 }

@@ -15,6 +15,13 @@ object SubtitleLanguageDetector {
 
         fun has(pattern: String): Boolean = Regex(pattern).containsMatchIn(sample)
 
+        // A single Chinese name/word inside otherwise foreign-language captions must not make
+        // the whole track look Chinese. Require Han ideographs to dominate the alphabetic text.
+        val hanCount = sample.count { it in '\u4E00'..'\u9FFF' }
+        val otherLetterCount = sample.count { it.isLetter() && it !in '\u4E00'..'\u9FFF' }
+        val totalLetters = (hanCount + otherLetterCount).coerceAtLeast(1)
+        val hanDominates = hanCount > 0 && hanCount.toDouble() / totalLetters >= 0.65
+
         return when {
             // Scripts with strong, mostly unambiguous Unicode ranges are checked first.
             has("[\\u3040-\\u30FF\\u31F0-\\u31FF]") -> "ja"
@@ -33,9 +40,9 @@ object SubtitleLanguageDetector {
             has("[ğĞışİı]") -> "tr"
             has("[ąćęłńśźżĄĆĘŁŃŚŹŻ]") -> "pl"
             has("[đĐơƠưƯăĂ]") -> "vi"
-            // Han ideographs without Japanese kana are treated as Chinese. If the source only
-            // contains ASCII/Latin letters, leave detection to the selected translation engine.
-            has("[\\u4E00-\\u9FFF]") -> "zh"
+            // Detect Chinese only when Han characters dominate; short foreign-language
+            // captions with an embedded Chinese name should still be passed to auto-detection.
+            hanDominates -> "zh"
             else -> "auto"
         }
     }
