@@ -29,6 +29,9 @@ class YtDlpMediaPolicyTest {
         assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\u0000"))
         assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\t"))
         assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\u007f"))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a" + 0x85.toChar()))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("x".repeat(8 * 1024 + 1)))
+        assertTrue(YtDlpMediaPolicy.isSafeCookieHeader("x".repeat(8 * 1024)))
     }
 
     @Test
