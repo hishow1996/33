@@ -48,6 +48,39 @@ class SystemTtsWavDecoderTest {
     }
 
     @Test
+    fun rejectsDuplicateFormatChunksInsteadOfSilentlyUsingTheLastOne() {
+        val valid = wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1, 0))
+        val bytes = ByteBuffer.allocate(valid.size + 24).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put(valid, 0, 36)
+            put(valid, 12, 24)
+            put(valid, 36, valid.size - 36)
+        }.array()
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(4, bytes.size - 8)
+
+        val error = runCatching { SystemTtsWavDecoder.decode(bytes) }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("重复 fmt"))
+    }
+
+    @Test
+    fun rejectsDuplicateDataChunksInsteadOfDroppingEarlierAudio() {
+        val valid = wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1, 0))
+        val bytes = ByteBuffer.allocate(valid.size + 12).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put(valid)
+            put("data".toByteArray(Charsets.US_ASCII))
+            putInt(4)
+            put(byteArrayOf(2, 0, 3, 0))
+        }.array()
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(4, bytes.size - 8)
+
+        val error = runCatching { SystemTtsWavDecoder.decode(bytes) }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("重复 data"))
+    }
+
+    @Test
     fun decodesPcm16AndNormalizesSignedSamples() {
         val audio = SystemTtsWavDecoder.decode(
             wave(
