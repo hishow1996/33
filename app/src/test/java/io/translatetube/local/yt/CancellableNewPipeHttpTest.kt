@@ -23,7 +23,7 @@ class CancellableNewPipeHttpTest {
             server.enqueue(
                 MockResponse()
                     .setBody("subtitle payload")
-                    .setBodyDelay(1, TimeUnit.SECONDS)
+                    .setBodyDelay(10, TimeUnit.SECONDS)
             )
             server.start()
             val ownerJob = SupervisorJob()

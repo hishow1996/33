@@ -27,7 +27,6 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 
 /** Reads provider keys from encrypted SharedPreferences values written by SettingsScreen. */
 object CloudTranscriptionSettings {

@@ -46,12 +46,12 @@ internal fun <T> executeCancellableHttpCall(
         onCancelling = true,
         invokeImmediately = true,
     ) { cause ->
-        if (cause is CancellationException || ownerJob.isCancelled) call.cancel()
+        if (cause is CancellationException) call.cancel()
     }
     try {
         return call.execute().use(consume)
     } catch (error: IOException) {
-        if (ownerJob?.isActive == false) {
+        if (ownerJob?.isCancelled == true) {
             throw kotlinx.coroutines.CancellationException("YouTube 请求已取消").also {
                 it.initCause(error)
             }

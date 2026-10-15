@@ -70,47 +70,22 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         .trim()
     if (normalized.isEmpty()) return List(size) { "" }
 
-    // Only invoke the JSON parser for a JSON-array-shaped response.
-    val jsonArray = if (normalized.startsWith("[") && normalized.endsWith("]")) {
-        runCatching { JSONArray(normalized) }.getOrNull()
-    } else {
-        null
-    }
+    // Accept JSON arrays when a model disregards the requested text format.
+    val jsonArray = runCatching { JSONArray(normalized) }.getOrNull()
     if (jsonArray != null && jsonArray.length() == size) {
         return List(size) { i -> jsonArray.optString(i).trim() }
     }
 
-    // Parse numbered rows explicitly: malformed, duplicate, or incomplete indices must not
-    // silently fall back to positional output and misalign translated subtitles.
-    fun indexedRow(raw: String): Pair<Int, String>? {
-        var line = raw.trim().trim(96.toChar()).trim()
-        if (line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ")) {
-            line = line.substring(2).trimStart()
-        }
-        if (line.startsWith("**")) line = line.removePrefix("**")
-        val digitCount = line.takeWhile { it in '0'..'9' }.length
-        if (digitCount !in 1..4) return null
-        val index = line.substring(0, digitCount).toIntOrNull() ?: return null
-        var rest = line.substring(digitCount)
-        if (rest.startsWith("**")) rest = rest.removePrefix("**")
-        rest = rest.trimStart()
-        when {
-            rest.startsWith("|") || rest.startsWith("｜") ||
-                rest.startsWith(":") || rest.startsWith("：") ||
-                rest.startsWith(".") || rest.startsWith("、") ||
-                rest.startsWith(")") -> rest = rest.drop(1).trimStart()
-            rest.startsWith("- ") -> rest = rest.drop(1).trimStart()
-            else -> return null
-        }
-        return index to rest.removePrefix("**").removeSuffix("**").trim()
-    }
-
+    // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
+    val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d{1,4})(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
     val indexed = linkedMapOf<Int, String>()
     var duplicateIndex = false
     normalized.lines().forEach { raw ->
-        val row = indexedRow(raw) ?: return@forEach
-        val (index, value) = row
+        val line = raw.trim().trim('`').trim()
+        val match = indexedLine.matchEntire(line) ?: return@forEach
+        val index = match.groupValues[1].toIntOrNull() ?: return@forEach
         if (index in 0..size) {
+            val value = match.groupValues[2].trim().removePrefix("**").removeSuffix("**").trim()
             if (indexed.containsKey(index)) {
                 duplicateIndex = true
             } else {

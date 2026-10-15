@@ -134,8 +134,12 @@ object SubtitleParsers {
             val timing = parseTimedTextTiming(match.groupValues[1]) ?: continue
             val rawText = match.groupValues[2]
             // Plain text needs no Android Html conversion; escaped entities and markup still do.
-            // Decode after removing actual tags so &lt;name&gt; remains literal subtitle text.
-            val text = stripTags(rawText).replace('\u00a0', ' ').trim()
+            val decodedText = if (rawText.contains('&') || rawText.contains('<')) {
+                android.text.Html.fromHtml(rawText, android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+            } else {
+                rawText
+            }
+            val text = decodedText.trim()
             if (text.isNotEmpty()) out += SubLine(out.size, timing.first, timing.second, text)
         }
         return normalizeTimeline(out, checkActive)
@@ -199,8 +203,10 @@ object SubtitleParsers {
             }
             if (end <= start) continue
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
-            // Strip actual markup before entity decoding; escaped angle brackets are literal text.
-            val text = stripTags(body).replace('\u00a0', ' ').trim()
+            val text = android.text.Html.fromHtml(
+                body,
+                android.text.Html.FROM_HTML_MODE_LEGACY,
+            ).toString().replace('\u00a0', ' ').trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return normalizeTimeline(out, checkActive)
@@ -398,12 +404,7 @@ object SubtitleParsers {
     }
 
     private fun stripTags(s: String): String =
-        SubtitleTextDecoder.decode(s.replace(htmlTagRegex, ""))
-            .replace('\u00a0', ' ')
-            // Entity expansion can introduce adjacent spaces (for example " &nbsp;").
-            // Collapse horizontal whitespace only so explicit line breaks remain intact.
-            .replace(Regex("[ \t]+"), " ")
-            .trim()
+        SubtitleTextDecoder.decode(s.replace(htmlTagRegex, "")).trim()
 
     private fun parseVttTs(value: String): Long? {
         val clean = value.trim().replace(",", ".")

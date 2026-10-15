@@ -1,6 +1,7 @@
 package io.translatetube.local.ui.screens
 
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
@@ -45,6 +47,8 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     var kawaLanguage by remember { mutableStateOf(prefs.getString("asr_kawa_language", "auto") ?: "auto") }
     var cartesiaLanguage by remember { mutableStateOf(prefs.getString("asr_cartesia_language", "en") ?: "en") }
     var asrLanguageMenuExpanded by remember { mutableStateOf(false) }
+    var asrConfigExpanded by remember { mutableStateOf(false) }
+    var asrConfigSavedMessage by remember { mutableStateOf<String?>(null) }
     // Cartesia documents both Norwegian Bokmål ("no") and Nynorsk ("nn"); Kawa keeps "no".
     val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "no" to "挪威语", "nn" to "挪威语（新挪威语）") }
     val kawaLanguages = remember(cartesiaLanguages) { cartesiaLanguages.filterNot { it.first == "nn" } }
@@ -113,7 +117,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         // 下载状态变化会触发重组；以实际文件校验结果为准，避免“状态就绪但模型文件损坏”。
         val ttsReady = io.translatetube.local.data.ModelFiles.ttsReady(ctx)
         val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx)
-        var confirmKind by remember { mutableStateOf<io.translatetube.local.data.ModelKind?>(null) }
+
 
 
 
@@ -144,16 +148,21 @@ Section("转写引擎") {
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "local"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "local").apply()
             },
         )
         AsrProviderCard(
             title = "ElevenLabs",
             subtitle = "自动检测语种",
+            onWebsiteClick = { openOfficialWebsite(ctx, "https://elevenlabs.io/speech-to-text") },
             selected = asrEngine == "elevenlabs",
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "elevenlabs"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "elevenlabs").apply()
             },
         )
@@ -166,20 +175,26 @@ Section("转写引擎") {
         AsrProviderCard(
             title = "Cartesia Ink",
             subtitle = "需指定原声语言",
+            onWebsiteClick = { openOfficialWebsite(ctx, "https://www.cartesia.ai/speech-to-text") },
             selected = asrEngine == "cartesia",
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "cartesia"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "cartesia").apply()
             },
         )
         AsrProviderCard(
             title = "Kawa",
-            subtitle = "每月 1,000 分钟免费",
+            subtitle = "云端转写 · API Key",
+            onWebsiteClick = { openOfficialWebsite(ctx, "https://docs.makimoto.ai/service/api-reference/") },
             selected = asrEngine == "kawa",
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "kawa"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "kawa").apply()
             },
         )
@@ -188,9 +203,17 @@ Section("转写引擎") {
     Spacer(Modifier.height(12.dp))
     if (asrEngine == "local") {
         Text(
-            "本地识别不需要 API Key。请先在模型管理中下载 Whisper 模型。",
+            "本地识别无需 API Key。首次使用前下载 Whisper 转写模型（约 198 MB）。",
             color = SubText,
             style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        ModelRow(
+            title = "Whisper 转写模型",
+            state = asrState,
+            ready = asrReady,
+            pkgMB = 198,
+            onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
         )
     } else {
         val selectedApiKey = when (asrEngine) {
@@ -209,94 +232,148 @@ Section("转写引擎") {
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text("服务配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    when (asrEngine) {
-                        "elevenlabs" -> "使用 Scribe 云端识别，语言自动检测。"
-                        "cartesia" -> "填写 API Key，并选择视频原声语言。"
-                        else -> "每月免费额度及实际计费以 Kawa 账户显示为准。"
-                    },
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                OutlinedTextField(
-                    value = selectedApiKey,
-                    onValueChange = { value ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { asrConfigExpanded = !asrConfigExpanded }
+                        .padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("服务配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (selectedApiKey.isBlank()) "填写 API Key 与识别语言"
+                            else "API Key 已输入 · 点击编辑",
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Icon(
+                        imageVector = if (asrConfigExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (asrConfigExpanded) "收起服务配置" else "展开服务配置",
+                        tint = BrandBright,
+                    )
+                }
+                if (asrConfigExpanded) {
+                    Text(
                         when (asrEngine) {
-                            "elevenlabs" -> {
-                                elevenLabsKey = value
-                                prefs.edit().putString("asr_elevenlabs_key", Crypto.encrypt(value.trim())).apply()
+                            "elevenlabs" -> "使用 ElevenLabs Scribe 云端识别，自动检测语言。"
+                            "cartesia" -> "使用 Cartesia Ink 云端识别，需要填写 API Key 并选择原声语言。"
+                            else -> "使用 Kawa 云端识别，可选择自动检测或指定原声语言。"
+                        },
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = selectedApiKey,
+                        onValueChange = { value ->
+                            asrConfigSavedMessage = null
+                            when (asrEngine) {
+                                "elevenlabs" -> elevenLabsKey = value
+                                "cartesia" -> cartesiaKey = value
+                                else -> kawaKey = value
                             }
-                            "cartesia" -> {
-                                cartesiaKey = value
-                                prefs.edit().putString("asr_cartesia_key", Crypto.encrypt(value.trim())).apply()
-                            }
-                            else -> {
-                                kawaKey = value
-                                prefs.edit().putString("asr_kawa_key", Crypto.encrypt(value.trim())).apply()
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("API Key") },
-                    placeholder = { Text("粘贴服务商 API Key") },
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                Text(
-                    if (selectedApiKey.isBlank()) "尚未填写密钥" else "密钥已加密保存在本机",
-                    color = if (selectedApiKey.isBlank()) SubText else BrandBright,
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("API Key") },
+                        placeholder = { Text("粘贴服务商 API Key") },
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    Text(
+                        if (selectedApiKey.isBlank()) "填写后点击保存配置"
+                        else "出于安全考虑，密钥在本机加密保存",
+                        color = if (selectedApiKey.isBlank()) SubText else BrandBright,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
 
-                if (asrEngine == "cartesia" || asrEngine == "kawa") {
-                    val selectedLanguage = if (asrEngine == "cartesia") cartesiaLanguage else kawaLanguage
-                    val languageOptions = if (asrEngine == "cartesia") cartesiaLanguages else kawaLanguages
-                    Text("识别语言", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                    Box {
-                        OutlinedButton(onClick = { asrLanguageMenuExpanded = true }) {
-                            Text(
-                                if (asrEngine == "kawa" && selectedLanguage.equals("auto", ignoreCase = true)) "自动检测"
-                                else languageOptions.firstOrNull { it.first == selectedLanguage }?.second ?: "英语"
-                            )
-                            Icon(Icons.Filled.ExpandMore, contentDescription = "选择识别语言")
+                    if (asrEngine == "cartesia" || asrEngine == "kawa") {
+                        val selectedLanguage = if (asrEngine == "cartesia") cartesiaLanguage else kawaLanguage
+                        val languageOptions = if (asrEngine == "cartesia") cartesiaLanguages else kawaLanguages
+                        Text("识别语言", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Box {
+                            OutlinedButton(onClick = { asrLanguageMenuExpanded = true }) {
+                                Text(
+                                    if (asrEngine == "kawa" && selectedLanguage.equals("auto", ignoreCase = true)) "自动检测"
+                                    else languageOptions.firstOrNull { it.first == selectedLanguage }?.second ?: "英语"
+                                )
+                                Icon(Icons.Filled.ExpandMore, contentDescription = "选择识别语言")
+                            }
+                            DropdownMenu(
+                                expanded = asrLanguageMenuExpanded,
+                                onDismissRequest = { asrLanguageMenuExpanded = false },
+                            ) {
+                                if (asrEngine == "kawa") {
+                                    DropdownMenuItem(
+                                        text = { Text("自动检测") },
+                                        onClick = {
+                                            kawaLanguage = "auto"
+                                            asrConfigSavedMessage = null
+                                            asrLanguageMenuExpanded = false
+                                        },
+                                    )
+                                }
+                                languageOptions.forEach { (code, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            if (asrEngine == "cartesia") {
+                                                cartesiaLanguage = code
+                                            } else {
+                                                kawaLanguage = code
+                                            }
+                                            asrConfigSavedMessage = null
+                                            asrLanguageMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
                         }
-                        DropdownMenu(
-                            expanded = asrLanguageMenuExpanded,
-                            onDismissRequest = { asrLanguageMenuExpanded = false },
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        asrConfigSavedMessage?.let {
+                            Text(
+                                it,
+                                color = BrandBright,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                when (asrEngine) {
+                                    "elevenlabs" -> prefs.edit()
+                                        .putString("asr_elevenlabs_key", Crypto.encrypt(elevenLabsKey.trim()))
+                                        .apply()
+                                    "cartesia" -> prefs.edit()
+                                        .putString("asr_cartesia_key", Crypto.encrypt(cartesiaKey.trim()))
+                                        .putString("asr_cartesia_language", cartesiaLanguage)
+                                        .apply()
+                                    else -> prefs.edit()
+                                        .putString("asr_kawa_key", Crypto.encrypt(kawaKey.trim()))
+                                        .putString("asr_kawa_language", kawaLanguage)
+                                        .apply()
+                                }
+                                asrConfigSavedMessage = "配置已保存"
+                            },
+                            enabled = selectedApiKey.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White),
+                            shape = RoundedCornerShape(10.dp),
                         ) {
-                            if (asrEngine == "kawa") {
-                                DropdownMenuItem(
-                                    text = { Text("自动检测") },
-                                    onClick = {
-                                        kawaLanguage = "auto"
-                                        prefs.edit().putString("asr_kawa_language", "auto").apply()
-                                        asrLanguageMenuExpanded = false
-                                    },
-                                )
-                            }
-                            languageOptions.forEach { (code, label) ->
-                                DropdownMenuItem(
-                                    text = { Text(label) },
-                                    onClick = {
-                                        if (asrEngine == "cartesia") {
-                                            cartesiaLanguage = code
-                                            prefs.edit().putString("asr_cartesia_language", code).apply()
-                                        } else {
-                                            kawaLanguage = code
-                                            prefs.edit().putString("asr_kawa_language", code).apply()
-                                        }
-                                        asrLanguageMenuExpanded = false
-                                    },
-                                )
-                            }
+                            Text("保存配置")
                         }
                     }
                 }
             }
         }
         Text(
-            "提示：云端服务需要网络，识别额度与超额收费由服务商决定。",
+            "云端转写需要网络，请妥善保管 API Key。",
             color = SubText,
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(start = 2.dp, top = 5.dp),
@@ -322,7 +399,7 @@ Section("配音设置") {
             Text(
                 when (ttsEngine) {
                     "system" -> "直接使用手机已安装的语音；不会要求下载 Kokoro 配音模型。"
-                    "piper" -> "Piper 补足 Kokoro 覆盖不到的语种（法/德/西/俄/意等）；请在下方模型管理中下载对应语种模型。"
+                    "piper" -> "Piper 补足 Kokoro 覆盖不到的语种（法/德/西/俄/意等）；可在此处选择并下载对应语种模型。"
                     else -> "使用本地 Kokoro 模型生成配音；首次使用前需下载模型。"
                 },
                 color = SubText,
@@ -330,6 +407,14 @@ Section("配音设置") {
                 modifier = Modifier.padding(start = 8.dp, top = 2.dp),
             )
             if (ttsEngine == "kokoro") {
+                ModelRow(
+                    title = "Kokoro 配音模型",
+                    state = ttsState,
+                    ready = ttsReady,
+                    pkgMB = 140,
+                    onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.TTS) },
+                )
+                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
                 Spacer(Modifier.height(8.dp))
                 var previewing by remember { mutableStateOf(false) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -368,67 +453,6 @@ Section("配音设置") {
 Section("视频源（yt-dlp）") {
     YtDlpUpdateSection()
 }
-
-Section("模型管理") {
-            Text(
-                when {
-                    asrEngine != "local" -> "当前选用云端转写；本地 Whisper 模型仍保留，切回本地时即可继续使用。"
-                    ttsEngine == "system" -> "系统 TTS 不需要配音模型；本地语音转写模型可单独下载。"
-                    else -> "配音模型用于离线合成语音，本地语音转写模型用于生成字幕。"
-                },
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Spacer(Modifier.height(8.dp))
-            if (ttsEngine == "kokoro") {
-                ModelRow(
-                    title = "配音模型",
-                    state = ttsState,
-                    ready = ttsReady,
-                    pkgMB = 140,
-                    onDownload = { confirmKind = io.translatetube.local.data.ModelKind.TTS },
-                )
-                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
-            }
-            ModelRow(
-                title = "语音转写模型",
-                state = asrState,
-                ready = asrReady,
-                pkgMB = 198,
-                onDownload = { confirmKind = io.translatetube.local.data.ModelKind.ASR },
-            )
-        }
-
-// 下载确认弹窗（规格：右侧确定 / 左侧取消，显示包大小）
-        confirmKind?.let { kind ->
-            val name = if (kind == io.translatetube.local.data.ModelKind.TTS) "配音模型（Kokoro）" else "转写模型（Whisper）"
-            val size = if (kind == io.translatetube.local.data.ModelKind.TTS) "140MB（解压后约 207MB）" else "198MB（解压后约 154MB）"
-            androidx.compose.material3.AlertDialog(
-                onDismissRequest = { confirmKind = null },
-                title = { Text("确定下载吗？", color = OnBg) },
-                text = {
-                    Column {
-                        Text(name, color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                        Spacer(Modifier.height(4.dp))
-                        Text("下载包大小：$size", color = SubText, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(4.dp))
-                        Text("建议使用 Wi-Fi 网络，下载完成后自动解压安装。", color = MutedGreen, style = MaterialTheme.typography.bodySmall)
-                    }
-                },
-                // 左：取消
-                dismissButton = {
-                    TextButton(onClick = { confirmKind = null }) { Text("取消", color = SubText) }
-                },
-                // 右：确定
-                confirmButton = {
-                    TextButton(onClick = {
-                        dlManager.download(kind)
-                        confirmKind = null
-                    }) { Text("确定", color = BrandBright) }
-                },
-                containerColor = SurfaceDark,
-            )
-        }
 
         Section("播放体验") {
             Row(
@@ -707,7 +731,7 @@ private fun PiperModelSection() {
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
             Column(Modifier.weight(1f)) {
-                Text("${def.langLabel} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                Text("${def.label} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                 when {
                     busyId == def.id -> {
                         LinearProgressIndicator(
@@ -727,13 +751,11 @@ private fun PiperModelSection() {
                     error = null
                     scope.launch {
                         try {
-                            io.translatetube.local.tts.PiperModels.download(
-                                ctx.applicationContext,
-                                def.id,
-                                onProgress = { p -> progress = p / 100f },
-                            )
+                            io.translatetube.local.tts.PiperModels.download(ctx.applicationContext, def.id) { p ->
+                                progress = p
+                            }
                         } catch (e: Exception) {
-                            error = "${def.langLabel}下载失败：${e.message ?: "未知错误"}"
+                            error = "${def.label}下载失败：${e.message ?: "未知错误"}"
                         } finally {
                             busyId = null
                         }
@@ -801,9 +823,25 @@ private fun YtDlpUpdateSection() {
             TextButton(
                 enabled = !state.checking,
                 onClick = {
+                    message = null
                     scope.launch {
-                        runCatching {
-                            io.translatetube.local.yt.YtDlpRepo.checkForUpdate(ctx.applicationContext, force = true)
+                        try {
+                            io.translatetube.local.yt.YtDlpRepo.checkForUpdate(
+                                ctx.applicationContext,
+                                force = true,
+                            )
+                            val checked = io.translatetube.local.yt.YtDlpRepo.updateState.value
+                            message = when {
+                                checked.current != null && checked.latest != null && !checked.hasUpdate ->
+                                    "检查结果：已是最新版本"
+                                checked.hasUpdate && checked.latest != null ->
+                                    "检查结果：发现新版本 ${checked.latest}"
+                                checked.latest != null && checked.current == null ->
+                                    "已获取最新版本 ${checked.latest}，暂时无法读取本机版本"
+                                else -> "检查未完成，请检查网络后重试"
+                            }
+                        } catch (e: Exception) {
+                            message = "检查失败：${e.message ?: "网络错误"}"
                         }
                     }
                 },
@@ -842,6 +880,7 @@ private fun AsrProviderCard(
     title: String,
     subtitle: String,
     selected: Boolean,
+    onWebsiteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -857,8 +896,8 @@ private fun AsrProviderCard(
         tonalElevation = 0.dp,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -866,17 +905,32 @@ private fun AsrProviderCard(
                     color = OnBg,
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
+                    maxLines = 1,
                 )
-                if (selected) {
-                    Text("✓", color = BrandBright, style = MaterialTheme.typography.titleSmall)
+                if (selected) Text("✓", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    subtitle,
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    modifier = Modifier.weight(1f),
+                )
+                onWebsiteClick?.let { websiteClick ->
+                    IconButton(
+                        onClick = websiteClick,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.OpenInNew,
+                            contentDescription = "打开${title}官网",
+                            tint = BrandBright,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
                 }
             }
-            Text(
-                subtitle,
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
-            )
         }
     }
 }
@@ -884,19 +938,37 @@ private fun AsrProviderCard(
 @Composable
 private fun ModelRow(
     title: String,
-    state: io.translatetube.local.data.ModelState, ready: Boolean, pkgMB: Int,
+    state: io.translatetube.local.data.ModelState,
+    ready: Boolean,
+    pkgMB: Int,
     onDownload: () -> Unit,
 ) {
-    val dl = (LocalContext.current.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    val active = state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING ||
+        state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
+    Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, color = OnBg, style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f))
+            Text(
+                title,
+                color = OnBg,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
+            )
             if (ready) {
                 Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelMedium)
+            } else if (!active) {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = if (state.status == io.translatetube.local.data.ModelStatus.FAILED) "重试下载$title" else "下载$title",
+                        tint = BrandBright,
+                    )
+                }
             }
         }
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(5.dp))
         when {
             ready -> {
                 Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
@@ -911,16 +983,21 @@ private fun ModelRow(
                         progress = { (state.progress / 100f).coerceIn(0f, 1f) },
                         modifier = Modifier.size(36.dp),
                         color = BrandBright,
-                        trackColor = androidx.compose.ui.graphics.Color(0xFFE5EAF0),
+                        trackColor = Color(0xFFE5EAF0),
                         strokeWidth = 3.dp,
                     )
                     Column(Modifier.weight(1f)) {
                         Text(
                             "下载中 ${state.progress}% · ${state.downloadedMB}/${state.totalMB} MB",
-                            color = BrandBright, style = MaterialTheme.typography.bodySmall,
+                            color = BrandBright,
+                            style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(Modifier.height(3.dp))
-                        Text(state.stageMessage ?: "下载完成后自动安装", color = SubText, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            state.stageMessage ?: "下载完成后自动安装",
+                            color = SubText,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                 }
             }
@@ -933,39 +1010,31 @@ private fun ModelRow(
                     CircularProgressIndicator(
                         modifier = Modifier.size(36.dp),
                         color = BrandBright,
-                        trackColor = androidx.compose.ui.graphics.Color(0xFFE5EAF0),
+                        trackColor = Color(0xFFE5EAF0),
                         strokeWidth = 3.dp,
                     )
                     Text(state.stageMessage ?: "正在安装模型", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
             }
             state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        state.error ?: "下载失败，请检查网络",
-                        color = DangerRed,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(
-                        onClick = {
-                            dl.download(if (title.contains("配音")) io.translatetube.local.data.ModelKind.TTS else io.translatetube.local.data.ModelKind.ASR)
-                        },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    ) { Text("重试", color = BrandBright) }
-                }
+                Text(
+                    state.error ?: "下载失败，请检查网络后重试",
+                    color = DangerRed,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             else -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f))
-                    TextButton(
-                        onClick = onDownload,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    ) { Text("下载", color = BrandBright) }
-                }
+                Text("下载包约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+}
+
+/** 在系统应用选择器中打开官网，让用户自行指定浏览器。 */
+private fun openOfficialWebsite(ctx: android.content.Context, url: String) {
+    runCatching {
+        val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        ctx.startActivity(Intent.createChooser(viewIntent, "选择浏览器打开官网"))
     }
 }
 

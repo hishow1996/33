@@ -311,7 +311,6 @@ object YtDlpRepo {
         val message = when (YoutubeDL.updateYoutubeDL(appCtx, YoutubeDL.UpdateChannel.STABLE)) {
             YoutubeDL.UpdateStatus.DONE -> "yt-dlp 解析规则已更新到最新版，可重试解析"
             YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp 解析规则已是最新版；失败可能是站点限制或网络问题"
-            null -> "yt-dlp 解析规则更新结果未知，请稍后重试"
         }
         // 更新后刷新版本检测结论（清掉「有新版本」标记）
         val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()

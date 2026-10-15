@@ -96,13 +96,13 @@ internal object SafeMediaHttp {
                 onCancelling = true,
                 invokeImmediately = true,
             ) { cause ->
-                if (cause is CancellationException || ownerJob.isCancelled) call.cancel()
+                if (cause is CancellationException) call.cancel()
             }
             val response = try {
                 call.execute()
             } catch (error: IOException) {
                 cancellationHandle?.dispose()
-                if (ownerJob?.isActive == false) {
+                if (ownerJob?.isCancelled == true) {
                     throw CancellationException("网页视频音轨下载已取消").also { it.initCause(error) }
                 }
                 throw error
@@ -158,7 +158,7 @@ internal object SafeMediaHttp {
                     return try {
                         super.read(sink, byteCount)
                     } catch (error: IOException) {
-                        if (!ownerJob.isActive) {
+                        if (ownerJob.isCancelled) {
                             throw CancellationException("网页视频音轨下载已取消").also {
                                 it.initCause(error)
                             }
