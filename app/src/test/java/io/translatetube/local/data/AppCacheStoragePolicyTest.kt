@@ -70,4 +70,12 @@ class AppCacheStoragePolicyTest {
         ))
         assertTrue(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = false, dubbingIncomplete = false))
     }
+
+    @Test
+    fun cacheSizeAdditionSaturatesInsteadOfWrappingNegative() {
+        assertEquals(Long.MAX_VALUE, AppCacheStoragePolicy.addBytesSaturated(Long.MAX_VALUE - 4L, 10L))
+        assertEquals(Long.MAX_VALUE - 4L, AppCacheStoragePolicy.addBytesSaturated(Long.MAX_VALUE - 4L, 0L))
+        assertEquals(12L, AppCacheStoragePolicy.addBytesSaturated(10L, 2L))
+    }
+
 }

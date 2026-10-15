@@ -20,13 +20,20 @@ internal object AppCacheStoragePolicy {
         modelDownloadActive: Boolean = false,
     ): Boolean = !isPlaying && !isProcessing && !dubbingIncomplete && !modelDownloadActive
 
+    /** Cache UI totals should saturate rather than wrap negative on extreme file sizes. */
+    internal fun addBytesSaturated(total: Long, bytes: Long): Long {
+        require(total >= 0L) { "缓存累计值不能为负数" }
+        if (bytes <= 0L) return total
+        return if (total > Long.MAX_VALUE - bytes) Long.MAX_VALUE else total + bytes
+    }
+
     fun sizeBytes(cacheDir: File): Long {
         var total = 0L
         managedDirectoryNames.forEach { name ->
             val directory = File(cacheDir, name)
             if (directory.isDirectory) {
                 directory.walkTopDown().filter { it.isFile }.forEach { file ->
-                    total += file.length().coerceAtLeast(0L)
+                    total = addBytesSaturated(total, file.length().coerceAtLeast(0L))
                 }
             }
         }
@@ -34,7 +41,7 @@ internal object AppCacheStoragePolicy {
             ?.filter { file ->
                 file.isFile && managedTopLevelPrefixes.any { prefix -> file.name.startsWith(prefix) }
             }
-            ?.forEach { file -> total += file.length().coerceAtLeast(0L) }
+            ?.forEach { file -> total = addBytesSaturated(total, file.length().coerceAtLeast(0L)) }
         return total
     }
 

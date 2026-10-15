@@ -1,5 +1,7 @@
 package io.translatetube.local.subs
 
+import java.util.Locale
+
 /** 一条字幕行：用于 UI 显示 / 翻译 / 配音对轴 */
 data class SubLine(
     val index: Int,
@@ -35,7 +37,7 @@ object SubtitleParsers {
 
     fun fmtTime(ms: Long): String {
         val t = ms / 1000
-        return "%02d:%02d:%02d".format(t / 3600, (t % 3600) / 60, t % 60)
+        return String.format(Locale.ROOT, "%02d:%02d:%02d", t / 3600, (t % 3600) / 60, t % 60)
     }
 
     /** WebVTT → 行列表（YouTube timedtext 返回 vtt） */
@@ -114,7 +116,7 @@ object SubtitleParsers {
         val minutes = (safe % 3_600_000L) / 60_000L
         val seconds = (safe % 60_000L) / 1_000L
         val millis = safe % 1_000L
-        return "%02d:%02d:%02d.%03d".format(hours, minutes, seconds, millis)
+        return String.format(Locale.ROOT, "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
     }
 
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
@@ -146,7 +148,7 @@ object SubtitleParsers {
     /** Parse start/dur by attribute name, regardless of XML attribute order or quote style. */
     internal fun parseTimedTextTiming(attributes: String): Pair<Long, Long>? {
         val attrs = timedTextAttributeRegex.findAll(attributes)
-            .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+            .associate { it.groupValues[1].lowercase(Locale.ROOT) to it.groupValues[2] }
         val startSeconds = attrs["start"]?.toDoubleOrNull() ?: return null
         // Default only when the provider omits duration. A present but malformed value
         // must reject the cue rather than silently inventing a three-second time window.
@@ -183,7 +185,7 @@ object SubtitleParsers {
         for ((matchIndex, match) in cueRegex.findAll(src).withIndex()) {
             if ((matchIndex and 0xff) == 0) checkActive()
             val attrs = attributeRegex.findAll(match.groupValues[1])
-                .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+                .associate { it.groupValues[1].lowercase(Locale.ROOT) to it.groupValues[2] }
             val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) }
                 ?.takeIf { it >= 0L } ?: continue
             // An explicit but malformed end is not equivalent to a missing end. Do not
@@ -274,7 +276,7 @@ object SubtitleParsers {
     fun isPlaceholderTranslation(translated: String?): Boolean {
         val normalized = translated
             ?.trim()
-            ?.lowercase()
+            ?.lowercase(Locale.ROOT)
             ?.replace(placeholderNormalizationRegex, "")
             ?: return false
         if (normalized in setOf(
@@ -303,7 +305,7 @@ object SubtitleParsers {
         var previousKey = ""
         var removedDuplicate = false
         for (chunk in chunks) {
-            val key = chunk.lowercase().replace(punctuationSymbolsWhitespaceRegex, "")
+            val key = chunk.lowercase(Locale.ROOT).replace(punctuationSymbolsWhitespaceRegex, "")
             val hasChinese = chineseCharRegex.containsMatchIn(key)
             if (hasChinese && key.length >= 2 && key == previousKey) {
                 removedDuplicate = true

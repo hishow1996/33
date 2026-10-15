@@ -117,6 +117,14 @@ class CloudTranscriptionTest {
                 writeBytes(byteArrayOf(3))
                 setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
             }
+            val staleKawaChunk = File(directory, "asr-kawa-old.wav").apply {
+                writeBytes(byteArrayOf(6))
+                setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
+            }
+            val recentKawaChunk = File(directory, "asr-kawa-active.wav").apply {
+                writeBytes(byteArrayOf(7))
+                setLastModified(now - 1_000L)
+            }
             val unrelated = File(directory, "other.part").apply {
                 writeBytes(byteArrayOf(4))
                 setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
@@ -126,9 +134,11 @@ class CloudTranscriptionTest {
                 setLastModified(now + 1_000L)
             }
 
-            assertEquals(2, CloudTranscription.cleanupStaleWavStages(directory, now))
+            assertEquals(3, CloudTranscription.cleanupStaleWavStages(directory, now))
             assertTrue(!stale.exists())
             assertTrue(!staleRequest.exists())
+            assertTrue(!staleKawaChunk.exists())
+            assertTrue(recentKawaChunk.exists())
             assertTrue(recent.exists())
             assertTrue(unrelated.exists())
             assertTrue(future.exists())

@@ -48,4 +48,16 @@ class TranslationBatchResultTest {
         assertTrue(result.translations.isEmpty())
         assertEquals(listOf(0, 1), result.missingIndices)
     }
+
+    @Test
+    fun duplicateSourceIndicesProduceAtMostOneTranslationOrRetryEntry() {
+        val result = TranslationBatchResult.from(
+            listOf(2, 2, 3, 3, 4),
+            listOf("", "第二行", "第三行", "", "第四行"),
+        )
+
+        assertEquals(mapOf(2 to "第二行", 3 to "第三行", 4 to "第四行"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+    }
+
 }

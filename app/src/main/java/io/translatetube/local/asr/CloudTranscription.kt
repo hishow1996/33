@@ -73,7 +73,9 @@ object CloudTranscription {
             // PlaybackService creates the final request WAV under this prefix; a force-stop can
             // bypass its finally deletion just as it can leave the writer's staging file behind.
             val abandonedRequest = file.name.startsWith("asr-cloud-") && file.name.endsWith(".wav")
-            if (!file.isFile || (!abandonedStage && !abandonedRequest)) continue
+            // Kawa's bounded per-chunk uploads are also staged as WAVs and can survive force-stop.
+            val abandonedKawaChunk = file.name.startsWith("asr-kawa-") && file.name.endsWith(".wav")
+            if (!file.isFile || (!abandonedStage && !abandonedRequest && !abandonedKawaChunk)) continue
             val modified = file.lastModified()
             if (modified > 0L && nowMs >= modified &&
                 nowMs - modified > STAGED_WAV_MAX_AGE_MS && file.delete()

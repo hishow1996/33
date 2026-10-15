@@ -14,16 +14,19 @@ internal data class TranslationBatchResult(
     companion object {
         fun from(indices: List<Int>, rawTranslations: List<String>): TranslationBatchResult {
             val translated = linkedMapOf<Int, String>()
-            val missing = mutableListOf<Int>()
+            val missing = linkedSetOf<Int>()
             indices.forEachIndexed { position, sourceIndex ->
                 val value = SubtitleParsers.cleanTranslatedText(rawTranslations.getOrNull(position))
                 if (value.isNullOrBlank()) {
-                    missing += sourceIndex
+                    if (sourceIndex !in translated) missing += sourceIndex
                 } else {
-                    translated[sourceIndex] = value
+                    // Duplicate indices must not create duplicate retries or let a later blank
+                    // result erase a valid translation for the same source row.
+                    translated.putIfAbsent(sourceIndex, value)
+                    missing.remove(sourceIndex)
                 }
             }
-            return TranslationBatchResult(translated, missing)
+            return TranslationBatchResult(translated, missing.toList())
         }
     }
 }

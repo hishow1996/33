@@ -351,4 +351,26 @@ class SubtitleParsersTest {
         assertEquals(3_000L, parsed.single().startMs)
         assertEquals(4_000L, parsed.single().endMs)
     }
+
+    @Test
+    fun ttmlAttributesPlaceholdersAndExportTimesIgnoreTheDefaultLocale() {
+        val previous = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("tr", "TR"))
+            val parsed = SubtitleParsers.parseTtml(
+                """<TT><BODY><P BEGIN="1s" END="2s">upper-case timing</P></BODY></TT>"""
+            )
+            assertEquals(1, parsed.size)
+            assertEquals(1_000L, parsed.single().startMs)
+            assertEquals(2_000L, parsed.single().endMs)
+
+            assertEquals(true, SubtitleParsers.isPlaceholderTranslation("TRANSLATING"))
+            assertEquals("00:01:01", SubtitleParsers.fmtTime(61_000L))
+            val exported = SubtitleParsers.toVtt(listOf(SubLine(0, 1_000L, 2_000L, "cue")))
+            assertEquals(true, exported.contains("00:00:01.000 --> 00:00:02.000"))
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
+
 }
