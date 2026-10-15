@@ -911,14 +911,13 @@ class PlaybackService : MediaSessionService() {
                     val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取字幕文件")
                     val text = input.use {
-                        String(
+                        SubtitleFileDecoder.decode(
                             BoundedTextPayload.readBytes(
                                 it,
                                 maxBytes = 8L * 1024L * 1024L,
                                 resourceLabel = "导入的字幕文件",
                                 checkActive = { ownerJob?.ensureActive() },
                             ),
-                            Charsets.UTF_8,
                         )
                     }
                     SubtitleParsers.parseAutoCancellable(text) {
