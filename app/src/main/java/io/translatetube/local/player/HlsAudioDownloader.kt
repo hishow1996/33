@@ -154,10 +154,10 @@ internal object HlsAudioDownloader {
         destination: File,
         requestHeaders: Map<String, String> = emptyMap(),
         awaitResume: suspend () -> Unit = {},
-        onProgress: (String) -> Unit = {},
         userAgent: String? = null,
+        onProgress: (String) -> Unit = {},
     ): File = downloadMutex.withLock {
-        downloadLocked(playlistUrl, destination, requestHeaders, awaitResume, onProgress, userAgent)
+        downloadLocked(playlistUrl, destination, requestHeaders, awaitResume, userAgent, onProgress)
     }
 
     private suspend fun downloadLocked(
@@ -165,8 +165,8 @@ internal object HlsAudioDownloader {
         destination: File,
         requestHeaders: Map<String, String>,
         awaitResume: suspend () -> Unit,
-        onProgress: (String) -> Unit,
         userAgent: String?,
+        onProgress: (String) -> Unit,
     ): File {
         val ownerJob = currentCoroutineContext()[Job]
         // A captured WebView Range belongs to its original request. Do not reuse it for a

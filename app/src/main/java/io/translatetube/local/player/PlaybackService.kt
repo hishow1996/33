@@ -2951,17 +2951,23 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             try {
                                 downloadAudio(mediaUrl, destination, sessionKey, headers)
                             } catch (manifest: HlsManifestPayloadException) {
-                            // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
-                            // Detect the response body, then re-open through the bounded HLS segment path.
-                            HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
-                                updateUiForSession(sessionKey) { state ->
-                                    if (state.key == sessionKey) {
-                                        state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
-                                    } else state
+                                // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
+                                // Detect the response body, then re-open through the bounded HLS segment path.
+                                HlsAudioDownloader.download(
+                                    mediaUrl,
+                                    destination,
+                                    requestHeaders = headers,
+                                    awaitResume = { awaitProcessingResumed(sessionKey) },
+                                    userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                                ) { detail ->
+                                    updateUiForSession(sessionKey) { state ->
+                                        if (state.key == sessionKey) {
+                                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                                        } else state
+                                    }
                                 }
                             }
                         }
-                            }
                     }
                 } catch (mediaError: Exception) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
