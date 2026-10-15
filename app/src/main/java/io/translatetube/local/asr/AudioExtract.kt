@@ -23,6 +23,8 @@ object AudioExtract {
     // unusual but valid low-rate audio formats accepted by the decoder.
     private const val MAX_DECODED_SOURCE_CHUNK_SAMPLES = 64 * 1024
     private const val MAX_RESAMPLER_INPUT_CHUNK_SAMPLES = 64 * 1024
+    // Some Android 9 codecs can remain in TRY_AGAIN_LATER forever on malformed sources.
+    private const val MAX_CODEC_STALL_MS = 60_000L
 
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
 
@@ -216,11 +218,14 @@ object AudioExtract {
             val info = MediaCodec.BufferInfo()
 
             BufferedOutputStream(FileOutputStream(destination), 64 * 1024).use { output ->
+                var lastCodecProgressAtMs = android.os.SystemClock.elapsedRealtime()
                 while (!sawOutputEos) {
                     checkActive()
+                    var loopMadeProgress = false
                     if (!sawInputEos) {
                         val inBufferIndex = codec.dequeueInputBuffer(10_000)
                         if (inBufferIndex >= 0) {
+                            loopMadeProgress = true
                             val inputBuffer = codec.getInputBuffer(inBufferIndex)
                                 ?: throw IllegalStateException("音频解码器没有输入缓冲区")
                             val size = extractor.readSampleData(inputBuffer, 0)
@@ -238,6 +243,7 @@ object AudioExtract {
 
                     val outBufferIndex = codec.dequeueOutputBuffer(info, 10_000)
                     if (outBufferIndex >= 0) {
+                        loopMadeProgress = true
                         val outputBuffer = codec.getOutputBuffer(outBufferIndex)
                             ?: throw IllegalStateException("音频解码器没有输出缓冲区")
                         val endOffset = info.offset.toLong() + info.size.toLong()
@@ -346,6 +352,7 @@ object AudioExtract {
                         codec.releaseOutputBuffer(outBufferIndex, false)
                         if (reachedEnd) sawOutputEos = true
                     } else if (outBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        loopMadeProgress = true
                         // On Android 9 some audio decoders report their actual PCM output here.
                         val newFormat = codec.outputFormat
                         if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
@@ -372,6 +379,18 @@ object AudioExtract {
                                 maxDurationMs,
                             )
                         }
+                    } else if (outBufferIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
+                        loopMadeProgress = true
+                    }
+
+                    if (loopMadeProgress) {
+                        lastCodecProgressAtMs = android.os.SystemClock.elapsedRealtime()
+                    } else if (
+                        android.os.SystemClock.elapsedRealtime() - lastCodecProgressAtMs > MAX_CODEC_STALL_MS
+                    ) {
+                        throw IllegalStateException(
+                            "音频解码器连续 60 秒没有输出进展；媒体可能损坏或当前解码器不兼容，请换一个音频源重试"
+                        )
                     }
                 }
 
