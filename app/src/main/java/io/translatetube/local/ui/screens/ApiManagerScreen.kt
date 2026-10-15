@@ -573,18 +573,47 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
     }
 }
 
+/**
+ * Resolve official brand domains even when the configured API base URL points at a gateway,
+ * proxy or compatibility endpoint. Keep specific product hosts ahead of their parent domains.
+ */
+private fun preferredApiLogoHost(profile: ApiProfile): String? {
+    val name = profile.name.lowercase(Locale.ROOT)
+    val officialHost = when {
+        profile.type == "GEMINI" || name.contains("gemini") -> "gemini.google.com"
+        profile.type == "GCLOUD" || name.contains("google cloud") || name.contains("谷歌云") -> "cloud.google.com"
+        name.contains("deepseek") || name.contains("深度求索") -> "deepseek.com"
+        name.contains("openai") || name.contains("chatgpt") -> "openai.com"
+        name.contains("anthropic") || name.contains("claude") -> "anthropic.com"
+        name.contains("moonshot") || name.contains("kimi") || name.contains("月之暗面") -> "moonshot.cn"
+        name.contains("qwen") || name.contains("通义千问") || name.contains("dashscope") || name.contains("百炼") -> "qwenlm.ai"
+        name.contains("siliconflow") || name.contains("硅基流动") -> "siliconflow.cn"
+        name.contains("zhipu") || name.contains("智谱") || name.contains("glm") -> "z.ai"
+        name.contains("minimax") || name.contains("海螺") -> "minimaxi.com"
+        name.contains("baichuan") || name.contains("百川") -> "baichuan-ai.com"
+        name.contains("volcengine") || name.contains("火山引擎") || name.contains("豆包") -> "volcengine.com"
+        else -> null
+    }
+    val fromConfiguredUrl = runCatching {
+        Uri.parse(profile.baseUrl.trim()).host?.lowercase(Locale.ROOT)?.trimEnd('.')
+    }.getOrNull()
+    // If a known provider is identified by name, prefer its first-party domain over the
+    // third-party API gateway. Otherwise inspect the API endpoint host and use its own branding.
+    return (officialHost ?: fromConfiguredUrl)?.takeIf(::isPublicLogoLookupHost)
+}
+
 @Composable
 private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
     val context = LocalContext.current.applicationContext
-    val spec = remember(profile.type, profile.name, profile.baseUrl) {
-        apiLogoSpec(profile)
+    val forceOfficialOnlineLogo = profile.type == "GEMINI" ||
+        profile.name.contains("gemini", ignoreCase = true)
+    val spec = remember(profile.type, profile.name, profile.baseUrl, forceOfficialOnlineLogo) {
+        if (forceOfficialOnlineLogo) ApiLogoSpec() else apiLogoSpec(profile)
     }
-    val host = remember(profile.baseUrl) {
-        runCatching { Uri.parse(profile.baseUrl.trim()).host?.lowercase(Locale.ROOT)?.trimEnd('.') }
-            .getOrNull()
-            ?.takeIf(::isPublicLogoLookupHost)
+    val host = remember(profile.type, profile.name, profile.baseUrl) {
+        preferredApiLogoHost(profile)
     }
-    val needsOnlineLogo = spec.layers.isEmpty() && !spec.useGoogleTranslate
+    val needsOnlineLogo = forceOfficialOnlineLogo || (spec.layers.isEmpty() && !spec.useGoogleTranslate)
     val downloadedLogo by produceState<File?>(null, host, needsOnlineLogo) {
         value = null
         if (!needsOnlineLogo || host == null) return@produceState
@@ -705,7 +734,8 @@ private fun candidateWebsiteHosts(host: String): List<String> {
     val suffix = parts.takeLast(2).joinToString(".")
     val rootLabels = if (suffix in twoLevelSuffixes) 3 else 2
     val root = parts.takeLast(rootLabels.coerceAtMost(parts.size)).joinToString(".")
-    return listOf(root, normalized).distinct().filter(::isPublicLogoLookupHost)
+    // Try a product/subdomain logo first (e.g. Gemini), then the registered parent domain.
+    return listOf(normalized, root).distinct().filter(::isPublicLogoLookupHost)
 }
 
 private fun fetchSmallText(url: String): Pair<String, String>? {
