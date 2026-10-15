@@ -7,7 +7,7 @@ import org.junit.Test
 class AudioTrackWritePolicyTest {
     @Test
     fun retriesTemporaryZeroProgressAndResumesAtTheExactOffset() {
-        val results = ArrayDeque(listOf(0, 0, 2, 0, 2))
+        val results = java.util.ArrayDeque(listOf(0, 0, 2, 0, 2))
         val requests = mutableListOf<Pair<Int, Int>>()
         val written = AudioTrackWritePolicy.writeFully(
             sampleCount = 4,
