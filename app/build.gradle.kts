@@ -5,6 +5,12 @@ import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.Properties
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.util.Locale
+import java.util.jar.JarEntry
+import java.util.jar.JarFile
+import java.util.jar.JarOutputStream
 
 plugins {
     id("com.android.application")
@@ -241,8 +247,8 @@ private fun rewriteNewPipeClass(bytes: ByteArray): Pair<ByteArray, Int> {
     }
     if (targets.isEmpty()) return bytes to 0
 
-    val additions = java.io.ByteArrayOutputStream()
-    val additionStream = java.io.DataOutputStream(additions)
+    val additions = ByteArrayOutputStream()
+    val additionStream = DataOutputStream(additions)
     var newCpCount = cpCount
     val utf8Indexes = entries.values.filter { it.tag == 1 }
         .associate { it.text.orEmpty() to it.index }.toMutableMap()
@@ -276,8 +282,8 @@ private fun rewriteNewPipeClass(bytes: ByteArray): Pair<ByteArray, Int> {
         putCpU2(cpBytes, entry.start - 10 + 1, compatClassIndex!!)
     }
 
-    val output = java.io.ByteArrayOutputStream(bytes.size + additions.size())
-    val data = java.io.DataOutputStream(output)
+    val output = ByteArrayOutputStream(bytes.size + additions.size())
+    val data = DataOutputStream(output)
     data.write(bytes, 0, 8)
     data.writeShort(newCpCount)
     data.write(cpBytes)
@@ -294,8 +300,8 @@ val patchNewPipeAndroid9Api = tasks.register("patchNewPipeAndroid9Api") {
         val outputJar = patchedNewPipeJar.get().asFile
         outputJar.parentFile.mkdirs()
         var patchedReferences = 0
-        java.util.jar.JarFile(inputJar).use { source ->
-            java.util.jar.JarOutputStream(outputJar.outputStream().buffered()).use { destination ->
+        JarFile(inputJar).use { source ->
+            JarOutputStream(outputJar.outputStream().buffered()).use { destination ->
                 val entries = source.entries()
                 while (entries.hasMoreElements()) {
                     val entry = entries.nextElement()
@@ -310,7 +316,7 @@ val patchNewPipeAndroid9Api = tasks.register("patchNewPipeAndroid9Api") {
                         patchedReferences += count
                         rewritten
                     } else sourceBytes
-                    val outputEntry = java.util.jar.JarEntry(entry.name)
+                    val outputEntry = JarEntry(entry.name)
                     if (entry.time > 0L) outputEntry.time = entry.time
                     destination.putNextEntry(outputEntry)
                     destination.write(patchedBytes)
