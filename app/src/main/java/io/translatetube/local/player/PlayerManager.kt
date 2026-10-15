@@ -186,19 +186,33 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
     ) {
+        // Validate candidates before stopping the current source. Invalid extractor output must
+        // not turn a recoverable parse failure into an abrupt stop of a working video.
+        val muxed = muxedUrl?.takeIf(::isValidHttpMediaUrl)
+        val v = PlayerQualityPolicy.chooseDefault(videoOnly, ::isValidHttpMediaUrl)?.first
+        if (!PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxed,
+                v,
+                audioUrl,
+                ::isValidHttpMediaUrl,
+            )
+        ) {
+            errorSink.value = "YouTube 没有可用的合并音视频流或有效的分离音视频流地址"
+            return
+        }
+
         clearPreviousYouTubeSource()
 
         // Single-file streams are the most compatible path on older Android devices.
-        if (!muxedUrl.isNullOrBlank() && isValidHttpMediaUrl(muxedUrl)) {
+        if (muxed != null) {
             try {
-                setUriSource(Uri.parse(muxedUrl), title, artist, artworkUrl)
+                setUriSource(Uri.parse(muxed), title, artist, artworkUrl)
                 return
             } catch (e: Exception) {
                 android.util.Log.w("PlayerManager", "Muxed YouTube stream setup failed; trying adaptive streams", e)
             }
         }
 
-        val v = PlayerQualityPolicy.chooseDefault(videoOnly, ::isValidHttpMediaUrl)?.first
         if (v != null && isValidHttpMediaUrl(v) && isValidHttpMediaUrl(audioUrl)) {
             try {
                 val meta = buildMetadata(title, artist, artworkUrl)
