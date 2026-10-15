@@ -23,15 +23,27 @@ internal object WebVideoProbePolicy {
         existing: List<WebVideoCandidate>,
         incoming: List<WebVideoCandidate>,
     ): List<WebVideoCandidate> =
-        (existing + incoming)
+        // New observations come first: a fresh stream discovered after the list reaches its cap
+        // must not be hidden forever behind the oldest 200 candidates.
+        (incoming + existing)
+            .filter { acceptsMediaUrl(it.url) }
             .groupBy { it.url }
             .map { (_, group) ->
-                val first = group.first()
-                first.copy(
-                    title = group.firstOrNull { it.title.isNotBlank() }?.title.orEmpty(),
-                    poster = group.firstOrNull { it.poster.isNotBlank() }?.poster.orEmpty(),
+                val latest = group.first()
+                val retainedDuration = group.maxOfOrNull { it.durationSeconds }
+                    ?.takeIf { it.isFinite() && it > 0.0 }
+                latest.copy(
+                    title = latest.title.ifBlank {
+                        group.firstOrNull { it.title.isNotBlank() }?.title.orEmpty()
+                    },
+                    poster = latest.poster.ifBlank {
+                        group.firstOrNull { it.poster.isNotBlank() }?.poster.orEmpty()
+                    },
                     drmProtected = group.any { it.drmProtected },
-                    durationSeconds = group.maxOfOrNull { it.durationSeconds } ?: first.durationSeconds,
+                    durationSeconds = latest.durationSeconds
+                        .takeIf { it.isFinite() && it > 0.0 }
+                        ?: retainedDuration
+                        ?: 0.0,
                 )
             }
             .take(MAX_RETAINED_CANDIDATES)
