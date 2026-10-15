@@ -28,9 +28,38 @@ internal object SubtitleFileDecoder {
             }
         }
 
+        // UTF-16 subtitles are sometimes exported without a BOM. Detect a strong alternating-NUL
+        // pattern in ASCII timestamps before falling back to UTF-8/GB18030.
+        when (bomlessUtf16Order(bytes)) {
+            StandardCharsets.UTF_16LE -> decodeStrict(bytes, StandardCharsets.UTF_16LE, 0)?.let { return it }
+            StandardCharsets.UTF_16BE -> decodeStrict(bytes, StandardCharsets.UTF_16BE, 0)?.let { return it }
+        }
+
         decodeStrict(bytes, StandardCharsets.UTF_8, 0)?.let { return it.removePrefix("\uFEFF") }
         decodeStrict(bytes, gb18030(), 0)?.let { return it.removePrefix("\uFEFF") }
         return String(bytes, StandardCharsets.UTF_8).removePrefix("\uFEFF")
+    }
+
+    private fun bomlessUtf16Order(bytes: ByteArray): Charset? {
+        val count = minOf(bytes.size, 256)
+        if (count < 8) return null
+        var evenNuls = 0
+        var oddNuls = 0
+        var pairs = 0
+        for (index in 0 until count) {
+            if (bytes[index].toInt() == 0) {
+                if (index % 2 == 0) evenNuls++ else oddNuls++
+            }
+            if (index % 2 == 1) pairs++
+        }
+        if (pairs <= 0) return null
+        val evenRatio = evenNuls.toDouble() / pairs
+        val oddRatio = oddNuls.toDouble() / pairs
+        return when {
+            oddRatio >= 0.30 && evenRatio <= 0.10 -> StandardCharsets.UTF_16LE
+            evenRatio >= 0.30 && oddRatio <= 0.10 -> StandardCharsets.UTF_16BE
+            else -> null
+        }
     }
 
     private fun startsWith(bytes: ByteArray, vararg values: Int): Boolean =
