@@ -53,7 +53,8 @@ class DubbingCacheIdentityTest {
     @Test
     fun synthesisContentVersionInvalidatesOlderPcmCacheNames() {
         val current = key()
-        assertNotEquals(current, current.replace("v8-speed-", "v7-speed-"))
+        org.junit.Assert.assertTrue(current.contains("v9-speed-"))
+        assertNotEquals(current, current.replace("v9-speed-", "v8-speed-"))
         assertNotEquals(current, key(cueDurationMs = 1_401L))
     }
 
