@@ -1,6 +1,8 @@
 package io.translatetube.local.yt
 
 import java.net.URI
+import java.net.URLDecoder
+import java.util.Locale
 
 /** Pure URL parsing for common YouTube watch, Shorts, share, live, and embed links. */
 internal object YouTubeUrlParser {
@@ -19,11 +21,12 @@ internal object YouTubeUrlParser {
             else -> "https://$input"
         }
         val uri = runCatching { URI(normalized) }.getOrNull() ?: return null
-        val host = uri.host?.lowercase()?.trimEnd('.') ?: return null
+        val host = uri.host?.lowercase(Locale.ROOT)?.trimEnd('.') ?: return null
         val acceptedHost = host == "youtube.com" || host.endsWith(".youtube.com") ||
             host == "youtu.be" || host == "youtube-nocookie.com" ||
             host.endsWith(".youtube-nocookie.com")
-        if (!acceptedHost || uri.userInfo != null) return null
+        val port = uri.port
+        if (!acceptedHost || uri.userInfo != null || (port != -1 && port !in 1..65535)) return null
 
         if (host == "youtu.be") {
             val pathId = uri.path.orEmpty().trim('/').substringBefore('/')
@@ -32,8 +35,13 @@ internal object YouTubeUrlParser {
 
         val query = uri.rawQuery.orEmpty()
         for (parameter in query.split('&')) {
-            if (parameter.substringBefore('=') == "v") {
-                val value = parameter.substringAfter('=', "")
+            val name = runCatching {
+                URLDecoder.decode(parameter.substringBefore('='), Charsets.UTF_8.name())
+            }.getOrNull() ?: continue
+            if (name == "v") {
+                val value = runCatching {
+                    URLDecoder.decode(parameter.substringAfter('=', ""), Charsets.UTF_8.name())
+                }.getOrNull() ?: continue
                 if (idPattern.matches(value)) return value
             }
         }

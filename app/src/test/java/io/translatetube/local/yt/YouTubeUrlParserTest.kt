@@ -31,6 +31,13 @@ class YouTubeUrlParserTest {
     }
 
     @Test
+    fun decodesPercentEncodedWatchIdsAndRejectsInvalidPorts() {
+        assertEquals(id, YouTubeUrlParser.extractVideoId("https://www.youtube.com/watch?v=%64Qw4w9WgXcQ"))
+        assertNull(YouTubeUrlParser.extractVideoId("https://www.youtube.com:0/watch?v=$id"))
+        assertNull(YouTubeUrlParser.extractVideoId("https://www.youtube.com:99999/watch?v=$id"))
+    }
+
+    @Test
     fun rejectsNonYouTubeHostsAndInvalidIds() {
         assertNull(YouTubeUrlParser.extractVideoId("https://notyoutube.com/watch?v=$id"))
         assertNull(YouTubeUrlParser.extractVideoId("https://example.com/?v=$id"))

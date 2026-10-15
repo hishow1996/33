@@ -25,7 +25,8 @@ internal object YouTubeStreamSelector {
             trimmed.startsWith("http://", ignoreCase = true)) &&
             runCatching {
                 val uri = java.net.URI(trimmed)
-                !uri.host.isNullOrBlank() && uri.userInfo == null
+                !uri.host.isNullOrBlank() && uri.userInfo == null &&
+                    (uri.port == -1 || uri.port in 1..65535)
             }.getOrDefault(false)
     }
 
