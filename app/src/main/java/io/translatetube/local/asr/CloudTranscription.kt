@@ -50,6 +50,20 @@ object CloudTranscription {
     /** Bound JSON allocation on memory-constrained phones when a provider returns malformed data. */
     internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
 
+    /**
+     * Cartesia accepts documented language codes, not the UI's "auto" sentinel.
+     * Map the previous Norwegian option to the API's documented "nn" code.
+     */
+    internal fun cartesiaLanguageCode(language: String): String? {
+        val normalized = language.trim().lowercase(java.util.Locale.ROOT)
+        if (normalized.isEmpty() || normalized == "auto") return null
+        return if (normalized == "no") "nn" else normalized
+    }
+
+    /** Kawa's automatic-detection mode is represented by omitting the language field. */
+    internal fun kawaLanguageCode(language: String): String? =
+        language.trim().takeIf { it.isNotEmpty() && !it.equals("auto", ignoreCase = true) }
+
     /** Read UTF-8 response data with a hard byte limit and cooperative cancellation checks. */
     internal fun readBoundedUtf8(
         input: InputStream,
@@ -164,7 +178,7 @@ object CloudTranscription {
                     addFormDataPart("timestamps_granularity", "word")
                 } else {
                     addFormDataPart("model", "ink-whisper")
-                    addFormDataPart("language", language)
+                    cartesiaLanguageCode(language)?.let { addFormDataPart("language", it) }
                     addFormDataPart("timestamp_granularities[]", "word")
                 }
             }
@@ -303,9 +317,7 @@ object CloudTranscription {
                     val form = MultipartBody.Builder().setType(MultipartBody.FORM)
                         .addFormDataPart("file", chunk.name, chunk.asRequestBody("audio/wav".toMediaType()))
                         .apply {
-                            if (language.isNotBlank() && language != "auto") {
-                                addFormDataPart("language", language)
-                            }
+                            kawaLanguageCode(language)?.let { addFormDataPart("language", it) }
                         }
                         .build()
                     val create = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions")

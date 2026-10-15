@@ -9,6 +9,23 @@ import org.junit.Test
 
 class CloudTranscriptionTest {
     @Test
+    fun cartesiaLanguageOmitsAutoAndUsesItsDocumentedNorwegianCode() {
+        assertEquals("en", CloudTranscription.cartesiaLanguageCode(" en "))
+        assertEquals("zh", CloudTranscription.cartesiaLanguageCode("ZH"))
+        assertEquals("nn", CloudTranscription.cartesiaLanguageCode("no"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("auto"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode(" AUTO "))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("  "))
+    }
+
+    @Test
+    fun kawaLanguageTreatsAutoCaseInsensitivelyAsLanguageDetection() {
+        assertEquals("zh", CloudTranscription.kawaLanguageCode(" zh "))
+        assertEquals(null, CloudTranscription.kawaLanguageCode("auto"))
+        assertEquals(null, CloudTranscription.kawaLanguageCode("AUTO"))
+        assertEquals(null, CloudTranscription.kawaLanguageCode(" "))
+    }
+    @Test
     fun boundedProviderResponseReaderAcceptsWithinLimitAndRejectsOversizedBodies() {
         val text = "字幕响应"
         assertEquals(
