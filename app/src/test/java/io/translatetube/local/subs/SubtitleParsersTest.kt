@@ -304,4 +304,53 @@ class SubtitleParsersTest {
         org.junit.Assert.assertTrue(error is java.util.concurrent.CancellationException)
         org.junit.Assert.assertEquals(3, checks)
     }
+
+    @Test
+    fun acceptsSubtitleTimestampFractionsOfDifferentWidths() {
+        val source = """
+            WEBVTT
+
+            00:00:01,2 --> 00:00:02,25
+            short fractional widths
+
+            00:00:03.1250 --> 00:00:04.1250
+            extended fractional widths
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf(1_200L, 2_250L, 3_125L, 4_125L), parsed.flatMap { listOf(it.startMs, it.endMs) })
+        assertEquals(listOf("short fractional widths", "extended fractional widths"), parsed.map { it.text })
+    }
+
+    @Test
+    fun assParserAcceptsIndentedCaseInsensitiveDialogueKeywords() {
+        val source = """
+              dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,lowercase cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAss(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("lowercase cue", parsed.single().text)
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(2_000L, parsed.single().endMs)
+    }
+
+    @Test
+    fun malformedExplicitTtmlEndDoesNotSilentlyFallBackToDuration() {
+        val source = """
+            <tt><body>
+              <p begin="1s" end="broken" dur="2s">bad timing</p>
+              <p begin="3s" dur="1s">valid cue</p>
+            </body></tt>
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseTtml(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("valid cue", parsed.single().text)
+        assertEquals(3_000L, parsed.single().startMs)
+        assertEquals(4_000L, parsed.single().endMs)
+    }
 }
