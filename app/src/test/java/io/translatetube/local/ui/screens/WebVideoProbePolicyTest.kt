@@ -37,6 +37,18 @@ class WebVideoProbePolicyTest {
         assertEquals(12.0, merged.single().durationSeconds, 0.0)
         assertTrue(merged.single().drmProtected)
 
+        val refreshed = WebVideoProbePolicy.mergeCandidates(
+            existing = listOf(
+                WebVideoCandidate("https://cdn.example/same.mp4", "Old title", "old-poster", 90.0, false)
+            ),
+            incoming = listOf(
+                WebVideoCandidate("https://cdn.example/same.mp4", "Updated title", "new-poster", 12.0, false)
+            ),
+        )
+        assertEquals("Updated title", refreshed.single().title)
+        assertEquals("new-poster", refreshed.single().poster)
+        assertEquals(12.0, refreshed.single().durationSeconds, 0.0)
+
         val many = (0 until (WebVideoProbePolicy.MAX_RETAINED_CANDIDATES + 50)).map {
             WebVideoCandidate("https://cdn.example/$it.mp4", "V$it", "", 0.0, false)
         }
@@ -44,5 +56,12 @@ class WebVideoProbePolicyTest {
             WebVideoProbePolicy.MAX_RETAINED_CANDIDATES,
             WebVideoProbePolicy.mergeCandidates(emptyList(), many).size,
         )
+
+        val fullList = many.take(WebVideoProbePolicy.MAX_RETAINED_CANDIDATES)
+        val fresh = WebVideoCandidate("https://cdn.example/newly-discovered.mp4", "Fresh", "", 1.0, false)
+        val afterDiscovery = WebVideoProbePolicy.mergeCandidates(fullList, listOf(fresh))
+        assertEquals(WebVideoProbePolicy.MAX_RETAINED_CANDIDATES, afterDiscovery.size)
+        assertTrue(afterDiscovery.any { it.url == fresh.url })
+        assertFalse(afterDiscovery.any { it.url == fullList.last().url })
     }
 }
