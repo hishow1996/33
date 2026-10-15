@@ -542,7 +542,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     if (!entry.isFile || entry.size < 0L) {
                         throw java.io.IOException("模型压缩包包含不支持的条目")
                     }
-                    if (extractedBytes + entry.size > maxExtractedBytes) {
+                    // Subtract the already-bounded total instead of adding an untrusted tar
+                    // entry size, which could overflow Long before the limit comparison.
+                    if (entry.size > maxExtractedBytes - extractedBytes) {
                         throw java.io.IOException("解压后的模型超过大小限制")
                     }
                     output.parentFile?.let {
