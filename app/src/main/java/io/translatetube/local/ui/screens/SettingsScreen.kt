@@ -148,18 +148,21 @@ Section("转写引擎") {
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "local"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "local").apply()
             },
         )
         AsrProviderCard(
             title = "ElevenLabs",
             subtitle = "自动检测语种",
-            officialUrl = "https://elevenlabs.io/speech-to-text",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://elevenlabs.io/speech-to-text") },
             selected = asrEngine == "elevenlabs",
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "elevenlabs"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "elevenlabs").apply()
             },
         )
@@ -172,24 +175,26 @@ Section("转写引擎") {
         AsrProviderCard(
             title = "Cartesia Ink",
             subtitle = "需指定原声语言",
-            officialUrl = "https://www.cartesia.ai/speech-to-text",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://www.cartesia.ai/speech-to-text") },
             selected = asrEngine == "cartesia",
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "cartesia"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "cartesia").apply()
             },
         )
         AsrProviderCard(
             title = "Kawa",
             subtitle = "每月 1,000 分钟免费",
-            officialUrl = "https://docs.makimoto.ai/service/api-reference/",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://docs.makimoto.ai/service/api-reference/") },
             selected = asrEngine == "kawa",
             modifier = Modifier.weight(1f),
             onClick = {
                 asrEngine = "kawa"
+                asrConfigExpanded = false
+                asrConfigSavedMessage = null
                 prefs.edit().putString("asr_provider", "kawa").apply()
             },
         )
@@ -830,13 +835,13 @@ private fun YtDlpUpdateSection() {
                                 checked.current != null && checked.latest != null && !checked.hasUpdate ->
                                     "检查结果：已是最新版本"
                                 checked.hasUpdate && checked.latest != null ->
-                                    "检查结果：发现新版本 \${checked.latest}"
+                                    "检查结果：发现新版本 ${checked.latest}"
                                 checked.latest != null && checked.current == null ->
-                                    "已获取最新版本 \${checked.latest}，暂时无法读取本机版本"
+                                    "已获取最新版本 ${checked.latest}，暂时无法读取本机版本"
                                 else -> "检查未完成，请检查网络后重试"
                             }
                         } catch (e: Exception) {
-                            message = "检查失败：\${e.message ?: "网络错误"}"
+                            message = "检查失败：${e.message ?: "网络错误"}"
                         }
                     }
                 },
@@ -875,8 +880,7 @@ private fun AsrProviderCard(
     title: String,
     subtitle: String,
     selected: Boolean,
-    officialUrl: String,
-    onWebsiteClick: () -> Unit,
+    onWebsiteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -913,16 +917,18 @@ private fun AsrProviderCard(
                     maxLines = 2,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(
-                    onClick = onWebsiteClick,
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.OpenInNew,
-                        contentDescription = "打开\${title}官网",
-                        tint = BrandBright,
-                        modifier = Modifier.size(17.dp),
-                    )
+                onWebsiteClick?.let { websiteClick ->
+                    IconButton(
+                        onClick = websiteClick,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.OpenInNew,
+                            contentDescription = "打开${title}官网",
+                            tint = BrandBright,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
                 }
             }
         }
@@ -956,7 +962,7 @@ private fun ModelRow(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Download,
-                        contentDescription = if (state.status == io.translatetube.local.data.ModelStatus.FAILED) "重试下载\$title" else "下载\$title",
+                        contentDescription = if (state.status == io.translatetube.local.data.ModelStatus.FAILED) "重试下载$title" else "下载$title",
                         tint = BrandBright,
                     )
                 }
@@ -982,7 +988,7 @@ private fun ModelRow(
                     )
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "下载中 \${state.progress}% · \${state.downloadedMB}/\${state.totalMB} MB",
+                            "下载中 ${state.progress}% · ${state.downloadedMB}/${state.totalMB} MB",
                             color = BrandBright,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -1018,7 +1024,7 @@ private fun ModelRow(
                 )
             }
             else -> {
-                Text("下载包约 \$pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall)
+                Text("下载包约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
