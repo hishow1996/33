@@ -187,7 +187,7 @@ Section("转写引擎") {
         )
         AsrProviderCard(
             title = "Kawa",
-            subtitle = "每月 1,000 分钟免费",
+            subtitle = "云端转写 · API Key",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://docs.makimoto.ai/service/api-reference/") },
             selected = asrEngine == "kawa",
             modifier = Modifier.weight(1f),
@@ -244,7 +244,7 @@ Section("转写引擎") {
                         Text("服务配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
                         Text(
                             if (selectedApiKey.isBlank()) "填写 API Key 与识别语言"
-                            else "API Key 已填写 · 点击编辑",
+                            else "API Key 已输入 · 点击编辑",
                             color = SubText,
                             style = MaterialTheme.typography.bodySmall,
                         )
