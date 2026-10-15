@@ -220,7 +220,10 @@ class PlaybackService : MediaSessionService() {
 
     fun cancelProcessing() {
         val current = ui.value
-        if (!isProcessingPhase(current.phase)) return
+        if (!isProcessingPhase(current.phase)) {
+            updateProcessingNotification(current)
+            return
+        }
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         prepJob?.cancel(kotlinx.coroutines.CancellationException("用户取消视频处理"))
