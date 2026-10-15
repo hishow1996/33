@@ -440,9 +440,35 @@ class DubbingEngine(
                     } else {
                         readyAudio.samples
                     }
-                    writeCache(idx, readyAudio.sampleRate, boundedSamples, checkActive = ::checkSynthesisActive)
+                    var cachePersisted = false
+                    try {
+                        writeCache(idx, readyAudio.sampleRate, boundedSamples, checkActive = ::checkSynthesisActive)
+                        cachePersisted = true
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (cacheError: Exception) {
+                        if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
+                        // Disk/cache failures are not synthesis failures. Preserve valid generated
+                        // audio in the bounded LRU so this cue can still play on low-storage devices.
+                        android.util.Log.w(
+                            "DubbingEngine",
+                            "PCM cache write failed for line ${idx + 1}; trying bounded memory playback",
+                            cacheError,
+                        )
+                    }
+                    val retainedInMemory = synchronized(mem) {
+                        mem[idx] = boundedSamples to readyAudio.sampleRate
+                        mem.containsKey(idx)
+                    }
+                    if (!cachePersisted && !retainedInMemory) {
+                        reportSynthesisError(
+                            "第 ${idx + 1} 句已合成，但缓存写入失败，且该句音频超出可用内存缓存容量，无法安全播放。请释放存储空间后重试。"
+                        )
+                        readiness.markPrepared(idx, hasAudio = false)
+                        bumpPrepared()
+                        continue
+                    }
                     readiness.markPrepared(idx, hasAudio = true)
-                    synchronized(mem) { mem[idx] = boundedSamples to readyAudio.sampleRate }
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
                             onFirstSynthesisReady?.invoke(idx, boundedSamples.size, readyAudio.sampleRate)
