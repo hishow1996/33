@@ -44,6 +44,14 @@ object CloudTranscription {
 
     internal data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
 
+    /** One Kawa upload with a one-second leading context window and a non-overlapping cue ownership window. */
+    internal data class KawaChunkRange(
+        val offsetBytes: Long,
+        val sizeBytes: Long,
+        val ownedStartMs: Long,
+        val ownedEndMs: Long,
+    )
+
     /** Split provider words at long silences instead of stretching a caption across the pause. */
     internal const val MAX_WORD_GAP_MS = 800L
 
@@ -275,7 +283,7 @@ object CloudTranscription {
         if (pcmBytes <= 0L || pcmBytes % 2L != 0L) {
             throw IOException("待转写 WAV 音频为空或 PCM 数据未按 16 位采样对齐")
         }
-        val ranges = kawaChunkRanges(pcmBytes)
+        val ranges = kawaChunkRangesWithContext(pcmBytes)
         if (ranges.isEmpty()) throw IOException("待转写 WAV 音频为空")
         val cues = ArrayList<Triple<Long, Long, String>>()
         var detectedLanguage = language
@@ -283,7 +291,9 @@ object CloudTranscription {
         // Do not create every chunk up front: for a long recording that duplicates almost the
         // entire WAV on disk and can exhaust free storage before the first request is uploaded.
         java.io.RandomAccessFile(wavFile, "r").use { input ->
-            for ((offsetBytes, size) in ranges) {
+            for (range in ranges) {
+                val offsetBytes = range.offsetBytes
+                val size = range.sizeBytes
                 checkActive()
                 ownerJob?.ensureActive()
                 val offsetMs = offsetBytes / 32L // 16 kHz * mono * PCM16 = 32 bytes per millisecond.
@@ -401,6 +411,9 @@ object CloudTranscription {
                             chunkDurationMs = chunkDurationMs,
                             totalDurationMs = durationMs,
                         ) ?: continue
+                        // The adjacent chunk owns its leading context interval. This keeps a cue
+                        // near a hard upload boundary from being emitted twice.
+                        if (timeline.first < range.ownedStartMs || timeline.first >= range.ownedEndMs) continue
                         cues += Triple(timeline.first, timeline.second, text)
                     }
                 } finally {
@@ -483,6 +496,39 @@ object CloudTranscription {
             val size = minOf(chunkBytes, pcmBytes - offset)
             result += offset to size
             offset += size
+        }
+        return result
+    }
+
+    /**
+     * Adds one second of preceding audio to each Kawa request after the first. The upload stays
+     * below Kawa's 10 MB limit, while the ownership windows remain contiguous and non-overlapping.
+     */
+    internal fun kawaChunkRangesWithContext(pcmBytes: Long): List<KawaChunkRange> {
+        if (pcmBytes <= 0L || pcmBytes % 2L != 0L) return emptyList()
+        val chunkBytes = 8L * 1024L * 1024L
+        // 16 kHz mono PCM16 is 32 bytes per millisecond; align overlap to a whole second.
+        val contextBytes = 32_000L
+        val result = ArrayList<KawaChunkRange>()
+        var primaryOffset = 0L
+        while (primaryOffset < pcmBytes) {
+            val offset = (primaryOffset - contextBytes).coerceAtLeast(0L)
+            val end = primaryOffset + minOf(chunkBytes, pcmBytes - primaryOffset)
+            val isLast = end == pcmBytes
+            val ownedStartMs = offset / 32L
+            val ownedEndMs = if (isLast) pcmBytes / 32L else (end - contextBytes) / 32L
+            val size = end - offset
+            if (size <= 0L || size % 2L != 0L || ownedEndMs <= ownedStartMs) {
+                return emptyList()
+            }
+            result += KawaChunkRange(
+                offsetBytes = offset,
+                sizeBytes = size,
+                ownedStartMs = ownedStartMs,
+                ownedEndMs = ownedEndMs,
+            )
+            if (isLast) break
+            primaryOffset = end
         }
         return result
     }

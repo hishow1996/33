@@ -795,7 +795,7 @@ class PlaybackService : MediaSessionService() {
                 }
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
-                val tts = makeTts()
+                val tts = makeTtsOffMainThread()
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1004,7 +1004,7 @@ class PlaybackService : MediaSessionService() {
                     }
                     return@launch
                 }
-                val tts = makeTts()
+                val tts = makeTtsOffMainThread()
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2000,7 +2000,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     try {
                         // Pass the saved selection explicitly so a settings change during parsing
                         // cannot cause the readiness check and actual engine to disagree.
-                        val tts: TtsEngine = makeTts(selectedTts)
+                        val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
                         try {
                             ensureCurrentSession(key)
                         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2937,6 +2937,32 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
     }
 
     /**
+     * TTS constructors may load native runtimes or wait for Android's system TTS service.
+     * Keep those blocking operations off the main thread and close an instance if cancellation
+     * wins after construction but before the caller can take ownership.
+     */
+    private suspend fun makeTtsOffMainThread(engineId: String? = null): TtsEngine {
+        val created = java.util.concurrent.atomic.AtomicReference<TtsEngine?>(null)
+        try {
+            return withContext(Dispatchers.IO) {
+                val engine = makeTts(engineId)
+                created.set(engine)
+                try {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    engine
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    created.compareAndSet(engine, null)
+                    runCatching { engine.close() }
+                    throw cancelled
+                }
+            }.also { created.compareAndSet(it, null) }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            created.getAndSet(null)?.let { engine -> runCatching { engine.close() } }
+            throw cancelled
+        }
+    }
+
+    /**
      * Centralize synthesis-failure reporting for normal playback and imported subtitles.
      * The explicitly selected TTS engine is retained; the source audio is restored on failure.
      */
@@ -3151,7 +3177,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 }
                 // Initialize the selected engine before the expensive diarization step and before
                 // retiring the current dubbing engine. If TTS setup fails, playback remains intact.
-                val preflightEngine = makeTts(selectedTts)
+                val preflightEngine = makeTtsOffMainThread(selectedTts)
                 pendingTts = preflightEngine
                 val systemChineseVoiceCount =
                     (preflightEngine as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
@@ -3316,7 +3342,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val ttsWasPreflighted = pendingTts != null
-                val tts = pendingTts ?: makeTts(selectedTts)
+                val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -3448,7 +3474,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 // Initialize the selected engine before touching the active voice. A phone that
                 // offers only one Chinese system voice cannot perform manual multi-speaker changes;
                 // in that case the existing dub keeps playing unchanged.
-                pendingTts = makeTts(selectedTts)
+                pendingTts = makeTtsOffMainThread(selectedTts)
                 val systemChineseVoiceCount =
                     (pendingTts as? io.translatetube.local.tts.SystemTts)?.chineseVoiceCount ?: 0
                 if (!io.translatetube.local.tts.TtsSpeakerCapabilityPolicy
@@ -3487,7 +3513,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     )
                 }
 
-                val tts = pendingTts ?: makeTts(selectedTts)
+                val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
                 val engine = try {
                     DubbingEngine(this@PlaybackService, sessionKey, scope)
                 } catch (e: Exception) {

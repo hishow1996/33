@@ -246,6 +246,34 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun kawaContextChunksOverlapAudioButKeepCaptionOwnershipContiguous() {
+        val chunkLimit = 8L * 1024L * 1024L
+        val overlapBytes = 32_000L
+        val pcmBytes = chunkLimit * 2L + 12_344L
+        val ranges = CloudTranscription.kawaChunkRangesWithContext(pcmBytes)
+
+        assertEquals(listOf(0L, chunkLimit - overlapBytes, chunkLimit * 2L - overlapBytes),
+            ranges.map { it.offsetBytes })
+        assertEquals(listOf(chunkLimit, chunkLimit + overlapBytes, overlapBytes + 12_344L),
+            ranges.map { it.sizeBytes })
+        assertEquals(listOf(0L, (chunkLimit - overlapBytes) / 32L, (chunkLimit * 2L - overlapBytes) / 32L),
+            ranges.map { it.ownedStartMs })
+        assertEquals(
+            listOf((chunkLimit - overlapBytes) / 32L, (chunkLimit * 2L - overlapBytes) / 32L, pcmBytes / 32L),
+            ranges.map { it.ownedEndMs },
+        )
+        assertTrue(ranges.all {
+            it.offsetBytes >= 0L &&
+                it.sizeBytes in 2L..(chunkLimit + overlapBytes) &&
+                it.sizeBytes % 2L == 0L &&
+                it.offsetBytes + it.sizeBytes <= pcmBytes
+        })
+        assertTrue(ranges.zipWithNext().all { (left, right) -> left.ownedEndMs == right.ownedStartMs })
+        assertTrue(CloudTranscription.kawaChunkRangesWithContext(0L).isEmpty())
+        assertTrue(CloudTranscription.kawaChunkRangesWithContext(3L).isEmpty())
+    }
+
+    @Test
     fun kawaChunksAreBoundedContiguousAndCoverTheWholePcm() {
         val chunkLimit = 8L * 1024L * 1024L
         val pcmBytes = chunkLimit * 2L + 12_344L
