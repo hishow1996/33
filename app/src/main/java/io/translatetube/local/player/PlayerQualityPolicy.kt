@@ -38,7 +38,7 @@ internal object PlayerQualityPolicy {
         url: String?,
         isValidUrl: (String) -> Boolean,
     ): Boolean {
-        if (url.isNullOrBlank()) return false
+        if (url.isNullOrBlank() || url.any { Character.isISOControl(it) }) return false
         return try {
             isValidUrl(url.trim())
         } catch (_: Exception) {

@@ -10,6 +10,8 @@ internal object YouTubeUrlParser {
     private val pathPattern = Regex("(?:^|/)(?:shorts|embed|live|v)/([A-Za-z0-9_-]{11})(?:/|$)", RegexOption.IGNORE_CASE)
 
     fun extractVideoId(text: String): String? {
+        // Reject hidden controls before trimming; otherwise a newline-wrapped ID/URL is accepted.
+        if (text.any { Character.isISOControl(it) }) return null
         val input = text.trim()
         if (idPattern.matches(input)) return input
         if (input.isEmpty()) return null

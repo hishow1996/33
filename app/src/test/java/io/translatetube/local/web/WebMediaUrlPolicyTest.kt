@@ -48,6 +48,20 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
+    fun rejectsControlCharactersBeforeTrimmingPageAndMediaUrls() {
+        val page = "https://example.com/watch"
+        val media = "https://cdn.example/video.mp4"
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("\n$page"))
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("$page\n"))
+        assertNull(WebMediaUrlPolicy.normalizePageUrl(page + 0x85.toChar()))
+        assertNull(WebMediaUrlPolicy.normalizeMediaUrl("\n$media"))
+        assertNull(WebMediaUrlPolicy.normalizeMediaUrl("$media\n"))
+        assertNull(WebMediaUrlPolicy.normalizeMediaUrl(media + 0x85.toChar()))
+        assertEquals(false, WebMediaUrlPolicy.looksLikeMediaRequest(media + "\n"))
+        assertEquals(true, WebMediaUrlPolicy.unsupportedReason(media + "\n")!!.contains("控制字符"))
+    }
+
+    @Test
     fun uppercaseMediaExtensionsRemainRecognizedAcrossLocales() {
         val previous = java.util.Locale.getDefault()
         try {

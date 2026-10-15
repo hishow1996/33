@@ -71,6 +71,27 @@ class PlayerQualityPolicyTest {
     }
 
     @Test
+    fun rejectsControlCharactersBeforeCandidateUrlTrimming() {
+        val candidates = listOf(
+            ("\nhttps://media.example/1080" to 1080),
+            ("https://media.example/480\n" to 480),
+            ("https://media.example/240" to 240),
+        )
+        assertEquals(
+            "https://media.example/240" to 240,
+            PlayerQualityPolicy.chooseDefault(candidates, { true }),
+        )
+        org.junit.Assert.assertFalse(
+            PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxedUrl = "https://media.example/muxed\n",
+                adaptiveVideoUrl = null,
+                audioUrl = "",
+                isValidUrl = { true },
+            ),
+        )
+    }
+
+    @Test
     fun sourcePreflightRequiresUsableMuxedOrCompleteAdaptivePair() {
         val validUrl: (String) -> Boolean = { it.startsWith("https://") }
 

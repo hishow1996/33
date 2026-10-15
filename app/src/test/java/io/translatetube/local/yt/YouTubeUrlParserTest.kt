@@ -38,6 +38,13 @@ class YouTubeUrlParserTest {
     }
 
     @Test
+    fun rejectsControlCharactersBeforeTrimmingInput() {
+        assertNull(YouTubeUrlParser.extractVideoId("\nhttps://youtube.com/watch?v=$id"))
+        assertNull(YouTubeUrlParser.extractVideoId("https://youtube.com/watch?v=$id\n"))
+        assertNull(YouTubeUrlParser.extractVideoId(id + 0x85.toChar()))
+    }
+
+    @Test
     fun rejectsNonYouTubeHostsAndInvalidIds() {
         assertNull(YouTubeUrlParser.extractVideoId("https://notyoutube.com/watch?v=$id"))
         assertNull(YouTubeUrlParser.extractVideoId("https://example.com/?v=$id"))

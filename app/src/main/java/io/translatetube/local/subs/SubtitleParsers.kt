@@ -37,7 +37,7 @@ object SubtitleParsers {
 
 
     fun fmtTime(ms: Long): String {
-        val t = ms / 1000
+        val t = ms.coerceAtLeast(0L) / 1000L
         return String.format(Locale.ROOT, "%02d:%02d:%02d", t / 3600, (t % 3600) / 60, t % 60)
     }
 
@@ -76,7 +76,9 @@ object SubtitleParsers {
             }
 
             val m = webVttTimestampRegex.find(line)
-            if (m != null) {
+            // WebVTT cue identifiers occupy their own line. Do not accept a timestamp substring
+            // embedded in arbitrary text as a valid cue boundary.
+            if (m != null && m.range.first == 0) {
                 flush()
                 val parts = m.value.split("-->")
                 pendingStart = parseVttTs(parts[0].trim()) ?: -1L

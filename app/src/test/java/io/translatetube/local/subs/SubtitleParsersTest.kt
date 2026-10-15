@@ -20,6 +20,29 @@ class SubtitleParsersTest {
     }
 
     @Test
+    fun ignoresTimestampSubstringsEmbeddedInMalformedCueLines() {
+        val source = """
+            WEBVTT
+
+            junk 00:00:01.000 --> 00:00:02.000
+            this must not become a timed cue
+
+            00:00:03.000 --> 00:00:04.000
+            valid cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("valid cue"), parsed.map { it.text })
+    }
+
+    @Test
+    fun negativeTimesFormatAsZeroInsteadOfNegativeClockFields() {
+        assertEquals("00:00:00", SubtitleParsers.fmtTime(-1L))
+        assertEquals("00:00:00", SubtitleParsers.fmtTime(-1_000L))
+    }
+
+    @Test
     fun noteBlocksBetweenCuesAreNotAppendedToSubtitleText() {
         val source = """
             WEBVTT

@@ -10,6 +10,9 @@ internal object WebMediaUrlPolicy {
     private val hostPortPattern = Regex("""^(?:\[[0-9A-Fa-f:.%]+\]|[^:/?#]+):\d+(?:[/?#].*)?$""")
     private val blockedSchemes = setOf("javascript", "file", "data", "blob", "content", "intent", "mailto", "tel", "about")
 
+    private fun containsControlCharacters(value: String): Boolean =
+        value.any { Character.isISOControl(it) }
+
     /** Reject unusable authorities early; java.net.URI accepts out-of-range numeric ports. */
     private fun isValidHttpUri(uri: URI): Boolean {
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
@@ -22,6 +25,8 @@ internal object WebMediaUrlPolicy {
             (port == -1 || port in 1..65535)
     }
     fun normalizePageUrl(input: String): String? {
+        // Do not let trim() erase control characters and change the URL being validated.
+        if (containsControlCharacters(input)) return null
         val raw = input.trim()
         if (raw.isEmpty()) return null
         // Reject known non-web schemes before treating a colon and digits as a host port.
@@ -45,6 +50,7 @@ internal object WebMediaUrlPolicy {
 
     /** Network-observed media resources, including videos inside cross-origin iframes. */
     fun looksLikeMediaRequest(input: String): Boolean {
+        if (containsControlCharacters(input)) return false
         val uri = runCatching { URI(input.trim()) }.getOrNull() ?: return false
         if (!isValidHttpUri(uri)) return false
         val path = uri.rawPath.orEmpty().lowercase(Locale.ROOT)
@@ -53,6 +59,7 @@ internal object WebMediaUrlPolicy {
     }
 
     fun normalizeMediaUrl(input: String): String? {
+        if (containsControlCharacters(input)) return null
         val raw = input.trim()
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
         if (!isValidHttpUri(uri)) return null
@@ -61,6 +68,7 @@ internal object WebMediaUrlPolicy {
     }
 
     fun unsupportedReason(input: String): String? {
+        if (containsControlCharacters(input)) return "媒体地址包含无效控制字符。"
         val raw = input.trim()
         if (raw.startsWith("blob:", ignoreCase = true)) {
             return "此网站通过 blob/MSE 临时媒体流播放，无法直接读取独立音轨。"
