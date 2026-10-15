@@ -208,6 +208,7 @@ object CloudTranscription {
 
 
     /** Kawa limits uploads to 10 MB. Split PCM WAV into 8 MiB chunks and restore global timestamps. */
+    /** Kawa limits uploads to 10 MB. Process one 8 MiB PCM chunk at a time to bound disk usage. */
     private suspend fun transcribeKawa(
         apiKey: String,
         language: String,
@@ -217,109 +218,154 @@ object CloudTranscription {
         ownerJob: Job?,
     ): Result {
         val pcmBytes = wavFile.length() - 44L
-        if (pcmBytes <= 0L) throw IOException("待转写 WAV 音频为空")
-        val chunkPcmBytes = 8L * 1024L * 1024L
-        val chunks = ArrayList<Pair<Long, File>>()
-        var offsetBytes = 0L
-        try {
-            java.io.RandomAccessFile(wavFile, "r").use { input ->
-                while (offsetBytes < pcmBytes) {
-                    checkActive()
-                    val size = minOf(chunkPcmBytes, pcmBytes - offsetBytes)
-                    val chunk = File.createTempFile("asr-kawa-", ".wav", wavFile.parentFile)
-                    try {
-                        val header = ByteArray(44)
-                        input.seek(0L); input.readFully(header)
-                        val little = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
-                        little.putInt(4, (36L + size).toInt())
-                        little.putInt(40, size.toInt())
-                        FileOutputStream(chunk).use { output ->
-                            output.write(header)
-                            input.seek(44L + offsetBytes)
-                            val buffer = ByteArray(64 * 1024)
-                            var remaining = size
-                            while (remaining > 0L) {
-                                checkActive()
-                                val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                                if (n < 0) throw IOException("Kawa 分段音频读取不完整")
-                                if (n > 0) { output.write(buffer, 0, n); remaining -= n }
+        if (pcmBytes <= 0L || pcmBytes % 2L != 0L) {
+            throw IOException("待转写 WAV 音频为空或 PCM 数据未按 16 位采样对齐")
+        }
+        val ranges = kawaChunkRanges(pcmBytes)
+        if (ranges.isEmpty()) throw IOException("待转写 WAV 音频为空")
+        val cues = ArrayList<Triple<Long, Long, String>>()
+        var detectedLanguage = language
+
+        // Do not create every chunk up front: for a long recording that duplicates almost the
+        // entire WAV on disk and can exhaust free storage before the first request is uploaded.
+        java.io.RandomAccessFile(wavFile, "r").use { input ->
+            for ((offsetBytes, size) in ranges) {
+                checkActive()
+                ownerJob?.ensureActive()
+                val offsetMs = offsetBytes / 32L // 16 kHz * mono * PCM16 = 32 bytes per millisecond.
+                val chunk = File.createTempFile("asr-kawa-", ".wav", wavFile.parentFile)
+                try {
+                    val header = ByteArray(44)
+                    input.seek(0L)
+                    input.readFully(header)
+                    val little = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                    little.putInt(4, (36L + size).toInt())
+                    little.putInt(40, size.toInt())
+
+                    FileOutputStream(chunk).use { output ->
+                        output.write(header)
+                        input.seek(44L + offsetBytes)
+                        val buffer = ByteArray(64 * 1024)
+                        var remaining = size
+                        while (remaining > 0L) {
+                            checkActive()
+                            ownerJob?.ensureActive()
+                            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                            if (n < 0) throw IOException("Kawa 分段音频读取不完整")
+                            if (n > 0) {
+                                output.write(buffer, 0, n)
+                                remaining -= n
                             }
                         }
-                    } catch (error: Exception) { chunk.delete(); throw error }
-                    chunks += (offsetBytes / 32L) to chunk
-                    offsetBytes += size
+                        output.flush()
+                    }
+
+                    val form = MultipartBody.Builder().setType(MultipartBody.FORM)
+                        .addFormDataPart("file", chunk.name, chunk.asRequestBody("audio/wav".toMediaType()))
+                        .apply {
+                            if (language.isNotBlank() && language != "auto") {
+                                addFormDataPart("language", language)
+                            }
+                        }
+                        .build()
+                    val create = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions")
+                        .header("Authorization", "Bearer " + apiKey)
+                        .post(form)
+                        .build()
+                    val jobId = executeCancellableHttpCall(client.newCall(create), ownerJob) { response ->
+                        val body = response.body?.string().orEmpty()
+                        checkActive()
+                        if (!response.isSuccessful) {
+                            val message = runCatching {
+                                JSONObject(body).optJSONObject("error")?.optString("message")
+                            }.getOrNull()
+                            val advice = when (response.code) {
+                                401, 403 -> "Kawa API Key 无效或没有访问权限"
+                                413 -> "Kawa 单次上传上限为 10 MB"
+                                415 -> "Kawa 只接受 MP3 或 WAV 音频"
+                                429 -> "Kawa 请求被限流或免费转写额度已用完，请稍后重试并检查账户额度"
+                                else -> message?.takeIf { it.isNotBlank() }?.take(200) ?: "请检查网络和 Kawa 账户"
+                            }
+                            throw IOException("Kawa 云端转写失败（HTTP " + response.code + "）：" + advice)
+                        }
+                        JSONObject(body).optString("job_id").takeIf { it.isNotBlank() }
+                            ?: throw IOException("Kawa 没有返回转写任务编号")
+                    }
+
+                    // The service has accepted the file; keep only one request chunk while polling.
+                    chunk.delete()
+
+                    var result: JSONObject? = null
+                    var attempts = 0
+                    while (attempts++ < 180) {
+                        checkActive()
+                        ownerJob?.ensureActive()
+                        val poll = Request.Builder()
+                            .url("https://api.makimoto.ai/v1/transcriptions/$jobId")
+                            .header("Authorization", "Bearer " + apiKey)
+                            .get()
+                            .build()
+                        val status = executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
+                            val body = response.body?.string().orEmpty()
+                            checkActive()
+                            if (!response.isSuccessful) {
+                                throw IOException("Kawa 查询转写状态失败（HTTP " + response.code + "）")
+                            }
+                            JSONObject(body)
+                        }
+                        when (val stateName = status.optString("status")) {
+                            "succeeded" -> {
+                                result = status.optJSONObject("result")
+                                    ?: throw IOException("Kawa 已报告转写完成，但响应缺少有效 result 数据")
+                                break
+                            }
+                            "failed" -> throw IOException(
+                                "Kawa 转写任务失败：" +
+                                    status.optJSONObject("error")?.optString("message").orEmpty()
+                                        .ifBlank { "服务端处理失败" }.take(200)
+                            )
+                            "queued", "processing" -> Unit
+                            else -> throw IOException("Kawa 返回未知转写状态：" + stateName.take(80))
+                        }
+                        delay(2_000L)
+                    }
+
+                    val obj = result ?: throw IOException("Kawa 转写等待超时，请稍后重试")
+                    obj.optString("language").takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
+                    val transcript = obj.optJSONArray("transcript")
+                        ?: throw IOException("Kawa 返回结果缺少分段时间戳")
+                    for (i in 0 until transcript.length()) {
+                        checkActive()
+                        val item = transcript.optJSONObject(i) ?: continue
+                        val text = item.optString("text").trim()
+                        val start = item.optDouble("time_start", Double.NaN)
+                        val end = item.optDouble("time_end", Double.NaN)
+                        if (text.isBlank() || !start.isFinite() || !end.isFinite() || end <= start) continue
+                        val safeDuration = durationMs.coerceAtLeast(1L)
+                        val startMs = (offsetMs + (start * 1000.0).toLong()).coerceIn(0L, safeDuration - 1L)
+                        val endMs = (offsetMs + (end * 1000.0).toLong()).coerceIn(startMs + 1L, safeDuration)
+                        cues += Triple(startMs, endMs, text)
+                    }
+                } finally {
+                    runCatching { chunk.delete() }
                 }
             }
-            val cues = ArrayList<Triple<Long, Long, String>>()
-            var detectedLanguage = language
-            for ((offsetMs, chunk) in chunks) {
-                checkActive()
-                val form = MultipartBody.Builder().setType(MultipartBody.FORM)
-                    .addFormDataPart("file", chunk.name, chunk.asRequestBody("audio/wav".toMediaType()))
-                    .apply { if (language.isNotBlank() && language != "auto") addFormDataPart("language", language) }
-                    .build()
-                val create = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions")
-                    .header("Authorization", "Bearer $apiKey").post(form).build()
-                val jobId = executeCancellableHttpCall(client.newCall(create), ownerJob) { response ->
-                    val body = response.body?.string().orEmpty(); checkActive()
-                    if (!response.isSuccessful) {
-                        val message = runCatching { JSONObject(body).optJSONObject("error")?.optString("message") }.getOrNull()
-                        val advice = when (response.code) {
-                            401, 403 -> "Kawa API Key 无效或没有访问权限"
-                            413 -> "Kawa 单次上传上限为 10 MB"
-                            415 -> "Kawa 只接受 MP3 或 WAV 音频"
-                            429 -> "Kawa 请求被限流或免费转写额度已用完，请稍后重试并检查账户额度"
-                            else -> message?.takeIf { it.isNotBlank() }?.take(200) ?: "请检查网络和 Kawa 账户"
-                        }
-                        throw IOException("Kawa 云端转写失败（HTTP ${response.code}）：$advice")
-                    }
-                    JSONObject(body).optString("job_id").takeIf { it.isNotBlank() }
-                        ?: throw IOException("Kawa 没有返回转写任务编号")
-                }
-                var result: JSONObject? = null
-                var attempts = 0
-                while (attempts++ < 180) {
-                    checkActive()
-                    val poll = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions/$jobId")
-                        .header("Authorization", "Bearer $apiKey").get().build()
-                    val status = executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
-                        val body = response.body?.string().orEmpty(); checkActive()
-                        if (!response.isSuccessful) throw IOException("Kawa 查询转写状态失败（HTTP ${response.code}）")
-                        JSONObject(body)
-                    }
-                    val stateName = status.optString("status")
-                    when (stateName) {
-                        "succeeded" -> {
-                            result = status.optJSONObject("result")
-                                ?: throw IOException("Kawa 已报告转写完成，但响应缺少有效 result 数据")
-                            break
-                        }
-                        "failed" -> throw IOException("Kawa 转写任务失败：" +
-                            status.optJSONObject("error")?.optString("message").orEmpty().ifBlank { "服务端处理失败" }.take(200))
-                        "queued", "processing" -> Unit
-                        else -> throw IOException("Kawa 返回未知转写状态：${stateName.take(80)}")
-                    }
-                    delay(2_000L)
-                }
-                val obj = result ?: throw IOException("Kawa 转写等待超时，请稍后重试")
-                obj.optString("language").takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
-                val transcript = obj.optJSONArray("transcript") ?: throw IOException("Kawa 返回结果缺少分段时间戳")
-                for (i in 0 until transcript.length()) {
-                    checkActive()
-                    val item = transcript.optJSONObject(i) ?: continue
-                    val text = item.optString("text").trim()
-                    val start = item.optDouble("time_start", Double.NaN)
-                    val end = item.optDouble("time_end", Double.NaN)
-                    if (text.isBlank() || !start.isFinite() || !end.isFinite() || end <= start) continue
-                    val safeDuration = durationMs.coerceAtLeast(1L)
-                    val startMs = (offsetMs + (start * 1000.0).toLong()).coerceIn(0L, safeDuration - 1L)
-                    val endMs = (offsetMs + (end * 1000.0).toLong()).coerceIn(startMs + 1L, safeDuration)
-                    cues += Triple(startMs, endMs, text)
-                }
-            }
-            if (cues.isEmpty()) throw IOException("Kawa 没有返回有效字幕时间轴；可切回本地 Whisper 重试")
-            return Result(cues.sortedBy { it.first }, detectedLanguage)
-        } finally { chunks.forEach { it.second.delete() } }
+        }
+        if (cues.isEmpty()) throw IOException("Kawa 没有返回有效字幕时间轴；可切回本地 Whisper 重试")
+        return Result(cues.sortedBy { it.first }, detectedLanguage)
+    }
+
+    internal fun kawaChunkRanges(pcmBytes: Long): List<Pair<Long, Long>> {
+        if (pcmBytes <= 0L || pcmBytes % 2L != 0L) return emptyList()
+        val chunkBytes = 8L * 1024L * 1024L
+        val result = ArrayList<Pair<Long, Long>>()
+        var offset = 0L
+        while (offset < pcmBytes) {
+            val size = minOf(chunkBytes, pcmBytes - offset)
+            result += offset to size
+            offset += size
+        }
+        return result
     }
 
     internal fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {

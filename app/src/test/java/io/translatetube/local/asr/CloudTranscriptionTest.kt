@@ -48,4 +48,18 @@ class CloudTranscriptionTest {
     fun emptyWordListProducesNoCues() {
         assertTrue(CloudTranscription.groupWords(emptyList(), durationMs = 1_000L).isEmpty())
     }
+
+    @Test
+    fun kawaChunksAreBoundedContiguousAndCoverTheWholePcm() {
+        val chunkLimit = 8L * 1024L * 1024L
+        val pcmBytes = chunkLimit * 2L + 12_344L
+        val ranges = CloudTranscription.kawaChunkRanges(pcmBytes)
+
+        assertEquals(listOf(0L, chunkLimit, chunkLimit * 2L), ranges.map { it.first })
+        assertEquals(listOf(chunkLimit, chunkLimit, 12_344L), ranges.map { it.second })
+        assertTrue(ranges.all { (offset, size) -> offset >= 0L && size in 2L..chunkLimit && size % 2L == 0L })
+        assertEquals(pcmBytes, ranges.sumOf { it.second })
+        assertTrue(CloudTranscription.kawaChunkRanges(0L).isEmpty())
+        assertTrue(CloudTranscription.kawaChunkRanges(3L).isEmpty())
+    }
 }

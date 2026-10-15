@@ -112,13 +112,16 @@ class PiperModelFilePolicyTest {
     @Test
     fun restoresBackupOnlyWhenTheCurrentDestinationIsNotComplete() {
         assertTrue(PiperModelFilePolicy.shouldRestoreBackup(
-            backupExists = true, destinationIsComplete = false
+            backupExists = true, backupIsComplete = true, destinationIsComplete = false
         ))
         assertFalse(PiperModelFilePolicy.shouldRestoreBackup(
-            backupExists = false, destinationIsComplete = false
+            backupExists = false, backupIsComplete = true, destinationIsComplete = false
         ))
         assertFalse(PiperModelFilePolicy.shouldRestoreBackup(
-            backupExists = true, destinationIsComplete = true
+            backupExists = true, backupIsComplete = false, destinationIsComplete = false
+        ))
+        assertFalse(PiperModelFilePolicy.shouldRestoreBackup(
+            backupExists = true, backupIsComplete = true, destinationIsComplete = true
         ))
     }
 

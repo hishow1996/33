@@ -54,6 +54,9 @@ internal object PiperModelFilePolicy {
     fun hasExpectedEntryLength(expectedBytes: Long, actualBytes: Long): Boolean =
         expectedBytes >= 0L && actualBytes == expectedBytes
 
-    fun shouldRestoreBackup(backupExists: Boolean, destinationIsComplete: Boolean): Boolean =
-        backupExists && !destinationIsComplete
+    fun shouldRestoreBackup(
+        backupExists: Boolean,
+        backupIsComplete: Boolean,
+        destinationIsComplete: Boolean,
+    ): Boolean = backupExists && backupIsComplete && !destinationIsComplete
 }

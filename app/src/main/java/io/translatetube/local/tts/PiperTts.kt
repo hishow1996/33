@@ -267,9 +267,12 @@ object PiperModels {
                 if (!backup.isDirectory) {
                     throw java.io.IOException("Piper 模型备份路径不是目录，无法安全恢复")
                 }
+                val destinationIsComplete = complete(dest, def)
+                val backupIsComplete = complete(backup, def)
                 if (PiperModelFilePolicy.shouldRestoreBackup(
                         backupExists = true,
-                        destinationIsComplete = complete(dest, def),
+                        backupIsComplete = backupIsComplete,
+                        destinationIsComplete = destinationIsComplete,
                     )
                 ) {
                     val invalid = File(root, "${def.id}.invalid")
@@ -285,7 +288,10 @@ object PiperModels {
                     }
                     if (invalid.exists()) runCatching { invalid.deleteRecursively() }
                 } else if (!backup.deleteRecursively()) {
-                    throw java.io.IOException("无法清理上次 Piper 模型安装留下的备份")
+                    // A backup is not trusted merely because it exists: an interrupted old download
+                    // may have left a truncated model there. Delete only that unusable backup and
+                    // download/replace the destination from a newly validated staging directory.
+                    throw java.io.IOException("无法清理不完整的 Piper 模型备份")
                 }
             }
             if (archive.exists() && !archive.delete()) {
