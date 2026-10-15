@@ -53,15 +53,23 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
-        // Android 13+ 通知运行时权限（媒体控制通知需要）
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-        ) {
-            notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        // 先显示首页首帧，再请求 Android 13+ 通知权限；避免权限弹窗抢在 setContent 前启动，
+        // 让系统启动页一直停留，看起来像是应用启动很慢。
         setContent {
             TranslateTubeTheme {
+                LaunchedEffect(Unit) {
+                    // 等待两帧，确保主页至少完成一次绘制后再弹权限申请。
+                    withFrameNanos { }
+                    withFrameNanos { }
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.POST_NOTIFICATIONS,
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
                 var screen by remember { mutableStateOf(Screen.HOME) }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
                 val req by playReq
