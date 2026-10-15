@@ -826,9 +826,12 @@ class DubbingEngine(
 
     /** Continue partial writes and tolerate a few transient zero-progress responses from OEM audio sinks. */
     private fun writeFully(track: AudioTrack, samples: FloatArray): Int =
-        AudioTrackWritePolicy.writeFully(samples.size) { offset, remaining ->
-            track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
-        }
+        AudioTrackWritePolicy.writeFully(
+            sampleCount = samples.size,
+            write = { offset, remaining ->
+                track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+            },
+        )
 
     private fun writeFully(track: AudioTrack, samples: ShortArray): Int =
         AudioTrackWritePolicy.writeFully(samples.size) { offset, remaining ->
