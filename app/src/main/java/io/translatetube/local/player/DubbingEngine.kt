@@ -3,7 +3,10 @@ package io.translatetube.local.player
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Handler
+import android.os.Looper
 import android.media.PlaybackParams
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.tts.TtsEngine
@@ -850,7 +853,111 @@ class DubbingEngine(
      * PCM_FLOAT tracks. Retry once using the broadly supported PCM_16BIT format before reporting
      * a dubbing-output failure, so a valid TTS result is not discarded on older devices.
      */
+    private fun nextStaticChunkEnd(startSample: Int, totalSamples: Int): Int =
+        (startSample.toLong() + MAX_STATIC_TRACK_SAMPLES).coerceAtMost(totalSamples.toLong()).toInt()
+
+    /**
+     * Schedules the next bounded static buffer only while the same video cue still owns playback.
+     * The callback is marshalled to the audio executor before touching shared AudioTrack state.
+     */
+    private fun installNextStaticChunk(
+        sourceTrack: AudioTrack,
+        samples: FloatArray,
+        sampleRate: Int,
+        chunkStartSample: Int,
+        chunkEndSample: Int,
+        lineIndex: Int,
+        generation: Int,
+        preparedAtMs: Long,
+        syncRate: Float,
+        lineStartMs: Long,
+        lineEndMs: Long,
+    ) {
+        if (chunkEndSample >= samples.size || chunkEndSample <= chunkStartSample) return
+        sourceTrack.setPlaybackPositionUpdateListener(
+            object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(callbackTrack: AudioTrack) {
+                    if (callbackTrack !== sourceTrack) return
+                    try {
+                        audioExec.execute {
+                            if (released || playbackGeneration.get() != generation || track !== sourceTrack) return@execute
+                            try {
+                                val latestPosition = DubbingStartPositionPolicy.choose(
+                                    lineIndex = lineIndex,
+                                    lineStartMs = lineStartMs,
+                                    lineEndMs = lineEndMs,
+                                    requestedPositionMs = preparedAtMs,
+                                    latestCursor = latestTimelineCursor,
+                                )
+                                if (latestPosition == null) {
+                                    track = null
+                                    runCatching { sourceTrack.release() }
+                                    return@execute
+                                }
+                                val targetSkip = DubbingTiming.lateStartSkipSamples(
+                                    preparedAtMs = preparedAtMs,
+                                    currentPositionMs = latestPosition,
+                                    syncRate = syncRate,
+                                    sampleRate = sampleRate,
+                                    availableSampleCount = samples.size,
+                                )
+                                val nextStart = maxOf(chunkEndSample, targetSkip)
+                                if (nextStart >= samples.size) {
+                                    track = null
+                                    runCatching { sourceTrack.release() }
+                                    return@execute
+                                }
+                                val nextEnd = nextStaticChunkEnd(nextStart, samples.size)
+                                val nextTrack = createFilledAudioTrack(samples.copyOfRange(nextStart, nextEnd), sampleRate)
+                                nextTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
+                                runCatching {
+                                    nextTrack.setPlaybackParams(
+                                        PlaybackParams().setSpeed(activePlaybackRate).setPitch(1.0f)
+                                    )
+                                }.onFailure {
+                                    android.util.Log.w("DubbingEngine", "Audio playback-rate adjustment unavailable", it)
+                                }
+                                track = nextTrack
+                                installNextStaticChunk(
+                                    sourceTrack = nextTrack,
+                                    samples = samples,
+                                    sampleRate = sampleRate,
+                                    chunkStartSample = nextStart,
+                                    chunkEndSample = nextEnd,
+                                    lineIndex = lineIndex,
+                                    generation = generation,
+                                    preparedAtMs = preparedAtMs,
+                                    syncRate = syncRate,
+                                    lineStartMs = lineStartMs,
+                                    lineEndMs = lineEndMs,
+                                )
+                                sourceTrack.release()
+                                nextTrack.play()
+                            } catch (error: Exception) {
+                                if (track === sourceTrack) track = null
+                                runCatching { sourceTrack.release() }
+                                android.util.Log.w("DubbingEngine", "Unable to advance long dubbing cue", error)
+                                readiness.markPrepared(lineIndex, hasAudio = false)
+                                reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：${error.message ?: error.javaClass.simpleName}")
+                            }
+                        }
+                    } catch (_: java.util.concurrent.RejectedExecutionException) {
+                        // The cleanup barrier owns the track when the audio executor is closing.
+                    }
+                }
+
+                override fun onPeriodicNotification(callbackTrack: AudioTrack) = Unit
+            },
+            Handler(Looper.getMainLooper()),
+        )
+        sourceTrack.setNotificationMarkerPosition(chunkEndSample - chunkStartSample)
+    }
+
     private fun createFilledAudioTrack(samples: FloatArray, sampleRate: Int): AudioTrack {
+        require(samples.isNotEmpty()) { "配音音频为空" }
+        require(samples.size <= MAX_STATIC_TRACK_SAMPLES) {
+            "单个 AudioTrack 分段超过安全长度：${samples.size} 个采样点"
+        }
         fun attributes() = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -913,12 +1020,39 @@ class DubbingEngine(
                 "Using PCM_16BIT fallback for ${samples.size} samples at ${sampleRate} Hz",
             )
             return pcm16Track
-        } catch (e: Exception) {
+        } catch (pcm16Error: Exception) {
             try { pcm16Track?.release() } catch (_: Exception) {}
-            throw IllegalStateException(
-                "PCM_FLOAT 与 PCM_16BIT 音轨均无法输出中文配音",
-                e,
-            )
+            // Android 9/OEM audio stacks can reject Builder-configured static tracks even when
+            // the same PCM format is supported. Retry once via the legacy constructor before
+            // telling the user that the selected TTS engine failed.
+            var legacyTrack: AudioTrack? = null
+            try {
+                val pcm16 = DubbingPcm16Converter.convert(samples)
+                legacyTrack = AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    pcm16.size * 2,
+                    AudioTrack.MODE_STATIC,
+                )
+                if (legacyTrack.state != AudioTrack.STATE_INITIALIZED) {
+                    throw IllegalStateException("传统 PCM_16BIT AudioTrack 初始化失败")
+                }
+                val written = writeFully(legacyTrack, pcm16)
+                if (written != pcm16.size) {
+                    throw IllegalStateException("传统 PCM_16BIT AudioTrack 写入不完整：${written}/${pcm16.size}")
+                }
+                android.util.Log.i("DubbingEngine", "Using legacy PCM_16BIT AudioTrack fallback")
+                return legacyTrack
+            } catch (legacyError: Exception) {
+                try { legacyTrack?.release() } catch (_: Exception) {}
+                legacyError.addSuppressed(pcm16Error)
+                throw IllegalStateException(
+                    "PCM_FLOAT、PCM_16BIT 和传统兼容音轨均无法输出中文配音；可能是设备音频缓冲区限制或系统 TTS 音频格式异常",
+                    legacyError,
+                )
+            }
         }
     }
 
@@ -977,22 +1111,43 @@ class DubbingEngine(
                         return@execute
                     }
 
-                    val newTrack = createFilledAudioTrack(playbackSamples, sr)
+                    var chunkStart = 0
+                    var chunkEnd = nextStaticChunkEnd(chunkStart, playbackSamples.size)
+                    var newTrack = createFilledAudioTrack(playbackSamples.copyOfRange(chunkStart, chunkEnd), sr)
                     created = newTrack
-                    // Cancellation/session replacement is expected; a partial/failed write is not.
-                    // The latter is rejected inside createFilledAudioTrack so original audio is
-                    // restored instead of leaving this cue marked ready while its output is silent.
                     if (released || playbackGeneration.get() != generation) {
                         newTrack.release()
                         created = null
                         return@execute
                     }
 
-                    // The player can advance while the static AudioTrack buffer is being filled.
-                    // Re-check the timeline and advance the static playback head to skip elapsed
-                    // samples, rather than speaking the old words late. The track is MODE_STATIC
-                    // and mono, so the head position is expressed in the same frames as PCM samples.
+                    // Android/OEM static AudioTrack buffers are bounded. Create the first chunk
+                    // only, then append further static chunks at marker boundaries for long cues.
+                    // Whenever the player has advanced during setup, skip expired samples before
+                    // playback rather than starting stale speech.
                     var skippedSamples = 0
+                    fun rebuildChunkAt(startSample: Int) {
+                        val oldTrack = newTrack
+                        try { oldTrack.pause(); oldTrack.flush(); oldTrack.release() } catch (_: Exception) {}
+                        chunkStart = startSample.coerceIn(0, playbackSamples.size)
+                        chunkEnd = nextStaticChunkEnd(chunkStart, playbackSamples.size)
+                        if (chunkEnd <= chunkStart) throw IllegalStateException("配音分段长度无效")
+                        newTrack = createFilledAudioTrack(
+                            playbackSamples.copyOfRange(chunkStart, chunkEnd),
+                            sr,
+                        )
+                        created = newTrack
+                        if (track === oldTrack) track = newTrack
+                        newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
+                        runCatching {
+                            newTrack.setPlaybackParams(
+                                PlaybackParams().setSpeed(activePlaybackRate).setPitch(1.0f)
+                            )
+                        }.onFailure {
+                            android.util.Log.w("DubbingEngine", "Audio playback-rate adjustment unavailable", it)
+                        }
+                    }
+
                     fun alignToLatestTimelinePosition(): Boolean {
                         val latestPosition = DubbingStartPositionPolicy.choose(
                             lineIndex = idx,
@@ -1008,15 +1163,17 @@ class DubbingEngine(
                             sampleRate = sr,
                             availableSampleCount = playbackSamples.size,
                         )
-                        // No intelligible audio remains when the head would reach the end of
-                        // this bounded cue buffer; do not start a clipped syllable after the cue.
                         if (targetSkip >= playbackSamples.size) return false
                         if (targetSkip > skippedSamples) {
-                            val result = newTrack.setPlaybackHeadPosition(targetSkip)
-                            if (result != AudioTrack.SUCCESS) {
-                                throw IllegalStateException(
-                                    "无法按最新播放位置校准配音采样头：AudioTrack 状态 $result"
-                                )
+                            if (targetSkip >= chunkEnd) {
+                                rebuildChunkAt(targetSkip)
+                            } else {
+                                val result = newTrack.setPlaybackHeadPosition(targetSkip - chunkStart)
+                                if (result != AudioTrack.SUCCESS) {
+                                    throw IllegalStateException(
+                                        "无法按最新播放位置校准配音采样头：AudioTrack 状态 $result"
+                                    )
+                                }
                             }
                             skippedSamples = targetSkip
                         }
@@ -1030,8 +1187,7 @@ class DubbingEngine(
                     }
 
                     // Playback speed may have changed while PCM was loading. Combine the cue's
-                    // synchronization rate with the newest player speed instead of overwriting it
-                    // with a stale value captured before AudioTrack creation.
+                    // synchronization rate with the newest player speed instead of a stale value.
                     val playbackRate = (
                         plan.syncRate * DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
                     ).coerceIn(0.5f, 4.0f)
@@ -1040,12 +1196,13 @@ class DubbingEngine(
                             PlaybackParams().setSpeed(playbackRate).setPitch(1.0f)
                         )
                     }.onFailure {
-                        // If a provider rejects dynamic rates, keep the voice audible at native speed.
                         android.util.Log.w("DubbingEngine", "Audio playback-rate adjustment unavailable", it)
                     }
 
-                    track?.let { old ->
-                        try { old.pause(); old.flush(); old.release() } catch (_: Exception) {}
+                    track?.let { oldTrack ->
+                        if (oldTrack !== newTrack) {
+                            try { oldTrack.pause(); oldTrack.flush(); oldTrack.release() } catch (_: Exception) {}
+                        }
                     }
                     track = newTrack
                     activeSyncRate = plan.syncRate
@@ -1057,8 +1214,6 @@ class DubbingEngine(
                         return@execute
                     }
                     newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
-                    // Re-check once more immediately before play() in case another ticker
-                    // update arrived while parameters/volume were applied.
                     if (!alignToLatestTimelinePosition()) {
                         if (track === newTrack) track = null
                         newTrack.release()
@@ -1071,6 +1226,19 @@ class DubbingEngine(
                         created = null
                         return@execute
                     }
+                    installNextStaticChunk(
+                        sourceTrack = newTrack,
+                        samples = playbackSamples,
+                        sampleRate = sr,
+                        chunkStartSample = chunkStart,
+                        chunkEndSample = chunkEnd,
+                        lineIndex = idx,
+                        generation = generation,
+                        preparedAtMs = position,
+                        syncRate = plan.syncRate,
+                        lineStartMs = line.startMs,
+                        lineEndMs = line.endMs,
+                    )
                     newTrack.play()
                     created = null
                     if (!released && playbackGeneration.get() == generation) {
@@ -1316,5 +1484,7 @@ class DubbingEngine(
         private val cacheInstallLock = Any()
         private val nextCacheWriterId = AtomicInteger(0)
         private const val TEMP_PCM_AGE_MS = 6L * 60L * 60L * 1_000L
+        // Keep each native static track well below Android's common 1 MiB static-buffer ceiling.
+        private const val MAX_STATIC_TRACK_SAMPLES = 96_000
     }
 }
