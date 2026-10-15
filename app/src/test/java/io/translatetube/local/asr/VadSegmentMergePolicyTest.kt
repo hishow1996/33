@@ -91,7 +91,10 @@ class VadSegmentMergePolicyTest {
     @Test
     fun sampleIndexConversionDoesNotOverflowForExtremeTracks() {
         assertEquals(1_000L, VadSegmentMergePolicy.sampleIndexToMillis(16_001L, 16_000))
-        assertEquals(Long.MAX_VALUE, VadSegmentMergePolicy.sampleIndexToMillis(Long.MAX_VALUE, 16_000))
+        val maxSampleIndex = Long.MAX_VALUE
+        val expectedMaxMillis = (maxSampleIndex / 16_000L) * 1_000L +
+            (maxSampleIndex % 16_000L) * 1_000L / 16_000L
+        assertEquals(expectedMaxMillis, VadSegmentMergePolicy.sampleIndexToMillis(maxSampleIndex, 16_000))
     }
 
     @Test
