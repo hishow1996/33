@@ -61,6 +61,23 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun boundedProviderResponseReaderRecoversFromZeroByteBulkReads() {
+        val backing = ByteArrayInputStream("ok".toByteArray(Charsets.UTF_8))
+        val unusual = object : java.io.InputStream() {
+            private var returnZero = true
+            override fun read(): Int = backing.read()
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                if (returnZero) {
+                    returnZero = false
+                    return 0
+                }
+                return backing.read(buffer, offset, length)
+            }
+        }
+        assertEquals("ok", CloudTranscription.readBoundedUtf8(unusual, maxBytes = 2L))
+    }
+
+    @Test
     fun boundedProviderResponseReaderChecksCancellationBeforeReading() {
         val error = runCatching {
             CloudTranscription.readBoundedUtf8(
