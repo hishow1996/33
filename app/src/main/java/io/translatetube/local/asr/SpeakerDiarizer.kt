@@ -56,7 +56,10 @@ object SpeakerDiarizer {
                 throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
             }
             onProgress("下载人物识别模型…")
-            val dir = File(context.filesDir, "models/speaker").apply { mkdirs() }
+            val dir = File(context.filesDir, "models/speaker")
+            if (!dir.isDirectory && !dir.mkdirs()) {
+                throw java.io.IOException("无法创建人物识别模型目录，请检查设备可用存储空间")
+            }
             val segmentation = File(dir, "segmentation.onnx")
             val embedding = File(dir, "embedding.onnx")
             if (!segmentation.isFile || segmentation.length() < 1_000_000L) {
@@ -120,6 +123,7 @@ object SpeakerDiarizer {
                     checkActive()
                     val count = java.lang.reflect.Array.getLength(raw)
                     val out = ArrayList<Segment>(count)
+                    val durationSec = samples.size.toFloat() / sampleRate.toFloat()
                     for (i in 0 until count) {
                         checkActive()
                         val item = java.lang.reflect.Array.get(raw, i)
@@ -127,8 +131,10 @@ object SpeakerDiarizer {
                         val start = (cls.getMethod("getStart").invoke(item) as Number).toFloat()
                         val end = (cls.getMethod("getEnd").invoke(item) as Number).toFloat()
                         val speaker = (cls.getMethod("getSpeaker").invoke(item) as Number).toInt()
-                        val confidence = (runCatching { cls.getMethod("getConfidence").invoke(item) as Number }.getOrNull()?.toFloat() ?: -2f)
-                        if (end > start && speaker >= 0) out += Segment(start, end, speaker, confidence)
+                        val confidence = (runCatching {
+                            cls.getMethod("getConfidence").invoke(item) as Number
+                        }.getOrNull()?.toFloat() ?: SpeakerSegmentPolicy.UNKNOWN_CONFIDENCE)
+                        SpeakerSegmentPolicy.normalize(start, end, speaker, confidence, durationSec)?.let(out::add)
                     }
                     out
                 } finally {
