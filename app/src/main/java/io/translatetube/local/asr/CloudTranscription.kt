@@ -69,10 +69,11 @@ object CloudTranscription {
         val files = directory.listFiles() ?: return 0
         var deleted = 0
         for (file in files) {
-            if (!file.isFile ||
-                !file.name.startsWith("cloud-wav-") ||
-                !file.name.endsWith(".part")
-            ) continue
+            val abandonedStage = file.name.startsWith("cloud-wav-") && file.name.endsWith(".part")
+            // PlaybackService creates the final request WAV under this prefix; a force-stop can
+            // bypass its finally deletion just as it can leave the writer's staging file behind.
+            val abandonedRequest = file.name.startsWith("asr-cloud-") && file.name.endsWith(".wav")
+            if (!file.isFile || (!abandonedStage && !abandonedRequest)) continue
             val modified = file.lastModified()
             if (modified > 0L && nowMs >= modified &&
                 nowMs - modified > STAGED_WAV_MAX_AGE_MS && file.delete()
