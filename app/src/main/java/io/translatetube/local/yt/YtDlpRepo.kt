@@ -278,8 +278,9 @@ object YtDlpRepo {
     /** 是否为适合 yt-dlp 处理的 URL（http/https 均可；主入口 YouTube 仍走 NewPipe，此处含 YouTube 作为风控兜底）。 */
     fun isEligible(url: String): Boolean {
         val u = url.trim()
-        if (!u.startsWith("http://", ignoreCase = true) && !u.startsWith("https://", ignoreCase = true)) return false
-        val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull() ?: return false
+        if (!YtDlpMediaPolicy.isSafeHttpUrl(u)) return false
+        val host = runCatching { java.net.URI(u).host?.lowercase(java.util.Locale.ROOT) }.getOrNull()
+            ?: return false
         return host.isNotEmpty() && !host.endsWith(".local")
     }
 
@@ -344,25 +345,22 @@ object YtDlpRepo {
             }
             val info = YoutubeDL.getInfo(request)
             val formats = info.formats.orEmpty()
-            val combined = formats.filter { f ->
-                val v = f.vcodec
-                val a = f.acodec
-                !v.isNullOrBlank() && v != "none" && !a.isNullOrBlank() && a != "none" && !f.url.isNullOrBlank()
-            }.maxByOrNull { it.tbr }
-            val hls = formats.firstOrNull { f ->
-                val u = f.url.orEmpty()
-                f.ext == "m3u8" || u.contains(".m3u8", ignoreCase = true)
+            val playableFormats = formats.mapNotNull { format ->
+                val url = format.url?.takeIf(YtDlpMediaPolicy::isSafeHttpUrl) ?: return@mapNotNull null
+                YtDlpFormatCandidate(
+                    url = url,
+                    extension = format.ext,
+                    hasVideo = !format.vcodec.isNullOrBlank() && format.vcodec != "none",
+                    hasAudio = !format.acodec.isNullOrBlank() && format.acodec != "none",
+                    bitrate = format.tbr.toDouble(),
+                )
             }
-            val audioOnly = formats.filter { f ->
-                val a = f.acodec
-                !a.isNullOrBlank() && a != "none" && (f.vcodec.isNullOrBlank() || f.vcodec == "none") && !f.url.isNullOrBlank()
-            }.maxByOrNull { it.tbr }
-
-            val chosen: VideoFormat? = combined ?: hls ?: audioOnly
-            val url = chosen?.url ?: info.url
-            if (url.isNullOrBlank()) {
-                throw IllegalStateException("yt-dlp 未返回可播放的媒体地址")
-            }
+            val url = YtDlpMediaPolicy.selectPlayableUrl(
+                formats = playableFormats,
+                fallbackUrl = info.url.takeIf { formats.isEmpty() },
+            ) ?: throw IllegalStateException(
+                "yt-dlp 未返回可播放的视频流；只找到音频流或媒体地址格式无效"
+            )
             // 透传给播放器的 Cookie 优先用请求头里的（保持与解析一致的登录态）
             val headers = info.httpHeaders.orEmpty()
             val effectiveCookie = headers["Cookie"].orEmpty().ifBlank { cookieHeader.orEmpty() }
