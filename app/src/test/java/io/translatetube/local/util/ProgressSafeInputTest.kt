@@ -29,7 +29,7 @@ class ProgressSafeInputTest {
             assertTrue("positive-length read must make progress", count > 0)
             result.write(buffer, count)
         }
-        assertEquals("audio", result.toString(Charsets.UTF_8.name()))
+        assertEquals("audio", result.toString())
     }
 
     @Test
