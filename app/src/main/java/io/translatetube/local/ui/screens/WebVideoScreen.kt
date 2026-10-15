@@ -611,7 +611,7 @@ private val PROBE_SCRIPT = """
             el.getAttribute('role') === 'button' ||
             el.hasAttribute('onclick') ||
             el.hasAttribute('aria-label') ||
-            /control|button|btn|icon|action|back|share|vip|fullscreen|full-screen|play|pause|volume|menu|progress/i.test(classes);
+            /control|button|btn|icon|action|back|return|prev|arrow|chevron|jiantou|fanhui|left|返回|上一页|share|vip|fullscreen|full-screen|play|pause|volume|menu|progress/i.test(classes);
           if (!isControl) continue;
           el.style.setProperty('touch-action', 'manipulation', 'important');
           el.style.setProperty('-webkit-tap-highlight-color', 'transparent', 'important');
