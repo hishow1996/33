@@ -90,7 +90,8 @@ object SpeakerDiarizer {
             checkActive()
             onProgress("识别人物说话片段…")
             try {
-                val loader = javaClass.classLoader!!
+                val loader = javaClass.classLoader
+                    ?: throw IllegalStateException("无法初始化人物识别运行环境")
                 fun type(name: String) = Class.forName("com.k2fsa.sherpa.onnx.$name", true, loader)
                 val pyannoteClass = type("OfflineSpeakerSegmentationPyannoteModelConfig")
                 val segmentationClass = type("OfflineSpeakerSegmentationModelConfig")
@@ -146,7 +147,11 @@ object SpeakerDiarizer {
                     e,
                 )
             } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw IllegalStateException("说话人分离模型初始化或推理失败：${e.targetException.message}", e.targetException)
+                throw IllegalStateException("说话人分离模型初始化或推理失败：${e.targetException.message ?: e.targetException.javaClass.simpleName}", e.targetException)
+            } catch (e: ReflectiveOperationException) {
+                throw IllegalStateException("当前 sherpa-onnx AAR 的说话人分离 API 与应用不兼容，请更新内置运行库后重试", e)
+            } catch (e: NoSuchElementException) {
+                throw IllegalStateException("当前 sherpa-onnx AAR 缺少所需的说话人分离构造函数，请更新内置运行库后重试", e)
             } catch (e: LinkageError) {
                 throw IllegalStateException("当前 sherpa-onnx.aar 的原生库不支持说话人分离，请更新内置 AAR 后重试", e)
             }
