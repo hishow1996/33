@@ -94,6 +94,7 @@ data class PlayerUiState(
     val selectedQuality: String = "",
     val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
     val subtitleTrackStatus: String = "",
+    val isProcessingPaused: Boolean = false,
 )
 
 private data class YouTubeQualitySource(
@@ -142,6 +143,8 @@ class PlaybackService : MediaSessionService() {
         }
     }
     private var prepJob: Job? = null
+    private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var processingPaused = false
     private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
@@ -171,6 +174,8 @@ class PlaybackService : MediaSessionService() {
         /** 播放画面 TextureView（供悬浮窗摘取 reparent） */
         @Volatile var videoSurfaceView: android.view.TextureView? = null
         const val CH_MAIN = "playback"
+        const val ACTION_TOGGLE_PROCESSING_PAUSE = "io.translatetube.local.action.TOGGLE_PROCESSING_PAUSE"
+        const val ACTION_CANCEL_PROCESSING = "io.translatetube.local.action.CANCEL_PROCESSING"
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -185,6 +190,76 @@ class PlaybackService : MediaSessionService() {
             activeVideoKey = videoKey,
             activeUiKey = ui.value.key,
         )
+    }
+
+    private fun isProcessingPhase(phase: Phase): Boolean = phase in setOf(
+        Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING,
+        Phase.TRANSLATING, Phase.SYNTHESIZING,
+    )
+
+    /** Processing checkpoints wait here while paused. */
+    private suspend fun awaitProcessingResumed(sessionKey: String) {
+        if (processingPaused) processingPauseGate.withLock { /* resumes when unlocked */ }
+        ensureCurrentSession(sessionKey)
+    }
+
+    fun toggleProcessingPause() {
+        if (!isProcessingPhase(ui.value.phase)) return
+        if (processingPaused) {
+            processingPaused = false
+            if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        } else if (processingPauseGate.tryLock()) {
+            processingPaused = true
+        }
+        ui.update { current ->
+            if (current.key == videoKey) current.copy(isProcessingPaused = processingPaused)
+            else current
+        }
+    }
+
+    fun cancelProcessing() {
+        val current = ui.value
+        if (!isProcessingPhase(current.phase)) return
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        prepJob?.cancel(kotlinx.coroutines.CancellationException("用户取消视频处理"))
+        prepJob = null
+        subtitleDownloadJob?.cancel()
+        subtitleDownloadJob = null
+        speakerJob?.cancel()
+        speakerJob = null
+        qualityJob?.cancel()
+        qualityJob = null
+        qualityRecoveryJob?.cancel()
+        qualityRecoveryJob = null
+        dubCollectJob?.cancel()
+        dubCollectJob = null
+        runCatching { retireCurrentDubbing() }
+        if (playerReady && ::pm.isInitialized) runCatching { pm.originalVolume = 1f }
+        updateUiForSession(current.key) {
+            it.copy(
+                phase = Phase.ERROR,
+                progress = "",
+                error = "已取消处理。点击重试即可重新开始。",
+                muteOriginal = false,
+                noModelHint = null,
+                isProcessingPaused = false,
+            )
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_TOGGLE_PROCESSING_PAUSE -> {
+                toggleProcessingPause()
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL_PROCESSING -> {
+                cancelProcessing()
+                return START_NOT_STICKY
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
     }
 
     /** 主线程把画面 TextureView 交给播放器 */
@@ -399,8 +474,8 @@ class PlaybackService : MediaSessionService() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val notification = NotificationCompat.Builder(this, CH_MAIN)
             .setSmallIcon(R.drawable.ic_stat_brand)
-            .setContentTitle(title)
-            .setContentText(displayDetail)
+            .setContentTitle(if (state.isProcessingPaused) "已暂停 · $title" else title)
+            .setContentText(if (state.isProcessingPaused) "已暂停 · $displayDetail" else displayDetail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(
@@ -417,6 +492,26 @@ class PlaybackService : MediaSessionService() {
                 )
             )
             .apply {
+                if (isProcessingPhase(state.phase)) {
+                    val toggleIntent = Intent(this@PlaybackService, PlaybackService::class.java)
+                        .setAction(ACTION_TOGGLE_PROCESSING_PAUSE)
+                    val togglePending = PendingIntent.getService(
+                        this@PlaybackService, 1002, toggleIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                    addAction(
+                        if (state.isProcessingPaused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
+                        if (state.isProcessingPaused) "继续" else "暂停",
+                        togglePending,
+                    )
+                    val cancelIntent = Intent(this@PlaybackService, PlaybackService::class.java)
+                        .setAction(ACTION_CANCEL_PROCESSING)
+                    val cancelPending = PendingIntent.getService(
+                        this@PlaybackService, 1003, cancelIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
+                }
                 // Always replace or clear the previous stage's progress state.
                 // Only measurable work receives a percentage; other phases show no stale bar.
                 if (measuredPercent != null) {
@@ -531,6 +626,8 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         prepJob?.cancel()
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         speakerJob?.cancel(); speakerJob = null
@@ -567,6 +664,7 @@ class PlaybackService : MediaSessionService() {
         val configuredTtsName = ttsDisplayName(configuredTts)
         ui.value = PlayerUiState(
             phase = if (resumeState != null) Phase.TRANSLATING else Phase.PARSING,
+            isProcessingPaused = false,
             key = key,
             progress = if (resumeState != null) "恢复已获取的字幕，继续未完成的翻译…" else "解析中…",
             title = resumeState?.title.orEmpty(),
@@ -1199,9 +1297,9 @@ class PlaybackService : MediaSessionService() {
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
         try {
-            ensureCurrentSession(key)
+            awaitProcessingResumed(key)
             awaitRetiredDubbingEngines()
-            ensureCurrentSession(key)
+            awaitProcessingResumed(key)
             var meta = VideoEntity(
                 key = key, videoId = videoId, localUri = localUri?.toString() ?: remoteMediaUrl,
                 title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
@@ -1225,8 +1323,9 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
             } else if (videoId != null) {
+                awaitProcessingResumed(key)
                 val m = NewPipeRepo.resolve(videoId)
-                ensureCurrentSession(key)
+                awaitProcessingResumed(key)
                 meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
                 updateUiForSession(key) { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
             } else if (remoteMediaUrl != null && resumeState == null) {
@@ -1269,9 +1368,10 @@ class PlaybackService : MediaSessionService() {
             // 解析视频时先列出所有字幕轨。下载是可选操作，不影响自动翻译/配音流程。
             if (videoId != null && resumeState == null) {
                 try {
+                    awaitProcessingResumed(key)
                     updateUiForSession(key) { it.copy(progress = "正在查找可用字幕轨…") }
                     val tracks = NewPipeRepo.subtitleTracks(videoId)
-                    ensureCurrentSession(key)
+                    awaitProcessingResumed(key)
                     updateUiForSession(key) {
                         it.copy(
                             availableSubtitleTracks = tracks,
@@ -1340,9 +1440,10 @@ class PlaybackService : MediaSessionService() {
             }
             suspend fun fetchAndCacheSourceLines(): Pair<List<SubLine>, String>? {
                 val id = videoId ?: return null
+                awaitProcessingResumed(key)
                 updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
                 val fetched = NewPipeRepo.subtitles(id) ?: return null
-                ensureCurrentSession(key)
+                awaitProcessingResumed(key)
                 val lang = fetched.second.takeIf { it.isNotBlank() } ?: "auto"
                 val fetchedLines = fetched.first
                     .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
@@ -2263,6 +2364,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         val batchSize = 10
         val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
         for (batchIndices in pendingIndices.chunked(batchSize)) {
+            awaitProcessingResumed(key)
             // A model may return fewer rows than requested, or put UI/status text in a translation
             // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
             var unresolvedIndices = batchIndices
@@ -2825,6 +2927,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 val buf = ByteArray(64 * 1024)
                                 while (true) {
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                    awaitProcessingResumed(sessionKey)
                                     val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
                                     if (n < 0) break
                                     if (payloadPrefixSize < payloadPrefix.size) {
