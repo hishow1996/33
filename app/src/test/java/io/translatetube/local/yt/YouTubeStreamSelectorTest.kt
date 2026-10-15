@@ -47,6 +47,9 @@ class YouTubeStreamSelectorTest {
                 YouTubeVideoCandidate(240, "https://cdn.test:0/zero-port.mp4", false, "mp4", 1000),
                 YouTubeVideoCandidate(240, "https://cdn.test:99999/invalid-port.mp4", false, "mp4", 2000),
                 YouTubeVideoCandidate(240, "https://cdn.test:/empty-port.mp4", false, "mp4", 3000),
+                YouTubeVideoCandidate(240, "\nhttps://cdn.test/leading-newline.mp4", false, "mp4", 4000),
+                YouTubeVideoCandidate(240, "https://cdn.test/trailing-newline.mp4\n", false, "mp4", 5000),
+                YouTubeVideoCandidate(240, "https://cdn.test/c1.mp4" + 0x85.toChar(), false, "mp4", 6000),
                 YouTubeVideoCandidate(240, "https://cdn.test/240.mp4", false, "mp4", 100),
             )
         )
