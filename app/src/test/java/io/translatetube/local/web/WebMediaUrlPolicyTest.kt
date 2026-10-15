@@ -48,6 +48,19 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
+    fun uppercaseMediaExtensionsRemainRecognizedAcrossLocales() {
+        val previous = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("tr", "TR"))
+            assertEquals(true, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example/VIDEO.MP4"))
+            assertEquals(true, WebMediaUrlPolicy.looksLikeMediaRequest("https://cdn.example/INDEX.M3U8"))
+            assertEquals(true, WebMediaUrlPolicy.unsupportedReason("https://cdn.example/INDEX.MPD")!!.contains("DASH"))
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
+
+    @Test
     fun givesSpecificReasonForUnsupportedMediaSources() {
         assertEquals(true, WebMediaUrlPolicy.unsupportedReason("blob:https://example.com/1")!!.contains("blob"))
         assertNull(WebMediaUrlPolicy.unsupportedReason("https://cdn.example/index.m3u8"))

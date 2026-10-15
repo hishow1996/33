@@ -16,6 +16,7 @@ internal data class TranslationBatchResult(
             val translated = linkedMapOf<Int, String>()
             val missing = linkedSetOf<Int>()
             indices.forEachIndexed { position, sourceIndex ->
+                if (sourceIndex < 0) return@forEachIndexed
                 val value = SubtitleParsers.cleanTranslatedText(rawTranslations.getOrNull(position))
                 if (value.isNullOrBlank()) {
                     if (sourceIndex !in translated) missing += sourceIndex

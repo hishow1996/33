@@ -50,6 +50,16 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun negativeSourceIndicesAreIgnoredInsteadOfBecomingCacheKeys() {
+        val result = TranslationBatchResult.from(
+            listOf(-1, 2, -8, 3),
+            listOf("must not be stored", "valid", "must not be retried", "正在翻译"),
+        )
+        assertEquals(mapOf(2 to "valid"), result.translations)
+        assertEquals(listOf(3), result.missingIndices)
+    }
+
+    @Test
     fun duplicateSourceIndicesProduceAtMostOneTranslationOrRetryEntry() {
         val result = TranslationBatchResult.from(
             listOf(2, 2, 3, 3, 4),

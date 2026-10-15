@@ -15,6 +15,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
@@ -144,7 +145,9 @@ object YtDlpRepo {
             in 18..23 -> "NIGHT"
             else -> return null
         }
-        val date = "%04d-%02d-%02d".format(
+        val date = String.format(
+            Locale.ROOT,
+            "%04d-%02d-%02d",
             cal.get(java.util.Calendar.YEAR),
             cal.get(java.util.Calendar.MONTH) + 1,
             cal.get(java.util.Calendar.DAY_OF_MONTH),
@@ -221,6 +224,7 @@ object YtDlpRepo {
         onProgress: (Int) -> Unit = {},
         cookieHeader: String? = null,
     ): File = withContext(Dispatchers.IO) {
+        if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
         ensureReady(ctx)
         val parent = dest.parentFile
         if (parent == null || dest.name.endsWith(".part")) {
@@ -242,6 +246,9 @@ object YtDlpRepo {
                 addOption("--newline")
                 addOption("-o", outputTemplate)
                 cookieHeader?.takeIf { it.isNotBlank() }?.let {
+                    if (it.any { character -> character == '\r' || character == '\n' }) {
+                        throw IllegalArgumentException("Cookie 请求头不能包含换行符")
+                    }
                     addOption("--add-headers", "Cookie:$it")
                 }
             }

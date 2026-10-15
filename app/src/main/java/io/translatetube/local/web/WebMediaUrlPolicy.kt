@@ -47,7 +47,7 @@ internal object WebMediaUrlPolicy {
     fun looksLikeMediaRequest(input: String): Boolean {
         val uri = runCatching { URI(input.trim()) }.getOrNull() ?: return false
         if (!isValidHttpUri(uri)) return false
-        val path = uri.rawPath.orEmpty().lowercase()
+        val path = uri.rawPath.orEmpty().lowercase(Locale.ROOT)
         return listOf(".mp4", ".webm", ".m4v", ".mov", ".mkv", ".mp3", ".m4a", ".aac", ".ogg", ".m3u8", ".mpd")
             .any(path::endsWith)
     }
@@ -71,7 +71,7 @@ internal object WebMediaUrlPolicy {
         ) {
             return "该媒体地址不是可独立访问的 HTTP/HTTPS 视频流。"
         }
-        val path = runCatching { URI(raw).rawPath.orEmpty().lowercase() }.getOrDefault("")
+        val path = runCatching { URI(raw).rawPath.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
         if (path.endsWith(".mpd")) {
             return "检测到 DASH 分片清单；当前版本暂不支持 DASH 音轨缓存。"
         }
