@@ -79,9 +79,17 @@ internal object WebMediaUrlPolicy {
         ) {
             return "该媒体地址不是可独立访问的 HTTP/HTTPS 视频流。"
         }
-        val path = runCatching { URI(raw).rawPath.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
+        val parsedPath = runCatching { URI(raw).rawPath.orEmpty() }.getOrDefault("")
+        val path = parsedPath.lowercase(Locale.ROOT)
         if (path.endsWith(".mpd")) {
             return "检测到 DASH 分片清单；当前版本暂不支持 DASH 音轨缓存。"
+        }
+        // 爱壹帆的 /static/media/test.mp4 是网页探测/占位文件，并非正片；
+        // 其响应可能是空载荷或页面内容，Media3 无法识别容器。筛选入口与最终播放入口都拦截。
+        if (path.endsWith("/static/media/test.mp4") &&
+            runCatching { URI(raw).host.equals("m.yfsp.tv", ignoreCase = true) }.getOrDefault(false)
+        ) {
+            return "这是爱壹帆网页的测试占位视频，不是正片资源。请在候选列表中选择其他 CDN 视频地址。"
         }
         val uri = runCatching { URI(raw) }.getOrNull()
         if (uri == null || !isValidHttpUri(uri)) {
