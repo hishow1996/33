@@ -102,7 +102,18 @@ object CloudTranscription {
             checkActive()
             val count = input.read(buffer)
             if (count < 0) break
-            if (count == 0) continue
+            if (count == 0) {
+                // Some provider streams may fail to make progress on a bulk read. Force a
+                // single-byte read so this bounded reader cannot busy-loop forever.
+                val single = input.read()
+                if (single < 0) break
+                if (totalBytes >= maxBytes) {
+                    throw IOException("云端转写响应超过安全上限（${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
+                }
+                output.write(single)
+                totalBytes++
+                continue
+            }
             if (count.toLong() > maxBytes - totalBytes) {
                 throw IOException("云端转写响应超过安全上限（${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
             }
