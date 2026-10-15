@@ -33,6 +33,15 @@ class WebMediaUrlPolicyTest {
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("data:video/mp4;base64,abc"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example:99999/video.mp4"))
         assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example:0/video.mp4"))
+        assertNull(WebMediaUrlPolicy.normalizeMediaUrl("https://m.yfsp.tv/static/media/test.mp4"))
+        assertEquals(
+            true,
+            WebMediaUrlPolicy.unsupportedReason("https://m.yfsp.tv/static/media/test.mp4")!!.contains("占位视频"),
+        )
+        assertEquals(
+            "https://cdn.example/static/media/test.mp4",
+            WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/static/media/test.mp4"),
+        )
     }
 
     @Test
