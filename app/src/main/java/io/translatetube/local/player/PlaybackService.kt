@@ -2814,7 +2814,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 val buf = ByteArray(64 * 1024)
                                 while (true) {
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                    val n = ins.read(buf)
+                                    val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
                                     if (n < 0) break
                                     if (payloadPrefixSize < payloadPrefix.size) {
                                         val copyCount = minOf(n, payloadPrefix.size - payloadPrefixSize)
@@ -2854,6 +2854,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     }
                 }
 
+                // Make the complete temporary payload durable before publishing the cache path.
+                if (writeTarget.isFile && writeTarget.length() > 0L) {
+                    java.io.RandomAccessFile(writeTarget, "rw").use { it.fd.sync() }
+                }
                 if (!writeTarget.isFile || writeTarget.length() == 0L) {
                     throw IllegalStateException("音频下载结果为空")
                 }
