@@ -65,13 +65,13 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         val hop = 29 * sr
         val out = mutableListOf<Pair<Long, String>>()
         var start = 0
-        val totalSec = pcm.size / sr
+        val totalSec = WhisperProgressPolicy.secondsCeiling(pcm.size, sr)
         while (start < pcm.size) {
             val end = (start + window).coerceAtMost(pcm.size)
             val seg = pcm.copyOfRange(start, end)
             val text = transcribe(seg).trim()
             if (text.isNotEmpty()) out += (start / sr).toLong() to text
-            onProgress((end / sr).toLong(), totalSec.toLong())
+            onProgress(WhisperProgressPolicy.secondsCeiling(end, sr), totalSec)
             if (end >= pcm.size) break
             start += hop
         }
