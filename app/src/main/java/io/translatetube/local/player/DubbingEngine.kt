@@ -1154,9 +1154,15 @@ class DubbingEngine(
             audioExec.execute {
                 var created: AudioTrack? = null
                 try {
-                    val (samples, sr) = load(idx) {
+                    val loaded = load(idx) {
                         !released && playbackGeneration.get() == generation
                     } ?: return@execute
+                    // Android 9/OEM AudioTrack implementations can reject common TTS rates such
+                    // as 22.05/24 kHz in static mode. Normalize speech output to 16 kHz mono PCM
+                    // before constructing a track; lower 8 kHz engines remain at their native rate.
+                    val outputPcm = DubbingOutputPcmPolicy.normalize(loaded.first, loaded.second)
+                    val samples = outputPcm.samples
+                    val sr = outputPcm.sampleRate
                     if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
 
                     val position = DubbingStartPositionPolicy.choose(
