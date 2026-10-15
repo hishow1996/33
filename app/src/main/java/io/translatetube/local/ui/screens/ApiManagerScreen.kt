@@ -1049,7 +1049,7 @@ private fun FreeModelConfigDialog(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 val candidateModels = if (isGemini) {
-                    listOf("gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro")
+                    listOf("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite")
                 } else {
                     listOf("deepseek-chat", "deepseek-reasoner")
                 }
