@@ -1447,24 +1447,32 @@ private fun SubtitleList(
         modifier.fillMaxSize()
             .clip(RoundedCornerShape(24.dp))
             .background(Color.White)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().height(32.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            Text("中文字幕", color = OnBg, style = MaterialTheme.typography.titleMedium)
+            Text("中文字幕", color = OnBg, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold))
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = onCopy) {
-                Icon(Icons.Filled.ContentCopy, contentDescription = "复制双语字幕", tint = SubText)
+            Box(
+                Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onCopy),
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.ContentCopy,
+                    contentDescription = "复制双语字幕",
+                    tint = SubText,
+                    modifier = Modifier.size(19.dp),
+                )
             }
         }
         HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f),
-            contentPadding = PaddingValues(vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = PaddingValues(top = 3.dp, bottom = 5.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             if (state.lines.isEmpty() && state.phase == Phase.READY) {
                 item {
@@ -1501,7 +1509,7 @@ private fun SubtitleList(
                             }
                         )
                         .clickable { svc?.seek(line.startMs) }
-                        .padding(horizontal = 12.dp, vertical = if (activeDub) 10.dp else 7.dp),
+                        .padding(horizontal = 10.dp, vertical = if (activeDub) 7.dp else 5.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -1512,7 +1520,7 @@ private fun SubtitleList(
                             else -> SubText
                         },
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (activeDub) 20.sp else if (active) 17.sp else 15.sp,
+                            fontSize = if (activeDub) 18.sp else if (active) 15.sp else 14.sp,
                             fontWeight = when {
                                 activeDub -> FontWeight.Black
                                 active -> FontWeight.SemiBold
@@ -1526,11 +1534,11 @@ private fun SubtitleList(
                         },
                     )
                     if (showOriginalText) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             line.text,
                             color = Color(0xFF626873),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Normal),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
                         )
