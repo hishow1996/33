@@ -73,6 +73,24 @@ class SafeMediaHttpTest {
     }
 
     @Test
+    fun rejectsControlCharactersInForwardedHeadersBeforeMakingARequest() {
+        val invalidHeaders = listOf(
+            mapOf("Cookie" to "session=private\\r\\nInjected: yes"),
+            mapOf("Cookie" to ("session=private" + 0x85.toChar() + "Injected: yes")),
+            mapOf("Referer" to "https://site.example/watch\\r\\nX: yes"),
+        )
+        for (headers in invalidHeaders) {
+            val error = runCatching {
+                SafeMediaHttp.execute(
+                    url = "http://127.0.0.1:1/media",
+                    requestHeaders = headers,
+                )
+            }.exceptionOrNull()
+            assertTrue(error is IllegalArgumentException)
+        }
+    }
+
+    @Test
     fun rejectsInvertedAndOverflowingRangeHeadersBeforeMakingARequest() {
         val invalidRanges = listOf("bytes=8-4", "bytes=9223372036854775808-9223372036854775809")
         invalidRanges.forEach { range ->
