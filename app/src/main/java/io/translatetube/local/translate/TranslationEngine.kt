@@ -71,9 +71,14 @@ object LangMap {
         if (normalized.isEmpty() || normalized == "auto" ||
             normalized == "und" || normalized == "unknown" || normalized == "undefined"
         ) return if (target) "zh-CN" else "auto"
-        return when (normalized) {
-            "zh", "zh-cn", "zh-hans", "zh-hans-cn", "zh-sg" -> "zh-CN"
-            "zh-tw", "zh-hant", "zh-hant-tw", "zh-hk" -> "zh-TW"
+        return when {
+            normalized in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn", "zh-sg") ||
+                normalized.startsWith("zh-hans-") -> "zh-CN"
+            normalized in setOf("zh-tw", "zh-hant", "zh-hant-tw", "zh-hk") ||
+                normalized.startsWith("zh-hant-") -> "zh-TW"
+            normalized == "nb" || normalized == "nn" -> "no"
+            normalized == "iw" -> "he"
+            normalized == "in" -> "id"
             else -> raw.substringBefore('-').lowercase(java.util.Locale.ROOT)
         }
     }
