@@ -35,6 +35,19 @@ class MediaDownloadRetryPolicyTest {
     }
 
     @Test
+    fun ytDlpFallbackIsSuppressedForCancellationAndInactiveSessions() {
+        assertTrue(MediaDownloadRetryPolicy.shouldFallbackToStreaming(IOException("format unsupported"), true))
+        assertFalse(MediaDownloadRetryPolicy.shouldFallbackToStreaming(CancellationException("cancelled"), true))
+        assertFalse(
+            MediaDownloadRetryPolicy.shouldFallbackToStreaming(
+                IOException("wrapped", CancellationException("cancelled")),
+                true,
+            )
+        )
+        assertFalse(MediaDownloadRetryPolicy.shouldFallbackToStreaming(IOException("format unsupported"), false))
+    }
+
+    @Test
     fun doesNotRetryPermanentErrorsOrCancellation() {
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 403")))
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 404")))

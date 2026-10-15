@@ -2613,6 +2613,13 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     } catch (cancel: kotlinx.coroutines.CancellationException) {
                         throw cancel
                     } catch (e: Exception) {
+                        val coroutineActive = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive != false
+                        if (!MediaDownloadRetryPolicy.shouldFallbackToStreaming(e, coroutineActive)) {
+                            // Preserve wrapped cancellation too: do not start network fallback when
+                            // the current session has already been cancelled or retired.
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            throw e
+                        }
                         android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
                         updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {

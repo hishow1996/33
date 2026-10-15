@@ -27,6 +27,10 @@ internal object MediaDownloadRetryPolicy {
             normalized.contains("invalid signature")
     }
 
+    /** Decide whether a yt-dlp failure may proceed to another network download path. */
+    fun shouldFallbackToStreaming(error: Throwable, coroutineActive: Boolean): Boolean =
+        coroutineActive && !hasCancellationCause(error)
+
     fun shouldRetry(error: Throwable): Boolean {
         if (hasCancellationCause(error)) return false
         if (error is IOException) return true
