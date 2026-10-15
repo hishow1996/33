@@ -57,8 +57,12 @@ class DubbingEngine(
     private val mem = DubbingPcmMemoryCache(maxBytes = pcmMemoryBudgetBytes, maxEntries = 48)
 
     @Volatile private var tts: TtsEngine? = null
-    /** Called when the selected engine fails; the service reports this without switching engines. */
+    private val ttsInstances = java.util.concurrent.CopyOnWriteArrayList<TtsEngine>()
+    private val fallbackRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** Return true when the service has scheduled a safe fallback-engine switch for this failed cue. */
+    @Volatile var onFallbackRequested: ((index: Int, detail: String) -> Boolean)? = null
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
+    val currentTtsName: String get() = tts?.name.orEmpty()
     /** Diagnostic callback: the first successful PCM result for this session. */
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
@@ -121,6 +125,9 @@ class DubbingEngine(
         synchronized(cacheWriteLock) {
             if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
             this.tts = tts
+            ttsInstances.clear()
+            ttsInstances.add(tts)
+            fallbackRequested.set(false)
             this.lines = lines.toList()
             this.timeline = DubbingTimeline(this.lines)
             synthesisErrorReported.set(false)
@@ -266,6 +273,10 @@ class DubbingEngine(
             // isEmpty() check could let this worker exit before the reordered work is restored.
             while (!released) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                // A fallback request stops this worker at a line boundary. The service waits for
+                // it to unwind before swapping engines, preventing old TTS PCM from being written
+                // into the new engine's cache namespace.
+                if (fallbackRequested.get()) break
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
                 val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 fun checkSynthesisActive() {
@@ -486,8 +497,16 @@ class DubbingEngine(
                     // A released session must never write a failure marker into a newer session's cache.
                     if (released) throw kotlinx.coroutines.CancellationException("配音引擎已释放")
                     // After one retry, publish the failure and allow video playback to continue.
+                    val detail = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
-                    reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
+                    if (requestTtsFallback(idx, detail)) {
+                        // The asynchronous service callback will install the fallback and requeue
+                        // this cue. Stop before synthesizing another line with the failed engine.
+                        readiness.markPrepared(idx, hasAudio = false)
+                        bumpPrepared()
+                        continue
+                    }
+                    reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：$detail")
                     // Do not persist a zero-sample marker for a failed synthesis. A transient
                     // service/voice failure should be retried in a future session, not cached as silence.
                     readiness.markPrepared(idx, hasAudio = false)
@@ -501,11 +520,60 @@ class DubbingEngine(
             val completedWorker = kotlinx.coroutines.currentCoroutineContext()[Job]
             val shouldRestart = synchronized(synthStartLock) {
                 if (synthJob === completedWorker) synthJob = null
-                !released && pending.isNotEmpty()
+                !released && !fallbackRequested.get() && pending.isNotEmpty()
             }
             if (shouldRestart) startSynthLoop()
             }
         }
+    }
+
+    private fun requestTtsFallback(index: Int, detail: String): Boolean {
+        if (!tts?.name.orEmpty().contains("系统TTS")) return false
+        if (!fallbackRequested.compareAndSet(false, true)) return true
+        val accepted = runCatching { onFallbackRequested?.invoke(index, detail) == true }.getOrDefault(false)
+        if (!accepted) fallbackRequested.set(false)
+        return accepted
+    }
+
+    /**
+     * Replace a failed System TTS instance after the active synthesis job has unwound, then retry
+     * the cue with a fresh engine-specific cache key. Existing valid fallback cache rows are reused.
+     */
+    suspend fun completeTtsFallback(fallback: TtsEngine, failedIndex: Int) {
+        synthJob?.join()
+        if (released || failedIndex !in lines.indices) {
+            runCatching { fallback.close() }
+            fallbackRequested.set(false)
+            return
+        }
+        val previous = tts
+        synchronized(cacheWriteLock) {
+            if (released) {
+                runCatching { fallback.close() }
+                fallbackRequested.set(false)
+                return
+            }
+            ttsInstances.addIfAbsent(fallback)
+            tts = fallback
+            fallbackRequested.set(false)
+        }
+        if (previous != null && previous !== fallback) {
+            runCatching { previous.close() }
+            ttsInstances.remove(previous)
+        }
+        synchronized(mem) { mem.remove(failedIndex) }
+        markCuePending(failedIndex)
+        queueSynthesisRetry(failedIndex)
+    }
+
+    fun failTtsFallback(failedIndex: Int, detail: String) {
+        fallbackRequested.set(false)
+        if (failedIndex in lines.indices) {
+            readiness.markPrepared(failedIndex, hasAudio = false)
+            bumpPrepared()
+        }
+        reportSynthesisError("系统 TTS 配音失败，自动切换备用引擎也未成功：$detail")
+        if (!released) startSynthLoop()
     }
 
     private fun reportSynthesisError(message: String) {
@@ -937,8 +1005,11 @@ class DubbingEngine(
                                 if (track === sourceTrack) track = null
                                 runCatching { sourceTrack.release() }
                                 android.util.Log.w("DubbingEngine", "Unable to advance long dubbing cue", error)
+                                val detail = error.message ?: error.javaClass.simpleName
                                 readiness.markPrepared(lineIndex, hasAudio = false)
-                                reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：${error.message ?: error.javaClass.simpleName}")
+                                if (!requestTtsFallback(lineIndex, detail)) {
+                                    reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
+                                }
                             }
                         }
                     } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -1256,8 +1327,11 @@ class DubbingEngine(
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
                     // The service sees this marker and restores original video audio.
                     if (playbackGeneration.get() == generation) readiness.markPrepared(idx, hasAudio = false)
+                    val detail = e.message ?: e.javaClass.simpleName
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
-                    reportSynthesisError("第 ${idx + 1} 句音频输出失败：${e.message ?: e.javaClass.simpleName}")
+                    if (!requestTtsFallback(idx, detail)) {
+                        reportSynthesisError("第 ${idx + 1} 句音频输出失败：$detail")
+                    }
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -1410,8 +1484,10 @@ class DubbingEngine(
             released = true
         }
         playbackGeneration.incrementAndGet()
-        val oldTts = tts
+        val oldTtsInstances = ttsInstances.toList()
+        ttsInstances.clear()
         tts = null
+        fallbackRequested.set(false)
         cacheInitGeneration.incrementAndGet()
         cacheInitJob?.cancel()
         // Serialize the task snapshot with startSynthLoop(). Without this lock, release()
@@ -1419,21 +1495,22 @@ class DubbingEngine(
         // TTS engine underneath that just-started synthesis call.
         val activeSynthesis = synchronized(synthStartLock) { synthJob }
         activeSynthesis?.cancel()
+        val systemInstances = oldTtsInstances.filterIsInstance<io.translatetube.local.tts.SystemTts>()
+        val nativeInstances = oldTtsInstances.filterNot { it is io.translatetube.local.tts.SystemTts }
+        // Close latch-backed System TTS instances first so any waiting synth() call can unwind.
+        systemInstances.forEach { engine -> runCatching { engine.close() } }
         when {
-            oldTts == null -> ttsCloseSignal.complete(Unit)
-            oldTts is io.translatetube.local.tts.SystemTts -> {
-                // System TTS uses a latch-backed callback. close() marks it closed before waking
-                // synth(), so it can abort without decoding a partial WAV.
-                try { oldTts.close() } finally { ttsCloseSignal.complete(Unit) }
-            }
+            nativeInstances.isEmpty() -> ttsCloseSignal.complete(Unit)
             activeSynthesis != null && !activeSynthesis.isCompleted -> {
-                // Kokoro performs blocking native work. Defer native release until it unwinds.
+                // Kokoro/Piper may be inside blocking native work. Defer native release until it unwinds.
                 activeSynthesis.invokeOnCompletion {
-                    try { oldTts.close() } finally { ttsCloseSignal.complete(Unit) }
+                    try { nativeInstances.forEach { runCatching { it.close() } } }
+                    finally { ttsCloseSignal.complete(Unit) }
                 }
             }
             else -> {
-                try { oldTts.close() } finally { ttsCloseSignal.complete(Unit) }
+                try { nativeInstances.forEach { runCatching { it.close() } } }
+                finally { ttsCloseSignal.complete(Unit) }
             }
         }
         _currentLine.value = -1
@@ -1485,6 +1562,8 @@ class DubbingEngine(
         private val nextCacheWriterId = AtomicInteger(0)
         private const val TEMP_PCM_AGE_MS = 6L * 60L * 60L * 1_000L
         // Keep each native static track well below Android's common 1 MiB static-buffer ceiling.
-        private const val MAX_STATIC_TRACK_SAMPLES = 96_000
+        // Keep static chunks small for Android 9/OEM AudioTrack implementations with
+        // restrictive buffer limits. At 24 kHz this is at most one second of audio.
+        private const val MAX_STATIC_TRACK_SAMPLES = 24_000
     }
 }
