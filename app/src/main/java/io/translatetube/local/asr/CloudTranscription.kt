@@ -188,10 +188,8 @@ object CloudTranscription {
             if (token.isBlank()) continue
             val startSeconds = item.optDouble("start", Double.NaN)
             val endSeconds = item.optDouble("end", Double.NaN)
-            if (!startSeconds.isFinite() || !endSeconds.isFinite() || endSeconds < startSeconds) continue
-            val startMs = (startSeconds * 1000.0).toLong().coerceIn(0L, safeDuration - 1L)
-            val endMs = (endSeconds * 1000.0).toLong().coerceIn(startMs + 1L, safeDuration)
-            words += TimedWord(token, startMs, endMs)
+            val interval = providerWordRange(startSeconds, endSeconds, safeDuration) ?: continue
+            words += TimedWord(token, interval.first, interval.second)
         }
 
         val cues = groupWords(words, safeDuration)
@@ -391,6 +389,34 @@ object CloudTranscription {
             endMsDouble.toLong().coerceAtLeast(startMs + 1L).coerceAtMost(usableChunkMs)
         }
         return (globalOffset + startMs) to (globalOffset + endMs)
+    }
+
+    /**
+     * Normalize a provider's seconds-based word range before it enters subtitle grouping.
+     * Reject zero-length, negative, non-finite, or post-media starts; clamp only an end that
+     * extends beyond the media so malformed data cannot invent a final 1 ms caption.
+     */
+    internal fun providerWordRange(
+        startSeconds: Double,
+        endSeconds: Double,
+        durationMs: Long,
+    ): Pair<Long, Long>? {
+        if (durationMs <= 0L ||
+            !startSeconds.isFinite() || !endSeconds.isFinite() ||
+            startSeconds < 0.0 || endSeconds <= startSeconds
+        ) return null
+
+        val startMsDouble = startSeconds * 1_000.0
+        if (!startMsDouble.isFinite() || startMsDouble >= durationMs.toDouble()) return null
+        val safeStart = startMsDouble.toLong().coerceIn(0L, durationMs - 1L)
+
+        val endMsDouble = endSeconds * 1_000.0
+        val safeEnd = if (!endMsDouble.isFinite() || endMsDouble >= durationMs.toDouble()) {
+            durationMs
+        } else {
+            endMsDouble.toLong().coerceAtLeast(safeStart + 1L).coerceAtMost(durationMs)
+        }
+        return safeStart to safeEnd
     }
 
     internal fun kawaChunkRanges(pcmBytes: Long): List<Pair<Long, Long>> {

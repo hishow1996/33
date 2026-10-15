@@ -50,6 +50,28 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun rejectsInvalidProviderWordIntervalsAndStartsPastMediaEnd() {
+        assertEquals(null, CloudTranscription.providerWordRange(1.0, 1.0, 10_000L))
+        assertEquals(null, CloudTranscription.providerWordRange(2.0, 1.0, 10_000L))
+        assertEquals(null, CloudTranscription.providerWordRange(-0.1, 0.5, 10_000L))
+        assertEquals(null, CloudTranscription.providerWordRange(11.0, 12.0, 10_000L))
+        assertEquals(null, CloudTranscription.providerWordRange(Double.NaN, 1.0, 10_000L))
+        assertEquals(null, CloudTranscription.providerWordRange(0.0, 1.0, 0L))
+    }
+
+    @Test
+    fun clampsOnlyAValidWordsEndThatExtendsPastMediaDuration() {
+        assertEquals(
+            9_900L to 10_000L,
+            CloudTranscription.providerWordRange(9.9, 12.0, 10_000L),
+        )
+        assertEquals(
+            0L to 1L,
+            CloudTranscription.providerWordRange(0.0, 0.0005, 10_000L),
+        )
+    }
+
+    @Test
     fun mapsKawaChunkLocalTimesWithinWholeMediaTimeline() {
         assertEquals(
             262_194L to 262_254L,
