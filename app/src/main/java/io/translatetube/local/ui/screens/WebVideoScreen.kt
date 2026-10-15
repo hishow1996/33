@@ -86,6 +86,7 @@ fun WebVideoScreen(
     var ytDlpBusy by remember(initialUrl) { mutableStateOf(false) }
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
     var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
+    var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
 
     fun runYtDlp(target: String) {
         if (ytDlpBusy) return
@@ -151,7 +152,6 @@ fun WebVideoScreen(
     }
 
     // 页面加载后仍无任何候选媒体时，自动尝试一次 yt-dlp 解析。
-    var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
     LaunchedEffect(currentPage, pageLoadToken) {
         delay(5000)
         if (candidatesState.value.isEmpty() && !ytDlpBusy && ytDlpAutoAttempts == 0) {
