@@ -1,10 +1,55 @@
 package io.translatetube.local.asr
 
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CloudTranscriptionTest {
+    @Test
+    fun boundedProviderResponseReaderAcceptsWithinLimitAndRejectsOversizedBodies() {
+        val text = "字幕响应"
+        assertEquals(
+            text,
+            CloudTranscription.readBoundedUtf8(
+                ByteArrayInputStream(text.toByteArray(Charsets.UTF_8)),
+                maxBytes = text.toByteArray(Charsets.UTF_8).size.toLong(),
+            ),
+        )
+
+        val error = runCatching {
+            CloudTranscription.readBoundedUtf8(
+                ByteArrayInputStream(byteArrayOf(1, 2, 3)),
+                maxBytes = 2L,
+            )
+        }.exceptionOrNull()
+        assertTrue(error is IOException)
+    }
+
+    @Test
+    fun wavExportRejectsPcmFilesWhosePhysicalSizeDiffersFromDeclaredSamples() {
+        val directory = createTempDir(prefix = "cloud-wav-length")
+        try {
+            val pcm = File(directory, "source.pcm").apply {
+                writeBytes(byteArrayOf(1, 2, 3, 4))
+            }
+            val wav = File(directory, "output.wav")
+            val error = runCatching {
+                CloudTranscription.writeWavFile(AudioExtract.PcmFile(pcm, sampleCount = 1L), wav)
+            }.exceptionOrNull()
+
+            assertTrue(error is IllegalArgumentException)
+            assertTrue(!wav.exists())
+
+            CloudTranscription.writeWavFile(AudioExtract.PcmFile(pcm, sampleCount = 2L), wav)
+            assertEquals(48L, wav.length())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
     @Test
     fun groupsOutOfOrderProviderWordsByTimestamp() {
         val cues = CloudTranscription.groupWords(

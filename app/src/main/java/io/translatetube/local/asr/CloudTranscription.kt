@@ -8,12 +8,15 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.ResponseBody
 import org.json.JSONObject
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
@@ -44,6 +47,43 @@ object CloudTranscription {
     /** Split provider words at long silences instead of stretching a caption across the pause. */
     internal const val MAX_WORD_GAP_MS = 800L
 
+    /** Bound JSON allocation on memory-constrained phones when a provider returns malformed data. */
+    internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
+
+    /** Read UTF-8 response data with a hard byte limit and cooperative cancellation checks. */
+    internal fun readBoundedUtf8(
+        input: InputStream,
+        maxBytes: Long = MAX_RESPONSE_BODY_BYTES,
+        checkActive: () -> Unit = {},
+    ): String {
+        require(maxBytes in 1L..Int.MAX_VALUE.toLong()) { "云端响应大小上限无效" }
+        val output = ByteArrayOutputStream(minOf(maxBytes, 64L * 1024L).toInt())
+        val buffer = ByteArray(16 * 1024)
+        var totalBytes = 0L
+        while (true) {
+            checkActive()
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count == 0) continue
+            if (count.toLong() > maxBytes - totalBytes) {
+                throw IOException("云端转写响应超过安全上限（\${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
+            }
+            output.write(buffer, 0, count)
+            totalBytes += count.toLong()
+        }
+        return String(output.toByteArray(), Charsets.UTF_8)
+    }
+
+    private fun readResponseBody(body: ResponseBody?, checkActive: () -> Unit): String {
+        if (body == null) return ""
+        if (body.contentLength() > MAX_RESPONSE_BODY_BYTES) {
+            throw IOException("云端转写响应超过 16 MB 安全上限，请切换本地 Whisper 或缩短音频后重试")
+        }
+        return body.byteStream().use { input ->
+            readBoundedUtf8(input, checkActive = checkActive)
+        }
+    }
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -63,7 +103,7 @@ object CloudTranscription {
         require(pcmFile.sampleRate == 16_000) { "云端转写需要 16kHz PCM 音频" }
         val dataBytes = pcmFile.sampleCount * 2L
         require(dataBytes in 2L..(0xffff_ffffL - 36L)) { "音频太大，无法安全创建 WAV 文件" }
-        require(pcmFile.file.isFile && pcmFile.file.length() >= dataBytes) { "待转写音频缓存不完整，请重试" }
+        require(pcmFile.file.isFile && pcmFile.file.length() == dataBytes) { "PCM 缓存长度与声明的采样数不一致，无法创建 WAV 文件" }
 
         val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
         header.put("RIFF".toByteArray(Charset.forName("US-ASCII")))
@@ -149,7 +189,7 @@ object CloudTranscription {
 
         checkActive()
         val responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
-            val body = response.body?.string().orEmpty()
+            val body = readResponseBody(response.body, checkActive)
             checkActive()
             if (!response.isSuccessful) {
                 val serverMessage = try {
@@ -273,7 +313,7 @@ object CloudTranscription {
                         .post(form)
                         .build()
                     val jobId = executeCancellableHttpCall(client.newCall(create), ownerJob) { response ->
-                        val body = response.body?.string().orEmpty()
+                        val body = readResponseBody(response.body, checkActive)
                         checkActive()
                         if (!response.isSuccessful) {
                             val message = runCatching {
@@ -306,7 +346,7 @@ object CloudTranscription {
                             .get()
                             .build()
                         val status = executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
-                            val body = response.body?.string().orEmpty()
+                            val body = readResponseBody(response.body, checkActive)
                             checkActive()
                             if (!response.isSuccessful) {
                                 throw IOException("Kawa 查询转写状态失败（HTTP " + response.code + "）")
