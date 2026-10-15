@@ -130,9 +130,16 @@ class AsrTranscriptCheckpointPolicyTest {
             }
             val inMemory = FloatArray(pcm16.size) { pcm16[it] / 32768f }
             val fromFile = AudioExtract.PcmFile(file, pcm16.size.toLong(), 16_000)
+            val memorySignature = AsrTranscriptCheckpointPolicy.signature(inMemory, segments)
             assertEquals(
-                AsrTranscriptCheckpointPolicy.signature(inMemory, segments),
+                memorySignature,
                 AsrTranscriptCheckpointPolicy.signature(fromFile, segments),
+            )
+            assertFalse(
+                memorySignature == AsrTranscriptCheckpointPolicy.signature(
+                    AudioExtract.PcmFile(file, pcm16.size.toLong(), 8_000),
+                    segments,
+                )
             )
         } finally {
             file.delete()
@@ -150,6 +157,21 @@ class AsrTranscriptCheckpointPolicyTest {
         assertFalse(AsrMemoryPolicy.shouldReleaseRecognizer(false, 384, false, 0L, 0L))
     }
 
+
+    @Test
+    fun fileBackedSignatureRejectsTruncatedPcmPayloadBeforeSeeking() {
+        val file = File.createTempFile("pcm-signature-truncated-test", ".s16le")
+        try {
+            FileOutputStream(file).use { it.write(byteArrayOf(1, 0, 2, 0)) }
+            val mismatched = AudioExtract.PcmFile(file, 3L, 16_000)
+            val error = runCatching {
+                AsrTranscriptCheckpointPolicy.signature(mismatched, listOf(0L to 1L))
+            }.exceptionOrNull()
+            assertTrue(error is IllegalArgumentException)
+        } finally {
+            file.delete()
+        }
+    }
 
     @Test
     fun fileBackedSignatureCanBeCancelledBetweenSparseAnchors() {

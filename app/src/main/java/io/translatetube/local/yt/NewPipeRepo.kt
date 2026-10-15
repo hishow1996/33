@@ -124,12 +124,10 @@ object NewPipeRepo {
     /** StreamInfo 复用：缓存读写有锁；网络解析不占用锁，避免卡住主线程的 invalidation。 */
     private suspend fun info(videoId: String): StreamInfo =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val cached = synchronized(infoLock) {
-                if (cachedId == videoId) cachedInfo else null
+            val (cached, requestGeneration) = synchronized(infoLock) {
+                (if (cachedId == videoId) cachedInfo else null) to infoCacheGeneration
             }
             if (cached != null) return@withContext cached
-
-            val requestGeneration = synchronized(infoLock) { infoCacheGeneration }
             initOnce()
             // This fetch is intentionally outside infoLock. Each caller returns its own result,
             // and a generation check prevents a stale fetch from being installed after invalidate().

@@ -15,6 +15,7 @@ fun vadSegments(
     sr: Int = 16000,
     checkActive: () -> Unit = {},
 ): List<Pair<Long, Long>> {
+    VadSegmentMergePolicy.requireSupportedSampleRate(sr)
     val vad = newVad(ctx, sr)
     val segments = mutableListOf<Pair<Long, Long>>()
     try {
@@ -58,6 +59,7 @@ fun vadSegmentsFromFile(
     sr: Int = 16000,
     checkActive: () -> Unit = {},
 ): List<Pair<Long, Long>> {
+    VadSegmentMergePolicy.requireSupportedSampleRate(sr)
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
     require(PcmTempFilePolicy.hasCompletePcm16Payload(pcmFile.file, pcmFile.sampleCount)) {
         "PCM 临时文件缺失、为空或长度与声明的采样数不匹配"
@@ -140,7 +142,9 @@ private fun drainVad(
         val startSample = segment.start.toLong()
         val endSample = startSample + segment.samples.size.toLong()
         VadSegmentMergePolicy.clipToSampleBounds(startSample, endSample, maxSamples)?.let { (start, end) ->
-            segments += (start * 1000L / sr) to (end * 1000L / sr)
+            val startMs = VadSegmentMergePolicy.sampleIndexToMillis(start, sr)
+            val endMs = VadSegmentMergePolicy.sampleIndexToMillis(end, sr)
+            if (endMs > startMs) segments += startMs to endMs
         }
         vad.pop()
     }

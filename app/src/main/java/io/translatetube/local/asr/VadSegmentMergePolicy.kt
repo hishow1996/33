@@ -10,6 +10,26 @@ internal object VadSegmentMergePolicy {
     const val MERGE_GAP_MS = 400L
     const val MAX_MERGED_SEGMENT_MS = 25_000L
 
+    /** Silero VAD is configured for 8 kHz or 16 kHz PCM; reject invalid rates before JNI calls. */
+    fun requireSupportedSampleRate(sampleRate: Int) {
+        require(sampleRate == 8_000 || sampleRate == 16_000) {
+            "VAD 只支持 8 kHz 或 16 kHz PCM，当前采样率：${sampleRate}"
+        }
+    }
+
+    /** Convert a sample index without overflowing while multiplying by 1,000. */
+    fun sampleIndexToMillis(sampleIndex: Long, sampleRate: Int): Long {
+        require(sampleIndex >= 0L) { "PCM 样本位置不能为负数" }
+        requireSupportedSampleRate(sampleRate)
+        val rate = sampleRate.toLong()
+        val wholeSeconds = sampleIndex / rate
+        val remainderSamples = sampleIndex % rate
+        if (wholeSeconds > Long.MAX_VALUE / 1_000L) return Long.MAX_VALUE
+        val wholeMs = wholeSeconds * 1_000L
+        val remainderMs = remainderSamples * 1_000L / rate
+        return if (wholeMs > Long.MAX_VALUE - remainderMs) Long.MAX_VALUE else wholeMs + remainderMs
+    }
+
     /** Clips a padded VAD span back to the original decoded sample range. */
     fun clipToSampleBounds(
         startSample: Long,

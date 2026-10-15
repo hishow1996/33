@@ -6,7 +6,7 @@ import java.security.MessageDigest
 internal object AsrTranscriptCheckpointPolicy {
     fun signature(pcmSamples: FloatArray, segments: List<Pair<Long, Long>>): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        digest.update("${pcmSamples.size}|${segments.size}|".toByteArray(Charsets.UTF_8))
+        digest.update("${pcmSamples.size}|16000|${segments.size}|".toByteArray(Charsets.UTF_8))
 
         // Sparse, evenly spaced PCM anchors distinguish same-length tracks without hashing every
         // sample on older devices. The VAD boundaries below add another inexpensive identity check.
@@ -41,8 +41,13 @@ internal object AsrTranscriptCheckpointPolicy {
         checkActive: () -> Unit,
     ): String {
         checkActive()
+        require(io.translatetube.local.asr.PcmTempFilePolicy.hasCompletePcm16Payload(
+            pcmFile.file, pcmFile.sampleCount,
+        )) {
+            "PCM 临时文件缺失、为空或长度与声明的采样数不匹配"
+        }
         val digest = MessageDigest.getInstance("SHA-256")
-        digest.update("${pcmFile.sampleCount}|${segments.size}|".toByteArray(Charsets.UTF_8))
+        digest.update("${pcmFile.sampleCount}|${pcmFile.sampleRate}|${segments.size}|".toByteArray(Charsets.UTF_8))
         // Use the same sparse, evenly spaced normalized PCM anchors as the in-memory signature.
         val stride = maxOf(1L, pcmFile.sampleCount / 1_024L)
         val sampleBuffer = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN)

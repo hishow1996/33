@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit
 object YtDlpRepo {
 
     private const val TAG = "YtDlpRepo"
+    private const val MAX_RELEASE_METADATA_BYTES = 1024L * 1024L
 
     @Volatile private var inited = false
 
@@ -159,8 +160,14 @@ object YtDlpRepo {
                 .build()
         ).execute().use { response ->
             if (!response.isSuccessful) return@runCatching null
-            val body = response.body?.string() ?: return@runCatching null
-            JSONObject(body).optString("tag_name").takeIf { it.isNotBlank() }
+            val body = response.body ?: return@runCatching null
+            if (body.contentLength() > MAX_RELEASE_METADATA_BYTES) return@runCatching null
+            val bytes = BoundedTextPayload.readBytes(
+                body.byteStream(),
+                maxBytes = MAX_RELEASE_METADATA_BYTES,
+                resourceLabel = "yt-dlp 版本检查响应",
+            )
+            JSONObject(String(bytes, Charsets.UTF_8)).optString("tag_name").takeIf { it.isNotBlank() }
         }
     }.getOrNull()
 

@@ -77,6 +77,24 @@ class VadSegmentMergePolicyTest {
     }
 
     @Test
+    fun sampleRateMustMatchTheNativeVadSupportedRates() {
+        VadSegmentMergePolicy.requireSupportedSampleRate(8_000)
+        VadSegmentMergePolicy.requireSupportedSampleRate(16_000)
+        assertEquals(false, runCatching {
+            VadSegmentMergePolicy.requireSupportedSampleRate(0)
+        }.isSuccess)
+        assertEquals(false, runCatching {
+            VadSegmentMergePolicy.requireSupportedSampleRate(44_100)
+        }.isSuccess)
+    }
+
+    @Test
+    fun sampleIndexConversionDoesNotOverflowForExtremeTracks() {
+        assertEquals(1_000L, VadSegmentMergePolicy.sampleIndexToMillis(16_001L, 16_000))
+        assertEquals(Long.MAX_VALUE, VadSegmentMergePolicy.sampleIndexToMillis(Long.MAX_VALUE, 16_000))
+    }
+
+    @Test
     fun paddedFinalWindowIsClippedToTheOriginalAudioLength() {
         assertEquals(9_900L to 10_000L, VadSegmentMergePolicy.clipToSampleBounds(9_900, 10_400, 10_000))
     }
