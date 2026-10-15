@@ -237,6 +237,16 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
     ): Boolean {
+        // Reject bad candidates before stopping the currently working source.
+        if (!isValidHttpMediaUrl(videoUrl)) {
+            errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
+            return false
+        }
+        if (!muxed && !isValidHttpMediaUrl(audioUrl)) {
+            errorSink.value = "该清晰度缺少有效的视频或音频流地址"
+            return false
+        }
+
         // Clearing Media3 state resets playWhenReady and the timeline. Capture both first so a
         // quality switch does not jump back to 00:00 or unexpectedly pause an active session.
         val resumeState = PlayerQualitySwitchPolicy.capture(
@@ -244,10 +254,6 @@ class PlayerManager(private val ctx: Context) {
             player.playWhenReady,
         )
         clearPreviousYouTubeSource()
-        if (!isValidHttpMediaUrl(videoUrl)) {
-            errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
-            return false
-        }
         if (muxed) {
             return try {
                 setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
@@ -257,10 +263,6 @@ class PlayerManager(private val ctx: Context) {
                 errorSink.value = "无法初始化 YouTube 合并视频流：${e.message ?: e.javaClass.simpleName}"
                 false
             }
-        }
-        if (!isValidHttpMediaUrl(audioUrl)) {
-            errorSink.value = "该清晰度缺少有效的视频或音频流地址"
-            return false
         }
         return try {
             val meta = buildMetadata(title, artist, artworkUrl)
