@@ -787,7 +787,10 @@ private fun YtDlpUpdateSection() {
         Column(Modifier.weight(1f)) {
             Text("解析规则版本", color = OnBg, style = MaterialTheme.typography.bodyMedium)
             val desc = when {
-                state.current == null -> "尚未使用过 yt-dlp；首次解析网页视频后开启检测"
+                state.checking -> "正在读取本机 yt-dlp 版本并检查上游最新版…"
+                state.current == null && state.latest != null ->
+                    "已获取最新版本 ${state.latest}，暂时无法读取本机版本"
+                state.current == null -> "尚未读取到本机 yt-dlp 版本，点击“检查更新”重试"
                 state.hasUpdate && state.latest != null ->
                     "发现新版本 ${state.latest}（当前 ${state.current}）"
                 state.latest != null -> "当前 ${state.current} · 已是最新"
