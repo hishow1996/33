@@ -364,14 +364,6 @@ class OpenAiCompatEngine(
         return parseNumbered(content, lines.size)
     }
 
-    private suspend fun generateContent(modelId: String, payload: String): String =
-        post(
-            "$endpointBase/v1beta/models/$modelId:generateContent",
-            mapOf("x-goog-api-key" to normalizedApiKey),
-            payload,
-            currentCoroutineContext()[Job],
-        )
-
     private fun parseNumbered(content: String, size: Int): List<String> =
         parseModelTranslations(content, size)
 }
@@ -476,6 +468,14 @@ class GeminiEngine(
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
         return parseNumbered(text, lines.size)
     }
+
+    private suspend fun generateContent(modelId: String, payload: String): String =
+        post(
+            "$endpointBase/v1beta/models/$modelId:generateContent",
+            mapOf("x-goog-api-key" to normalizedApiKey),
+            payload,
+            currentCoroutineContext()[Job],
+        )
 
     private fun parseNumbered(content: String, size: Int): List<String> =
         parseModelTranslations(content, size)
