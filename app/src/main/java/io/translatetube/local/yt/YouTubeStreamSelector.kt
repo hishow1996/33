@@ -22,6 +22,9 @@ internal object YouTubeStreamSelector {
     private const val DEFAULT_HEIGHT = 360
 
     fun isHttpUrl(value: String): Boolean {
+        // Check the original string before trim(): trimming a newline can silently turn an
+        // invalid stream URL into a different, accepted URL.
+        if (value.isBlank() || value.any { Character.isISOControl(it) }) return false
         val trimmed = value.trim()
         return (trimmed.startsWith("https://", ignoreCase = true) ||
             trimmed.startsWith("http://", ignoreCase = true)) &&
