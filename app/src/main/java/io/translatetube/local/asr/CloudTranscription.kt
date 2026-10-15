@@ -177,9 +177,8 @@ object CloudTranscription {
                 while (copied < dataBytes) {
                     checkActive()
                     val wanted = minOf(buffer.size.toLong(), dataBytes - copied).toInt()
-                    val count = input.read(buffer, 0, wanted)
+                    val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer, 0, wanted)
                     if (count < 0) throw IOException("音频缓存提前结束，无法创建完整 WAV")
-                    if (count == 0) continue
                     dest.write(buffer, 0, count)
                     copied += count
                 }
@@ -341,12 +340,12 @@ object CloudTranscription {
                         while (remaining > 0L) {
                             checkActive()
                             ownerJob?.ensureActive()
-                            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                            if (n < 0) throw IOException("Kawa 分段音频读取不完整")
-                            if (n > 0) {
-                                output.write(buffer, 0, n)
-                                remaining -= n
-                            }
+                            val count = minOf(buffer.size.toLong(), remaining).toInt()
+                            // RandomAccessFile.readFully either fills this bounded chunk or fails;
+                            // unlike read(), it cannot spin forever on a zero-progress read.
+                            input.readFully(buffer, 0, count)
+                            output.write(buffer, 0, count)
+                            remaining -= count
                         }
                         output.flush()
                     }
