@@ -47,6 +47,7 @@ object SubtitleParsers {
         var pendingStart = -1L
         var pendingEnd = -1L
         val buf = StringBuilder()
+        var inNoteBlock = false
         fun flush() {
             val txt = buf.toString().trim()
             if (pendingStart >= 0 && pendingEnd > pendingStart && txt.isNotEmpty()) {
@@ -57,15 +58,27 @@ object SubtitleParsers {
         for ((lineIndex, raw) in src.lineSequence().withIndex()) {
             if ((lineIndex and 0xff) == 0) checkActive()
             val line = raw.trim()
+            if (line.isEmpty()) {
+                // A blank line closes a WebVTT cue. Do not attach comments or orphan text to it.
+                if (!inNoteBlock) flush()
+                inNoteBlock = false
+                continue
+            }
+            if (inNoteBlock) continue
+            if (pendingStart < 0 &&
+                (line == "NOTE" || line.startsWith("NOTE ") || line.startsWith("NOTE\\t"))
+            ) {
+                inNoteBlock = true
+                continue
+            }
+
             val m = webVttTimestampRegex.find(line)
             if (m != null) {
                 flush()
                 val parts = m.value.split("-->")
                 pendingStart = parseVttTs(parts[0].trim()) ?: -1L
                 pendingEnd = parseVttTs(parts[1].trim()) ?: -1L
-            } else if (line.isEmpty()) {
-                // 行结束标记交给下一条 cue 前统一 flush
-            } else if (pendingStart >= 0 && !line.startsWith("NOTE") && !line.startsWith("WEBVTT") &&
+            } else if (pendingStart >= 0 && !line.startsWith("WEBVTT") &&
                 !line.startsWith("Kind:") && !line.startsWith("Language:")
             ) {
                 buf.appendLine(stripTags(line))
@@ -81,15 +94,18 @@ object SubtitleParsers {
     internal fun parseSrt(src: String, checkActive: () -> Unit): List<SubLine> =
         parseVtt(src, checkActive)
 
-    /** 将字幕行导出为标准 WebVTT，统一文件扩展名并保留时间轴。 */
+    /** 将字幕行导出为标准 WebVTT，跳过空文本和非法时间窗，并按时间排序。 */
     fun toVtt(lines: List<SubLine>): String = buildString {
         appendLine("WEBVTT")
         appendLine()
-        lines.forEach { line ->
-            appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
-            line.text.lines().forEach { appendLine(it) }
-            appendLine()
-        }
+        lines.asSequence()
+            .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+            .sortedBy { it.startMs }
+            .forEach { line ->
+                appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
+                line.text.lines().forEach { appendLine(it) }
+                appendLine()
+            }
     }
 
     private fun formatVttTime(ms: Long): String {
