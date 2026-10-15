@@ -20,7 +20,7 @@ internal object BoundedTextPayload {
         var totalBytes = 0L
         while (true) {
             checkActive()
-            val count = input.read(buffer)
+            val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
             if (count < 0) break
             if (count == 0) continue
             if (totalBytes > maxBytes - count.toLong()) {
