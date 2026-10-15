@@ -93,6 +93,8 @@ fun WebVideoScreen(
     val fullScreenContainer = remember { mutableStateOf<FrameLayout?>(null) }
     val fullScreenCallback = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var ytDlpJob by remember(initialUrl) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // 自动「更新规则后重试」是否已用过（每次页面导航只自动自救一次，防循环）
+    var rulesUpdatedForRetry by remember(initialUrl) { mutableStateOf(false) }
 
     // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
     val appCtx = LocalContext.current.applicationContext
@@ -168,6 +170,7 @@ fun WebVideoScreen(
                     if (!screenActive.get() || pageGeneration.get() != requestGeneration ||
                         ytDlpRunGeneration.get() != runGeneration || currentPage != target
                     ) return@post
+                    if (rulesUpdatedForRetry) status = "更新解析规则后重试成功"
                     ytDlpBusy = false
                     ytDlpJob = null
                     status = "yt-dlp 解析成功：${media.title}"
@@ -190,6 +193,28 @@ fun WebVideoScreen(
                     ytDlpJob = null
                     ytDlpHint = io.translatetube.local.yt.YtDlpRepo.failureHint(e)
                     status = "yt-dlp 解析未成功；可稍后重试或改用其他链接。"
+                    // 自救：检测到上游有新版解析规则时，先自动更新规则，再重试一次
+                    // （网站改版导致旧规则失效是最常见的解析失败原因）
+                    if (io.translatetube.local.yt.YtDlpRepo.updateState.value.hasUpdate && !rulesUpdatedForRetry) {
+                        rulesUpdatedForRetry = true
+                        status = "检测到 yt-dlp 有新版解析规则，正在自动更新（约 30MB）…"
+                        ytScope.launch(Dispatchers.IO) {
+                            try {
+                                io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
+                            } catch (updateError: Exception) {
+                                mainHandler.post {
+                                    status = "解析规则自动更新失败，可稍后在设置里手动更新后重试。"
+                                }
+                                return@launch
+                            }
+                            mainHandler.post {
+                                if (screenActive.get() && pageGeneration.get() == requestGeneration && !ytDlpBusy) {
+                                    status = "解析规则已更新，正在重试解析…"
+                                    runYtDlp(target)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

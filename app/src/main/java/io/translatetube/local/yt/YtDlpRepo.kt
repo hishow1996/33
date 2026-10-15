@@ -41,6 +41,14 @@ object YtDlpRepo {
     private const val MAX_RESOLVE_JSON_CHARS = 4 * 1024 * 1024
     private const val MAX_RESOLVE_FORMATS = 500
 
+    /**
+     * 与 App 内 WebView 一致的移动端 Chrome UA。yt-dlp 默认 UA（python-* 类）
+     * 会被 B 站等风控站点以 HTTP 412 直接拒绝，是「网页视频解析失败」的最常见原因；
+     * WebView 能正常打开的页面，yt-dlp 用同一 UA 请求通常也能通过。
+     */
+    const val BROWSER_UA: String =
+        "Mozilla/5.0 (Linux; Android 9; COR-AL10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+
     @Volatile private var inited = false
 
     // ---- 版本自动检测（每日最多一次；仅在用过 yt-dlp 后启用） ----
@@ -355,6 +363,8 @@ object YtDlpRepo {
                 addOption("-N", "4")
                 addOption("--newline")
                 addOption("-o", outputTemplate)
+                // 与 resolve 相同的浏览器 UA，避免直链下载被站点风控拒绝
+                addOption("--add-headers", "User-Agent:" + BROWSER_UA)
                 cookieHeader?.takeIf { it.isNotBlank() }?.let {
                     addOption("--add-headers", "Cookie:" + it)
                 }
@@ -482,6 +492,8 @@ object YtDlpRepo {
                     addOption("--no-playlist")
                     addOption("--socket-timeout", "20")
                     addOption("--retries", "3")
+                    // 浏览器 UA：对不被风控的站点无副作用，对 B 站等 412 风控站点是关键
+                    addOption("--add-headers", "User-Agent:" + BROWSER_UA)
                     if (!cookieHeader.isNullOrBlank()) {
                         addOption("--add-headers", "Cookie:" + cookieHeader)
                     }
@@ -560,7 +572,7 @@ object YtDlpRepo {
                 "视频不可用（可能已删除或地区限制）"
             msg.contains("timed out", ignoreCase = true) || msg.contains("timeout", ignoreCase = true) ->
                 "网络超时，请检查网络后重试"
-            else -> "yt-dlp 解析失败：${e.message ?: "未知错误"}"
+            else -> "yt-dlp 解析失败：${e.message ?: "未知错误"}（网站改版常导致旧规则失效，可在设置里更新 yt-dlp 解析规则）"
         }
     }
 }
