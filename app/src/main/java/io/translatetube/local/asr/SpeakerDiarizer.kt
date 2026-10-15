@@ -174,7 +174,7 @@ object SpeakerDiarizer {
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
                             checkActive()
-                            val n = input.read(buffer)
+                            val n = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                             if (n < 0) break
                             total += n
                             if (total > maxBytes) throw java.io.IOException("模型文件超过大小限制")
@@ -222,7 +222,7 @@ object SpeakerDiarizer {
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
                             checkActive()
-                            val n = tar.read(buffer)
+                            val n = io.translatetube.local.util.ProgressSafeInput.read(tar, buffer)
                             if (n < 0) break
                             total += n
                             if (total > 30L * 1024 * 1024) throw java.io.IOException("分离模型超过大小限制")
