@@ -34,6 +34,9 @@ class PcmFrameLayoutTest {
     fun rejectsBuffersThatSplitSamplesOrChannelFrames() {
         assertEquals(false, PcmFrameLayout.isValidBuffer(1, 16, 2, 1))
         assertEquals(false, PcmFrameLayout.isValidBuffer(0, 3, 2, 1))
+        // These offsets align to samples, but split the stereo and 3-channel frames.
+        assertEquals(false, PcmFrameLayout.isValidBuffer(2, 8, 2, 2))
+        assertEquals(false, PcmFrameLayout.isValidBuffer(4, 12, 2, 3))
         assertEquals(false, PcmFrameLayout.isValidBuffer(0, 6, 2, 2))
         assertEquals(false, PcmFrameLayout.isValidBuffer(-2, 8, 2, 2))
     }

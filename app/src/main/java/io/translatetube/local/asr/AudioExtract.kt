@@ -70,8 +70,9 @@ object AudioExtract {
             require(sampleCount <= Long.MAX_VALUE / 2L) { "PCM 文件采样范围超出可寻址长度" }
             val endSample = startSample + count.toLong()
             val endByte = endSample * 2L
-            require(file.isFile && file.length() >= endByte) {
-                "PCM 临时文件长度小于声明的采样范围"
+            val expectedFileBytes = sampleCount * 2L
+            require(file.isFile && file.length() == expectedFileBytes && endByte <= expectedFileBytes) {
+                "PCM 临时文件长度与声明的采样数不一致"
             }
 
             val result = FloatArray(count)

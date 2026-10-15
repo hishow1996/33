@@ -10,10 +10,10 @@ internal object PcmTempFilePolicy {
     /** Keep decoded scratch PCM bounded on older devices even for unusually long source files. */
     const val MAX_PCM_BYTES = 512L * 1024L * 1024L
 
-    /** True only when a PCM16 scratch file physically contains its declared sample range. */
+    /** True only when a PCM16 scratch file's byte length exactly matches its declared samples. */
     fun hasCompletePcm16Payload(file: File, sampleCount: Long): Boolean {
         if (sampleCount <= 0L || sampleCount > Long.MAX_VALUE / 2L || !file.isFile) return false
-        return file.length() >= sampleCount * 2L
+        return file.length() == sampleCount * 2L
     }
 
     fun canAppendSamples(currentBytes: Long, sampleCount: Int): Boolean {

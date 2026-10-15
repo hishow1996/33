@@ -29,8 +29,9 @@ internal object PcmFrameLayout {
     ): Boolean {
         if (offsetBytes < 0 || sizeBytes < 0) return false
         if (bytesPerSample !in 1..4 || channels !in 1..8) return false
-        if (offsetBytes % bytesPerSample != 0) return false
         val bytesPerFrame = bytesPerSample * channels
-        return sizeBytes % bytesPerFrame == 0
+        // An offset can be sample-aligned but still start in the middle of a stereo/multichannel
+        // frame. The mixer treats the first sample as channel zero, so reject that layout early.
+        return offsetBytes % bytesPerFrame == 0 && sizeBytes % bytesPerFrame == 0
     }
 }

@@ -35,6 +35,23 @@ class AudioExtractPcmFileTest {
         }
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsPcmFileWithTrailingBytesBeyondDeclaredSampleCount() {
+        val oversized = File.createTempFile("pcm-trailing-test", ".s16le")
+        try {
+            oversized.writeBytes(byteArrayOf(1, 0, 2, 0, 3, 0))
+            AudioExtract.PcmFile(
+                file = oversized,
+                sampleCount = 2L,
+            ).readFloatSamples(
+                startSample = 0L,
+                count = 2,
+            )
+        } finally {
+            oversized.delete()
+        }
+    }
+
     @Test(expected = java.util.concurrent.CancellationException::class)
     fun checksCancellationBeforeAllocatingLargeFloatArrayOrOpeningFile() {
         val sampleCount = 32 * 1024 * 1024 / 4

@@ -51,11 +51,15 @@ class PcmTempFilePolicyTest {
             val truncated = File(dir, "truncated.s16le").apply {
                 writeBytes(byteArrayOf(1, 0))
             }
+            val trailing = File(dir, "trailing.s16le").apply {
+                writeBytes(byteArrayOf(1, 0, 2, 0, 3, 0))
+            }
             val missing = File(dir, "missing.s16le")
 
             assertTrue(PcmTempFilePolicy.hasCompletePcm16Payload(complete, 2L))
             assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(truncated, 2L))
             assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(missing, 1L))
+            assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(trailing, 2L))
             assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(complete, 0L))
             assertFalse(PcmTempFilePolicy.hasCompletePcm16Payload(complete, Long.MAX_VALUE))
         } finally {
