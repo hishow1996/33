@@ -693,6 +693,8 @@ class DubbingEngine(
                 }
                 out.flush()
             }
+            // Flush PCM bytes and metadata before a same-directory rename makes this cache reusable.
+            java.io.RandomAccessFile(temp, "rw").use { it.fd.sync() }
             checkActive()
             if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
                 throw java.io.IOException("PCM 缓存写入不完整")
