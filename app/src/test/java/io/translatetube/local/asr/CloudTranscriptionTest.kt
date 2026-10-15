@@ -53,6 +53,18 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun kawaPollUrlAcceptsSafeIdsAndRejectsPathOrHeaderInjection() {
+        assertEquals(
+            "https://api.makimoto.ai/v1/transcriptions/job_123-abc",
+            CloudTranscription.kawaPollUrl("job_123-abc"),
+        )
+        for (badId in listOf("", ".", "..", "../other", "id?admin=1", "id#fragment", "id\nInjected", "x".repeat(257))) {
+            val error = runCatching { CloudTranscription.kawaPollUrl(badId) }.exceptionOrNull()
+            assertTrue(error is IOException)
+        }
+    }
+
+    @Test
     fun kawaLanguageTreatsAutoCaseInsensitivelyAsLanguageDetection() {
         assertEquals("zh", CloudTranscription.kawaLanguageCode(" zh "))
         assertEquals(null, CloudTranscription.kawaLanguageCode("auto"))

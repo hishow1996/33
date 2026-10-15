@@ -485,15 +485,8 @@ class DubbingEngine(
                     // After one retry, publish the failure and allow video playback to continue.
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：${e.message ?: e.javaClass.simpleName}")
-                    try {
-                        writeCache(idx, 16000, FloatArray(0), checkActive = ::checkSynthesisActive)
-                    } catch (writeError: Exception) {
-                        if (writeError is kotlinx.coroutines.CancellationException) throw writeError
-                        // Session readiness is independent of persistence. Even when storage is
-                        // unavailable, finish this cue as silent so playback falls back to source
-                        // audio and the worker can continue with later subtitles.
-                        android.util.Log.e("DubbingEngine", "cache fallback fail line $idx", writeError)
-                    }
+                    // Do not persist a zero-sample marker for a failed synthesis. A transient
+                    // service/voice failure should be retried in a future session, not cached as silence.
                     readiness.markPrepared(idx, hasAudio = false)
                     bumpPrepared()
                 }
@@ -676,7 +669,18 @@ class DubbingEngine(
             checkActive()
             return true
         }
-        return inspectCache(cacheFile(idx), checkActive).hasAudio
+        val file = cacheFile(idx)
+        val inspection = inspectCache(file, checkActive)
+        val reusable = DubbingCacheAudioPolicy.reusableState(
+            inspection.hasAudio,
+            lines.getOrNull(idx)?.zh,
+        )
+        if (inspection.hasAudio == false && reusable == null) {
+            // Older builds persisted failed TTS synthesis as an empty marker. If this cue has
+            // translated text, invalidate that marker so a later session can retry the selected engine.
+            deleteCacheIfUnchanged(file, inspection.stamp)
+        }
+        return reusable
     }
 
     /**

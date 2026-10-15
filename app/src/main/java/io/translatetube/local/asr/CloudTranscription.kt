@@ -4,6 +4,7 @@ import android.content.Context
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.yt.executeCancellableHttpCall
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -108,6 +109,18 @@ object CloudTranscription {
     /** Kawa's automatic-detection mode is represented by omitting the language field. */
     internal fun kawaLanguageCode(language: String): String? =
         language.trim().takeIf { it.isNotEmpty() && !it.equals("auto", ignoreCase = true) }
+
+    private val kawaJobIdPattern = Regex("[A-Za-z0-9_-]{1,256}")
+
+    /** Keep server-returned job IDs inside one fixed path segment before attaching the API key. */
+    internal fun kawaPollUrl(jobId: String): String {
+        if (!kawaJobIdPattern.matches(jobId)) {
+            throw IOException("Kawa 返回的转写任务编号格式无效")
+        }
+        val base = "https://api.makimoto.ai/v1/transcriptions".toHttpUrlOrNull()
+            ?: throw IOException("Kawa 转写查询地址无效")
+        return base.newBuilder().addPathSegment(jobId).build().toString()
+    }
 
     /**
      * Kawa's asynchronous job endpoint can be briefly rate-limited or unavailable. Retry only
@@ -449,6 +462,7 @@ object CloudTranscription {
                         JSONObject(body).optString("job_id").takeIf { it.isNotBlank() }
                             ?: throw IOException("Kawa 没有返回转写任务编号")
                     }
+                    val pollUrl = kawaPollUrl(jobId)
 
                     // The service has accepted the file; keep only one request chunk while polling.
                     chunk.delete()
@@ -459,7 +473,7 @@ object CloudTranscription {
                         checkActive()
                         ownerJob?.ensureActive()
                         val poll = Request.Builder()
-                            .url("https://api.makimoto.ai/v1/transcriptions/$jobId")
+                            .url(pollUrl)
                             .header("Authorization", "Bearer " + apiKey)
                             .get()
                             .build()
