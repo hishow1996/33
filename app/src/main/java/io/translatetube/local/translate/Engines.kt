@@ -4,6 +4,9 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
@@ -134,28 +137,54 @@ private fun responseRoute(response: okhttp3.Response): String {
     return hops.asReversed().joinToString(" -> ")
 }
 
-private fun post(url: String, headers: Map<String, String>, body: String): String {
-    val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
-    headers.forEach { (k, v) -> b.header(k, v) }
-    http.newCall(b.build()).execute().use { resp ->
-        val text = resp.body?.string() ?: throw IllegalStateException("空响应")
-        if (!resp.isSuccessful) {
-            throw IllegalStateException("HTTP ${resp.code} [${responseRoute(resp)}]: ${text.take(500)}")
-        }
-        return text
+private const val MAX_TRANSLATION_RESPONSE_BYTES = 16L * 1024L * 1024L
+
+private fun readTranslationResponse(
+    response: okhttp3.Response,
+    ownerJob: Job?,
+): String {
+    val body = response.body ?: throw IllegalStateException("空响应")
+    if (body.contentLength() > MAX_TRANSLATION_RESPONSE_BYTES) {
+        throw IllegalStateException("翻译服务响应超过 16 MB 安全上限，已停止读取以保护设备内存")
     }
+    val bytes = body.byteStream().use { input ->
+        io.translatetube.local.yt.BoundedTextPayload.readBytes(
+            input,
+            maxBytes = MAX_TRANSLATION_RESPONSE_BYTES,
+            resourceLabel = "翻译服务响应",
+            checkActive = { ownerJob?.ensureActive() },
+        )
+    }
+    val text = String(bytes, Charsets.UTF_8)
+    if (!response.isSuccessful) {
+        throw IllegalStateException("HTTP ${response.code} [${responseRoute(response)}]: ${text.take(500)}")
+    }
+    return text
 }
 
-private fun get(url: String, headers: Map<String, String>): String {
+private fun post(
+    url: String,
+    headers: Map<String, String>,
+    body: String,
+    ownerJob: Job?,
+): String {
+    val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
+    headers.forEach { (k, v) -> b.header(k, v) }
+    return io.translatetube.local.yt.executeCancellableHttpCall(
+        http.newCall(b.build()), ownerJob,
+    ) { response -> readTranslationResponse(response, ownerJob) }
+}
+
+private fun get(
+    url: String,
+    headers: Map<String, String>,
+    ownerJob: Job?,
+): String {
     val b = Request.Builder().url(url).get()
     headers.forEach { (k, v) -> b.header(k, v) }
-    http.newCall(b.build()).execute().use { resp ->
-        val text = resp.body?.string() ?: throw IllegalStateException("空响应")
-        if (!resp.isSuccessful) {
-            throw IllegalStateException("HTTP ${resp.code} [${responseRoute(resp)}]: ${text.take(500)}")
-        }
-        return text
-    }
+    return io.translatetube.local.yt.executeCancellableHttpCall(
+        http.newCall(b.build()), ownerJob,
+    ) { response -> readTranslationResponse(response, ownerJob) }
 }
 
 /**
@@ -238,7 +267,7 @@ class OpenAiCompatEngine(
     }
 
     override suspend fun listModels(): List<String> {
-        val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"))
+        val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"), currentCoroutineContext()[Job])
         val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
         return (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.sorted()
     }
@@ -297,6 +326,7 @@ class OpenAiCompatEngine(
             endpoint("/chat/completions"),
             mapOf("Authorization" to "Bearer $apiKey"),
             payload.toString(),
+            currentCoroutineContext()[Job],
         )
         val content = JSONObject(body).getJSONArray("choices")
             .getJSONObject(0).getJSONObject("message").getString("content")
@@ -322,7 +352,7 @@ class GeminiEngine(
     private val normalizedApiKey = apiKey.trim()
 
     override suspend fun listModels(): List<String> {
-        val body = get("$endpointBase/v1beta/models", mapOf("x-goog-api-key" to normalizedApiKey))
+        val body = get("$endpointBase/v1beta/models", mapOf("x-goog-api-key" to normalizedApiKey), currentCoroutineContext()[Job])
         val arr = JSONObject(body).optJSONArray("models") ?: return emptyList()
         val out = mutableListOf<String>()
         for (i in 0 until arr.length()) {
@@ -380,6 +410,7 @@ class GeminiEngine(
             "$endpointBase/v1beta/models/$model:generateContent",
             mapOf("x-goog-api-key" to normalizedApiKey),
             payload.toString(),
+            currentCoroutineContext()[Job],
         )
         val text = JSONObject(body).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
@@ -409,7 +440,7 @@ class GoogleWebEngine : TranslationEngine {
                 "&sl=" + java.net.URLEncoder.encode(source, "UTF-8") +
                 "&tl=" + java.net.URLEncoder.encode(target, "UTF-8") +
                 "&dt=t&q=" + java.net.URLEncoder.encode(line, "UTF-8")
-            val root = JSONArray(get(url, mapOf("User-Agent" to "Mozilla/5.0")))
+            val root = JSONArray(get(url, mapOf("User-Agent" to "Mozilla/5.0"), currentCoroutineContext()[Job]))
             val segments = root.optJSONArray(0) ?: throw IllegalStateException("Google 翻译返回格式异常")
             val translated = buildString {
                 for (i in 0 until segments.length()) {
@@ -509,6 +540,7 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
             endpointWithKey,
             emptyMap(),
             requestPayload(texts, srcLang, tgtLang),
+            currentCoroutineContext()[Job],
         )
         val arr = JSONObject(body).getJSONObject("data").getJSONArray("translations")
         if (arr.length() != texts.size) {
