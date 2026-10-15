@@ -33,6 +33,21 @@ class ProgressSafeInputTest {
     }
 
     @Test
+    fun fallbackHonorsOffsetAndLengthBounds() {
+        val backing = ByteArrayInputStream("xyz".toByteArray(Charsets.UTF_8))
+        val unusual = object : InputStream() {
+            override fun read(): Int = backing.read()
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int = 0
+        }
+        val buffer = ByteArray(4) { '#'.code.toByte() }
+        assertEquals(1, ProgressSafeInput.read(unusual, buffer, 2, 2))
+        assertEquals('x'.code.toByte(), buffer[2])
+        assertEquals('#'.code.toByte(), buffer[0])
+        assertEquals('#'.code.toByte(), buffer[1])
+        assertEquals('#'.code.toByte(), buffer[3])
+    }
+
+    @Test
     fun emptyBufferIsRejectedBeforeReading() {
         val input = ByteArrayInputStream(byteArrayOf(1))
         val error = runCatching { ProgressSafeInput.read(input, ByteArray(0)) }.exceptionOrNull()
