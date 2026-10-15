@@ -388,6 +388,7 @@ object AudioExtract {
                         }
                     } else if (outBufferIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
                         // Buffer-layout notification only; it is not audio data progress.
+                    }
 
                     if (loopMadeProgress) {
                         lastCodecProgressAtMs = android.os.SystemClock.elapsedRealtime()
