@@ -72,6 +72,8 @@ fun GoogleTranslateSection() {
             states = withContext(Dispatchers.IO) {
                 packs.associate { pack -> pack.source to if (packIsReady(pack)) "ready" else "missing" }
             }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             states = packs.associate { it.source to "unknown" }
         }
@@ -133,6 +135,10 @@ fun GoogleTranslateSection() {
                                     if (!packIsReady(pack)) throw IllegalStateException("语言包安装校验未通过")
                                     states = states + (pack.source to "ready")
                                     downloadMessage = ""
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                    // Cancellation is lifecycle/navigation control flow, not a failed download.
+                                    states = states + (pack.source to "missing")
+                                    throw cancelled
                                 } catch (e: Exception) {
                                     states = states + (pack.source to "failed")
                                     downloadMessage = "${pack.title}下载失败：${e.message ?: "请检查网络后重试"}"
