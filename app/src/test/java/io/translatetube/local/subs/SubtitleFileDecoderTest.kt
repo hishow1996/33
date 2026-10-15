@@ -27,7 +27,7 @@ class SubtitleFileDecoderTest {
 
     @Test
     fun detectsUtf16WithoutBomFromTimestampText() {
-        val text = "1\\r\\n00:00:00,000 --> 00:00:01,000\\r\\n字幕"
+        val text = "1" + 13.toChar() + 10.toChar() + "00:00:00,000 --> 00:00:01,000" + 13.toChar() + 10.toChar() + "字幕"
         assertEquals(text, SubtitleFileDecoder.decode(text.toByteArray(StandardCharsets.UTF_16LE)))
         assertEquals(text, SubtitleFileDecoder.decode(text.toByteArray(StandardCharsets.UTF_16BE)))
     }
