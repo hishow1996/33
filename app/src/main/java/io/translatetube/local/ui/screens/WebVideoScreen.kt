@@ -1,6 +1,9 @@
 package io.translatetube.local.ui.screens
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -9,6 +12,10 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.webkit.CookieManager
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -79,6 +86,9 @@ fun WebVideoScreen(
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val screenActive = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(true) }
     val pageGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
+    val ytDlpRunGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
+    val fullScreenContainer = remember { mutableStateOf<FrameLayout?>(null) }
+    val fullScreenCallback = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var ytDlpJob by remember(initialUrl) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
@@ -88,6 +98,25 @@ fun WebVideoScreen(
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
     var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
     var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
+
+    fun hideFullScreenView() {
+        fullScreenContainer.value?.let { container ->
+            (container.parent as? ViewGroup)?.removeView(container)
+        }
+        fullScreenContainer.value = null
+        fullScreenCallback.value?.onCustomViewHidden()
+        fullScreenCallback.value = null
+    }
+
+    fun cancelYtDlp() {
+        ytDlpRunGeneration.incrementAndGet()
+        ytDlpJob?.cancel()
+        ytDlpJob = null
+        ytDlpBusy = false
+        ytDlpHint = null
+        ytDlpAutoAttempts = 1
+        status = "已取消视频解析"
+    }
 
     fun runYtDlp(target: String) {
         if (ytDlpBusy) return
@@ -99,6 +128,7 @@ fun WebVideoScreen(
         ytDlpHint = null
         status = "正在用 yt-dlp 解析该网站视频（首次使用需解包运行时，请稍候）…"
         val requestGeneration = pageGeneration.get()
+        val runGeneration = ytDlpRunGeneration.incrementAndGet()
         val job = ytScope.launch(Dispatchers.IO) {
             try {
                 // 透传 WebView 里的站点 Cookie（登录态），提高需登录站点的解析成功率
@@ -107,9 +137,9 @@ fun WebVideoScreen(
                 }.getOrNull()
                 val media = io.translatetube.local.yt.YtDlpRepo.resolve(appCtx, target, cookieHeader)
                 mainHandler.post {
-                    if (!screenActive.get() || pageGeneration.get() != requestGeneration || currentPage != target) {
-                        return@post
-                    }
+                    if (!screenActive.get() || pageGeneration.get() != requestGeneration ||
+                        ytDlpRunGeneration.get() != runGeneration || currentPage != target
+                    ) return@post
                     ytDlpBusy = false
                     ytDlpJob = null
                     status = "yt-dlp 解析成功：${media.title}"
@@ -125,9 +155,9 @@ fun WebVideoScreen(
             } catch (e: Exception) {
                 Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
                 mainHandler.post {
-                    if (!screenActive.get() || pageGeneration.get() != requestGeneration || currentPage != target) {
-                        return@post
-                    }
+                    if (!screenActive.get() || pageGeneration.get() != requestGeneration ||
+                        ytDlpRunGeneration.get() != runGeneration || currentPage != target
+                    ) return@post
                     ytDlpBusy = false
                     ytDlpJob = null
                     ytDlpHint = io.translatetube.local.yt.YtDlpRepo.failureHint(e)
@@ -140,6 +170,7 @@ fun WebVideoScreen(
 
     fun resetForNavigation(target: String) {
         pageGeneration.incrementAndGet()
+        ytDlpRunGeneration.incrementAndGet()
         ytDlpJob?.cancel()
         ytDlpJob = null
         ytDlpBusy = false
@@ -204,6 +235,8 @@ fun WebVideoScreen(
     DisposableEffect(screenActive) {
         onDispose {
             screenActive.set(false)
+            ytDlpRunGeneration.incrementAndGet()
+            hideFullScreenView()
             ytDlpJob?.cancel()
             ytDlpJob = null
             webViewState.value?.let { view ->
@@ -270,7 +303,50 @@ fun WebVideoScreen(
                         settings.mediaPlaybackRequiresUserGesture = false
                         settings.javaScriptCanOpenWindowsAutomatically = false
                         settings.loadsImagesAutomatically = true
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
+                        settings.setSupportZoom(false)
+                        settings.setSupportMultipleWindows(false)
                         addJavascriptInterface(bridge, "ElephantVideoBridge")
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                                val activity = ctx.findActivity()
+                                val decor = activity?.window?.decorView as? ViewGroup
+                                if (view == null || decor == null || fullScreenContainer.value != null) {
+                                    callback?.onCustomViewHidden()
+                                    return
+                                }
+                                val container = FrameLayout(ctx).apply {
+                                    setBackgroundColor(android.graphics.Color.BLACK)
+                                    addView(
+                                        view,
+                                        FrameLayout.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ),
+                                    )
+                                }
+                                fullScreenContainer.value = container
+                                fullScreenCallback.value = callback
+                                decor.addView(
+                                    container,
+                                    ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ),
+                                )
+                                container.bringToFront()
+                            }
+
+                            override fun onHideCustomView() {
+                                hideFullScreenView()
+                            }
+
+                            override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                                Log.d(TAG_WEB, "Web console ${message.messageLevel()}: ${message.message()}")
+                                return true
+                            }
+                        }
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
@@ -340,6 +416,25 @@ fun WebVideoScreen(
             )
 
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (ytDlpBusy) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Text(
+                        "正在解析视频资源…",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { cancelYtDlp() }) { Text("取消解析") }
+                }
+            }
             if (ytDlpHint != null) {
                 Text(
                     ytDlpHint.orEmpty(),
@@ -440,6 +535,17 @@ fun WebVideoScreen(
                 }
             }
         }
+    }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current: Context = this
+    while (true) {
+        if (current is Activity) return current
+        if (current !is ContextWrapper) return null
+        val next = current.baseContext
+        if (next === current) return null
+        current = next
     }
 }
 
