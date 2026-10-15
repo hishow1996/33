@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.subs.SubtitleParsers
+
 /** Structural guards for persisted subtitle timelines before binary-search playback uses them. */
 internal object SubtitleCacheValidationPolicy {
     /**
@@ -17,4 +19,12 @@ internal object SubtitleCacheValidationPolicy {
         }
         return true
     }
+
+    /**
+     * A mixed cache can contain good translations beside interrupted progress placeholders.
+     * Reuse it when at least one real translation survives cleanup; callers can then retry only
+     * the blank/placeholder rows. A cache made entirely of placeholders is not recoverable.
+     */
+    fun hasRecoverableTranslationRows(translations: List<String?>): Boolean =
+        translations.any { !SubtitleParsers.cleanTranslatedText(it).isNullOrBlank() }
 }

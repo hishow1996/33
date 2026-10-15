@@ -1126,8 +1126,7 @@ class PlaybackService : MediaSessionService() {
         if (rows.length() == 0) {
             false
         } else {
-            var validTranslations = 0
-            var hasProgressPlaceholder = false
+            val translations = ArrayList<String?>(rows.length())
             val timelineRows = ArrayList<Triple<Long, Long, String>>(rows.length())
             for (i in 0 until rows.length()) {
                 val row = rows.optJSONObject(i)
@@ -1137,19 +1136,14 @@ class PlaybackService : MediaSessionService() {
                 val originalText = row.optString("t").trim()
                 timelineRows += Triple(startMs, endMs, originalText)
 
-                val translation = row.optString("zh")
-                if (SubtitleParsers.isPlaceholderTranslation(translation)) {
-                    hasProgressPlaceholder = true
-                }
-                if (!SubtitleParsers.cleanTranslatedText(translation).isNullOrBlank()) {
-                    validTranslations++
-                }
+                translations += row.optString("zh")
             }
             if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
                 throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")
             }
-            // Partial caches are intentional checkpoints. Retry should only translate missing rows.
-            !hasProgressPlaceholder && validTranslations > 0
+            // Keep any valid completed rows; restore logic cleans placeholder rows to null and
+            // translates only those missing cues on retry.
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(translations)
         }
     } catch (e: Exception) {
         android.util.Log.w("PlaybackService", "Invalid subtitle translation cache JSON or timeline", e)

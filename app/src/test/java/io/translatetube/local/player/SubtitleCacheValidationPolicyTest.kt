@@ -19,6 +19,21 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun recoversMixedTranslationCacheWhenSomeRowsArePlaceholders() {
+        assertTrue(
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(
+                listOf("第一句", "正在翻译2/4行", "", null, "第三句")
+            )
+        )
+        assertFalse(
+            SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(
+                listOf("正在翻译", "翻译中3/4行", null, "")
+            )
+        )
+        assertFalse(SubtitleCacheValidationPolicy.hasRecoverableTranslationRows(emptyList()))
+    }
+
+    @Test
     fun rejectsMalformedAndOutOfOrderCachedCues() {
         assertFalse(SubtitleCacheValidationPolicy.hasValidTimeline(emptyList()))
         assertFalse(SubtitleCacheValidationPolicy.hasValidTimeline(listOf(Triple(-1L, 500L, "bad start"))))
