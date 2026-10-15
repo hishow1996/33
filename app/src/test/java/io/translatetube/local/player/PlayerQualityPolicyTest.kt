@@ -39,4 +39,42 @@ class PlayerQualityPolicyTest {
     fun returnsNullWhenThereIsNoUsableStream() {
         assertNull(PlayerQualityPolicy.chooseDefault(listOf("bad" to 360), { false }))
     }
+
+    @Test
+    fun sourcePreflightRequiresUsableMuxedOrCompleteAdaptivePair() {
+        val validUrl: (String) -> Boolean = { it.startsWith("https://") }
+
+        org.junit.Assert.assertTrue(
+            PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxedUrl = "https://media.example/muxed",
+                adaptiveVideoUrl = null,
+                audioUrl = "",
+                isValidUrl = validUrl,
+            ),
+        )
+        org.junit.Assert.assertTrue(
+            PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxedUrl = null,
+                adaptiveVideoUrl = "https://media.example/video",
+                audioUrl = "https://media.example/audio",
+                isValidUrl = validUrl,
+            ),
+        )
+        org.junit.Assert.assertFalse(
+            PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxedUrl = "not-a-url",
+                adaptiveVideoUrl = "https://media.example/video",
+                audioUrl = "not-a-url",
+                isValidUrl = validUrl,
+            ),
+        )
+        org.junit.Assert.assertFalse(
+            PlayerQualityPolicy.hasUsableSourceCandidate(
+                muxedUrl = null,
+                adaptiveVideoUrl = null,
+                audioUrl = "https://media.example/audio",
+                isValidUrl = validUrl,
+            ),
+        )
+    }
 }
