@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.subs.SubLine
 
 /** Structural guards for persisted subtitle timelines before binary-search playback uses them. */
 internal object SubtitleCacheValidationPolicy {
@@ -27,4 +28,11 @@ internal object SubtitleCacheValidationPolicy {
      */
     fun hasRecoverableTranslationRows(translations: List<String?>): Boolean =
         translations.any { !SubtitleParsers.cleanTranslatedText(it).isNullOrBlank() }
+
+    /**
+     * Chinese source captions are already the target language. Repair legacy/incomplete cache rows
+     * from their source text rather than leaving blank or stale placeholder translations visible.
+     */
+    fun restoreChineseSourceTranslations(rows: List<SubLine>): List<SubLine> =
+        rows.map { line -> line.copy(zh = SubtitleParsers.cleanTranslatedText(line.text)) }
 }

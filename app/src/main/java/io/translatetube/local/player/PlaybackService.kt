@@ -1829,8 +1829,17 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         originalText, cachedTranslation, o.optInt("sp", -1),
                     )
                 }
-                lines = restored
-                srcLang = cached.srcLang
+                // A legacy cache can have a blank source-language field. Preserve a trusted
+                // language from the source cache, or re-detect from the restored original captions,
+                // rather than accidentally treating Chinese source subtitles as foreign text.
+                srcLang = cached.srcLang.takeIf { it.isNotBlank() }
+                    ?: restoredSourceLang
+                    ?: detectLangFromText(restored.take(12).joinToString(" ") { it.text })
+                lines = if (isChineseLanguage(srcLang)) {
+                    SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(restored)
+                } else {
+                    restored
+                }
                 if (!isChineseLanguage(srcLang) && restored.any { line ->
                     line.text.isNotBlank() && SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
                 }) {
