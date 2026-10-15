@@ -377,6 +377,8 @@ internal fun shouldFallbackToCurrentGeminiModel(configuredModel: String, error: 
         detail.contains("NOT_FOUND", ignoreCase = true)
     val isRetiredModel = detail.contains("no longer available", ignoreCase = true) ||
         detail.contains("not available to new users", ignoreCase = true) ||
+        detail.contains("is not found for api version", ignoreCase = true) ||
+        detail.contains("not supported for generatecontent", ignoreCase = true) ||
         detail.contains("model is not found", ignoreCase = true) ||
         detail.contains("model not found", ignoreCase = true)
     return isNotFound && isRetiredModel
@@ -464,8 +466,29 @@ class GeminiEngine(
             )
             generateContent(FreeModelDefaults.GEMINI_MODEL, payload.toString())
         }
-        val text = JSONObject(body).getJSONArray("candidates").getJSONObject(0)
-            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+        val response = JSONObject(body)
+        val candidates = response.optJSONArray("candidates")
+            ?: throw IllegalStateException(
+                "Gemini 未返回候选译文" +
+                    response.optJSONObject("promptFeedback")?.optString("blockReason")
+                        ?.takeIf { it.isNotBlank() && it != "null" }?.let { "（请求被拦截：$it）" }.orEmpty()
+            )
+        val candidate = candidates.optJSONObject(0)
+            ?: throw IllegalStateException("Gemini 未返回可用候选译文（候选数：${candidates.length()}）")
+        val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
+            ?: throw IllegalStateException(
+                "Gemini 候选结果不包含文本内容（结束原因：${candidate.optString("finishReason", "未知")}）"
+            )
+        val text = (0 until parts.length()).mapNotNull { index ->
+            val part = parts.optJSONObject(index) ?: return@mapNotNull null
+            if (part.optBoolean("thought", false)) return@mapNotNull null
+            part.optString("text").takeIf { it.isNotBlank() && it != "null" }
+        }.joinToString("\n")
+        if (text.isBlank()) {
+            throw IllegalStateException(
+                "Gemini 已响应，但没有返回可用文本（结束原因：${candidate.optString("finishReason", "未知")}）"
+            )
+        }
         return parseNumbered(text, lines.size)
     }
 
