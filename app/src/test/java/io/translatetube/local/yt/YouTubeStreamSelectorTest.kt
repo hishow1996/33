@@ -56,14 +56,14 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
-    fun defaultSelects360pOrNearestAndPrefersHigherOnTies() {
+    fun defaultSelects360pOrHighestAvailableLowerQualityAndAvoidsHigherQualityWhenPossible() {
         val streams = listOf(
             YouTubeVideoCandidate(720, "https://cdn.test/720", false, "mp4", 1),
             YouTubeVideoCandidate(480, "https://cdn.test/480", false, "mp4", 1),
             YouTubeVideoCandidate(240, "https://cdn.test/240", false, "mp4", 1),
         )
-        assertEquals(1, YouTubeStreamSelector.defaultQualityIndex(streams))
-        assertEquals(0, YouTubeStreamSelector.defaultQualityIndex(listOf(
+        assertEquals(2, YouTubeStreamSelector.defaultQualityIndex(streams))
+        assertEquals(1, YouTubeStreamSelector.defaultQualityIndex(listOf(
             YouTubeVideoCandidate(480, "https://cdn.test/480", false, "mp4", 1),
             YouTubeVideoCandidate(240, "https://cdn.test/240", false, "mp4", 1),
         )))
@@ -71,6 +71,15 @@ class YouTubeStreamSelectorTest {
         assertEquals(0, YouTubeStreamSelector.defaultQualityIndex(listOf(
             YouTubeVideoCandidate(360, "https://cdn.test/360", false, "mp4", 1),
         )))
+    }
+
+    @Test
+    fun selectsLowestHigherQualityOnlyWhenNoLowerQualityExists() {
+        val streams = listOf(
+            YouTubeVideoCandidate(1080, "https://cdn.test/1080", false, "mp4", 1),
+            YouTubeVideoCandidate(480, "https://cdn.test/480", false, "mp4", 1),
+        )
+        assertEquals(1, YouTubeStreamSelector.defaultQualityIndex(streams))
     }
 
     @Test

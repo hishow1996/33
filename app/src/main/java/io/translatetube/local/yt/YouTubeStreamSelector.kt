@@ -19,6 +19,8 @@ internal data class YouTubeAudioCandidate(
 )
 
 internal object YouTubeStreamSelector {
+    private const val DEFAULT_HEIGHT = 360
+
     fun isHttpUrl(value: String): Boolean {
         val trimmed = value.trim()
         return (trimmed.startsWith("https://", ignoreCase = true) ||
@@ -52,10 +54,13 @@ internal object YouTubeStreamSelector {
 
     fun defaultQualityIndex(candidates: List<YouTubeVideoCandidate>): Int {
         if (candidates.isEmpty()) return -1
-        val exact = candidates.indexOfFirst { it.height == 360 }
-        if (exact >= 0) return exact
-        // candidates are sorted high-to-low, so equal-distance ties choose the higher quality.
-        return candidates.indices.minByOrNull { kotlin.math.abs(candidates[it].height - 360) } ?: 0
+        // Match PlayerQualityPolicy: prefer the highest valid quality at or below 360p.
+        // Only choose a higher resolution when every available stream is above 360p.
+        return candidates.indices
+            .filter { candidates[it].height <= DEFAULT_HEIGHT }
+            .maxByOrNull { candidates[it].height }
+            ?: candidates.indices.minByOrNull { candidates[it].height }
+            ?: -1
     }
 
     /** Prefer M4A/AAC for broad decoder compatibility, then highest bitrate in that tier. */

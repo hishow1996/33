@@ -45,6 +45,30 @@ class DubbingReadinessTest {
     }
 
     @Test
+    fun repeatedAudioSilentAndPendingTransitionsReplaceOneState() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(6, hasAudio = false)
+        assertEquals(1, readiness.readyCount())
+        assertTrue(readiness.isSilent(6))
+        assertFalse(readiness.isPrepared(6))
+
+        readiness.markPrepared(6, hasAudio = true)
+        assertEquals(1, readiness.readyCount())
+        assertTrue(readiness.isPrepared(6))
+        assertFalse(readiness.isSilent(6))
+
+        readiness.markPending(6)
+        assertEquals(0, readiness.readyCount())
+        assertFalse(readiness.isReady(6))
+
+        readiness.markPrepared(6, hasAudio = false)
+        assertEquals(1, readiness.readyCount())
+        assertTrue(readiness.isSilent(6))
+        readiness.clear()
+        assertEquals(0, readiness.readyCount())
+    }
+
+    @Test
     fun readyCountTracksOutOfOrderCuesAndCacheInvalidation() {
         val readiness = DubbingReadiness()
         readiness.markPrepared(8, hasAudio = true)
