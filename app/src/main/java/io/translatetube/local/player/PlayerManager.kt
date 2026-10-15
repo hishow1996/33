@@ -121,7 +121,13 @@ class PlayerManager(private val ctx: Context) {
                 notifyTick(player.currentPosition)
             }
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED) onEnded?.invoke()
+                if (state == Player.STATE_ENDED) {
+                    try {
+                        onEnded?.invoke()
+                    } catch (error: Exception) {
+                        android.util.Log.w("PlayerManager", "Playback-end callback failed", error)
+                    }
+                }
             }
             override fun onPlayerError(error: PlaybackException) {
                 var cause: Throwable? = error
@@ -144,7 +150,11 @@ class PlayerManager(private val ctx: Context) {
                 if (w > 0 && h > 0) {
                     // pixelWidthHeightRatio 处理非方像素（少见但合法）
                     val ratio = (w * videoSize.pixelWidthHeightRatio / h).coerceIn(0.5f, 2.4f)
-                    onVideoAspect?.invoke(ratio)
+                    try {
+                        onVideoAspect?.invoke(ratio)
+                    } catch (error: Exception) {
+                        android.util.Log.w("PlayerManager", "Video-aspect callback failed", error)
+                    }
                 }
             }
         })
@@ -176,7 +186,7 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
     ) {
-        errorSink.value = null
+        clearPreviousYouTubeSource()
 
         // Single-file streams are the most compatible path on older Android devices.
         if (!muxedUrl.isNullOrBlank() && isValidHttpMediaUrl(muxedUrl)) {
@@ -188,7 +198,7 @@ class PlayerManager(private val ctx: Context) {
             }
         }
 
-        val v = videoOnly.maxByOrNull { it.second }?.first
+        val v = PlayerQualityPolicy.chooseDefault(videoOnly, ::isValidHttpMediaUrl)?.first
         if (v != null && isValidHttpMediaUrl(v) && isValidHttpMediaUrl(audioUrl)) {
             try {
                 val meta = buildMetadata(title, artist, artworkUrl)
@@ -210,6 +220,14 @@ class PlayerManager(private val ctx: Context) {
         }
     }
 
+    /** Clear stale playback before switching; a failed new source must not leave the old video running. */
+    private fun clearPreviousYouTubeSource() {
+        errorSink.value = null
+        player.pause()
+        player.stop()
+        player.clearMediaItems()
+    }
+
     /** 为指定清晰度加载流；视频轨分离时与音频轨合并播放。 */
     fun setYouTubeQuality(
         videoUrl: String,
@@ -219,7 +237,7 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
     ): Boolean {
-        errorSink.value = null
+        clearPreviousYouTubeSource()
         if (!isValidHttpMediaUrl(videoUrl)) {
             errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
             return false
@@ -294,8 +312,9 @@ class PlayerManager(private val ctx: Context) {
     fun play() { player.play() }
     fun pause() { player.pause() }
     fun seekTo(ms: Long) {
-        player.seekTo(ms)
-        notifyTick(ms)
+        val safePosition = ms.coerceAtLeast(0L)
+        player.seekTo(safePosition)
+        notifyTick(safePosition)
     }
     fun speed(s: Float) {
         player.playbackParameters = PlaybackParameters(DubbingTiming.normalizePlayerSpeed(s))
