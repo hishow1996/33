@@ -151,6 +151,7 @@ class PlaybackService : MediaSessionService() {
     private var remoteMediaUrl: String? = null
     private var remoteMediaTitle: String = ""
     private var remoteMediaReferrer: String = ""
+    private var remoteMediaUserAgent: String = ""
     private var remoteMediaCookie: String? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
@@ -638,6 +639,7 @@ class PlaybackService : MediaSessionService() {
         remoteMediaTitle: String = "",
         remoteMediaReferrer: String = "",
         remoteMediaCookie: String? = null,
+        remoteMediaUserAgent: String? = null,
     ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
@@ -658,6 +660,21 @@ class PlaybackService : MediaSessionService() {
         this.remoteMediaUrl = remoteMediaUrl
         this.remoteMediaTitle = remoteMediaTitle
         this.remoteMediaReferrer = remoteMediaReferrer
+        this.remoteMediaUserAgent = remoteMediaUserAgent.orEmpty()
+        // 兜底防护：blob:/data: 等网页内嵌地址绝不能进入 ExoPlayer（会以
+        // PARSING_CONTAINER_UNSUPPORTED 失败甚至崩溃），必须在此拦截并给出可操作的提示。
+        if (remoteMediaUrl != null && !remoteMediaUrl.startsWith("http://", true) &&
+            !remoteMediaUrl.startsWith("https://", true)
+        ) {
+            ui.update {
+                it.copy(
+                    phase = Phase.ERROR,
+                    progress = "",
+                    error = "该视频使用网页内嵌流（blob/MSE）播放，无法直接播放或提取音频。请回到「网页视频」页等待检测到可访问的视频地址，或点击「用 yt-dlp 解析本页视频」重试。"
+                )
+            }
+            return
+        }
         this.remoteMediaCookie = remoteMediaCookie
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
@@ -2091,6 +2108,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     if (remoteMediaUrl != null) "网页视频" else "本地视频",
                     null,
                     requestHeaders,
+                    userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                 )
                 }
             }

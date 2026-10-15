@@ -33,6 +33,7 @@ data class PlayRequest(
     val mediaTitle: String? = null,
     val mediaReferrer: String? = null,
     val mediaCookie: String? = null,
+    val mediaUserAgent: String? = null,
     val webPageUrl: String? = null,
     val ts: Long = System.currentTimeMillis(), // 保证同视频重复点击也能触发
 ) {
@@ -113,18 +114,20 @@ class MainActivity : ComponentActivity() {
                                 mediaTitle = req?.mediaTitle.orEmpty(),
                                 mediaReferrer = req?.mediaReferrer.orEmpty(),
                                 mediaCookie = req?.mediaCookie,
+                                mediaUserAgent = req?.mediaUserAgent,
                                 onBack = { screen = Screen.HOME },
                                 onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
                             )
                             Screen.WEB -> WebVideoScreen(
                                 initialUrl = req?.webPageUrl.orEmpty(),
                                 onBack = { playReq.value = null; screen = Screen.HOME },
-                                onOpenMedia = { url, title, referrer, cookie ->
+                                onOpenMedia = { url, title, referrer, cookie, userAgent ->
                                     playReq.value = PlayRequest(
                                         mediaUrl = url,
                                         mediaTitle = title,
                                         mediaReferrer = referrer,
                                         mediaCookie = cookie,
+                                        mediaUserAgent = userAgent,
                                     )
                                     screen = Screen.PLAYER
                                 },

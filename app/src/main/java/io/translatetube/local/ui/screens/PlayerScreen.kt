@@ -82,6 +82,7 @@ fun PlayerScreen(
     mediaTitle: String = "",
     mediaReferrer: String = "",
     mediaCookie: String? = null,
+    mediaUserAgent: String? = null,
 ) {
     val ctx = LocalContext.current
     val state by PlaybackService.ui.collectAsState()
@@ -112,14 +113,14 @@ fun PlayerScreen(
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie)
+            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent)
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, retryNonce) {
+    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, mediaUserAgent, retryNonce) {
         val key = requestKey
         val retryRequested = retryNonce != handledRetryNonce
         if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
@@ -163,7 +164,7 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie)
+                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the

@@ -77,7 +77,7 @@ internal data class WebVideoCandidate(
 fun WebVideoScreen(
     initialUrl: String,
     onBack: () -> Unit,
-    onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?) -> Unit,
+    onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?, userAgent: String?) -> Unit,
 ) {
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
@@ -179,6 +179,7 @@ fun WebVideoScreen(
                         media.title.ifBlank { pageTitle },
                         media.referrer,
                         media.cookie.takeIf { it.isNotBlank() },
+                        webViewState.value?.settings?.userAgentString,
                     )
                 }
             } catch (e: CancellationException) {
@@ -455,6 +456,11 @@ fun WebVideoScreen(
                                 super.onPageStarted(view, url, favicon)
                                 resetForNavigation(url)
                                 pageLoadToken++
+                                // 尽早挂上网络 hook：站点视频接口多在 DOM 就绪前就发起 XHR/fetch，
+                                // 等到 onPageFinished 再注入就抓不到响应了。
+                                if (screenActive.get()) {
+                                    runCatching { view.evaluateJavascript(NET_HOOK_SCRIPT, null) }
+                                }
                             }
 
                             override fun onPageFinished(view: WebView, url: String) {
@@ -631,7 +637,13 @@ fun WebVideoScreen(
                                                 ?: "无法读取该媒体地址。"
                                         } else {
                                             val cookie = runCatching { CookieManager.getInstance().getCookie(mediaUrl) }.getOrNull()
-                                            onOpenMedia(mediaUrl, candidate.title.ifBlank { pageTitle }, currentPage, cookie)
+                                            onOpenMedia(
+                                                mediaUrl,
+                                                candidate.title.ifBlank { pageTitle },
+                                                currentPage,
+                                                cookie,
+                                                webViewState.value?.settings?.userAgentString,
+                                            )
                                         }
                                     },
                                 ) {
@@ -658,6 +670,12 @@ private fun Context.findActivity(): Activity? {
         current = next
     }
 }
+
+private val NET_HOOK_SCRIPT = """
+(function(){
+$body
+})();
+""".trimIndent()
 
 private val PROBE_SCRIPT = """
 (function() {
@@ -743,6 +761,75 @@ private val PROBE_SCRIPT = """
         }).filter(function(row) { return !!row && !!row.url; });
         if (window.ElephantVideoBridge) {
           window.ElephantVideoBridge.reportVideos(JSON.stringify(rows));
+        }
+      } catch (ignored) {}
+    }
+    // ---- 网络 hook：很多站点（yfsp/nnyy 等）的视频地址藏在 XHR/fetch 接口响应里，
+    // URL 拦截只能看到接口地址看不到响应体，必须在页面 JS 内部抓取响应内容。 ----
+    if (!window.__elephantNetHooked) {
+      window.__elephantNetHooked = true;
+      window.__elephantNetMedia = window.__elephantNetMedia || {};
+      var MEDIA_RE = /https?:\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv|m4a|aac)[^"'\s\\<>]*/g;
+      var MEDIA_RE_PROTOCOL_REL = /\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv)[^"'\s\\<>]*/g;
+      var reportNet = function(text) {
+        try {
+          if (!text || text.length > 2097152) return;
+          var text2 = String(text);
+          var found = text2.match(MEDIA_RE) || [];
+          var rel = text2.match(MEDIA_RE_PROTOCOL_REL) || [];
+          if ((!found || !found.length) && (!rel || !rel.length)) return;
+          var added = false;
+          var addUrl = function(u) {
+            if (u.indexOf('//') === 0) u = location.protocol + u;
+            if (!window.__elephantNetMedia[u]) {
+              window.__elephantNetMedia[u] = true;
+              added = true;
+            }
+          };
+          for (var i = 0; i < found.length && i < 50; i++) addUrl(found[i]);
+          for (var j = 0; j < rel.length && j < 20; j++) addUrl(rel[j]);
+          if (added && window.ElephantVideoBridge) {
+            var rows = [];
+            for (var url in window.__elephantNetMedia) {
+              if (Object.prototype.hasOwnProperty.call(window.__elephantNetMedia, url) && rows.length < 100) {
+                rows.push({ url: url, title: (document.title || '').slice(0, 512), poster: '', duration: 0, drm: false });
+              }
+            }
+            window.ElephantVideoBridge.reportVideos(JSON.stringify(rows));
+          }
+        } catch (ignored) {}
+      };
+      try {
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method, url) {
+          this.__elephantUrl = url;
+          return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+          var xhr = this;
+          this.addEventListener('load', function() {
+            try {
+              var type = xhr.responseType;
+              if (!type || type === 'text' || type === 'json') {
+                reportNet(type === 'json' ? JSON.stringify(xhr.response) : xhr.responseText);
+              }
+            } catch (ignored) {}
+          });
+          return origSend.apply(this, arguments);
+        };
+      } catch (ignored) {}
+      try {
+        var origFetch = window.fetch;
+        if (origFetch) {
+          window.fetch = function() {
+            return origFetch.apply(this, arguments).then(function(resp) {
+              try {
+                resp.clone().text().then(reportNet).catch(function() {});
+              } catch (ignored) {}
+              return resp;
+            });
+          };
         }
       } catch (ignored) {}
     }

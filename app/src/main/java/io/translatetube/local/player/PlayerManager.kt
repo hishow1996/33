@@ -141,7 +141,23 @@ class PlayerManager(private val ctx: Context) {
                     cause = cause.cause
                 }
                 val code = error.errorCodeName
-                errorSink.value = "播放失败（$code）：${detail ?: error.message ?: "播放器无法读取该视频流"}"
+                val friendly = when (error.errorCode) {
+                    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                    PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+                    PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ->
+                        "视频地址返回的内容无法播放（常见原因：站点防护拦截了 App 的访问，或视频地址已过期）。请回到「网页视频」页重新检测，或稍后在网络环境变化后重试。"
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                        "网络连接失败或超时，请检查网络后重试。"
+                    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+                        "视频地址被站点拒绝（HTTP 状态异常），站点防护可能已更新，请重新从网页检测。"
+                    PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
+                        "没有权限访问该视频地址。"
+                    else -> null
+                }
+                errorSink.value = friendly
+                    ?: "播放失败（$code）：${detail ?: error.message ?: "播放器无法读取该视频流"}"
             }
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                 // 竖屏/方形视频自适应宽高比，避免黑边或裁切
@@ -315,6 +331,7 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
         requestHeaders: Map<String, String> = emptyMap(),
+        userAgent: String? = null,
     ) {
         errorSink.value = null
         val item = MediaItem.Builder()
@@ -325,8 +342,10 @@ class PlayerManager(private val ctx: Context) {
         if (safeRequestHeaders.isEmpty()) {
             player.setMediaItem(item)
         } else {
+            // 站点防护（如 Cloudflare）的通行凭证与请求 UA 绑定：网页视频源必须沿用
+            // WebView 的 UA，否则 Cookie 会被判无效，返回挑战页 HTML 导致解析失败。
             val remoteHttpFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent(UA)
+                .setUserAgent(userAgent?.takeIf { it.isNotBlank() } ?: UA)
                 .setAllowCrossProtocolRedirects(true)
                 .setDefaultRequestProperties(safeRequestHeaders)
             val remoteMediaSourceFactory = DefaultMediaSourceFactory(
