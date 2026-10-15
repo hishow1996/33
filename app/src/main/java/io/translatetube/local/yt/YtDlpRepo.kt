@@ -6,8 +6,6 @@ import android.content.Context
 import android.util.Log
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
-import com.yausername.youtubedl_android.mapper.VideoFormat
-import com.yausername.youtubedl_android.mapper.VideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -401,34 +399,46 @@ object YtDlpRepo {
                 }
                 val response = YoutubeDL.execute(request, processId)
                 currentCoroutineContext().ensureActive()
-                val info: VideoInfo = YoutubeDL.objectMapper.readValue(response.out, VideoInfo::class.java)
-                val formats = info.formats.orEmpty()
-                val playableFormats = formats.mapNotNull { format ->
-                    val url = format.url?.takeIf { YtDlpMediaPolicy.isSafeHttpUrl(it) } ?: return@mapNotNull null
+                // Parse yt-dlp's --dump-json payload with Android's built-in JSON API.
+                // This avoids depending on a transitive Jackson type exposed by the library.
+                val info = JSONObject(response.out)
+                val formatsJson = info.optJSONArray("formats")
+                val formatCount = formatsJson?.length() ?: 0
+                val playableFormats = (0 until formatCount).mapNotNull { index ->
+                    val format = formatsJson?.optJSONObject(index) ?: return@mapNotNull null
+                    val formatUrl = format.optString("url").takeIf { YtDlpMediaPolicy.isSafeHttpUrl(it) }
+                        ?: return@mapNotNull null
+                    val videoCodec = format.optString("vcodec")
+                    val audioCodec = format.optString("acodec")
                     YtDlpFormatCandidate(
-                        url = url,
-                        extension = format.ext,
-                        hasVideo = !format.vcodec.isNullOrBlank() && format.vcodec != "none",
-                        hasAudio = !format.acodec.isNullOrBlank() && format.acodec != "none",
-                        bitrate = format.tbr.toDouble(),
+                        url = formatUrl,
+                        extension = format.optString("ext").takeIf { it.isNotBlank() && it != "null" },
+                        hasVideo = videoCodec.isNotBlank() && videoCodec != "none" && videoCodec != "null",
+                        hasAudio = audioCodec.isNotBlank() && audioCodec != "none" && audioCodec != "null",
+                        bitrate = format.optDouble("tbr", 0.0),
                     )
                 }
+                val fallbackUrl = info.optString("url")
+                    .takeIf { formatCount == 0 && YtDlpMediaPolicy.isSafeHttpUrl(it) }
                 val url = YtDlpMediaPolicy.selectPlayableUrl(
                     formats = playableFormats,
-                    fallbackUrl = info.url.takeIf { formats.isEmpty() },
+                    fallbackUrl = fallbackUrl,
                 ) ?: throw IllegalStateException(
                     "yt-dlp 未返回可播放的视频流；只找到音频流或媒体地址格式无效"
                 )
-                val headers = info.httpHeaders.orEmpty()
-                val effectiveCookie = headers["Cookie"].orEmpty().ifBlank { cookieHeader.orEmpty() }
+                val headers = info.optJSONObject("http_headers")
+                val effectiveCookie = headers?.optString("Cookie").orEmpty().ifBlank { cookieHeader.orEmpty() }
                 synchronized(resolvedOrigins) {
                     resolvedOrigins[url] = ClaimedOrigin(pageUrl.trim(), effectiveCookie.ifBlank { null })
                 }
+                val title = info.optString("title").takeIf { it.isNotBlank() && it != "null" }
+                    ?: info.optString("fulltitle").takeIf { it.isNotBlank() && it != "null" }
+                    ?: "yt-dlp 视频"
                 ResolvedMedia(
-                    title = info.title ?: info.fulltitle ?: "yt-dlp 视频",
-                    durationSec = info.duration,
+                    title = title,
+                    durationSec = info.optDouble("duration", 0.0).toInt().coerceAtLeast(0),
                     mediaUrl = url,
-                    referrer = headers["Referer"].orEmpty(),
+                    referrer = headers?.optString("Referer").orEmpty().takeUnless { it == "null" }.orEmpty(),
                     cookie = effectiveCookie,
                 )
             } catch (error: Exception) {
