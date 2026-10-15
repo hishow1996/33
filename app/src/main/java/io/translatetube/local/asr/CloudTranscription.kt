@@ -169,20 +169,37 @@ object CloudTranscription {
         header.put("data".toByteArray(Charset.forName("US-ASCII")))
         header.putInt(dataBytes.toInt())
 
-        FileInputStream(pcmFile.file).use { input ->
-            BufferedOutputStream(FileOutputStream(output)).use { dest ->
-                dest.write(header.array())
-                val buffer = ByteArray(64 * 1024)
-                var copied = 0L
-                while (copied < dataBytes) {
-                    checkActive()
-                    val wanted = minOf(buffer.size.toLong(), dataBytes - copied).toInt()
-                    val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer, 0, wanted)
-                    if (count < 0) throw IOException("音频缓存提前结束，无法创建完整 WAV")
-                    dest.write(buffer, 0, count)
-                    copied += count
+        val parent = output.absoluteFile.parentFile
+            ?: throw IOException("WAV 输出目录无效")
+        if (!parent.isDirectory) throw IOException("WAV 输出目录不存在")
+        val staged = File.createTempFile("cloud-wav-", ".part", parent)
+        var installed = false
+        try {
+            FileInputStream(pcmFile.file).use { input ->
+                FileOutputStream(staged).use { fileOutput ->
+                    BufferedOutputStream(fileOutput, 64 * 1024).use { dest ->
+                        dest.write(header.array())
+                        val buffer = ByteArray(64 * 1024)
+                        var copied = 0L
+                        while (copied < dataBytes) {
+                            checkActive()
+                            val wanted = minOf(buffer.size.toLong(), dataBytes - copied).toInt()
+                            val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer, 0, wanted)
+                            if (count < 0) throw IOException("音频缓存提前结束，无法创建完整 WAV")
+                            dest.write(buffer, 0, count)
+                            copied += count
+                        }
+                        checkActive()
+                        dest.flush()
+                    }
+                    fileOutput.fd.sync()
                 }
             }
+            checkActive()
+            AtomicFileInstaller.install(staged, output)
+            installed = true
+        } finally {
+            if (!installed) runCatching { staged.delete() }
         }
     }
 
