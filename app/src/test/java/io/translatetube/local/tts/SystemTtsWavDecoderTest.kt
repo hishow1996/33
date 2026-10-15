@@ -8,6 +8,46 @@ import org.junit.Test
 
 class SystemTtsWavDecoderTest {
     @Test
+    fun exactBoundedReadRejectsTruncatedFiles() {
+        val input = java.io.ByteArrayInputStream(ByteArray(43))
+        val error = runCatching {
+            SystemTtsWavDecoder.readExactBoundedBytes(input, 44L)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("截断"))
+    }
+
+    @Test
+    fun exactBoundedReadRejectsFilesThatGrowAfterSizeCheck() {
+        val input = java.io.ByteArrayInputStream(ByteArray(45))
+        val error = runCatching {
+            SystemTtsWavDecoder.readExactBoundedBytes(input, 44L)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("发生变化"))
+    }
+
+    @Test
+    fun exactBoundedReadHandlesZeroProgressStreams() {
+        val backing = java.io.ByteArrayInputStream(ByteArray(44) { it.toByte() })
+        val input = object : java.io.InputStream() {
+            private var returnZero = true
+            override fun read(): Int = backing.read()
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                if (returnZero) {
+                    returnZero = false
+                    return 0
+                }
+                return backing.read(buffer, offset, length)
+            }
+        }
+
+        assertEquals(44, SystemTtsWavDecoder.readExactBoundedBytes(input, 44L).size)
+    }
+
+    @Test
     fun decodesPcm16AndNormalizesSignedSamples() {
         val audio = SystemTtsWavDecoder.decode(
             wave(
