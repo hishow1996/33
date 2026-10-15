@@ -44,7 +44,7 @@ internal object PlaybackHttpUrlPolicy {
             val name = rawName.lowercase(Locale.ROOT)
             val canonicalName = allowedHeaders[name] ?: return@forEach
             if (rawValue.length > 8 * 1024 ||
-                rawValue.any { it.code < 0x20 || it.code == 0x7f }
+                rawValue.any { Character.isISOControl(it) }
             ) return@forEach
             val value = rawValue.trim()
             if (value.isEmpty()) return@forEach
