@@ -258,6 +258,9 @@ class HlsAudioDownloaderTest {
         assertEquals(false, HlsAudioDownloader.isManifestUrl("file:///private/playlist.m3u8"))
         assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example:99999/playlist.m3u8"))
         assertEquals(false, HlsAudioDownloader.isManifestUrl("https://user:pass@cdn.example/playlist.m3u8"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("\nhttps://cdn.example/playlist.m3u8"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8\n"))
+        assertEquals(false, HlsAudioDownloader.isManifestUrl("https://cdn.example/playlist.m3u8" + 0x85.toChar()))
     }
 
 
