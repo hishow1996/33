@@ -153,15 +153,17 @@ internal object HlsAudioDownloader {
         playlistUrl: String,
         destination: File,
         requestHeaders: Map<String, String> = emptyMap(),
+        awaitResume: suspend () -> Unit = {},
         onProgress: (String) -> Unit = {},
     ): File = downloadMutex.withLock {
-        downloadLocked(playlistUrl, destination, requestHeaders, onProgress)
+        downloadLocked(playlistUrl, destination, requestHeaders, awaitResume, onProgress)
     }
 
     private suspend fun downloadLocked(
         playlistUrl: String,
         destination: File,
         requestHeaders: Map<String, String>,
+        awaitResume: suspend () -> Unit,
         onProgress: (String) -> Unit,
     ): File {
         val ownerJob = currentCoroutineContext()[Job]
@@ -177,13 +179,16 @@ internal object HlsAudioDownloader {
 
         try {
             withContext(Dispatchers.IO) {
+                awaitResume()
                 val rootUri = parseHttpUrl(playlistUrl)
                 val rootOrigin = rootUri
                 var fetched = fetchText(rootUri, mediaHeaders, rootOrigin, ownerJob)
+                awaitResume()
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
 
                 while (true) {
+                    awaitResume()
                     ownerJob?.ensureActive()
                     val next = selectMediaPlaylistUrl(fetched.finalUrl, fetched.text) ?: break
                     masterDepth++
@@ -191,6 +196,7 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
                     fetched = fetchText(parseHttpUrl(next), mediaHeaders, rootOrigin, ownerJob)
+                    awaitResume()
                     ensurePlaylistIsUnencrypted(fetched.text)
                 }
 
@@ -246,6 +252,7 @@ internal object HlsAudioDownloader {
                 val cachedSegments = mutableListOf<File>()
                 var totalCachedBytes = cachedBytes
                 sources.forEachIndexed { index, source ->
+                    awaitResume()
                     ownerJob?.ensureActive()
                     val segmentFile = segmentFiles[index]
                     val reusable = reusableSegments[index]
@@ -263,6 +270,7 @@ internal object HlsAudioDownloader {
                             rootOrigin = rootOrigin,
                             cachedBytes = totalCachedBytes,
                             ownerJob = ownerJob,
+                            awaitResume = awaitResume,
                             onRetry = { attempt ->
                                 onProgress("网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）")
                             },
@@ -282,12 +290,14 @@ internal object HlsAudioDownloader {
                 var mergedBytes = 0L
                 FileOutputStream(assemblyPart, false).buffered().use { output ->
                     cachedSegments.forEachIndexed { index, segment ->
+                        awaitResume()
                         ownerJob?.ensureActive()
                         onProgress("正在合并网页音轨 ${index + 1}/${cachedSegments.size}")
                         segment.inputStream().buffered().use { input ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 ownerJob?.ensureActive()
+                                awaitResume()
                                 val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                                 if (count < 0) break
                                 mergedBytes += count
@@ -399,6 +409,7 @@ internal object HlsAudioDownloader {
         rootOrigin: String,
         cachedBytes: Long,
         ownerJob: Job?,
+        awaitResume: suspend () -> Unit,
         onRetry: (attemptNumber: Int) -> Unit,
     ): File {
         val part = File(destination.parentFile, destination.name + ".part")
@@ -424,6 +435,7 @@ internal object HlsAudioDownloader {
         }
         var lastError: Exception? = null
         for (attempt in 1..3) {
+            awaitResume()
             ownerJob?.ensureActive()
             part.delete()
             try {
@@ -458,6 +470,7 @@ internal object HlsAudioDownloader {
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 ownerJob?.ensureActive()
+                                awaitResume()
                                 val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                                 if (count < 0) break
                                 if (payloadPrefixSize < payloadPrefix.size) {
@@ -522,6 +535,7 @@ internal object HlsAudioDownloader {
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         ownerJob?.ensureActive()
+                        awaitResume()
                         val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                         if (count < 0) break
                         output.write(buffer, 0, count)
