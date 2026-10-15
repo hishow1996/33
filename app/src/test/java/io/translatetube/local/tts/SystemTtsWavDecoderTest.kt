@@ -82,6 +82,15 @@ class SystemTtsWavDecoderTest {
     }
 
     @Test(expected = IllegalStateException::class)
+    fun rejectsDataOutsideTheDeclaredRiffContainer() {
+        val bytes = wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1, 0))
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(4, bytes.size - 8 - 4)
+        // The backing array still contains audio bytes, but the RIFF length ends at the data header.
+        SystemTtsWavDecoder.decode(bytes)
+    }
+
+    @Test(expected = IllegalStateException::class)
     fun rejectsPcmDataThatEndsMidSampleFrame() {
         SystemTtsWavDecoder.decode(
             wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1))

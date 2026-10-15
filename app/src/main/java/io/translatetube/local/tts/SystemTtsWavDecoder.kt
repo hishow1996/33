@@ -50,15 +50,27 @@ internal object SystemTtsWavDecoder {
                 ((bytes[p + 2].toInt() and 0xFF) shl 16) or
                 ((bytes[p + 3].toInt() and 0xFF) shl 24)
 
+        // Respect the RIFF container boundary instead of trusting trailing bytes past the
+        // length declared by the file. Some truncated WAVs still have stale data after that point.
+        val riffSize = i32(4)
+        if (riffSize < 4) {
+            throw IllegalStateException("系统 TTS WAV RIFF 容器长度无效")
+        }
+        val riffEndLong = 8L + riffSize.toLong()
+        if (riffEndLong > bytes.size.toLong() || riffEndLong < 12L) {
+            throw IllegalStateException("系统 TTS WAV RIFF 容器数据不完整")
+        }
+        val riffEnd = riffEndLong.toInt()
+
         // RIFF chunk order is not fixed; keep scanning after data until fmt is also found.
-        while (offset + 8 <= bytes.size) {
+        while (offset + 8 <= riffEnd) {
             val id = idAt(offset)
             val chunkSize = i32(offset + 4)
             if (chunkSize < 0) {
                 throw IllegalStateException("系统 TTS WAV 块长度无效")
             }
             val chunkDataStart = offset + 8
-            val available = (bytes.size - chunkDataStart).coerceAtLeast(0)
+            val available = (riffEnd - chunkDataStart).coerceAtLeast(0)
             if (chunkSize > available) {
                 throw IllegalStateException("系统 TTS WAV 数据不完整（$id 块）")
             }
@@ -75,11 +87,14 @@ internal object SystemTtsWavDecoder {
                 }
             }
             val next = chunkDataStart.toLong() + chunkSize.toLong() + (chunkSize and 1)
-            if (next > bytes.size.toLong()) {
-                // RIFF odd-sized chunks must have one padding byte.
+            if (next > riffEnd.toLong()) {
+                // RIFF odd-sized chunks must have one padding byte within the container.
                 throw IllegalStateException("系统 TTS WAV 块缺少填充字节")
             }
             offset = next.toInt()
+        }
+        if (offset != riffEnd) {
+            throw IllegalStateException("系统 TTS WAV 末尾存在不完整的块头")
         }
 
         if (formatCode == 0 || dataStart < 0 || dataLen <= 0) {
