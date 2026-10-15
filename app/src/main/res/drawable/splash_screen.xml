@@ -6,10 +6,4 @@
         android:width="196dp"
         android:height="196dp"
         android:gravity="center" />
-    <item
-        android:drawable="@drawable/splash_branding"
-        android:width="136dp"
-        android:height="54dp"
-        android:gravity="bottom|center_horizontal"
-        android:bottom="42dp" />
 </layer-list>
