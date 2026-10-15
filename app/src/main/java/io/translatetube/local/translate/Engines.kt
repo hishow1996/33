@@ -70,11 +70,14 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         .trim()
     if (normalized.isEmpty()) return List(size) { "" }
 
-    // Accept JSON arrays when a model disregards the requested text format.
-    val jsonArray = runCatching { JSONArray(normalized) }.getOrNull()
-    if (jsonArray != null && jsonArray.length() == size) {
-        return List(size) { i -> jsonArray.optString(i).trim() }
-    }
+    // Accept JSON arrays when a model disregards the requested text format. Keep every
+    // org.json call inside runCatching because Android's local-test stub may throw from length().
+    val jsonTranslations = runCatching {
+        JSONArray(normalized).takeIf { it.length() == size }?.let { array ->
+            List(size) { i -> array.optString(i).trim() }
+        }
+    }.getOrNull()
+    if (jsonTranslations != null) return jsonTranslations
 
     // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
     val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d{1,4})(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
