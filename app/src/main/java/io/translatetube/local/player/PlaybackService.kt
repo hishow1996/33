@@ -2843,7 +2843,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     }
                     val pageCookie = runCatching {
                         android.webkit.CookieManager.getInstance().getCookie(referrer)
-                    }.getOrNull()
+                    }.getOrNull().takeIf { !it.isNullOrBlank() } ?: cookie
                     try {
                         io.translatetube.local.yt.YtDlpRepo.downloadAudio(
                             applicationContext,
