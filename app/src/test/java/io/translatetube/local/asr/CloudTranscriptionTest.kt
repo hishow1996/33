@@ -103,17 +103,22 @@ class CloudTranscriptionTest {
                 writeBytes(byteArrayOf(2))
                 setLastModified(now - 1_000L)
             }
-            val unrelated = File(directory, "other.part").apply {
+            val staleRequest = File(directory, "asr-cloud-old.wav").apply {
                 writeBytes(byteArrayOf(3))
                 setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
             }
-            val future = File(directory, "cloud-wav-future.part").apply {
+            val unrelated = File(directory, "other.part").apply {
                 writeBytes(byteArrayOf(4))
+                setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
+            }
+            val future = File(directory, "cloud-wav-future.part").apply {
+                writeBytes(byteArrayOf(5))
                 setLastModified(now + 1_000L)
             }
 
-            assertEquals(1, CloudTranscription.cleanupStaleWavStages(directory, now))
+            assertEquals(2, CloudTranscription.cleanupStaleWavStages(directory, now))
             assertTrue(!stale.exists())
+            assertTrue(!staleRequest.exists())
             assertTrue(recent.exists())
             assertTrue(unrelated.exists())
             assertTrue(future.exists())
