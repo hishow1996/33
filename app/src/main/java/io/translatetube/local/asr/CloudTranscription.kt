@@ -66,7 +66,7 @@ object CloudTranscription {
             if (count < 0) break
             if (count == 0) continue
             if (count.toLong() > maxBytes - totalBytes) {
-                throw IOException("云端转写响应超过安全上限（\${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
+                throw IOException("云端转写响应超过安全上限（${maxBytes} 字节），请切换本地 Whisper 或缩短音频后重试")
             }
             output.write(buffer, 0, count)
             totalBytes += count.toLong()

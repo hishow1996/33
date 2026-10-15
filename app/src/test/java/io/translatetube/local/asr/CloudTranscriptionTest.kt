@@ -29,6 +29,19 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun boundedProviderResponseReaderChecksCancellationBeforeReading() {
+        val error = runCatching {
+            CloudTranscription.readBoundedUtf8(
+                ByteArrayInputStream(byteArrayOf(1, 2, 3)),
+                maxBytes = 4L,
+                checkActive = { throw java.util.concurrent.CancellationException("cancelled") },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
+    @Test
     fun wavExportRejectsPcmFilesWhosePhysicalSizeDiffersFromDeclaredSamples() {
         val directory = createTempDir(prefix = "cloud-wav-length")
         try {
