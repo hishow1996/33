@@ -5,12 +5,12 @@ import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.Properties
-import ByteArrayOutputStream
-import DataOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.util.Locale
-import JarEntry
-import JarFile
-import JarOutputStream
+import java.util.jar.JarEntry
+import java.util.jar.JarFile
+import java.util.jar.JarOutputStream
 
 plugins {
     id("com.android.application")
