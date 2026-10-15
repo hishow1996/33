@@ -9,14 +9,19 @@ import java.io.InputStream
  * repeat such reads may spin forever while downloading media, models, or subtitle payloads.
  */
 internal object ProgressSafeInput {
-    fun read(input: InputStream, buffer: ByteArray): Int {
-        require(buffer.isNotEmpty()) { "读取缓冲区不能为空" }
-        val count = input.read(buffer)
+    fun read(input: InputStream, buffer: ByteArray): Int =
+        read(input, buffer, 0, buffer.size)
+
+    fun read(input: InputStream, buffer: ByteArray, offset: Int, length: Int): Int {
+        require(offset >= 0 && length > 0 && offset <= buffer.size - length) {
+            "读取缓冲区范围无效"
+        }
+        val count = input.read(buffer, offset, length)
         if (count != 0) return count
 
         val value = input.read()
         if (value < 0) return -1
-        buffer[0] = value.toByte()
+        buffer[offset] = value.toByte()
         return 1
     }
 }
