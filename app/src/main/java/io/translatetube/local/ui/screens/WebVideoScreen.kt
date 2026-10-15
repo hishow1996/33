@@ -106,12 +106,15 @@ fun WebVideoScreen(
     var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
 
     fun hideFullScreenView() {
-        fullScreenContainer.value?.let { container ->
-            (container.parent as? ViewGroup)?.removeView(container)
-        }
+        val container = fullScreenContainer.value
+        val callback = fullScreenCallback.value
+        // Clear state before invoking the WebChromeClient callback. Some WebViews immediately
+        // re-enter onHideCustomView(), so a callback must only be delivered once.
         fullScreenContainer.value = null
-        fullScreenCallback.value?.onCustomViewHidden()
         fullScreenCallback.value = null
+        container?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        runCatching { callback?.onCustomViewHidden() }
+            .onFailure { Log.w(TAG_WEB, "Fullscreen exit callback failed", it) }
     }
 
     // Physical/system back should dismiss fullscreen first; it must not leave the Activity trapped
@@ -405,7 +408,9 @@ fun WebVideoScreen(
                                         contentDescription = "退出全屏"
                                         background = android.graphics.drawable.GradientDrawable().apply {
                                             shape = android.graphics.drawable.GradientDrawable.OVAL
-                                            setColor(0xB8000000.toInt())
+                                            // Opaque background intentionally covers the site's duplicate
+                                            // left-chevron controls so the fullscreen header shows one working button.
+                                            setColor(android.graphics.Color.BLACK)
                                         }
                                         isClickable = true
                                         isFocusable = true
