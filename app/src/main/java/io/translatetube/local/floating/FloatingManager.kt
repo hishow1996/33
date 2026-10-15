@@ -24,19 +24,24 @@ class FloatingManager(private val ctx: Context) {
     fun canDraw(): Boolean = Settings.canDrawOverlays(ctx)
 
     @SuppressLint("ClickableViewAccessibility")
-    fun show(v: View, wPx: Int, hPx: Int) {
-        if (view != null) return
+    fun show(v: View, wPx: Int, hPx: Int): Boolean {
+        if (view != null) return true
+        val displayMetrics = ctx.resources.displayMetrics
+        val maxWidth = displayMetrics.widthPixels.coerceAtLeast(1)
+        val maxHeight = displayMetrics.heightPixels.coerceAtLeast(1)
+        val windowWidth = FloatingWindowPolicy.boundedDimension(wPx, 280, maxWidth)
+        val windowHeight = FloatingWindowPolicy.boundedDimension(hPx, 200, maxHeight)
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val p = WindowManager.LayoutParams(
-            wPx, hPx, type,
+            windowWidth, windowHeight, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 40; y = 200
+            x = FloatingWindowPolicy.boundedOffset(40, windowWidth, maxWidth); y = FloatingWindowPolicy.boundedOffset(200, windowHeight, maxHeight)
         }
         // 整体拖动
         var downX = 0f; var downY = 0f; var origX = 0; var origY = 0; var dragging = false
@@ -50,28 +55,59 @@ class FloatingManager(private val ctx: Context) {
                     // 触点在右下 1/4 区域视为缩放
                     resizing = ev.x > v.width * 0.75f && ev.y > v.height * 0.75f
                     dragging = !resizing
-                    false
+                    // This overlay contains only the video surface. Consume DOWN so Android
+                    // continues delivering MOVE/UP and drag/resize can actually run.
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (resizing) {
-                        val nw = (startW + (ev.rawX - downX)).coerceAtLeast(280f).roundToInt()
-                        val nh = (startH + (ev.rawY - downY)).coerceAtLeast(200f).roundToInt()
+                        val nw = FloatingWindowPolicy.boundedDimension(
+                            (startW + (ev.rawX - downX)).roundToInt(), 280, maxWidth,
+                        )
+                        val nh = FloatingWindowPolicy.boundedDimension(
+                            (startH + (ev.rawY - downY)).roundToInt(), 200, maxHeight,
+                        )
                         p.width = nw; p.height = nh
+                        p.x = FloatingWindowPolicy.boundedOffset(p.x, p.width, maxWidth)
+                        p.y = FloatingWindowPolicy.boundedOffset(p.y, p.height, maxHeight)
                     } else if (dragging) {
-                        p.x = origX + (ev.rawX - downX).roundToInt()
-                        p.y = origY + (ev.rawY - downY).roundToInt()
+                        p.x = FloatingWindowPolicy.boundedOffset(
+                            origX + (ev.rawX - downX).roundToInt(), p.width, maxWidth,
+                        )
+                        p.y = FloatingWindowPolicy.boundedOffset(
+                            origY + (ev.rawY - downY).roundToInt(), p.height, maxHeight,
+                        )
                     }
                     try { wm?.updateViewLayout(v, p) } catch (_: Exception) {}
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    dragging = false
+                    resizing = false
                     true
                 }
                 else -> false
             }
         }
-        try {
-            wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            wm?.addView(v, p)
-            view = v; params = p
-        } catch (_: Exception) {}
+        val manager = ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        if (manager == null) {
+            v.setOnTouchListener(null)
+            return false
+        }
+        return try {
+            manager.addView(v, p)
+            wm = manager
+            view = v
+            params = p
+            true
+        } catch (_: Exception) {
+            runCatching { manager.removeViewImmediate(v) }
+            v.setOnTouchListener(null)
+            wm = null
+            view = null
+            params = null
+            false
+        }
     }
 
     fun hide() {

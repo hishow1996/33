@@ -76,6 +76,9 @@ fun WebVideoScreen(
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val screenActive = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(true) }
+    val pageGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
+    var ytDlpJob by remember(initialUrl) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
     val appCtx = LocalContext.current.applicationContext
@@ -86,14 +89,15 @@ fun WebVideoScreen(
 
     fun runYtDlp(target: String) {
         if (ytDlpBusy) return
-        if (!io.translatetube.local.yt.YtDlpRepo.isEligible(target)) {
+        if (!screenActive.get() || !io.translatetube.local.yt.YtDlpRepo.isEligible(target)) {
             ytDlpHint = "yt-dlp 仅适用于 http/https 非 YouTube 链接"
             return
         }
         ytDlpBusy = true
         ytDlpHint = null
         status = "正在用 yt-dlp 解析该网站视频（首次使用需解包运行时，请稍候）…"
-        ytScope.launch(Dispatchers.IO) {
+        val requestGeneration = pageGeneration.get()
+        val job = ytScope.launch(Dispatchers.IO) {
             try {
                 // 透传 WebView 里的站点 Cookie（登录态），提高需登录站点的解析成功率
                 val cookieHeader = runCatching {
@@ -101,7 +105,11 @@ fun WebVideoScreen(
                 }.getOrNull()
                 val media = io.translatetube.local.yt.YtDlpRepo.resolve(appCtx, target, cookieHeader)
                 mainHandler.post {
+                    if (!screenActive.get() || pageGeneration.get() != requestGeneration || currentPage != target) {
+                        return@post
+                    }
                     ytDlpBusy = false
+                    ytDlpJob = null
                     status = "yt-dlp 解析成功：${media.title}"
                     onOpenMedia(
                         media.mediaUrl,
@@ -115,16 +123,36 @@ fun WebVideoScreen(
             } catch (e: Exception) {
                 Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
                 mainHandler.post {
+                    if (!screenActive.get() || pageGeneration.get() != requestGeneration || currentPage != target) {
+                        return@post
+                    }
                     ytDlpBusy = false
+                    ytDlpJob = null
                     ytDlpHint = io.translatetube.local.yt.YtDlpRepo.failureHint(e)
                     status = "yt-dlp 解析未成功；可稍后重试或改用其他链接。"
                 }
             }
         }
+        ytDlpJob = job
+    }
+
+    fun resetForNavigation(target: String) {
+        pageGeneration.incrementAndGet()
+        ytDlpJob?.cancel()
+        ytDlpJob = null
+        ytDlpBusy = false
+        ytDlpAutoAttempts = 0
+        ytDlpHint = null
+        candidatesState.value = emptyList()
+        currentPage = target
+        address = target
+        pageTitle = ""
+        status = "正在打开网页并检测 HTML5 视频…"
     }
 
     // 页面加载后仍无任何候选媒体时，自动尝试一次 yt-dlp 解析。
-    LaunchedEffect(currentPage) {
+    var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
+    LaunchedEffect(currentPage, pageLoadToken) {
         delay(5000)
         if (candidatesState.value.isEmpty() && !ytDlpBusy && ytDlpAutoAttempts == 0) {
             ytDlpAutoAttempts = 1
@@ -157,7 +185,9 @@ fun WebVideoScreen(
                         )
                     }.distinctBy { it.url }
                 }.getOrDefault(emptyList())
+                val bridgeGeneration = pageGeneration.get()
                 mainHandler.post {
+                    if (!screenActive.get() || pageGeneration.get() != bridgeGeneration) return@post
                     val merged = WebVideoProbePolicy.mergeCandidates(candidatesState.value, found)
                     candidatesState.value = merged
                     status = if (merged.isEmpty()) {
@@ -170,8 +200,11 @@ fun WebVideoScreen(
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(screenActive) {
         onDispose {
+            screenActive.set(false)
+            ytDlpJob?.cancel()
+            ytDlpJob = null
             webViewState.value?.let { view ->
                 runCatching { view.stopLoading() }
                 runCatching { view.removeJavascriptInterface("ElephantVideoBridge") }
@@ -217,10 +250,8 @@ fun WebVideoScreen(
                     if (normalized == null) {
                         status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
                     } else {
-                        address = normalized
-                        currentPage = normalized
-                        candidatesState.value = emptyList()
-                        status = "正在打开网页并检测 HTML5 视频…"
+                        resetForNavigation(normalized)
+                        pageLoadToken++
                         webViewState.value?.loadUrl(normalized)
                     }
                 }) {
@@ -240,9 +271,15 @@ fun WebVideoScreen(
                         settings.loadsImagesAutomatically = true
                         addJavascriptInterface(bridge, "ElephantVideoBridge")
                         webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                                super.onPageStarted(view, url, favicon)
+                                resetForNavigation(url)
+                                pageLoadToken++
+                            }
+
                             override fun onPageFinished(view: WebView, url: String) {
                                 super.onPageFinished(view, url)
-                                currentPage = url
+                                if (!screenActive.get() || url != currentPage) return
                                 address = url
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
@@ -254,17 +291,25 @@ fun WebVideoScreen(
                                 request: WebResourceRequest,
                             ): android.webkit.WebResourceResponse? {
                                 val resourceUrl = request.url.toString()
-                                if (WebMediaUrlPolicy.looksLikeMediaRequest(resourceUrl)) {
+                                val requestGeneration = pageGeneration.get()
+                                if (WebVideoProbePolicy.acceptsMediaUrl(resourceUrl) &&
+                                    WebMediaUrlPolicy.looksLikeMediaRequest(resourceUrl)
+                                ) {
                                     mainHandler.post {
+                                        if (!screenActive.get() || pageGeneration.get() != requestGeneration) {
+                                            return@post
+                                        }
                                         val candidate = WebVideoCandidate(
                                             url = resourceUrl,
-                                            title = view.title.orEmpty(),
+                                            title = WebVideoProbePolicy.normalizeTitle(pageTitle),
                                             poster = "",
                                             durationSeconds = 0.0,
                                             drmProtected = false,
                                         )
-                                        candidatesState.value = (candidatesState.value + candidate)
-                                            .distinctBy { it.url }
+                                        candidatesState.value = WebVideoProbePolicy.mergeCandidates(
+                                            candidatesState.value,
+                                            listOf(candidate),
+                                        )
                                         status = "已从网页网络请求中检测到媒体资源。"
                                     }
                                 }
@@ -279,7 +324,9 @@ fun WebVideoScreen(
                                 super.onReceivedError(view, request, error)
                                 if (request.isForMainFrame) {
                                     mainHandler.post {
-                                        status = "网页加载失败：${error.description}"
+                                        if (screenActive.get() && request.url.toString() == currentPage) {
+                                            status = "网页加载失败：${error.description}"
+                                        }
                                     }
                                 }
                             }

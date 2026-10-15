@@ -238,8 +238,21 @@ fun PlayerScreen(
         val host = FrameLayout(ctx).apply {
             addView(tv, FrameLayout.LayoutParams(-1, -1))
         }
-        floating.show(host, 640, 360)
-        isFloating = true
+        val shown = floating.show(host, 640, 360)
+        if (shown && floating.isShowing()) {
+            isFloating = true
+        } else {
+            // WindowManager can reject an overlay even after permission was granted. Never leave
+            // the TextureView parented to a detached host or the player turns black.
+            host.removeView(tv)
+            frame.addView(tv, FrameLayout.LayoutParams(-1, -1))
+            isFloating = false
+            android.widget.Toast.makeText(
+                ctx,
+                "悬浮窗创建失败，已恢复播放器画面",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
     }
 
     // 系统返回键：存进度回主页，而不是退出应用
