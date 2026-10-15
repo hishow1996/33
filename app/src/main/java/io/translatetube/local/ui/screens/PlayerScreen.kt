@@ -696,11 +696,11 @@ private fun VideoParsingPage(
     val mainTitle = when {
         state.isProcessingPaused -> "处理已暂停"
         state.phase == Phase.ERROR -> "视频处理失败"
-        Phase.PARSING -> "正在处理视频"
-        Phase.DOWNLOADING_AUDIO -> "正在准备视频资源"
-        Phase.TRANSCRIBING -> "正在获取或识别字幕"
-        Phase.TRANSLATING -> "正在翻译字幕"
-        Phase.SYNTHESIZING -> "正在生成配音"
+        state.phase == Phase.PARSING -> "正在处理视频"
+        state.phase == Phase.DOWNLOADING_AUDIO -> "正在准备视频资源"
+        state.phase == Phase.TRANSCRIBING -> "正在获取或识别字幕"
+        state.phase == Phase.TRANSLATING -> "正在翻译字幕"
+        state.phase == Phase.SYNTHESIZING -> "正在生成配音"
         else -> "正在准备视频"
     }
     val detail = if (state.isProcessingPaused) "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复下载或解析" } else state.progress.ifBlank {
