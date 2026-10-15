@@ -91,7 +91,14 @@ object CloudTranscription {
     internal fun cartesiaLanguageCode(language: String): String? {
         val normalized = language.trim().lowercase(java.util.Locale.ROOT)
         if (normalized.isEmpty() || normalized == "auto") return null
-        return normalized
+
+        // Callers may hold BCP-47 tags such as "en-US" or "zh_CN", while this API
+        // expects a two-letter ISO-639-1 language code. Strip the region/script suffix;
+        // for malformed/unsupported shapes prefer provider auto-detection over a bad request.
+        val primary = normalized.substringBefore('-').substringBefore('_')
+        return primary.takeIf { code ->
+            code.length == 2 && code.all { it in 'a'..'z' }
+        }
     }
 
     /** Kawa's automatic-detection mode is represented by omitting the language field. */
