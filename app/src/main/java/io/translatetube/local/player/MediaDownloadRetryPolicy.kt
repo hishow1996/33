@@ -33,18 +33,19 @@ internal object MediaDownloadRetryPolicy {
 
     fun shouldRetry(error: Throwable): Boolean {
         if (hasCancellationCause(error)) return false
-        if (error is IOException) return true
 
-        val messages = generateSequence(error) { it.cause }
-            .mapNotNull { it.message }
-            .joinToString(" ")
+        val chain = generateSequence(error) { it.cause }.toList()
+        val messages = chain.mapNotNull { it.message }.joinToString(" ")
         val statusCode = Regex("(?:HTTP\\s*|失败\\s*)[（(]?(\\d{3})")
             .find(messages)
             ?.groupValues
             ?.getOrNull(1)
             ?.toIntOrNull()
 
-        if (statusCode != null && statusCode in retryableHttpCodes) return true
+        // A known HTTP status is stronger evidence than the wrapper type: IOException(404) is
+        // permanent and should not consume all retries, while IOException(429/503) is transient.
+        if (statusCode != null) return statusCode in retryableHttpCodes
+        if (chain.any { it is IOException }) return true
         return messages.contains("下载不完整") ||
             messages.contains("响应不完整") ||
             messages.contains("片段不完整")
