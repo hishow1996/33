@@ -35,8 +35,37 @@ object LangMap {
         "da" to "da", "fi" to "fi", "no" to "no", "nb" to "no", "el" to "el", "he" to "he",
         "hu" to "hu", "cs" to "cs", "ro" to "ro", "uk" to "uk", "bn" to "bn", "ms" to "ms",
     )
-    fun mlkit(code: String) = mlkit[code] ?: code.substringBefore('-')
-    fun isMlkitSupported(code: String) = mlkit.containsKey(code) || mlkit.containsValue(code)
+    /**
+     * Normalize BCP-47 tags and provider variants such as zh_CN and EN-us.
+     * ML Kit expects canonical language IDs; Traditional Chinese maps to zh-TW.
+     */
+    fun mlkit(code: String): String {
+        val normalized = code.trim().replace('_', '-')
+        if (normalized.isEmpty()) return ""
+        val exact = mlkit.entries.firstOrNull { it.key.equals(normalized, ignoreCase = true) }
+        if (exact != null) return exact.value
+        val lower = normalized.lowercase(java.util.Locale.ROOT)
+        if (lower == "zh-hant" || lower.startsWith("zh-hant-")) return "zh-TW"
+        if (lower == "zh-hans" || lower.startsWith("zh-hans-")) return "zh"
+        return lower.substringBefore('-')
+    }
+
+    /** Unknown source language falls back to English; never pass UI sentinel "auto" to ML Kit. */
+    fun mlkitSource(code: String): String =
+        mlkit(if (code.isBlank() || code.equals("auto", ignoreCase = true)) "en" else code)
+
+    fun isMlkitSupported(code: String): Boolean = mlkit(code) in mlkit.values
+
+    /** Canonical code for Google's public web and Cloud Translation endpoints. */
+    internal fun google(code: String, target: Boolean = false): String {
+        val raw = code.trim().replace('_', '-')
+        if (raw.isEmpty() || raw.equals("auto", ignoreCase = true)) return if (target) "zh-CN" else "auto"
+        return when (raw.lowercase(java.util.Locale.ROOT)) {
+            "zh", "zh-cn", "zh-hans", "zh-hans-cn", "zh-sg" -> "zh-CN"
+            "zh-tw", "zh-hant", "zh-hant-tw", "zh-hk" -> "zh-TW"
+            else -> raw.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        }
+    }
 
     /** 引擎无关的显示名（空/未知 → 让 LLM 自行识别） */
     fun display(code: String) = when (code) {
