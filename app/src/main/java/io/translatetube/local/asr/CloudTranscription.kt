@@ -106,6 +106,7 @@ object CloudTranscription {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
         require(wavFile.isFile && wavFile.length() > 44L) { "待转写音频为空" }
+        if (durationMs <= 0L) throw IOException("待转写音频时长无效，无法建立字幕时间轴")
         checkActive()
         val ownerJob = currentCoroutineContext()[Job]
         if (provider == "kawa") return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive, ownerJob)
@@ -322,7 +323,8 @@ object CloudTranscription {
     }
 
     internal fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {
-        if (words.isEmpty()) return emptyList()
+        // An invalid duration must not make coerceIn(0, durationMs - 1) throw inside a callback.
+        if (durationMs <= 0L || words.isEmpty()) return emptyList()
         val orderedWords = words.sortedWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
         val result = mutableListOf<Triple<Long, Long, String>>()
         val text = StringBuilder()

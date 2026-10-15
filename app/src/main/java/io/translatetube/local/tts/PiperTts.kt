@@ -164,14 +164,14 @@ object PiperModels {
         }?.map { it.name }?.toSet() ?: emptySet()
 
     /** 校验目录内三个关键资源齐全。 */
+    /** File names alone are not enough: an interrupted download can leave a truncated ONNX. */
     private fun complete(dir: File, definition: PiperModelDef): Boolean {
-        val rootFiles = dir.listFiles()
+        val files = dir.listFiles()
             ?.filter { it.isFile }
-            ?.map { it.name }
-            ?.toSet()
+            ?.associate { it.name to it.length() }
             .orEmpty()
         return PiperModelFilePolicy.isComplete(
-            rootFileNames = rootFiles,
+            rootFiles = files,
             hasEspeakData = File(dir, "espeak-ng-data").isDirectory,
             requiresChineseAssets = definition.supportsChineseOutput,
         )
@@ -217,16 +217,24 @@ object PiperModels {
     ): Unit = withContext(Dispatchers.IO) {
         checkActive()
         val root = piperRoot(ctx)
-        root.mkdirs()
+        if (!root.isDirectory && !root.mkdirs()) {
+            throw java.io.IOException("无法创建 Piper 模型目录：${root.absolutePath}")
+        }
         val dest = modelDir(ctx, def.id)
         if (complete(dest, def)) {
             refreshInstalled(ctx)
             return@withContext
         }
-        val archive = File(ctx.cacheDir, "${def.id}.tar.bz2")
-        val url = "$BASE/${def.archive}"
+
+        val archive = File(ctx.cacheDir, "piper-model-${def.id}.tar.bz2.tmp")
+        val staging = File(root, "${def.id}.extract")
+        val backup = File(root, "${def.id}.backup")
         try {
-            val request = Request.Builder().url(url).build()
+            if (archive.exists() && !archive.delete()) {
+                throw java.io.IOException("无法清理上次未完成的 Piper 下载文件")
+            }
+
+            val request = Request.Builder().url("$BASE/${def.archive}").build()
             val ownerJob = currentCoroutineContext()[Job]
             executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
                 if (!response.isSuccessful) {
@@ -234,73 +242,169 @@ object PiperModels {
                 }
                 val body = response.body ?: throw java.io.IOException("模型下载失败：空响应")
                 val total = body.contentLength()
+                if (total > MAX_ARCHIVE_BYTES) {
+                    throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
+                }
                 var done = 0L
                 body.byteStream().use { input ->
                     FileOutputStream(archive).use { output ->
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
                             checkActive()
+                            ownerJob?.ensureActive()
                             val n = input.read(buffer)
                             if (n < 0) break
-                            output.write(buffer, 0, n)
+                            if (!PiperModelFilePolicy.isWithinLimit(done, n.toLong(), MAX_ARCHIVE_BYTES)) {
+                                throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
+                            }
                             done += n
-                            if (total > 0) {
+                            output.write(buffer, 0, n)
+                            if (total > 0L) {
                                 onProgress(((done * 100L) / total).toInt().coerceIn(0, 99))
                             }
                         }
                         output.fd.sync()
                     }
                 }
+                if (done == 0L || (total >= 0L && done != total)) {
+                    throw java.io.IOException("Piper 模型下载不完整：预期 ${total} 字节，实际 ${done} 字节")
+                }
+            }
+
+            checkActive()
+            // Recover a process stopped between moving the old directory and publishing staging.
+            if (backup.exists()) {
+                if (dest.exists()) {
+                    if (!backup.deleteRecursively()) {
+                        throw java.io.IOException("无法清理上次 Piper 模型安装留下的备份")
+                    }
+                } else if (!backup.renameTo(dest)) {
+                    throw java.io.IOException("上次 Piper 模型安装中断，无法恢复原模型")
+                }
+            }
+            if (staging.exists() && !staging.deleteRecursively()) {
+                throw java.io.IOException("无法清理上次未完成的 Piper 解压目录")
+            }
+            if (!staging.mkdirs()) throw java.io.IOException("无法创建 Piper 临时解压目录")
+
+            extractArchive(archive, staging, checkActive)
+            if (!complete(staging, def)) {
+                throw java.io.IOException("Piper 模型包不完整：ONNX（至少 1 MB）、tokens.txt 及所需语言资源均须完整")
             }
             checkActive()
-            extractArchive(archive, dest, checkActive)
-            if (!complete(dest, def)) {
-                throw java.io.IOException("模型包不完整：缺少 model.onnx / tokens.txt / espeak-ng-data")
+
+            val hadDestination = dest.exists()
+            if (hadDestination && !dest.renameTo(backup)) {
+                throw java.io.IOException("无法备份现有 Piper 模型，旧模型仍保留")
             }
+            if (!staging.renameTo(dest)) {
+                val installError = java.io.IOException("无法发布新的 Piper 模型")
+                if (hadDestination && backup.exists() && !backup.renameTo(dest)) {
+                    installError.addSuppressed(
+                        java.io.IOException("新模型发布失败，旧模型仍保留在 ${backup.absolutePath}")
+                    )
+                }
+                throw installError
+            }
+            if (backup.exists()) runCatching { backup.deleteRecursively() }
             onProgress(100)
             refreshInstalled(ctx)
-        } catch (e: Exception) {
-            dest.deleteRecursively()
-            throw e
+        } catch (error: Exception) {
+            // Never delete the published model on a failed download or extraction. Only staging is disposable.
+            runCatching { staging.deleteRecursively() }
+            throw error
         } finally {
-            archive.delete()
+            runCatching { archive.delete() }
         }
     }
 
-    /** 解包 tar.bz2：剥掉包内一级目录，平铺到目标目录。 */
-    private fun extractArchive(archive: File, destination: File, checkActive: () -> Unit) {
-        destination.mkdirs()
+    private fun extractArchive(
+        archive: File,
+        destination: File,
+        checkActive: () -> Unit,
+    ) {
+        if (!destination.isDirectory) throw java.io.IOException("Piper 临时解压目录不存在")
+        val rootPath = destination.canonicalFile.path + File.separator
+        val buffer = ByteArray(64 * 1024)
+        var archiveRootName: String? = null
+        var extractedBytes = 0L
+
         TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(archive))).use { tar ->
-            val buffer = ByteArray(64 * 1024)
             while (true) {
                 checkActive()
                 val entry = tar.nextTarEntry ?: break
                 if (entry.isSymbolicLink || entry.isLink) {
                     throw java.io.IOException("模型包包含不安全的链接")
                 }
-                val rel = entry.name.replace("\\", "/")
-                    .split("/").dropWhile { it.isEmpty() }
-                    .drop(1) // 去掉 tar 根目录 vits-piper-xxx/
-                    .joinToString("/")
-                if (rel.isEmpty()) continue
-                // 防路径穿越
-                if (rel.contains("..")) throw java.io.IOException("模型包路径异常")
-                val target = File(destination, rel)
-                if (entry.isDirectory) {
-                    target.mkdirs()
+                if (!entry.isDirectory && !entry.isFile) {
+                    throw java.io.IOException("模型包包含不支持的特殊条目")
+                }
+
+                val normalized = entry.name.replace('\\', '/')
+                val firstPart = normalized.split('/').firstOrNull { it.isNotEmpty() }
+                    ?: throw java.io.IOException("模型包包含空路径")
+                val expectedRoot = archiveRootName
+                if (expectedRoot == null) archiveRootName = firstPart
+                else if (expectedRoot != firstPart) {
+                    throw java.io.IOException("模型包包含多个顶层目录")
+                }
+
+                val relative = PiperModelFilePolicy.normalizeArchiveEntryName(
+                    entry.name,
+                    archiveRootName ?: firstPart,
+                ) ?: throw java.io.IOException("模型包包含非法或越界路径")
+                if (relative.isEmpty()) {
+                    if (!entry.isDirectory) throw java.io.IOException("模型包根路径不是目录")
                     continue
                 }
-                target.parentFile?.mkdirs()
-                FileOutputStream(target).use { output ->
-                    while (true) {
-                        checkActive()
-                        val n = tar.read(buffer)
-                        if (n < 0) break
-                        output.write(buffer, 0, n)
+
+                val output = File(destination, relative).canonicalFile
+                if (!output.path.startsWith(rootPath)) {
+                    throw java.io.IOException("模型包路径越界")
+                }
+                if (entry.isDirectory) {
+                    if (!output.isDirectory && !output.mkdirs()) {
+                        throw java.io.IOException("无法创建 Piper 模型子目录")
                     }
-                    output.fd.sync()
+                    continue
+                }
+
+                if (!PiperModelFilePolicy.isWithinLimit(extractedBytes, entry.size, MAX_EXTRACTED_BYTES)) {
+                    throw java.io.IOException("Piper 模型解压内容超过 512 MB 安全上限")
+                }
+                output.parentFile?.let { parent ->
+                    if (!parent.isDirectory && !parent.mkdirs()) {
+                        throw java.io.IOException("无法创建 Piper 模型子目录")
+                    }
+                }
+
+                var written = 0L
+                FileOutputStream(output).use { out ->
+                    while (written < entry.size) {
+                        checkActive()
+                        val wanted = minOf(buffer.size.toLong(), entry.size - written).toInt()
+                        val count = tar.read(buffer, 0, wanted)
+                        if (count < 0) throw java.io.IOException("Piper 模型文件解压不完整：${entry.name}")
+                        if (count == 0) continue
+                        if (!PiperModelFilePolicy.isWithinLimit(extractedBytes, count.toLong(), MAX_EXTRACTED_BYTES) ||
+                            !PiperModelFilePolicy.isWithinLimit(written, count.toLong(), entry.size)
+                        ) {
+                            throw java.io.IOException("Piper 模型文件长度超过声明或总解压上限")
+                        }
+                        out.write(buffer, 0, count)
+                        written += count
+                        extractedBytes += count
+                    }
+                    out.fd.sync()
+                }
+                if (!PiperModelFilePolicy.hasExpectedEntryLength(entry.size, written)) {
+                    throw java.io.IOException("Piper 模型文件长度校验失败：${entry.name}")
                 }
             }
         }
     }
+
+    private const val MAX_ARCHIVE_BYTES = 256L * 1024L * 1024L
+    private const val MAX_EXTRACTED_BYTES = 512L * 1024L * 1024L
+
 }

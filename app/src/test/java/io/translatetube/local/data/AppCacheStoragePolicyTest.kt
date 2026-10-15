@@ -25,9 +25,10 @@ class AppCacheStoragePolicyTest {
             }
             File(root, "translate-pcm-leftover.s16le").writeBytes(ByteArray(13))
             File(root, "asr_audio_legacy.bin").writeBytes(ByteArray(19))
+            File(root, "piper-model-zh_cn_chaowen_medium.tar.bz2.tmp").writeBytes(ByteArray(29))
             File(root, "unrelated.bin").writeBytes(ByteArray(101))
 
-            assertEquals(17L + 23L + 31L + 13L + 19L, AppCacheStoragePolicy.sizeBytes(root))
+            assertEquals(17L + 23L + 31L + 13L + 19L + 29L, AppCacheStoragePolicy.sizeBytes(root))
         } finally {
             root.deleteRecursively()
         }
@@ -45,11 +46,13 @@ class AppCacheStoragePolicyTest {
                 parentFile?.mkdirs()
                 writeBytes(ByteArray(16))
             }
+            File(root, "piper-model-zh_cn_chaowen_medium.tar.bz2.tmp").writeBytes(ByteArray(29))
             val keep = File(root, "unrelated.bin").apply { writeText("keep") }
 
             assertTrue(AppCacheStoragePolicy.clear(root))
             assertFalse(File(root, "asr_audio_retry").exists())
             assertFalse(File(root, "dub").exists())
+            assertFalse(File(root, "piper-model-zh_cn_chaowen_medium.tar.bz2.tmp").exists())
             assertTrue(keep.isFile)
             assertEquals(0L, AppCacheStoragePolicy.sizeBytes(root))
         } finally {

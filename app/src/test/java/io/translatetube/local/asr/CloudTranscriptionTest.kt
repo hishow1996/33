@@ -36,6 +36,15 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun invalidDurationProducesNoCuesInsteadOfThrowing() {
+        assertTrue(CloudTranscription.groupWords(
+            listOf(CloudTranscription.TimedWord("hello", 0L, 100L)),
+            durationMs = 0L,
+        ).isEmpty())
+        assertTrue(CloudTranscription.groupWords(emptyList(), durationMs = -1L).isEmpty())
+    }
+
+    @Test
     fun emptyWordListProducesNoCues() {
         assertTrue(CloudTranscription.groupWords(emptyList(), durationMs = 1_000L).isEmpty())
     }

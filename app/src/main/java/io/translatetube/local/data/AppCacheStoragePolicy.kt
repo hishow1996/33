@@ -10,6 +10,7 @@ internal object AppCacheStoragePolicy {
         "translate-pcm-",
         "asr-cloud-",
         "asr-kawa-",
+        "piper-model-",
     )
 
     fun canClear(
