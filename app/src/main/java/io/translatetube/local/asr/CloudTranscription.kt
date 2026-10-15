@@ -58,6 +58,31 @@ object CloudTranscription {
     /** Bound JSON allocation on memory-constrained phones when a provider returns malformed data. */
     internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
 
+    // A force-stop can bypass writeWavFile's finally block. Keep only this writer's stale
+    // staging files eligible for cleanup; recently modified work from another active job survives.
+    internal const val STAGED_WAV_MAX_AGE_MS = 24L * 60L * 60L * 1_000L
+
+    internal fun cleanupStaleWavStages(
+        directory: File,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Int {
+        val files = directory.listFiles() ?: return 0
+        var deleted = 0
+        for (file in files) {
+            if (!file.isFile ||
+                !file.name.startsWith("cloud-wav-") ||
+                !file.name.endsWith(".part")
+            ) continue
+            val modified = file.lastModified()
+            if (modified > 0L && nowMs >= modified &&
+                nowMs - modified > STAGED_WAV_MAX_AGE_MS && file.delete()
+            ) {
+                deleted++
+            }
+        }
+        return deleted
+    }
+
     /**
      * Cartesia accepts documented ISO-639-1 codes; "auto" is a UI sentinel, not an API code.
      * Both "no" and "nn" are supported and must retain their distinct meanings.
@@ -172,6 +197,7 @@ object CloudTranscription {
         val parent = output.absoluteFile.parentFile
             ?: throw IOException("WAV 输出目录无效")
         if (!parent.isDirectory) throw IOException("WAV 输出目录不存在")
+        cleanupStaleWavStages(parent)
         val staged = File.createTempFile("cloud-wav-", ".part", parent)
         var installed = false
         try {
