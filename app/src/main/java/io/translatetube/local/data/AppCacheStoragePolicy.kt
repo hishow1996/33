@@ -17,7 +17,8 @@ internal object AppCacheStoragePolicy {
         isPlaying: Boolean,
         isProcessing: Boolean,
         dubbingIncomplete: Boolean,
-    ): Boolean = !isPlaying && !isProcessing && !dubbingIncomplete
+        modelDownloadActive: Boolean = false,
+    ): Boolean = !isPlaying && !isProcessing && !dubbingIncomplete && !modelDownloadActive
 
     fun sizeBytes(cacheDir: File): Long {
         var total = 0L

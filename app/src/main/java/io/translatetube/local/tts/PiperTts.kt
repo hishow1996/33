@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 import io.translatetube.local.yt.executeCancellableHttpCall
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -185,6 +187,13 @@ object PiperModels {
     private val _installed = MutableStateFlow<Set<String>>(emptySet())
     val installed: StateFlow<Set<String>> = _installed
 
+    // Counts queued and active downloads so cache cleanup cannot delete an archive in use.
+    private val installMutex = Mutex()
+    private val activeDownloadLock = Any()
+    private var activeDownloadRequests = 0
+    private val _activeDownloadCount = MutableStateFlow(0)
+    val activeDownloadCount: StateFlow<Int> = _activeDownloadCount
+
     fun refreshInstalled(ctx: Context) {
         _installed.value = installedIds(ctx)
     }
@@ -206,7 +215,22 @@ object PiperModels {
         checkActive: () -> Unit = {},
     ) {
         val def = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
-        download(ctx, def, onProgress, checkActive)
+        synchronized(activeDownloadLock) {
+            activeDownloadRequests++
+            _activeDownloadCount.value = activeDownloadRequests
+        }
+        try {
+            // Archive and extraction paths are deterministic. Serialize installs to avoid
+            // concurrent callers truncating the same download or deleting each other's staging dir.
+            installMutex.withLock {
+                download(ctx, def, onProgress, checkActive)
+            }
+        } finally {
+            synchronized(activeDownloadLock) {
+                activeDownloadRequests = (activeDownloadRequests - 1).coerceAtLeast(0)
+                _activeDownloadCount.value = activeDownloadRequests
+            }
+        }
     }
 
     private suspend fun download(
@@ -221,15 +245,49 @@ object PiperModels {
             throw java.io.IOException("无法创建 Piper 模型目录：${root.absolutePath}")
         }
         val dest = modelDir(ctx, def.id)
+        val archive = File(ctx.cacheDir, "piper-model-${def.id}.tar.bz2.tmp")
+        val staging = File(root, "${def.id}.extract")
+        val backup = File(root, "${def.id}.backup")
+        if (dest.exists() && !dest.isDirectory) {
+            throw java.io.IOException("Piper 模型目标路径不是目录，已停止覆盖以保护现有文件")
+        }
         if (complete(dest, def)) {
+            // A crash after publishing a complete model may leave a redundant backup behind.
+            if (backup.exists()) {
+                runCatching { if (backup.isDirectory) backup.deleteRecursively() else backup.delete() }
+            }
             refreshInstalled(ctx)
             return@withContext
         }
 
-        val archive = File(ctx.cacheDir, "piper-model-${def.id}.tar.bz2.tmp")
-        val staging = File(root, "${def.id}.extract")
-        val backup = File(root, "${def.id}.backup")
         try {
+            // Restore before any network work. A failed retry must not strand the last usable
+            // model in .backup merely because the download source is temporarily unavailable.
+            if (backup.exists()) {
+                if (!backup.isDirectory) {
+                    throw java.io.IOException("Piper 模型备份路径不是目录，无法安全恢复")
+                }
+                if (PiperModelFilePolicy.shouldRestoreBackup(
+                        backupExists = true,
+                        destinationIsComplete = complete(dest, def),
+                    )
+                ) {
+                    val invalid = File(root, "${def.id}.invalid")
+                    if (invalid.exists() && !invalid.deleteRecursively()) {
+                        throw java.io.IOException("无法清理上次损坏的 Piper 模型副本")
+                    }
+                    if (dest.exists() && !dest.renameTo(invalid)) {
+                        throw java.io.IOException("无法暂存损坏的 Piper 模型以恢复旧版本")
+                    }
+                    if (!backup.renameTo(dest)) {
+                        if (invalid.exists()) runCatching { invalid.renameTo(dest) }
+                        throw java.io.IOException("上次 Piper 模型安装中断，无法恢复原模型")
+                    }
+                    if (invalid.exists()) runCatching { invalid.deleteRecursively() }
+                } else if (!backup.deleteRecursively()) {
+                    throw java.io.IOException("无法清理上次 Piper 模型安装留下的备份")
+                }
+            }
             if (archive.exists() && !archive.delete()) {
                 throw java.io.IOException("无法清理上次未完成的 Piper 下载文件")
             }
@@ -272,16 +330,6 @@ object PiperModels {
             }
 
             checkActive()
-            // Recover a process stopped between moving the old directory and publishing staging.
-            if (backup.exists()) {
-                if (dest.exists()) {
-                    if (!backup.deleteRecursively()) {
-                        throw java.io.IOException("无法清理上次 Piper 模型安装留下的备份")
-                    }
-                } else if (!backup.renameTo(dest)) {
-                    throw java.io.IOException("上次 Piper 模型安装中断，无法恢复原模型")
-                }
-            }
             if (staging.exists() && !staging.deleteRecursively()) {
                 throw java.io.IOException("无法清理上次未完成的 Piper 解压目录")
             }

@@ -107,6 +107,27 @@ class PiperModelFilePolicyTest {
         ))
     }
 
+
+
+    @Test
+    fun restoresBackupOnlyWhenTheCurrentDestinationIsNotComplete() {
+        assertTrue(PiperModelFilePolicy.shouldRestoreBackup(
+            backupExists = true, destinationIsComplete = false
+        ))
+        assertFalse(PiperModelFilePolicy.shouldRestoreBackup(
+            backupExists = false, destinationIsComplete = false
+        ))
+        assertFalse(PiperModelFilePolicy.shouldRestoreBackup(
+            backupExists = true, destinationIsComplete = true
+        ))
+    }
+
+
+
+
+
+
+
     @Test
     fun rejectsArchiveAndExtractionSizeOverflowAndMismatchedEntryLengths() {
         assertTrue(PiperModelFilePolicy.isWithinLimit(100L, 50L, 150L))

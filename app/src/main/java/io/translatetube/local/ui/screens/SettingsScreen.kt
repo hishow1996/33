@@ -90,6 +90,10 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val ttsState by dlManager.tts.collectAsState()
         val asrState by dlManager.asr.collectAsState()
         val playbackState by io.translatetube.local.player.PlaybackService.ui.collectAsState()
+        val piperDownloadCount by io.translatetube.local.tts.PiperModels.activeDownloadCount.collectAsState()
+        val modelDownloadActive = piperDownloadCount > 0 ||
+            ttsState.status in setOf(io.translatetube.local.data.ModelStatus.DOWNLOADING, io.translatetube.local.data.ModelStatus.EXTRACTING) ||
+            asrState.status in setOf(io.translatetube.local.data.ModelStatus.DOWNLOADING, io.translatetube.local.data.ModelStatus.EXTRACTING)
         val cacheBusy = !io.translatetube.local.data.AppCacheStoragePolicy.canClear(
             isPlaying = playbackState.isPlaying,
             isProcessing = playbackState.phase in setOf(
@@ -102,6 +106,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             dubbingIncomplete = playbackState.phase == io.translatetube.local.player.Phase.READY &&
                 playbackState.totalLines > 0 &&
                 playbackState.preparedCount < playbackState.totalLines,
+            modelDownloadActive = modelDownloadActive,
         )
         // 下载状态变化会触发重组；以实际文件校验结果为准，避免“状态就绪但模型文件损坏”。
         val ttsReady = io.translatetube.local.data.ModelFiles.ttsReady(ctx)
@@ -466,7 +471,7 @@ Section("模型管理") {
             }
             if (cacheBusy) {
                 Text(
-                    "视频播放、转写或配音处理中，暂不能清理缓存，以免中断当前任务。",
+                    "视频播放、转写、配音或语音模型下载处理中，暂不能清理缓存，以免中断当前任务。",
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -481,7 +486,7 @@ Section("模型管理") {
                     title = { Text("清理临时缓存？", color = OnBg) },
                     text = {
                         Text(
-                            if (cacheBusy) "当前仍有播放或处理任务使用这些缓存。请先暂停播放并等待处理结束，再清理缓存。"
+                            if (cacheBusy) "当前仍有播放、处理或模型下载任务使用这些缓存。请先等待任务结束，再清理缓存。"
                             else "将清理配音 PCM、系统 TTS 临时 WAV、转写音频和 HLS 分段缓存。历史记录、字幕缓存和已下载模型不会删除。",
                             color = SubText,
                         )

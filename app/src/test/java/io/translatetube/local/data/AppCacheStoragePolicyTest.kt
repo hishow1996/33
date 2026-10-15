@@ -65,6 +65,9 @@ class AppCacheStoragePolicyTest {
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = true, isProcessing = false, dubbingIncomplete = false))
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = true, dubbingIncomplete = false))
         assertFalse(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = false, dubbingIncomplete = true))
+        assertFalse(AppCacheStoragePolicy.canClear(
+            isPlaying = false, isProcessing = false, dubbingIncomplete = false, modelDownloadActive = true
+        ))
         assertTrue(AppCacheStoragePolicy.canClear(isPlaying = false, isProcessing = false, dubbingIncomplete = false))
     }
 }
