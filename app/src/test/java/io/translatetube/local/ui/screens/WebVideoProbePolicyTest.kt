@@ -20,6 +20,8 @@ class WebVideoProbePolicyTest {
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("x".repeat(WebVideoProbePolicy.MAX_MEDIA_URL_CHARS + 1)))
         assertTrue(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.m3u8"))
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://m.yfsp.tv/static/media/scan_qr.mp3"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://m.yfsp.tv/static/media/test.mp4"))
+        assertTrue(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/test.mp4"))
         assertTrue(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/episode-audio.mp3"))
         assertEquals(WebVideoProbePolicy.MAX_TITLE_CHARS, WebVideoProbePolicy.normalizeTitle("t".repeat(2000)).length)
         assertEquals("", WebVideoProbePolicy.normalizePoster("p".repeat(5000)))
