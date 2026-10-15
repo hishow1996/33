@@ -201,7 +201,7 @@ class SafeMediaHttpTest {
             server.enqueue(
                 MockResponse()
                     .setBody("audio payload")
-                    .setBodyDelay(10, TimeUnit.SECONDS)
+                    .setBodyDelay(1, TimeUnit.SECONDS)
             )
             server.start()
             val ownerJob = SupervisorJob()
