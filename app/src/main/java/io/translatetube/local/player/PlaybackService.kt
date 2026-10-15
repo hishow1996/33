@@ -2210,7 +2210,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 dubbingStatus = "${selectedTtsName} 初始化失败",
                                 muteOriginal = false,
                                 noModelHint = when (selectedTts) {
-                                    "system" -> "已选择系统 TTS，但系统配音引擎初始化失败：$reason。不会自动切换到 Kokoro。请检查手机的文字转语音服务和中文语音数据。"
+                                    "system" -> "系统 TTS 初始化失败：$reason。应用已尝试使用设备上已安装的本地备用配音引擎；若没有可用备用模型，请检查手机的文字转语音服务与中文语音数据，或在设置中准备 Kokoro/Piper 中文模型。"
                                     "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
                                     else -> "已选择 Kokoro 模型，但初始化失败：$reason。不会自动切换到系统 TTS。请检查配音模型文件。"
                                 },
