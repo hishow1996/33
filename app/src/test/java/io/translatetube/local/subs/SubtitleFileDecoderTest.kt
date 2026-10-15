@@ -16,7 +16,7 @@ class SubtitleFileDecoderTest {
 
     @Test
     fun decodesBomMarkedUtf16LittleEndianAndBigEndian() {
-        val text = "1\n00:00:00,000 --> 00:00:01,000\n字幕"
+        val text = "1" + 13.toChar() + 10.toChar() + "00:00:00,000 --> 00:00:01,000" + 13.toChar() + 10.toChar() + "字幕"
         val littleEndian = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) +
             text.toByteArray(StandardCharsets.UTF_16LE)
         val bigEndian = byteArrayOf(0xFE.toByte(), 0xFF.toByte()) +
