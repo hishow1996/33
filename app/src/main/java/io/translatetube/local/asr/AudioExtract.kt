@@ -216,6 +216,9 @@ object AudioExtract {
             var sawInputEos = false
             var sawOutputEos = false
             val info = MediaCodec.BufferInfo()
+            // Reuse one conversion buffer across codec output chunks to avoid steady 16 KiB
+            // allocations (and GC churn) for every chunk on memory-constrained devices.
+            val pcmWriteBuffer = ByteArray(16 * 1024)
 
             BufferedOutputStream(FileOutputStream(destination), 64 * 1024).use { output ->
                 var lastCodecProgressAtMs = android.os.SystemClock.elapsedRealtime()
@@ -343,7 +346,7 @@ object AudioExtract {
                                             "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
                                         )
                                     }
-                                    writePcm16Le(output, converted, checkActive)
+                                    writePcm16Le(output, converted, pcmWriteBuffer, checkActive)
                                     outputBytes += converted.size.toLong() * 2L
                                     outputSamples += converted.size
                                     monoOffset += chunkCount
@@ -357,7 +360,6 @@ object AudioExtract {
                         codec.releaseOutputBuffer(outBufferIndex, false)
                         if (reachedEnd) sawOutputEos = true
                     } else if (outBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        loopMadeProgress = true
                         // On Android 9 some audio decoders report their actual PCM output here.
                         val newFormat = codec.outputFormat
                         if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
@@ -385,8 +387,7 @@ object AudioExtract {
                             )
                         }
                     } else if (outBufferIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
-                        loopMadeProgress = true
-                    }
+                        // Buffer-layout notification only; it is not audio data progress.
 
                     if (loopMadeProgress) {
                         lastCodecProgressAtMs = android.os.SystemClock.elapsedRealtime()
@@ -411,7 +412,7 @@ object AudioExtract {
                         "解码后的临时音频超过 512 MB 安全上限；请使用较短的视频后再试。"
                     )
                 }
-                writePcm16Le(output, tail, checkActive)
+                writePcm16Le(output, tail, pcmWriteBuffer, checkActive)
                 outputBytes += tail.size.toLong() * 2L
                 outputSamples += tail.size
                 output.flush()
@@ -431,13 +432,14 @@ object AudioExtract {
     private fun writePcm16Le(
         output: BufferedOutputStream,
         samples: ShortArray,
+        bytes: ByteArray,
         checkActive: () -> Unit = {},
     ) {
         if (samples.isEmpty()) return
+        require(bytes.size >= 2 && bytes.size % 2 == 0) { "PCM 输出缓冲区必须按 16 位采样对齐" }
         checkActive()
         // Convert and write small chunks instead of duplicating an entire codec buffer.
-        // This bounds temporary memory on older phones and keeps cancellation responsive.
-        val bytes = ByteArray(16 * 1024)
+        // Reuse the caller-owned scratch buffer across all decoded chunks.
         val samplesPerChunk = bytes.size / 2
         var sampleOffset = 0
         while (sampleOffset < samples.size) {
