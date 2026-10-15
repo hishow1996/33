@@ -331,6 +331,7 @@ object YtDlpRepo {
      *                    格式为 "k=v; k2=v2"。
      */
     suspend fun resolve(ctx: Context, pageUrl: String, cookieHeader: String? = null): ResolvedMedia {
+        if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
         ensureReady(ctx)
         return withContext(Dispatchers.IO) {
             val request = YoutubeDLRequest(pageUrl.trim()).apply {
@@ -346,7 +347,7 @@ object YtDlpRepo {
             val info = YoutubeDL.getInfo(request)
             val formats = info.formats.orEmpty()
             val playableFormats = formats.mapNotNull { format ->
-                val url = format.url?.takeIf(YtDlpMediaPolicy::isSafeHttpUrl) ?: return@mapNotNull null
+                val url = format.url?.takeIf { YtDlpMediaPolicy.isSafeHttpUrl(it) } ?: return@mapNotNull null
                 YtDlpFormatCandidate(
                     url = url,
                     extension = format.ext,
