@@ -38,6 +38,8 @@ object YtDlpRepo {
     private const val TAG = "YtDlpRepo"
     private const val MAX_RELEASE_METADATA_BYTES = 1024L * 1024L
     private const val MAX_PYPI_METADATA_BYTES = 8L * 1024L * 1024L
+    private const val MAX_RESOLVE_JSON_CHARS = 4 * 1024 * 1024
+    private const val MAX_RESOLVE_FORMATS = 500
 
     @Volatile private var inited = false
 
@@ -486,11 +488,19 @@ object YtDlpRepo {
                 }
                 val response = YoutubeDL.execute(request, processId)
                 currentCoroutineContext().ensureActive()
+                // Native extractors can return very large metadata for pages containing many
+                // embedded videos. Bound the JSON before allocating JSONObject's object graph,
+                // then cap inspected formats to avoid memory spikes on low-RAM phones.
+                if (response.out.length > MAX_RESOLVE_JSON_CHARS) {
+                    throw IllegalStateException(
+                        "yt-dlp 返回的媒体信息过大（${response.out.length} 字符），为避免应用内存不足已停止解析。请在网页源列表中选取具体视频或刷新页面重试。"
+                    )
+                }
                 // Parse yt-dlp's --dump-json payload with Android's built-in JSON API.
                 // This avoids depending on a transitive Jackson type exposed by the library.
                 val info = JSONObject(response.out)
                 val formatsJson = info.optJSONArray("formats")
-                val formatCount = formatsJson?.length() ?: 0
+                val formatCount = (formatsJson?.length() ?: 0).coerceAtMost(MAX_RESOLVE_FORMATS)
                 val playableFormats = (0 until formatCount).mapNotNull { index ->
                     val format = formatsJson?.optJSONObject(index) ?: return@mapNotNull null
                     val formatUrl = format.optString("url").takeIf { YtDlpMediaPolicy.isSafeHttpUrl(it) }
