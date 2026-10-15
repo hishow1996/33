@@ -24,6 +24,25 @@ class WebVideoProbePolicyTest {
     }
 
     @Test
+    fun rejectsUnsafeSchemesCredentialsAndInvalidPortsFromPageBridge() {
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("javascript:alert(1)"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("data:video/mp4;base64,abc"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("file:///sdcard/private.mp4"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://user:pass@cdn.example/video.mp4"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example:99999/video.mp4"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("https://cdn.example/video.mp4\\r\\nX: yes"))
+    }
+
+    @Test
+    fun keepsBlobForAnInformativeUnsupportedReasonButRejectsUnsafePosterUrls() {
+        assertTrue(WebVideoProbePolicy.acceptsMediaUrl("blob:https://site.example/0123"))
+        assertFalse(WebVideoProbePolicy.acceptsMediaUrl("blob:javascript:alert(1)"))
+        assertEquals("", WebVideoProbePolicy.normalizePoster("file:///sdcard/private.png"))
+        assertEquals("", WebVideoProbePolicy.normalizePoster("javascript:alert(1)"))
+        assertEquals("https://cdn.example/poster.jpg", WebVideoProbePolicy.normalizePoster("https://cdn.example/poster.jpg"))
+    }
+
+    @Test
     fun mergesDuplicateUrlsAndCapsTheRetainedCandidateList() {
         val base = WebVideoCandidate("https://cdn.example/video.mp4", "", "", 0.0, false)
         val update = WebVideoCandidate("https://cdn.example/video.mp4", "Video", "poster", 12.0, true)
