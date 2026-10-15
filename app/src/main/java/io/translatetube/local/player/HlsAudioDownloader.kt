@@ -624,8 +624,8 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("HLS 初始化片段必须出现在媒体片段之前；不支持中途切换初始化片段。")
                     }
                     val attributes = parseAttributes(line.substringAfter(':'))
-                    val path = attributes["URI"]
-                        ?: throw IllegalStateException("HLS 初始化片段缺少 URI。")
+                    val path = attributes["URI"]?.takeIf { it.isNotBlank() }
+                        ?: throw IllegalStateException("HLS 初始化片段缺少有效 URI。")
                     val resolvedInit = resolveUrl(baseUrl, path)
                     val rawRange = attributes["BYTERANGE"]
                     val initSource = if (rawRange.isNullOrBlank()) {
@@ -749,6 +749,9 @@ internal object HlsAudioDownloader {
     }
 
     private fun parseAttributes(input: String): Map<String, String> {
+        if (input.isBlank()) {
+            throw IllegalStateException("HLS 属性列表不能为空。")
+        }
         val result = linkedMapOf<String, String>()
         var cursor = 0
 

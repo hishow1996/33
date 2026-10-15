@@ -426,4 +426,27 @@ class HlsAudioDownloaderTest {
             }.exceptionOrNull() is IllegalStateException)
         }
     }
+
+    @Test
+    fun rejectsEmptyMasterAttributeListAndEmptyInitializationUri() {
+        val emptyMaster = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:
+            video/index.m3u8
+        """.trimIndent()
+        val emptyMapUri = """
+            #EXTM3U
+            #EXT-X-MAP:URI=""
+            #EXTINF:6.0,
+            seg-1.m4s
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        assertTrue(runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/master.m3u8", emptyMaster)
+        }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching {
+            HlsAudioDownloader.parseMediaPlaylist("https://cdn.example/index.m3u8", emptyMapUri)
+        }.exceptionOrNull() is IllegalStateException)
+    }
 }
