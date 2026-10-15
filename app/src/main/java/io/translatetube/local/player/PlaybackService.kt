@@ -2129,7 +2129,35 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     try {
                         // Pass the saved selection explicitly so a settings change during parsing
                         // cannot cause the readiness check and actual engine to disagree.
-                        val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
+                        val tts: TtsEngine = try {
+                            makeTtsOffMainThread(selectedTts)
+                        } catch (initError: kotlinx.coroutines.CancellationException) {
+                            throw initError
+                        } catch (initError: Exception) {
+                            if (selectedTts != "system") throw initError
+                            // If the Android TTS service has no usable Chinese voice, try an
+                            // already-installed local Chinese model instead of ending with zero
+                            // dubbing. Never download a model or call a network TTS silently.
+                            val fallbackId = withContext(Dispatchers.IO) {
+                                when {
+                                    kokoroRuntimeReady() -> "kokoro"
+                                    piperModelReadyForChinese() -> "piper"
+                                    else -> null
+                                }
+                            } ?: throw initError
+                            updateUiForSession(key) {
+                                it.copy(
+                                    dubbingStatus = "系统 TTS 初始化失败，正在尝试本地备用引擎…",
+                                    noModelHint = "系统 TTS 初始化失败：${initError.message ?: initError.javaClass.simpleName}。正在尝试已安装的本地中文配音模型。",
+                                )
+                            }
+                            try {
+                                makeTtsOffMainThread(fallbackId)
+                            } catch (fallbackError: Exception) {
+                                fallbackError.addSuppressed(initError)
+                                throw fallbackError
+                            }
+                        }
                         try {
                             ensureCurrentSession(key)
                         } catch (e: kotlinx.coroutines.CancellationException) {
