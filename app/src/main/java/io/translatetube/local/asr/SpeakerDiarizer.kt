@@ -63,7 +63,7 @@ object SpeakerDiarizer {
                 val archive = File(context.cacheDir, "speaker-segmentation.tar.bz2")
                 try {
                     checkActive()
-                    download(SEGMENTATION_URL, archive, 32L * 1024 * 1024, checkActive)
+                    download(SEGMENTATION_URL, archive, 32L * 1024 * 1024, checkActive, ownerJob)
                     checkActive()
                     extractSegmentation(archive, segmentation, checkActive)
                     checkActive()
@@ -75,7 +75,7 @@ object SpeakerDiarizer {
                 val temp = File(dir, "embedding.onnx.download")
                 try {
                     checkActive()
-                    download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive)
+                    download(EMBEDDING_URL, temp, 100L * 1024 * 1024, checkActive, ownerJob)
                     checkActive()
                     if (temp.length() < 5_000_000L) throw java.io.IOException("人物声纹模型文件不完整")
                     AtomicFileInstaller.install(temp, embedding)
@@ -152,17 +152,22 @@ object SpeakerDiarizer {
         destination: File,
         maxBytes: Long,
         checkActive: () -> Unit,
+        ownerJob: kotlinx.coroutines.Job?,
     ) {
         checkActive()
         val temp = File(destination.parentFile, destination.name + ".part")
         temp.delete()
         try {
             val request = Request.Builder().url(url).header("User-Agent", "TranslateTube/1.0").build()
-            http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw java.io.IOException("模型下载失败 HTTP ${response.code}")
+            io.translatetube.local.yt.executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
+                if (!SpeakerModelDownloadPolicy.isFullResponse(response.code)) {
+                    throw java.io.IOException("模型下载需要完整响应（HTTP 200），服务器返回 HTTP ${response.code}")
+                }
                 val body = response.body ?: throw java.io.IOException("模型下载响应为空")
                 val expectedBytes = body.contentLength()
-                if (expectedBytes > maxBytes) throw java.io.IOException("模型文件超过大小限制")
+                if (!SpeakerModelDownloadPolicy.isValidExpectedLength(expectedBytes, maxBytes)) {
+                    throw java.io.IOException("模型响应声明的文件大小无效或超过限制")
+                }
                 var total = 0L
                 body.byteStream().use { input ->
                     FileOutputStream(temp).use { output ->
@@ -178,10 +183,9 @@ object SpeakerDiarizer {
                         output.fd.sync()
                     }
                 }
-                if (total == 0L) throw java.io.IOException("下载的模型文件为空")
-                if (expectedBytes > 0L && total != expectedBytes) {
+                if (!SpeakerModelDownloadPolicy.isCompletePayload(expectedBytes, total, maxBytes)) {
                     throw java.io.IOException(
-                        "模型下载不完整：响应声明 ${expectedBytes} 字节，实际收到 ${total} 字节"
+                        "模型下载不完整或大小异常：响应声明 ${expectedBytes} 字节，实际收到 ${total} 字节"
                     )
                 }
             }
@@ -210,6 +214,9 @@ object SpeakerDiarizer {
                     if (entry.isDirectory || !entry.name.replace("\\", "/").endsWith("/model.onnx") &&
                         entry.name != "model.onnx") continue
                     if (found) throw java.io.IOException("模型包包含多个候选模型")
+                    if (entry.size !in 1L..SpeakerModelDownloadPolicy.MAX_SEGMENTATION_MODEL_BYTES) {
+                        throw java.io.IOException("分离模型的压缩包元数据大小无效或超过限制")
+                    }
                     var total = 0L
                     FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(64 * 1024)
@@ -222,6 +229,16 @@ object SpeakerDiarizer {
                             output.write(buffer, 0, n)
                         }
                         output.fd.sync()
+                    }
+                    if (!SpeakerModelDownloadPolicy.isCompleteArchiveEntry(
+                            entry.size,
+                            total,
+                            SpeakerModelDownloadPolicy.MAX_SEGMENTATION_MODEL_BYTES,
+                        )
+                    ) {
+                        throw java.io.IOException(
+                            "分离模型解压不完整：压缩包声明 ${entry.size} 字节，实际读取 ${total} 字节"
+                        )
                     }
                     if (total < 1_000_000L) throw java.io.IOException("分离模型文件不完整")
                     found = true
