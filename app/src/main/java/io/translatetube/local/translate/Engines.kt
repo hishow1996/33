@@ -364,8 +364,30 @@ class OpenAiCompatEngine(
         return parseNumbered(content, lines.size)
     }
 
+    private suspend fun generateContent(modelId: String, payload: String): String =
+        post(
+            "$endpointBase/v1beta/models/$modelId:generateContent",
+            mapOf("x-goog-api-key" to normalizedApiKey),
+            payload,
+            currentCoroutineContext()[Job],
+        )
+
     private fun parseNumbered(content: String, size: Int): List<String> =
         parseModelTranslations(content, size)
+}
+
+/** Retry retired Gemini model IDs with the current stable Flash model, but never hide auth/network errors. */
+internal fun shouldFallbackToCurrentGeminiModel(configuredModel: String, error: Throwable): Boolean {
+    if (configuredModel.trim().removePrefix("models/") == FreeModelDefaults.GEMINI_MODEL) return false
+    val detail = generateSequence(error) { it.cause }
+        .joinToString(" ") { it.message.orEmpty() }
+    val isNotFound = detail.contains("HTTP 404", ignoreCase = true) ||
+        detail.contains("NOT_FOUND", ignoreCase = true)
+    val isRetiredModel = detail.contains("no longer available", ignoreCase = true) ||
+        detail.contains("not available to new users", ignoreCase = true) ||
+        detail.contains("model is not found", ignoreCase = true) ||
+        detail.contains("model not found", ignoreCase = true)
+    return isNotFound && isRetiredModel
 }
 
 /** Google Gemini */
@@ -437,12 +459,19 @@ class GeminiEngine(
             "contents",
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$user"))))
         )
-        val body = post(
-            "$endpointBase/v1beta/models/$model:generateContent",
-            mapOf("x-goog-api-key" to normalizedApiKey),
-            payload.toString(),
-            currentCoroutineContext()[Job],
-        )
+        val body = try {
+            generateContent(model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }, payload.toString())
+        } catch (error: Exception) {
+            currentCoroutineContext().ensureActive()
+            val configured = model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }
+            if (!shouldFallbackToCurrentGeminiModel(configured, error)) throw error
+            android.util.Log.w(
+                "GeminiEngine",
+                "Configured Gemini model $configured is no longer available; retrying with ${FreeModelDefaults.GEMINI_MODEL}",
+                error,
+            )
+            generateContent(FreeModelDefaults.GEMINI_MODEL, payload.toString())
+        }
         val text = JSONObject(body).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
         return parseNumbered(text, lines.size)
@@ -598,7 +627,7 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
 
 /** 免费大模型默认配置 */
 object FreeModelDefaults {
-    const val GEMINI_MODEL = "gemini-2.5-flash"
+    const val GEMINI_MODEL = "gemini-3.8-flash"
     const val GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
     const val DEFAULT_GEMINI_KEY = ""
 
