@@ -3213,8 +3213,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             return@launch
                         }
                         val fallback = makeTtsOffMainThread(fallbackId)
-                        if (ui.value.key != sessionKey || dubbing !== engine) {
+                        // attach() starts the synthesis worker before runPipeline publishes
+                        // dubbing = engine, so an immediate first-line failure can arrive in this
+                        // narrow window. Session identity plus completeTtsFallback()'s released
+                        // guard is sufficient; checking the shared dubbing field here can strand the
+                        // fallback gate forever.
+                        if (ui.value.key != sessionKey) {
                             runCatching { fallback.close() }
+                            engine.failTtsFallback(failedIndex, "视频处理会话已切换，已取消备用引擎切换")
                             return@launch
                         }
                         engine.completeTtsFallback(fallback, failedIndex)
