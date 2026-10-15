@@ -1,7 +1,10 @@
 name: Build Android APK
 
-# Manual only: ordinary code commits must not start APK builds.
+# Manual on main; the dedicated build-latest-apk branch also builds once on push.
 on:
+  push:
+    branches:
+      - build-latest-apk
   workflow_dispatch:
 
 permissions:
@@ -47,9 +50,7 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      # This is the final integration build. Run unit tests before creating installable APK artifacts.
       # Speech models are downloaded by the app on first use; do not bundle the 300MB+ ONNX models into the APK.
-
       - name: Download sherpa-onnx AAR
         run: |
           mkdir -p app/libs
@@ -63,7 +64,6 @@ jobs:
       - name: Build debug and release APKs
         run: ./gradlew --no-daemon assembleDebug assembleRelease
 
-      # Debug APKs are signed with Android's debug key and can be installed directly.
       - name: Upload installable debug APK
         uses: actions/upload-artifact@v4
         with:
