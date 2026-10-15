@@ -14,6 +14,16 @@ class GeminiModelFallbackPolicyTest {
     }
 
     @Test
+    fun fallsBackWhenTheApiSaysModelIsUnsupportedForTheVersion() {
+        assertTrue(
+            shouldFallbackToCurrentGeminiModel(
+                "gemini-1.5-flash",
+                IllegalStateException("HTTP 404: models/gemini-1.5-flash is not found for API version v1beta or is not supported for generateContent"),
+            )
+        )
+    }
+
+    @Test
     fun doesNotFallbackForAuthenticationOrUnrelatedErrors() {
         assertFalse(
             shouldFallbackToCurrentGeminiModel(
