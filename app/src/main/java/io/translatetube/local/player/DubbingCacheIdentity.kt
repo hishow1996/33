@@ -36,6 +36,6 @@ internal object DubbingCacheIdentity {
         val engineHash = fingerprint(
             "$engineKey-v9-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-adaptive"
         )
-        return "$lineIndex-v$speakerId-e$engineHash-t$textHash.pcm"
+        return "$lineIndex-v$speakerId-v9-speed-$engineHash-t$textHash.pcm"
     }
 }
