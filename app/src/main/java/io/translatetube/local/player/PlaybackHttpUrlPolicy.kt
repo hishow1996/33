@@ -18,6 +18,9 @@ internal object PlaybackHttpUrlPolicy {
     )
 
     fun isValidMediaUrl(value: String): Boolean {
+        // Validate the unmodified input first so trim() cannot hide a leading/trailing
+        // newline, tab, DEL or C1 control character.
+        if (value.isBlank() || value.any { Character.isISOControl(it) }) return false
         val raw = value.trim()
         if (raw.isEmpty() || raw.any { it.code <= 0x20 || it.code == 0x7f }) return false
         val uri = runCatching { URI(raw) }.getOrNull() ?: return false
