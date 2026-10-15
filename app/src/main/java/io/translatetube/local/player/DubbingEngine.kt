@@ -567,13 +567,14 @@ class DubbingEngine(
     }
 
     fun failTtsFallback(failedIndex: Int, detail: String) {
-        fallbackRequested.set(false)
+        // Keep the gate closed: continuing this worker would repeatedly synthesize with the
+        // already-failed System TTS and could make the whole subtitle queue appear stuck.
+        fallbackRequested.set(true)
         if (failedIndex in lines.indices) {
             readiness.markPrepared(failedIndex, hasAudio = false)
             bumpPrepared()
         }
         reportSynthesisError("系统 TTS 配音失败，自动切换备用引擎也未成功：$detail")
-        if (!released) startSynthLoop()
     }
 
     private fun reportSynthesisError(message: String) {
