@@ -54,6 +54,24 @@ class MediaUrlCacheIdentityTest {
     }
 
     @Test
+    fun invalidPortsAreNotNormalizedIntoAValidMediaIdentity() {
+        val invalid = "https://cdn.example:99999/media.mp4?token=abc"
+        val zeroPort = "https://cdn.example:0/media.mp4?token=abc"
+        val valid = "https://cdn.example/media.mp4?token=abc"
+        assertEquals(invalid, MediaUrlCacheIdentity.canonicalUrl(invalid))
+        assertEquals(zeroPort, MediaUrlCacheIdentity.canonicalUrl(zeroPort))
+        assertNotEquals(MediaUrlCacheIdentity.key(valid), MediaUrlCacheIdentity.key(invalid))
+    }
+
+    @Test
+    fun malformedReferrerOriginsRemainSeparatedInSessionCacheKeys() {
+        val media = "https://cdn.example/video.mp4"
+        val first = MediaUrlCacheIdentity.remoteSessionKey(media, "https://site.example:99999/watch", "session")
+        val second = MediaUrlCacheIdentity.remoteSessionKey(media, "https://other.example:99999/watch", "session")
+        assertNotEquals(first, second)
+    }
+
+    @Test
     fun queryOrderAndDefaultPortDoNotChangeIdentity() {
         val first = "https://cdn.example:443/media.mp4?b=2&a=1"
         val second = "https://cdn.example/media.mp4?a=1&b=2"

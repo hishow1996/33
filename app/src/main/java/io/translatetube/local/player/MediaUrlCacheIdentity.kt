@@ -54,12 +54,21 @@ internal object MediaUrlCacheIdentity {
         "rscc", "rscd", "rsce", "rscl", "rsct",
     )
 
+    private fun hasValidHttpAuthority(uri: URI, scheme: String): Boolean {
+        val port = uri.port
+        return scheme in setOf("http", "https") &&
+            !uri.host.isNullOrBlank() &&
+            uri.userInfo == null &&
+            !uri.rawAuthority.orEmpty().endsWith(":") &&
+            (port == -1 || port in 1..65535)
+    }
+
     fun canonicalUrl(value: String): String {
         val uri = runCatching { URI(value.trim()) }.getOrNull()
             ?: return value.trim()
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         val host = uri.host?.lowercase(Locale.ROOT)
-        if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.userInfo != null) {
+        if (scheme == null || !hasValidHttpAuthority(uri, scheme) || host.isNullOrBlank()) {
             return value.trim()
         }
 
@@ -141,10 +150,15 @@ internal object MediaUrlCacheIdentity {
     ).joinToString("\n")
 
     private fun origin(value: String): String {
-        val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return ""
+        val uri = runCatching { URI(value.trim()) }.getOrNull()
+            ?: return "invalid-referrer-sha256:${sha256(value.trim())}"
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         val host = uri.host?.lowercase(Locale.ROOT)
-        if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.userInfo != null) return ""
+        if (scheme == null || !hasValidHttpAuthority(uri, scheme) || host.isNullOrBlank()) {
+            // Keep malformed referrers isolated rather than assigning every invalid origin the same
+            // empty scope, while still storing only a digest of the supplied string.
+            return "invalid-referrer-sha256:${sha256(value.trim())}"
+        }
         val port = when {
             scheme == "http" && uri.port == 80 -> -1
             scheme == "https" && uri.port == 443 -> -1

@@ -38,6 +38,27 @@ class PcmChannelMixerTest {
     }
 
     @Test
+    fun bulkDownmixChecksCancellationAndRejectsOversizedAggregateBeforeAllocation() {
+        val repeatedChunk = ShortArray(8_000_000)
+        val oversizedError = runCatching {
+            // Reuse the same backing array; the aggregate exceeds the budget without allocating
+            // a second large input buffer and must be rejected before allocating its output.
+            PcmChannelMixer.downmixToMono(listOf(repeatedChunk, repeatedChunk, repeatedChunk), 2)
+        }.exceptionOrNull()
+        assertTrue(oversizedError is IllegalArgumentException)
+
+        var checks = 0
+        val error = runCatching {
+            PcmChannelMixer.downmixToMono(listOf(ShortArray(100_000)), 1) {
+                checks++
+                if (checks == 3) throw java.util.concurrent.CancellationException("stale downmix")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(3, checks)
+    }
+
+    @Test
     fun largeDownmixChecksCancellationBetweenOutputChunks() {
         var checks = 0
         val error = runCatching {

@@ -30,6 +30,7 @@ internal class Pcm16StreamingResampler(
         check(!finished) { "重采样器已结束" }
         checkActive()
         if (input.isEmpty()) return ShortArray(0)
+        require(inputSamples <= Long.MAX_VALUE - input.size.toLong()) { "音频采样总数超出可处理范围" }
 
         // Reject an oversized upsampling request before allocating a combined input buffer.
         val estimatedOutputCount = ceil(input.size.toDouble() / ratio)
@@ -53,7 +54,7 @@ internal class Pcm16StreamingResampler(
             }
         }
         val newInputCount = inputSamples + input.size
-        val targetCountNow = (newInputCount.toDouble() / ratio).toInt().toLong()
+        val targetCountNow = outputSampleCount(newInputCount)
         val initialCapacity = estimatedOutputCount.toInt().coerceAtLeast(1) + 4
         var output = ShortArray(initialCapacity)
         var produced = 0
@@ -100,14 +101,22 @@ internal class Pcm16StreamingResampler(
         return output.copyOf(produced)
     }
 
+    /** Keeps cumulative output counts in Long; a streamed source can span many input chunks. */
+    internal fun outputSampleCount(sampleCount: Long): Long {
+        require(sampleCount >= 0L) { "音频采样数不能为负数" }
+        val count = sampleCount.toDouble() / ratio
+        require(count.isFinite() && count < Long.MAX_VALUE.toDouble()) { "重采样输出长度超出可处理范围" }
+        return count.toLong()
+    }
+
     fun finish(checkActive: () -> Unit = {}): ShortArray {
         check(!finished) { "重采样器已结束" }
         checkActive()
         finished = true
         if (inputSamples == 0L) return ShortArray(0)
 
-        // Match the previous whole-array implementation's Double.toInt() output length.
-        val targetCount = (inputSamples.toDouble() / ratio).toInt().toLong()
+        // Use the same bounded Long counter as process(); Int conversion would wrap on long streams.
+        val targetCount = outputSampleCount(inputSamples)
         val remaining = (targetCount - nextOutputSample).coerceAtLeast(0L)
         require(remaining <= Int.MAX_VALUE.toLong()) { "重采样输出过长" }
         val tail = ShortArray(remaining.toInt())

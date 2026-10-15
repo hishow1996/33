@@ -5,8 +5,10 @@ import java.util.Locale
 
 /** URL checks for pages opened in the in-app web video picker and their HTML5 media sources. */
 internal object WebMediaUrlPolicy {
-    private val explicitSchemePattern = Regex("""^[A-Za-z][A-Za-z0-9+.-]*:""")
-    private val hostPortPattern = Regex("""^(?:\[[^]]+]|[^:/?#]+):\d+(?:[/?#].*)?$""")
+    private val explicitSchemePattern = Regex("""^([A-Za-z][A-Za-z0-9+.-]*):""")
+    // IPv6 literals need brackets; accept only characters used by literal address/zone forms.
+    private val hostPortPattern = Regex("""^(?:\[[0-9A-Fa-f:.%]+\]|[^:/?#]+):\d+(?:[/?#].*)?$""")
+    private val blockedSchemes = setOf("javascript", "file", "data", "blob", "content", "intent", "mailto", "tel", "about")
 
     /** Reject unusable authorities early; java.net.URI accepts out-of-range numeric ports. */
     private fun isValidHttpUri(uri: URI): Boolean {
@@ -22,13 +24,14 @@ internal object WebMediaUrlPolicy {
     fun normalizePageUrl(input: String): String? {
         val raw = input.trim()
         if (raw.isEmpty()) return null
+        // Reject known non-web schemes before treating a colon and digits as a host port.
+        // Otherwise e.g. javascript:8080/alert could be silently reinterpreted as an HTTPS host.
+        val detectedScheme = explicitSchemePattern.find(raw)?.groupValues?.getOrNull(1)?.lowercase(Locale.ROOT)
+        if (detectedScheme in blockedSchemes) return null
         // A colon followed by digits can be a host port (example.com:8080), not a URI scheme.
         val hostPortWithoutScheme = hostPortPattern.matches(raw)
-        val explicitScheme = if (hostPortWithoutScheme) null else explicitSchemePattern.find(raw)?.value
-        if (explicitScheme != null &&
-            !raw.startsWith("https://", ignoreCase = true) &&
-            !raw.startsWith("http://", ignoreCase = true)
-        ) return null
+        val explicitScheme = if (hostPortWithoutScheme) null else detectedScheme
+        if (explicitScheme != null && explicitScheme !in setOf("http", "https")) return null
         val normalized = when {
             raw.startsWith("https://", ignoreCase = true) ||
                 raw.startsWith("http://", ignoreCase = true) -> raw

@@ -26,6 +26,20 @@ class Pcm16StreamingResamplerTest {
     }
 
     @Test
+    fun cumulativeOutputCountDoesNotWrapAtIntMaxValue() {
+        val resampler = Pcm16StreamingResampler(1_000, 16_000)
+        val inputCount = Int.MAX_VALUE.toLong() + 10_000L
+        assertEquals(inputCount * 16L, resampler.outputSampleCount(inputCount))
+    }
+
+    @Test
+    fun rejectsCumulativeOutputCountThatWouldOverflowLong() {
+        val resampler = Pcm16StreamingResampler(1_000, 384_000)
+        val error = runCatching { resampler.outputSampleCount(Long.MAX_VALUE) }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
     fun emptyAndSingleSampleInputsMatchLegacyLengthSemantics() {
         val emptyResampler = Pcm16StreamingResampler(48_000, 16_000)
         assertArrayEquals(ShortArray(0), emptyResampler.process(ShortArray(0)))

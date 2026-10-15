@@ -15,6 +15,9 @@ class WebMediaUrlPolicyTest {
         // Common bare host:port input must not be misread as an unsupported URI scheme.
         assertEquals("https://example.com:8080/watch", WebMediaUrlPolicy.normalizePageUrl("example.com:8080/watch"))
         assertEquals("https://localhost:3000", WebMediaUrlPolicy.normalizePageUrl("localhost:3000"))
+        assertEquals("https://[::1]:8080/watch", WebMediaUrlPolicy.normalizePageUrl("[::1]:8080/watch"))
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("javascript:8080/alert(1)"))
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("file:8080/etc/passwd"))
         assertNull(WebMediaUrlPolicy.normalizePageUrl("https://example.com:99999/watch"))
         assertNull(WebMediaUrlPolicy.normalizePageUrl("https://example.com:0/watch"))
     }
