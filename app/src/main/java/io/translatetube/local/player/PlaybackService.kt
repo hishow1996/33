@@ -3159,6 +3159,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
      * Centralize synthesis-failure reporting for normal playback and imported subtitles.
      * The explicitly selected TTS engine is retained; the source audio is restored on failure.
      */
+    /**
+     * Report failures, and automatically switch a failed System TTS session to an installed
+     * Chinese-capable local engine. The DubbingEngine holds the replacement until any in-flight
+     * synthesis call has unwound, then regenerates the failed cue with its own cache identity.
+     */
     private fun registerDubbingFailureHandler(
         engine: DubbingEngine,
         tts: TtsEngine,
@@ -3169,24 +3174,80 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             ui.update { state ->
                 if (state.key == sessionKey) {
                     state.copy(
-                        dubbingStatus = "${tts.name} 已生成第 ${index + 1} 句 PCM（约 ${durationMs} ms）"
+                        dubbingStatus = "${engine.currentTtsName} 已生成第 ${index + 1} 句 PCM（约 ${durationMs} ms）"
                     )
                 } else state
             }
         }
         engine.onPlaybackStarted = {
             ui.update { state ->
-                if (state.key == sessionKey) state.copy(dubbingStatus = "${tts.name} 正在播放中文配音")
+                if (state.key == sessionKey) state.copy(dubbingStatus = "${engine.currentTtsName} 正在播放中文配音")
                 else state
             }
         }
+
+        engine.onFallbackRequested = { failedIndex, detail ->
+            if (engine.currentTtsName != "系统TTS") {
+                false
+            } else {
+                updateUiForSession(sessionKey) { state ->
+                    state.copy(
+                        dubbingStatus = "系统 TTS 输出异常，正在自动切换备用配音引擎…",
+                        noModelHint = "系统 TTS 输出失败，正在尝试已安装的中文配音引擎。",
+                    )
+                }
+                scope.launch {
+                    try {
+                        // Prefer Kokoro for its stable Chinese voice; use a ready Chinese Piper
+                        // model when Kokoro is not installed. Never silently fall back to a network API.
+                        val fallbackId = when {
+                            kokoroRuntimeReady() -> "kokoro"
+                            piperModelReadyForChinese() -> "piper"
+                            else -> null
+                        }
+                        if (fallbackId == null) {
+                            engine.failTtsFallback(
+                                failedIndex,
+                                "系统 TTS 失败（$detail），并且设备上没有已就绪的 Kokoro 或中文 Piper 备用模型。请在设置中下载一个本地配音模型后重试。",
+                            )
+                            return@launch
+                        }
+                        val fallback = makeTtsOffMainThread(fallbackId)
+                        if (ui.value.key != sessionKey || dubbing !== engine) {
+                            runCatching { fallback.close() }
+                            return@launch
+                        }
+                        engine.completeTtsFallback(fallback, failedIndex)
+                        val fallbackName = engine.currentTtsName
+                        updateUiForSession(sessionKey) { state ->
+                            state.copy(
+                                ttsEngineName = fallbackName,
+                                dubbingStatus = "系统 TTS 失败，已自动切换到 $fallbackName 并重试当前句",
+                                noModelHint = "系统 TTS 出现问题：$detail。应用已自动改用本地备用引擎；如果仍无配音，请检查设备音频输出。",
+                            )
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        android.util.Log.e("PlaybackService", "Automatic System TTS fallback failed", error)
+                        engine.failTtsFallback(
+                            failedIndex,
+                            error.message ?: error.javaClass.simpleName,
+                        )
+                    }
+                }
+                true
+            }
+        }
+
         engine.onSynthesisError = { detail ->
-            val message = "当前选择的「${tts.name}」配音失败，未自动切换到其他引擎。$detail"
+            val activeName = engine.currentTtsName.ifBlank { tts.name }
+            val message = "当前配音引擎「$activeName」合成或输出失败，已恢复原声。$detail"
             ui.update { state ->
                 if (state.key == sessionKey) {
                     state.copy(
-                        ttsEngineName = tts.name,
-                        dubbingStatus = "${tts.name} 合成或播放失败，已恢复原声",
+                        ttsEngineName = activeName,
+                        dubbingStatus = "$activeName 合成或播放失败，已恢复原声",
                         muteOriginal = false,
                         noModelHint = message,
                     )
