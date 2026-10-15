@@ -42,6 +42,8 @@ class WebVideoProbePolicyTest {
         assertFalse(WebVideoProbePolicy.acceptsMediaUrl("blob:javascript:alert(1)"))
         assertEquals("", WebVideoProbePolicy.normalizePoster("file:///sdcard/private.png"))
         assertEquals("", WebVideoProbePolicy.normalizePoster("javascript:alert(1)"))
+        assertEquals("", WebVideoProbePolicy.normalizePoster("\nhttps://cdn.example/poster.jpg"))
+        assertEquals("", WebVideoProbePolicy.normalizePoster("https://cdn.example/poster.jpg" + 0x85.toChar()))
         assertEquals("https://cdn.example/poster.jpg", WebVideoProbePolicy.normalizePoster("https://cdn.example/poster.jpg"))
     }
 
