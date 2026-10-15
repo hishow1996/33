@@ -17,6 +17,12 @@ internal object AsrTranscriptCheckpointPolicy {
             sampleBuffer.putInt(pcmSamples[index].toRawBits())
             digest.update(sampleBuffer.array())
         }
+        val lastSampleIndex = pcmSamples.lastIndex
+        if (lastSampleIndex >= 0 && lastSampleIndex % stride != 0) {
+            sampleBuffer.clear()
+            sampleBuffer.putInt(pcmSamples[lastSampleIndex].toRawBits())
+            digest.update(sampleBuffer.array())
+        }
         segments.forEach { (start, end) ->
             digest.update("${start},${end};".toByteArray(Charsets.UTF_8))
         }
@@ -53,6 +59,16 @@ internal object AsrTranscriptCheckpointPolicy {
                 digest.update(sampleBuffer.array())
                 index += stride
                 sampledAnchors++
+            }
+            val lastSampleIndex = pcmFile.sampleCount - 1L
+            if (lastSampleIndex >= 0L && lastSampleIndex % stride != 0L) {
+                checkActive()
+                input.seek(lastSampleIndex * 2L)
+                val raw = input.readUnsignedByte() or (input.readUnsignedByte() shl 8)
+                val normalizedSample = raw.toShort() / 32768f
+                sampleBuffer.clear()
+                sampleBuffer.putInt(normalizedSample.toRawBits())
+                digest.update(sampleBuffer.array())
             }
         }
         checkActive()

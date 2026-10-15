@@ -32,6 +32,18 @@ class AsrTranscriptCheckpointPolicyTest {
     }
 
     @Test
+    fun signatureChangesWhenOnlyTheLastSparsePcmSampleDiffers() {
+        val pcm = FloatArray(4_096) { index -> (index % 31) / 31f }
+        val segments = listOf(0L to 1_000L, 1_200L to 2_400L)
+        val changedLastSample = pcm.copyOf().also { it[it.lastIndex] = 0.999f }
+
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.signature(pcm, segments) ==
+                AsrTranscriptCheckpointPolicy.signature(changedLastSample, segments)
+        )
+    }
+
+    @Test
     fun restoredRowsMustBelongToCompletedSegmentsAndBeUnique() {
         val completed = listOf(0L to 1_000L, 1_500L to 2_500L, 3_000L to 4_000L)
         assertTrue(

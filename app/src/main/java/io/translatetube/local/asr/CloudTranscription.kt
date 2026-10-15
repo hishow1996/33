@@ -51,13 +51,13 @@ object CloudTranscription {
     internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
 
     /**
-     * Cartesia accepts documented language codes, not the UI's "auto" sentinel.
-     * Map the previous Norwegian option to the API's documented "nn" code.
+     * Cartesia accepts documented ISO-639-1 codes; "auto" is a UI sentinel, not an API code.
+     * Both "no" and "nn" are supported and must retain their distinct meanings.
      */
     internal fun cartesiaLanguageCode(language: String): String? {
         val normalized = language.trim().lowercase(java.util.Locale.ROOT)
         if (normalized.isEmpty() || normalized == "auto") return null
-        return if (normalized == "no") "nn" else normalized
+        return normalized
     }
 
     /** Kawa's automatic-detection mode is represented by omitting the language field. */

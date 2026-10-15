@@ -9,10 +9,11 @@ import org.junit.Test
 
 class CloudTranscriptionTest {
     @Test
-    fun cartesiaLanguageOmitsAutoAndUsesItsDocumentedNorwegianCode() {
+    fun cartesiaLanguageKeepsBothDocumentedNorwegianCodesAndOmitsAuto() {
         assertEquals("en", CloudTranscription.cartesiaLanguageCode(" en "))
         assertEquals("zh", CloudTranscription.cartesiaLanguageCode("ZH"))
-        assertEquals("nn", CloudTranscription.cartesiaLanguageCode("no"))
+        assertEquals("no", CloudTranscription.cartesiaLanguageCode("no"))
+        assertEquals("nn", CloudTranscription.cartesiaLanguageCode("nn"))
         assertEquals(null, CloudTranscription.cartesiaLanguageCode("auto"))
         assertEquals(null, CloudTranscription.cartesiaLanguageCode(" AUTO "))
         assertEquals(null, CloudTranscription.cartesiaLanguageCode("  "))

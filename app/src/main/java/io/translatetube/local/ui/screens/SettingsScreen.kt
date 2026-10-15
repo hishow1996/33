@@ -45,9 +45,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     var kawaLanguage by remember { mutableStateOf(prefs.getString("asr_kawa_language", "auto") ?: "auto") }
     var cartesiaLanguage by remember { mutableStateOf(prefs.getString("asr_cartesia_language", "en") ?: "en") }
     var asrLanguageMenuExpanded by remember { mutableStateOf(false) }
-    // Cartesia's documented enum uses "nn" (not "no"); Kawa retains its own "no" choice.
-    val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "nn" to "挪威语（新挪威语）") }
-    val kawaLanguages = remember(cartesiaLanguages) { cartesiaLanguages + ("no" to "挪威语") }
+    // Cartesia documents both Norwegian Bokmål ("no") and Nynorsk ("nn"); Kawa keeps "no".
+    val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "no" to "挪威语", "nn" to "挪威语（新挪威语）") }
+    val kawaLanguages = remember(cartesiaLanguages) { cartesiaLanguages.filterNot { it.first == "nn" } }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
@@ -252,13 +252,12 @@ Section("转写引擎") {
                 if (asrEngine == "cartesia" || asrEngine == "kawa") {
                     val selectedLanguage = if (asrEngine == "cartesia") cartesiaLanguage else kawaLanguage
                     val languageOptions = if (asrEngine == "cartesia") cartesiaLanguages else kawaLanguages
-                    val displayLanguageCode = if (asrEngine == "cartesia" && selectedLanguage == "no") "nn" else selectedLanguage
                     Text("识别语言", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                     Box {
                         OutlinedButton(onClick = { asrLanguageMenuExpanded = true }) {
                             Text(
                                 if (asrEngine == "kawa" && selectedLanguage.equals("auto", ignoreCase = true)) "自动检测"
-                                else languageOptions.firstOrNull { it.first == displayLanguageCode }?.second ?: "英语"
+                                else languageOptions.firstOrNull { it.first == selectedLanguage }?.second ?: "英语"
                             )
                             Icon(Icons.Filled.ExpandMore, contentDescription = "选择识别语言")
                         }
