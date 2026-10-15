@@ -1593,6 +1593,7 @@ class PlaybackService : MediaSessionService() {
                     updateUiForSession(key) { it.copy(noModelHint = hint) }
                 } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
+                awaitProcessingResumed(key)
                 updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
                 val audioFile: Any = when {
                     videoId != null -> obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
@@ -2645,13 +2646,15 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")
                 } else state
             }
+            awaitProcessingResumed(sessionKey)
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException("无法获取视频音频流")
+            awaitProcessingResumed(sessionKey)
             val destination = asrAudioCacheFile(videoId)
             suspend fun downloadStream(url: String): File = try {
                 downloadAudio(url, destination, sessionKey)
             } catch (manifest: HlsManifestPayloadException) {
-                HlsAudioDownloader.download(url, destination) { detail ->
+                HlsAudioDownloader.download(url, destination, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
                     updateUiForSession(sessionKey) { state ->
                         if (state.key == sessionKey) {
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
@@ -2678,7 +2681,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "音频链接已失效，正在刷新视频流…")
                         } else state
                     }
+                    awaitProcessingResumed(sessionKey)
                     val refreshed = NewPipeRepo.audioForAsr(videoId) ?: throw firstError
+                    awaitProcessingResumed(sessionKey)
                     try {
                         downloadStream(refreshed.content)
                     } catch (refreshError: Exception) {
@@ -2741,6 +2746,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             ytdlpOrigin.pageUrl,
                             destination,
                             onProgress = { percent ->
+                                kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey) }
                                 updateUiForSession(sessionKey) { state ->
                                     if (state.key == sessionKey) {
                                         state.copy(
@@ -2774,7 +2780,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     }
                 }
                 val cachedAudio = if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
-                    HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
+                    HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
                         updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
@@ -2787,7 +2793,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     } catch (manifest: HlsManifestPayloadException) {
                         // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
                         // Detect the response body, then re-open through the bounded HLS segment path.
-                        HlsAudioDownloader.download(mediaUrl, destination, headers) { detail ->
+                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }) { detail ->
                             updateUiForSession(sessionKey) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
