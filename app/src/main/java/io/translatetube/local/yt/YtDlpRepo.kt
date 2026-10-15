@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -224,7 +226,7 @@ object YtDlpRepo {
             addOption("--socket-timeout", "20")
             addOption("--retries", "3")
             // 上限防护：纯音频通常 5~60MB，300M 足够宽容且防爆盘
-            addOption("--max-filesize", "300M")
+            addOption("--max-filesize", "160M")
             // 分片并发下载提速（HLS/dash 音轨常见分段）
             addOption("-N", "4")
             // 逐行刷新进度（外部程序解析标准做法，避免单行 \r 刷新吞进度）
@@ -239,12 +241,23 @@ object YtDlpRepo {
                 if (percent >= 0f) onProgress(percent.toInt().coerceIn(0, 100))
             }
         } catch (e: java.io.InterruptedIOException) {
+            // Do not turn coroutine cancellation into an ordinary download error: callers would
+            // otherwise continue into the expensive HLS fallback after the user already cancelled.
+            currentCoroutineContext().ensureActive()
             throw IllegalStateException("yt-dlp 下载被中断", e)
         }
-        // 校验产物：yt-dlp 正常退出但零字节/极小文件视为失败，让调用方回落流式管线
-        if (!dest.isFile || dest.length() < 1_000_000L) {
+        // Short valid clips can produce audio below 1 MB; only reject empty or oversized output.
+        // Keep the yt-dlp direct path within the same cache bound as the HTTP/HLS fallbacks.
+        val downloadedBytes = dest.length()
+        if (!YtDlpAudioPolicy.isValidDownload(dest.isFile, downloadedBytes)) {
             dest.delete()
-            throw IllegalStateException("yt-dlp 音频下载结果异常")
+            val reason = when {
+                downloadedBytes <= 0L -> "yt-dlp 音频下载结果为空"
+                downloadedBytes > YtDlpAudioPolicy.MAX_AUDIO_BYTES ->
+                    "yt-dlp 音频超过 160 MB 限制，正在回落至受限的流式下载"
+                else -> "yt-dlp 音频下载结果异常"
+            }
+            throw IllegalStateException(reason)
         }
         dest
     }
