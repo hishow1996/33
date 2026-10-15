@@ -17,6 +17,8 @@ on:
       - app/src/main/java/io/translatetube/local/ui/screens/WebVideoProbePolicy.kt
       - app/src/main/java/io/translatetube/local/player/HlsAudioDownloader.kt
       - app/src/main/java/io/translatetube/local/yt/YtDlpRepo.kt
+      - app/src/main/java/io/translatetube/local/web/WebMediaUrlPolicy.kt
+      - app/src/test/java/io/translatetube/local/web/WebMediaUrlPolicyTest.kt
       - app/src/main/java/io/translatetube/local/MainActivity.kt
       - app/src/main/java/io/translatetube/local/ui/screens/SettingsScreen.kt
       - app/src/main/res/drawable/splash_screen.xml
