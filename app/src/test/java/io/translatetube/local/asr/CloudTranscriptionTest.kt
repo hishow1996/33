@@ -20,6 +20,16 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun cartesiaLanguageNormalizesRegionTagsAndRejectsMalformedCodes() {
+        assertEquals("en", CloudTranscription.cartesiaLanguageCode("en-US"))
+        assertEquals("zh", CloudTranscription.cartesiaLanguageCode("zh_CN"))
+        assertEquals("pt", CloudTranscription.cartesiaLanguageCode("pt-BR"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("English"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("123"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("e"))
+    }
+
+    @Test
     fun retriesTransientKawaStatusErrorsButNotAuthOrCancellation() {
         assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 429）")))
         assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 503）")))
