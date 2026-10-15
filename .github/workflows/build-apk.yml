@@ -11,6 +11,8 @@ on:
       - app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
       - app/src/main/java/io/translatetube/local/player/PlaybackService.kt
       - app/src/main/java/io/translatetube/local/player/DubbingEngine.kt
+      - app/src/test/java/io/translatetube/local/player/DubbingOutputPcmPolicyTest.kt
+      - app/src/main/java/io/translatetube/local/player/DubbingOutputPcmPolicy.kt
       - app/src/main/java/io/translatetube/local/player/RemoteMediaRetryPolicy.kt
       - app/src/main/java/io/translatetube/local/translate/Engines.kt
       - app/src/main/java/io/translatetube/local/ui/screens/ApiManagerScreen.kt
