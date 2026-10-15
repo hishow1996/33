@@ -2,6 +2,7 @@ package io.translatetube.local.asr
 
 import android.content.Context
 import io.translatetube.local.translate.Crypto
+import io.translatetube.local.yt.executeCancellableHttpCall
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -17,6 +18,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 
 /** Reads provider keys from encrypted SharedPreferences values written by SettingsScreen. */
@@ -104,7 +107,8 @@ object CloudTranscription {
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
         require(wavFile.isFile && wavFile.length() > 44L) { "待转写音频为空" }
         checkActive()
-        if (provider == "kawa") return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive)
+        val ownerJob = currentCoroutineContext()[Job]
+        if (provider == "kawa") return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive, ownerJob)
 
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -140,7 +144,7 @@ object CloudTranscription {
             .build()
 
         checkActive()
-        val responseText = client.newCall(request).execute().use { response ->
+        val responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
             val body = response.body?.string().orEmpty()
             checkActive()
             if (!response.isSuccessful) {
@@ -209,6 +213,7 @@ object CloudTranscription {
         wavFile: File,
         durationMs: Long,
         checkActive: () -> Unit,
+        ownerJob: Job?,
     ): Result {
         val pcmBytes = wavFile.length() - 44L
         if (pcmBytes <= 0L) throw IOException("待转写 WAV 音频为空")
@@ -254,7 +259,7 @@ object CloudTranscription {
                     .build()
                 val create = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions")
                     .header("Authorization", "Bearer $apiKey").post(form).build()
-                val jobId = client.newCall(create).execute().use { response ->
+                val jobId = executeCancellableHttpCall(client.newCall(create), ownerJob) { response ->
                     val body = response.body?.string().orEmpty(); checkActive()
                     if (!response.isSuccessful) {
                         val message = runCatching { JSONObject(body).optJSONObject("error")?.optString("message") }.getOrNull()
@@ -276,7 +281,7 @@ object CloudTranscription {
                     checkActive()
                     val poll = Request.Builder().url("https://api.makimoto.ai/v1/transcriptions/$jobId")
                         .header("Authorization", "Bearer $apiKey").get().build()
-                    val status = client.newCall(poll).execute().use { response ->
+                    val status = executeCancellableHttpCall(client.newCall(poll), ownerJob) { response ->
                         val body = response.body?.string().orEmpty(); checkActive()
                         if (!response.isSuccessful) throw IOException("Kawa 查询转写状态失败（HTTP ${response.code}）")
                         JSONObject(body)
