@@ -255,7 +255,7 @@ class MlKitEngine : TranslationEngine {
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (lines.isEmpty()) return emptyList()
         // 源语言未知时按英语兜底（最常见外文视频）
-        val s = LangMap.mlkit(if (srcLang.isBlank()) "en" else srcLang)
+        val s = LangMap.mlkitSource(srcLang)
         val t = LangMap.mlkit(tgtLang)
         ensureModel(s)
         ensureModel(t)
@@ -444,12 +444,8 @@ class GoogleWebEngine : TranslationEngine {
     override val displayName = "Google 翻译（免费在线）"
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        val source = if (srcLang.isBlank() || srcLang == "auto") "auto" else srcLang.substringBefore('-')
-        val target = when (tgtLang) {
-            "zh", "zh-CN", "zh-Hans" -> "zh-CN"
-            "zh-TW", "zh-Hant" -> "zh-TW"
-            else -> tgtLang.substringBefore('-')
-        }
+        val source = LangMap.google(srcLang)
+        val target = LangMap.google(tgtLang, target = true)
         val out = ArrayList<String>(lines.size)
         for (line in lines) {
             if (line.isBlank()) { out += ""; continue }
@@ -528,11 +524,7 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
 
     private val endpoint = "https://translation.googleapis.com/language/translate/v2"
 
-    private fun targetCode(code: String): String = when (code) {
-        "zh", "zh-CN", "zh-Hans" -> "zh-CN"
-        "zh-TW", "zh-Hant" -> "zh-TW"
-        else -> code.substringBefore('-')
-    }
+    private fun targetCode(code: String): String = LangMap.google(code, target = true)
 
     private fun requestPayload(texts: List<String>, srcLang: String, tgtLang: String): String {
         val payload = JSONObject()
@@ -541,7 +533,7 @@ class GoogleCloudEngine(private val apiKey: String) : TranslationEngine {
             .put("format", "text")
         val source = srcLang.trim()
         if (source.isNotBlank() && !source.equals("auto", ignoreCase = true)) {
-            payload.put("source", source.substringBefore('-'))
+            payload.put("source", LangMap.google(source))
         }
         return payload.toString()
     }
