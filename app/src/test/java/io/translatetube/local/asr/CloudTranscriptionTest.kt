@@ -91,6 +91,38 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun staleCloudWavCleanupOnlyDeletesOldOwnedStageFiles() {
+        val directory = createTempDir(prefix = "cloud-wav-stages")
+        try {
+            val now = 10_000_000_000L
+            val stale = File(directory, "cloud-wav-old.part").apply {
+                writeBytes(byteArrayOf(1))
+                setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
+            }
+            val recent = File(directory, "cloud-wav-active.part").apply {
+                writeBytes(byteArrayOf(2))
+                setLastModified(now - 1_000L)
+            }
+            val unrelated = File(directory, "other.part").apply {
+                writeBytes(byteArrayOf(3))
+                setLastModified(now - CloudTranscription.STAGED_WAV_MAX_AGE_MS - 1L)
+            }
+            val future = File(directory, "cloud-wav-future.part").apply {
+                writeBytes(byteArrayOf(4))
+                setLastModified(now + 1_000L)
+            }
+
+            assertEquals(1, CloudTranscription.cleanupStaleWavStages(directory, now))
+            assertTrue(!stale.exists())
+            assertTrue(recent.exists())
+            assertTrue(unrelated.exists())
+            assertTrue(future.exists())
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun wavExportDoesNotPublishPartialFileWhenCancelled() {
         val directory = createTempDir(prefix = "cloud-wav-cancel")
         try {
