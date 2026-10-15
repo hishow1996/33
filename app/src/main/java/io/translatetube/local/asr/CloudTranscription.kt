@@ -17,6 +17,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.delay
 
 /** Reads provider keys from encrypted SharedPreferences values written by SettingsScreen. */
 object CloudTranscriptionSettings {
@@ -35,7 +36,7 @@ object CloudTranscription {
         val language: String,
     )
 
-    private data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
+    internal data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -91,7 +92,7 @@ object CloudTranscription {
         }
     }
 
-    fun transcribe(
+    suspend fun transcribe(
         provider: String,
         apiKey: String,
         language: String,
@@ -202,7 +203,7 @@ object CloudTranscription {
 
 
     /** Kawa limits uploads to 10 MB. Split PCM WAV into 8 MiB chunks and restore global timestamps. */
-    private fun transcribeKawa(
+    private suspend fun transcribeKawa(
         apiKey: String,
         language: String,
         wavFile: File,
@@ -261,7 +262,7 @@ object CloudTranscription {
                             401, 403 -> "Kawa API Key 无效或没有访问权限"
                             413 -> "Kawa 单次上传上限为 10 MB"
                             415 -> "Kawa 只接受 MP3 或 WAV 音频"
-                            429 -> "Kawa 每月免费转写额度已用完"
+                            429 -> "Kawa 请求被限流或免费转写额度已用完，请稍后重试并检查账户额度"
                             else -> message?.takeIf { it.isNotBlank() }?.take(200) ?: "请检查网络和 Kawa 账户"
                         }
                         throw IOException("Kawa 云端转写失败（HTTP ${response.code}）：$advice")
@@ -280,12 +281,19 @@ object CloudTranscription {
                         if (!response.isSuccessful) throw IOException("Kawa 查询转写状态失败（HTTP ${response.code}）")
                         JSONObject(body)
                     }
-                    when (status.optString("status")) {
-                        "succeeded" -> { result = status.optJSONObject("result"); break }
+                    val stateName = status.optString("status")
+                    when (stateName) {
+                        "succeeded" -> {
+                            result = status.optJSONObject("result")
+                                ?: throw IOException("Kawa 已报告转写完成，但响应缺少有效 result 数据")
+                            break
+                        }
                         "failed" -> throw IOException("Kawa 转写任务失败：" +
                             status.optJSONObject("error")?.optString("message").orEmpty().ifBlank { "服务端处理失败" }.take(200))
+                        "queued", "processing" -> Unit
+                        else -> throw IOException("Kawa 返回未知转写状态：${stateName.take(80)}")
                     }
-                    Thread.sleep(2_000L)
+                    delay(2_000L)
                 }
                 val obj = result ?: throw IOException("Kawa 转写等待超时，请稍后重试")
                 obj.optString("language").takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
@@ -308,8 +316,9 @@ object CloudTranscription {
         } finally { chunks.forEach { it.second.delete() } }
     }
 
-    private fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {
+    internal fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {
         if (words.isEmpty()) return emptyList()
+        val orderedWords = words.sortedWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
         val result = mutableListOf<Triple<Long, Long, String>>()
         val text = StringBuilder()
         var cueStart = 0L
@@ -329,7 +338,7 @@ object CloudTranscription {
             cueEnd = 0L
         }
 
-        for (word in words) {
+        for (word in orderedWords) {
             if (text.isNotEmpty() &&
                 (count >= 14 || text.length >= 48 || word.endMs - cueStart >= 6_500L)
             ) flush()
