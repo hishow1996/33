@@ -89,6 +89,20 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
         val ttsState by dlManager.tts.collectAsState()
         val asrState by dlManager.asr.collectAsState()
+        val playbackState by io.translatetube.local.player.PlaybackService.ui.collectAsState()
+        val cacheBusy = !io.translatetube.local.data.AppCacheStoragePolicy.canClear(
+            isPlaying = playbackState.isPlaying,
+            isProcessing = playbackState.phase in setOf(
+                io.translatetube.local.player.Phase.PARSING,
+                io.translatetube.local.player.Phase.DOWNLOADING_AUDIO,
+                io.translatetube.local.player.Phase.TRANSCRIBING,
+                io.translatetube.local.player.Phase.TRANSLATING,
+                io.translatetube.local.player.Phase.SYNTHESIZING,
+            ),
+            dubbingIncomplete = playbackState.phase == io.translatetube.local.player.Phase.READY &&
+                playbackState.totalLines > 0 &&
+                playbackState.preparedCount < playbackState.totalLines,
+        )
         // 下载状态变化会触发重组；以实际文件校验结果为准，避免“状态就绪但模型文件损坏”。
         val ttsReady = io.translatetube.local.data.ModelFiles.ttsReady(ctx)
         val asrReady = io.translatetube.local.data.ModelFiles.asrReady(ctx)
@@ -433,6 +447,7 @@ Section("模型管理") {
         Section("存储管理") {
             var cacheSize by remember { mutableStateOf(formatCacheSize(ctx)) }
             var showClearConfirm by remember { mutableStateOf(false) }
+            var cacheClearMessage by remember { mutableStateOf<String?>(null) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("临时缓存", color = OnBg, style = MaterialTheme.typography.bodyLarge)
@@ -440,23 +455,53 @@ Section("模型管理") {
                     Text("当前占用 $cacheSize", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
                 OutlinedButton(
-                    onClick = { showClearConfirm = true },
+                    enabled = !cacheBusy,
+                    onClick = {
+                        cacheClearMessage = null
+                        showClearConfirm = true
+                    },
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
                 ) { Text("清理缓存") }
+            }
+            if (cacheBusy) {
+                Text(
+                    "视频播放、转写或配音处理中，暂不能清理缓存，以免中断当前任务。",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            cacheClearMessage?.let {
+                Text(it, color = SubText, style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(5.dp))
             if (showClearConfirm) {
                 AlertDialog(
                     onDismissRequest = { showClearConfirm = false },
                     title = { Text("清理临时缓存？", color = OnBg) },
-                    text = { Text("已生成的配音音频可能需要重新合成。历史记录和收藏不会受影响。", color = SubText) },
+                    text = {
+                        Text(
+                            if (cacheBusy) "当前仍有播放或处理任务使用这些缓存。请先暂停播放并等待处理结束，再清理缓存。"
+                            else "将清理配音 PCM、系统 TTS 临时 WAV、转写音频和 HLS 分段缓存。历史记录、字幕缓存和已下载模型不会删除。",
+                            color = SubText,
+                        )
+                    },
                     confirmButton = {
-                        TextButton(onClick = {
-                            clearAppCache(ctx)
-                            cacheSize = formatCacheSize(ctx)
-                            showClearConfirm = false
-                        }) { Text("确认清理", color = DangerRed) }
+                        TextButton(
+                            enabled = !cacheBusy,
+                            onClick = {
+                                if (!cacheBusy) {
+                                    val cleared = clearAppCache(ctx)
+                                    cacheSize = formatCacheSize(ctx)
+                                    cacheClearMessage = if (cleared) {
+                                        "临时缓存已清理。"
+                                    } else {
+                                        "部分缓存仍被占用，未能完全清理；请稍后重试。"
+                                    }
+                                    showClearConfirm = false
+                                }
+                            },
+                        ) { Text("确认清理", color = if (cacheBusy) SubText else DangerRed) }
                     },
                     dismissButton = {
                         TextButton(onClick = { showClearConfirm = false }) { Text("取消", color = SubText) }
@@ -917,10 +962,7 @@ private fun ModelRow(
 /** 统计 app 缓存占用（配音 PCM + 转写临时音频） */
 private fun formatCacheSize(ctx: android.content.Context): String {
     return try {
-        var bytes = 0L
-        java.io.File(ctx.cacheDir, "dub").walkBottomUp().filter { it.isFile }.forEach { bytes += it.length() }
-        java.io.File(ctx.cacheDir, "tts_tmp").walkBottomUp().filter { it.isFile }.forEach { bytes += it.length() }
-        ctx.cacheDir.listFiles()?.filter { it.name.startsWith("asr_audio_") }?.forEach { bytes += it.length() }
+        val bytes = io.translatetube.local.data.AppCacheStoragePolicy.sizeBytes(ctx.cacheDir)
         when {
             bytes >= 1L shl 30 -> "%.1f GB".format(bytes / 1073741824.0)
             bytes >= 1L shl 20 -> "%.0f MB".format(bytes / 1048576.0)
@@ -930,11 +972,6 @@ private fun formatCacheSize(ctx: android.content.Context): String {
     } catch (_: Exception) { "未知" }
 }
 
-/** 清理配音/转写缓存 */
-private fun clearAppCache(ctx: android.content.Context) {
-    try {
-        java.io.File(ctx.cacheDir, "dub").deleteRecursively()
-        java.io.File(ctx.cacheDir, "tts_tmp").deleteRecursively()
-        ctx.cacheDir.listFiles()?.filter { it.name.startsWith("asr_audio_") }?.forEach { it.delete() }
-    } catch (_: Exception) {}
-}
+/** 清理配音/转写缓存；失败时返回 false，让设置页向用户说明。 */
+private fun clearAppCache(ctx: android.content.Context): Boolean =
+    io.translatetube.local.data.AppCacheStoragePolicy.clear(ctx.cacheDir)
