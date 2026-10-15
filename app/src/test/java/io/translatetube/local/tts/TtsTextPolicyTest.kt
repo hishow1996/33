@@ -20,6 +20,15 @@ class TtsTextPolicyTest {
     }
 
     @Test
+    fun rejectsEmptyOrWhitespaceOnlyTextBeforeCallingAProvider() {
+        listOf("", "   ", "\n\t").forEach { text ->
+            val error = runCatching { TtsTextPolicy.validate(text) }.exceptionOrNull()
+            assertTrue(error is TtsInputLimitException)
+            assertTrue(error?.message?.contains("为空") == true)
+        }
+    }
+
+    @Test
     fun countsSupplementaryCharactersAsOneCodePoint() {
         TtsTextPolicy.validate("😀".repeat(TtsTextPolicy.MAX_CODE_POINTS))
     }

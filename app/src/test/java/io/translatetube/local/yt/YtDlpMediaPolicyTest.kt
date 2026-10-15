@@ -20,12 +20,15 @@ class YtDlpMediaPolicyTest {
     }
 
     @Test
-    fun cookieHeaderRejectsLineBreaksButAllowsMissingOrOrdinaryCookies() {
+    fun cookieHeaderRejectsAllControlCharactersButAllowsOrdinaryCookies() {
         assertTrue(YtDlpMediaPolicy.isSafeCookieHeader(null))
         assertTrue(YtDlpMediaPolicy.isSafeCookieHeader(""))
         assertTrue(YtDlpMediaPolicy.isSafeCookieHeader("session=a; theme=dark"))
         assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\r\nInjected: yes"))
         assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\n"))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\u0000"))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\t"))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\u007f"))
     }
 
     @Test

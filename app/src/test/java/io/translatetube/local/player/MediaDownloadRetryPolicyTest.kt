@@ -12,6 +12,8 @@ class MediaDownloadRetryPolicyTest {
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("connection reset")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 429: rate limited")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP 503: service unavailable")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP/2 503: service unavailable")))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(IOException("HTTP/2 404: not found")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载失败 503")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("HLS 片段下载失败（HTTP 429）。")))
         assertTrue(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("音频下载不完整：响应声明 1024 字节，实际收到 512 字节")))
@@ -23,6 +25,7 @@ class MediaDownloadRetryPolicyTest {
     fun refreshesStaleSignedStreamsButNotTransientServerFailures() {
         assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("音频下载失败 403")))
         assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("HLS 清单读取失败（HTTP 410）。")))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IOException("HTTP/1.1 403: forbidden")))
         assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("链接可能过期或需要登录")))
         assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("音频下载失败 503")))
         assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(IllegalStateException("本地音频格式不受支持")))

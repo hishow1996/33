@@ -15,7 +15,7 @@ internal object MediaDownloadRetryPolicy {
         if (hasCancellationCause(error)) return false
         val chain = causeChain(error)
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
-        val statusCode = Regex("(?:HTTP\\s*|失败\\s*)[（(]?(\\d{3})")
+        val statusCode = Regex("""(?i)(?:HTTP(?:/\d+(?:\.\d+)?)?\s*|失败\s*[（(]?\s*)(\d{3})""")
             .find(messages)
             ?.groupValues
             ?.getOrNull(1)
@@ -39,7 +39,7 @@ internal object MediaDownloadRetryPolicy {
 
         val chain = causeChain(error)
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
-        val statusCode = Regex("(?:HTTP\\s*|失败\\s*)[（(]?(\\d{3})")
+        val statusCode = Regex("""(?i)(?:HTTP(?:/\d+(?:\.\d+)?)?\s*|失败\s*[（(]?\s*)(\d{3})""")
             .find(messages)
             ?.groupValues
             ?.getOrNull(1)

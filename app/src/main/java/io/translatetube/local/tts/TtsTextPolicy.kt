@@ -5,6 +5,9 @@ internal object TtsTextPolicy {
     const val MAX_CODE_POINTS = 1_000
 
     fun validate(text: String) {
+        if (text.isBlank()) {
+            throw TtsInputLimitException("字幕文本为空，无法生成配音。")
+        }
         val codePoints = text.codePointCount(0, text.length)
         if (codePoints > MAX_CODE_POINTS) {
             throw TtsInputLimitException(

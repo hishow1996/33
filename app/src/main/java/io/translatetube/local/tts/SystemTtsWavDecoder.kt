@@ -48,7 +48,7 @@ internal object SystemTtsWavDecoder {
         return bytes
     }
 
-    fun decode(bytes: ByteArray) {
+    fun decode(bytes: ByteArray): TtsAudio {
         if (bytes.size < MIN_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件过短")
         }
@@ -64,6 +64,8 @@ internal object SystemTtsWavDecoder {
         var formatCode = 0
         var channels = 1
         var sampleRate = 16_000
+        var byteRate = 0
+        var blockAlign = 0
         var bitsPerSample = 16
         var dataStart = -1
         var dataLen = 0
@@ -115,6 +117,8 @@ internal object SystemTtsWavDecoder {
                     formatCode = u16(chunkDataStart)
                     channels = u16(chunkDataStart + 2)
                     sampleRate = i32(chunkDataStart + 4)
+                    byteRate = i32(chunkDataStart + 8)
+                    blockAlign = u16(chunkDataStart + 12)
                     bitsPerSample = u16(chunkDataStart + 14)
                 }
                 "data" -> {
@@ -152,6 +156,13 @@ internal object SystemTtsWavDecoder {
             else -> throw IllegalStateException("系统 TTS WAV 格式不支持：format=$formatCode, bits=$bitsPerSample")
         }
         val frameSize = bytesPerSample * channels
+        if (blockAlign != frameSize) {
+            throw IllegalStateException("系统 TTS WAV blockAlign 与声道/采样格式不一致")
+        }
+        val expectedByteRate = sampleRate.toLong() * frameSize.toLong()
+        if (byteRate <= 0 || byteRate.toLong() != expectedByteRate) {
+            throw IllegalStateException("系统 TTS WAV byteRate 与采样格式不一致")
+        }
         if (dataLen % frameSize != 0) {
             throw IllegalStateException("系统 TTS WAV 音频数据未按完整采样帧对齐")
         }

@@ -81,6 +81,28 @@ class SystemTtsWavDecoderTest {
     }
 
     @Test
+    fun rejectsWavWithAnIncorrectBlockAlign() {
+        val bytes = wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1, 0))
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putShort(32, 1.toShort())
+
+        val error = runCatching { SystemTtsWavDecoder.decode(bytes) }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("blockAlign"))
+    }
+
+    @Test
+    fun rejectsWavWithAnIncorrectByteRate() {
+        val bytes = wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1, 0))
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(28, 12_345)
+
+        val error = runCatching { SystemTtsWavDecoder.decode(bytes) }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("byteRate"))
+    }
+
+    @Test
     fun decodesPcm16AndNormalizesSignedSamples() {
         val audio = SystemTtsWavDecoder.decode(
             wave(

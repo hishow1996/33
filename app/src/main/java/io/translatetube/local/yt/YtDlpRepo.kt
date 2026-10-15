@@ -226,7 +226,7 @@ object YtDlpRepo {
     ): File = withContext(Dispatchers.IO) {
         if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
         if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
-            throw IllegalArgumentException("Cookie 请求头不能包含换行符")
+            throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         ensureReady(ctx)
         val parent = dest.parentFile
@@ -347,7 +347,7 @@ object YtDlpRepo {
     suspend fun resolve(ctx: Context, pageUrl: String, cookieHeader: String? = null): ResolvedMedia {
         if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
         if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
-            throw IllegalArgumentException("Cookie 请求头不能包含换行符")
+            throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         ensureReady(ctx)
         return withContext(Dispatchers.IO) {

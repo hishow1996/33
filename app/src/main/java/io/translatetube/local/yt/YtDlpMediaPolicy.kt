@@ -13,9 +13,9 @@ internal data class YtDlpFormatCandidate(
 )
 
 internal object YtDlpMediaPolicy {
-    /** Cookie headers are passed through yt-dlp command options and must not contain header delimiters. */
+    /** Reject HTTP control characters before a Cookie header reaches the native downloader. */
     fun isSafeCookieHeader(value: String?): Boolean =
-        value == null || value.none { it == '\r' || it == '\n' }
+        value == null || value.none { it.code < 0x20 || it.code == 0x7f }
 
     fun isSafeHttpUrl(value: String): Boolean {
         val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return false
