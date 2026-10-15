@@ -1,5 +1,7 @@
 package io.translatetube.local.yt
 
+import io.translatetube.local.util.HttpDownloadResponsePolicy
+
 import android.content.Context
 import android.util.Log
 import com.yausername.youtubedl_android.YoutubeDL
@@ -162,7 +164,7 @@ object YtDlpRepo {
                 .header("Accept", "application/vnd.github+json")
                 .build()
         ).execute().use { response ->
-            if (!response.isSuccessful) return@runCatching null
+            if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) return@runCatching null
             val body = response.body ?: return@runCatching null
             if (body.contentLength() > MAX_RELEASE_METADATA_BYTES) return@runCatching null
             val bytes = BoundedTextPayload.readBytes(

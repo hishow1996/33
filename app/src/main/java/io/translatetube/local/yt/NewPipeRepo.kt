@@ -1,5 +1,7 @@
 package io.translatetube.local.yt
 
+import io.translatetube.local.util.HttpDownloadResponsePolicy
+
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import okhttp3.OkHttpClient
@@ -343,7 +345,9 @@ object NewPipeRepo {
         val req = okhttp3.Request.Builder().url(url).header("User-Agent", UA).build()
         val ownerJob = currentCoroutineContext()[Job]
         executeCancellableHttpCall(newPipeHttpClient.newCall(req), ownerJob) { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("字幕下载失败 ${resp.code}")
+            if (!HttpDownloadResponsePolicy.isCompleteGetResponse(resp.code)) {
+                throw IllegalStateException("字幕下载需要完整 HTTP 200 响应，收到 HTTP ${resp.code}")
+            }
             val body = resp.body ?: return@executeCancellableHttpCall ""
             if (body.contentLength() > BoundedTextPayload.MAX_BYTES) {
                 throw IllegalStateException("字幕响应超过 16 MB 限制，已停止读取以保护设备内存。")
