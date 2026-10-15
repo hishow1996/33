@@ -824,31 +824,16 @@ class DubbingEngine(
         }
     }
 
-    /**
-     * Blocking AudioTrack writes may report fewer samples than requested. Continue from the
-     * returned offset instead of treating a positive partial write as a failed engine.
-     */
-    private fun writeFully(track: AudioTrack, samples: FloatArray): Int {
-        var offset = 0
-        while (offset < samples.size) {
-            val written = track.write(samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING)
-            if (written < 0) return written
-            if (written == 0) return offset
-            offset += written
+    /** Continue partial writes and tolerate a few transient zero-progress responses from OEM audio sinks. */
+    private fun writeFully(track: AudioTrack, samples: FloatArray): Int =
+        AudioTrackWritePolicy.writeFully(samples.size) { offset, remaining ->
+            track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
         }
-        return offset
-    }
 
-    private fun writeFully(track: AudioTrack, samples: ShortArray): Int {
-        var offset = 0
-        while (offset < samples.size) {
-            val written = track.write(samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING)
-            if (written < 0) return written
-            if (written == 0) return offset
-            offset += written
+    private fun writeFully(track: AudioTrack, samples: ShortArray): Int =
+        AudioTrackWritePolicy.writeFully(samples.size) { offset, remaining ->
+            track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
         }
-        return offset
-    }
 
     /**
      * Float PCM is preferred for fidelity, but some OEM audio stacks fail to initialize or write
