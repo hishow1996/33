@@ -268,13 +268,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     executeCancellable(http.newCall(req)) { resp ->
                         if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                         val body = resp.body ?: throw IllegalStateException("空响应")
-                        val total = body.contentLength().takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
+                        val expectedBytes = body.contentLength()
+                        val total = expectedBytes.takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
                         body.byteStream().use { ins ->
                             FileOutputStream(pkg).use { out ->
                                 val buf = ByteArray(128 * 1024)
                                 var got = 0L
                                 val maxArchiveBytes = 512L * 1024 * 1024
-                                if (total > maxArchiveBytes) throw IllegalStateException("模型压缩包超过大小限制")
+                                if (expectedBytes > maxArchiveBytes || total > maxArchiveBytes) {
+                                    throw IllegalStateException("模型压缩包超过大小限制")
+                                }
                                 while (true) {
                                     if (state.value.status == ModelStatus.FAILED) throw kotlinx.coroutines.CancellationException("用户取消")
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -291,6 +294,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                         stageMessage = "正在下载模型包…",
                                     )
                                 }
+                                if (expectedBytes > 0L && got != expectedBytes) {
+                                    throw java.io.IOException(
+                                        "模型压缩包下载不完整：预期 ${expectedBytes} 字节，实际收到 ${got} 字节"
+                                    )
+                                }
+                                out.flush()
+                                out.fd.sync()
                             }
                         }
                     }
