@@ -15,6 +15,7 @@ on:
       - app/src/main/java/io/translatetube/local/data/ModelDownloadManager.kt
       - app/src/main/java/io/translatetube/local/data/ModelDownloadForegroundService.kt
       - app/src/test/java/io/translatetube/local/player/HlsAudioDownloaderTest.kt
+      - .github/workflows/build-apk.yml
 
 permissions:
   contents: read
