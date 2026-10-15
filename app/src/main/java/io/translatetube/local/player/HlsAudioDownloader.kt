@@ -93,7 +93,10 @@ internal object HlsAudioDownloader {
         !cacheDirectory.exists() || cacheDirectory.deleteRecursively()
     }
 
-    fun isManifestUrl(value: String): Boolean = runCatching {
+    fun isManifestUrl(value: String): Boolean {
+        // Do not normalize untrusted control characters away before validating a manifest URL.
+        if (value.isBlank() || value.any { Character.isISOControl(it) }) return false
+        return runCatching {
         val uri = URI(value.trim())
         val scheme = uri.scheme?.lowercase(java.util.Locale.ROOT)
         val port = uri.port
