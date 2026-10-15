@@ -707,7 +707,7 @@ private fun PiperModelSection() {
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
             Column(Modifier.weight(1f)) {
-                Text("${def.label} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                Text("${def.langLabel} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                 when {
                     busyId == def.id -> {
                         LinearProgressIndicator(
@@ -727,11 +727,13 @@ private fun PiperModelSection() {
                     error = null
                     scope.launch {
                         try {
-                            io.translatetube.local.tts.PiperModels.download(ctx.applicationContext, def.id) { p ->
-                                progress = p
-                            }
+                            io.translatetube.local.tts.PiperModels.download(
+                                ctx.applicationContext,
+                                def.id,
+                                onProgress = { p -> progress = p },
+                            )
                         } catch (e: Exception) {
-                            error = "${def.label}下载失败：${e.message ?: "未知错误"}"
+                            error = "${def.langLabel}下载失败：${e.message ?: "未知错误"}"
                         } finally {
                             busyId = null
                         }
