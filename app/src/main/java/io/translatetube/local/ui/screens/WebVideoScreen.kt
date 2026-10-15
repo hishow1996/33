@@ -53,7 +53,7 @@ import org.json.JSONArray
 
 private const val TAG_WEB = "WebVideoScreen"
 
-private data class WebVideoCandidate(
+internal data class WebVideoCandidate(
     val url: String,
     val title: String,
     val poster: String,
@@ -136,32 +136,29 @@ fun WebVideoScreen(
         object {
             @JavascriptInterface
             fun reportVideos(payload: String) {
+                // The bridge is callable by page JavaScript. Bound parsing and retained rows so a
+                // page with thousands of video elements cannot grow the native heap indefinitely.
+                if (!WebVideoProbePolicy.acceptsPayload(payload)) {
+                    Log.w(TAG_WEB, "Ignoring empty or oversized video probe payload")
+                    return
+                }
                 val found = runCatching {
                     val array = JSONArray(payload)
-                    (0 until array.length()).mapNotNull { index ->
+                    (0 until minOf(array.length(), WebVideoProbePolicy.MAX_ROWS_PER_PAYLOAD)).mapNotNull { index ->
                         val item = array.optJSONObject(index) ?: return@mapNotNull null
                         val url = item.optString("url").trim()
-                        if (url.isEmpty() || url == "null") return@mapNotNull null
+                        if (!WebVideoProbePolicy.acceptsMediaUrl(url)) return@mapNotNull null
                         WebVideoCandidate(
                             url = url,
-                            title = item.optString("title"),
-                            poster = item.optString("poster"),
-                            durationSeconds = item.optDouble("duration", 0.0).takeIf { it.isFinite() } ?: 0.0,
+                            title = WebVideoProbePolicy.normalizeTitle(item.optString("title")),
+                            poster = WebVideoProbePolicy.normalizePoster(item.optString("poster")),
+                            durationSeconds = item.optDouble("duration", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
                             drmProtected = item.optBoolean("drm", false),
                         )
                     }.distinctBy { it.url }
                 }.getOrDefault(emptyList())
                 mainHandler.post {
-                    val merged = (candidatesState.value + found)
-                        .groupBy { it.url }
-                        .map { (_, group) ->
-                            val first = group.first()
-                            first.copy(
-                                title = group.firstOrNull { it.title.isNotBlank() }?.title.orEmpty(),
-                                drmProtected = group.any { it.drmProtected },
-                                durationSeconds = group.maxOfOrNull { it.durationSeconds } ?: first.durationSeconds,
-                            )
-                        }
+                    val merged = WebVideoProbePolicy.mergeCandidates(candidatesState.value, found)
                     candidatesState.value = merged
                     status = if (merged.isEmpty()) {
                         "网页已加载，但暂未检测到媒体地址。DRM、blob/MSE 或封闭式播放器可能无法提取。"
@@ -404,21 +401,22 @@ private val PROBE_SCRIPT = """
     if (window.__elephantVideoProbeTimer) clearInterval(window.__elephantVideoProbeTimer);
     function collect() {
       try {
-        var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
+        var videos = Array.prototype.slice.call(document.querySelectorAll('video'), 0, 120);
         var rows = videos.map(function(v) {
           var src = v.currentSrc || v.src || '';
           if (!src) {
             var source = v.querySelector('source[src]');
             if (source) src = source.src || source.getAttribute('src') || '';
           }
+          if (String(src).length > 8192) return null;
           return {
             url: src,
-            title: document.title || '',
-            poster: v.poster || '',
+            title: (document.title || '').slice(0, 512),
+            poster: (v.poster || '').slice(0, 2048),
             duration: isFinite(v.duration) ? v.duration : 0,
             drm: !!v.mediaKeys
           };
-        }).filter(function(row) { return !!row.url; });
+        }).filter(function(row) { return !!row && !!row.url; });
         if (window.ElephantVideoBridge) {
           window.ElephantVideoBridge.reportVideos(JSON.stringify(rows));
         }
