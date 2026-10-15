@@ -278,7 +278,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                 while (true) {
                                     if (state.value.status == ModelStatus.FAILED) throw kotlinx.coroutines.CancellationException("用户取消")
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                    val n = ins.read(buf)
+                                    val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
                                     if (n < 0) break
                                     got += n
                                     if (got > maxArchiveBytes) throw IllegalStateException("模型压缩包超过大小限制")
@@ -418,7 +418,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             val buffer = ByteArray(128 * 1024)
             while (true) {
                 checkActive()
-                val count = input.read(buffer)
+                val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                 if (count < 0) break
                 digest.update(buffer, 0, count)
             }
@@ -451,7 +451,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         val buffer = ByteArray(32 * 1024)
                         while (true) {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            val count = input.read(buffer)
+                            val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                             if (count < 0) break
                             written += count
                             if (written > maxBytes) throw IllegalStateException("附属模型超过大小限制")
@@ -543,7 +543,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         var fileBytes = 0L
                         while (true) {
                             checkActive()
-                            val count = tar.read(buffer)
+                            val count = io.translatetube.local.util.ProgressSafeInput.read(tar, buffer)
                             if (count < 0) break
                             fileBytes += count
                             extractedBytes += count
