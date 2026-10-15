@@ -730,7 +730,7 @@ private fun PiperModelSection() {
                             io.translatetube.local.tts.PiperModels.download(
                                 ctx.applicationContext,
                                 def.id,
-                                onProgress = { p -> progress = p },
+                                onProgress = { p -> progress = p / 100f },
                             )
                         } catch (e: Exception) {
                             error = "${def.langLabel}下载失败：${e.message ?: "未知错误"}"
