@@ -22,6 +22,42 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun longPausesSplitWordsIntoSeparateCaptions() {
+        val cues = CloudTranscription.groupWords(
+            listOf(
+                CloudTranscription.TimedWord("Good", 100L, 300L),
+                CloudTranscription.TimedWord("morning.", 500L, 800L),
+                CloudTranscription.TimedWord("Everyone", 2_000L, 2_400L),
+            ),
+            durationMs = 5_000L,
+        )
+
+        assertEquals(2, cues.size)
+        assertEquals(100L to 800L, cues[0].first to cues[0].second)
+        assertEquals("Good morning.", cues[0].third)
+        assertEquals(2_000L to 2_400L, cues[1].first to cues[1].second)
+        assertEquals("Everyone", cues[1].third)
+    }
+
+    @Test
+    fun groupWordsIgnoresInvalidWordsAndClipsOnlyValidEnds() {
+        val cues = CloudTranscription.groupWords(
+            listOf(
+                CloudTranscription.TimedWord("negative", -20L, 100L),
+                CloudTranscription.TimedWord("empty", 100L, 100L),
+                CloudTranscription.TimedWord("  ", 100L, 200L),
+                CloudTranscription.TimedWord("valid", 9_800L, 12_000L),
+                CloudTranscription.TimedWord("after", 10_000L, 10_500L),
+            ),
+            durationMs = 10_000L,
+        )
+
+        assertEquals(1, cues.size)
+        assertEquals(9_800L to 10_000L, cues.single().first to cues.single().second)
+        assertEquals("valid", cues.single().third)
+    }
+
+    @Test
     fun keepsTimelineWithinMediaDuration() {
         val cues = CloudTranscription.groupWords(
             listOf(

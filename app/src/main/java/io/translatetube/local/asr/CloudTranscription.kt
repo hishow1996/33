@@ -41,6 +41,9 @@ object CloudTranscription {
 
     internal data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
 
+    /** Split provider words at long silences instead of stretching a caption across the pause. */
+    internal const val MAX_WORD_GAP_MS = 800L
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -433,9 +436,18 @@ object CloudTranscription {
     }
 
     internal fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {
-        // An invalid duration must not make coerceIn(0, durationMs - 1) throw inside a callback.
+        // Defend this grouping boundary too, rather than assuming every caller has already
+        // validated provider data. Clip only word ends; words starting outside the media are junk.
         if (durationMs <= 0L || words.isEmpty()) return emptyList()
-        val orderedWords = words.sortedWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
+        val orderedWords = words.asSequence()
+            .map { it.copy(text = it.text.trim()) }
+            .filter { it.text.isNotEmpty() && it.startMs >= 0L &&
+                it.startMs < durationMs && it.endMs > it.startMs }
+            .map { it.copy(endMs = it.endMs.coerceAtMost(durationMs)) }
+            .filter { it.endMs > it.startMs }
+            .sortedWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
+            .toList()
+        if (orderedWords.isEmpty()) return emptyList()
         val result = mutableListOf<Triple<Long, Long, String>>()
         val text = StringBuilder()
         var cueStart = 0L
@@ -456,6 +468,8 @@ object CloudTranscription {
         }
 
         for (word in orderedWords) {
+            val pauseMs = if (text.isNotEmpty()) word.startMs - cueEnd else 0L
+            if (text.isNotEmpty() && pauseMs > MAX_WORD_GAP_MS) flush()
             if (text.isNotEmpty() &&
                 (count >= 14 || text.length >= 48 || word.endMs - cueStart >= 6_500L)
             ) flush()
