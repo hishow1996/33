@@ -12,12 +12,50 @@ internal object WebVideoProbePolicy {
     fun acceptsPayload(payload: String): Boolean =
         payload.length in 2..MAX_PAYLOAD_CHARS
 
-    fun acceptsMediaUrl(url: String): Boolean =
-        url.isNotBlank() && url != "null" && url.length <= MAX_MEDIA_URL_CHARS
+    fun acceptsMediaUrl(url: String): Boolean {
+        val raw = url.trim()
+        if (raw.isEmpty() || raw.equals("null", ignoreCase = true) ||
+            raw.length > MAX_MEDIA_URL_CHARS ||
+            raw.any { it.code <= 0x20 || it.code == 0x7f }
+        ) return false
 
-    fun normalizeTitle(value: String): String = value.take(MAX_TITLE_CHARS)
+        // Keep blob candidates so the UI can explain unsupported MSE streams, but reject
+        // javascript:, data:, file:, intent:, embedded credentials, and malformed ports.
+        if (raw.startsWith("blob:", ignoreCase = true)) {
+            val inner = runCatching { java.net.URI(raw.substring(5)) }.getOrNull() ?: return false
+            return isSafeHttpUri(inner)
+        }
+        val uri = runCatching { java.net.URI(raw) }.getOrNull() ?: return false
+        return isSafeHttpUri(uri)
+    }
 
-    fun normalizePoster(value: String): String = value.take(MAX_POSTER_CHARS)
+    private fun isSafeHttpUri(uri: java.net.URI): Boolean {
+        val scheme = uri.scheme?.lowercase(java.util.Locale.ROOT)
+        val authority = uri.rawAuthority.orEmpty()
+        return scheme in setOf("http", "https") &&
+            !uri.host.isNullOrBlank() &&
+            uri.userInfo == null &&
+            authority.isNotEmpty() &&
+            !authority.endsWith(":") &&
+            (uri.port == -1 || uri.port in 1..65535)
+    }
+
+    fun normalizeTitle(value: String): String =
+        value.filterNot { Character.isISOControl(it) && !it.isWhitespace() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(MAX_TITLE_CHARS)
+
+    /** Page-controlled poster values may only cause remote HTTP(S) images to be loaded. */
+    fun normalizePoster(value: String): String {
+        val raw = value.trim()
+        if (raw.isEmpty() || raw.length > MAX_POSTER_CHARS ||
+            raw.any { it.code <= 0x20 || it.code == 0x7f }
+        ) return ""
+        val uri = runCatching { java.net.URI(raw) }.getOrNull() ?: return ""
+        if (!isSafeHttpUri(uri)) return ""
+        return raw
+    }
 
     fun mergeCandidates(
         existing: List<WebVideoCandidate>,
