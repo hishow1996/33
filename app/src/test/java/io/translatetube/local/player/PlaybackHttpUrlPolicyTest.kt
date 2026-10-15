@@ -29,6 +29,14 @@ class PlaybackHttpUrlPolicyTest {
     }
 
     @Test
+    fun rejectsC1ControlCharactersInHeaders() {
+        val sanitized = PlaybackHttpUrlPolicy.sanitizeRequestHeaders(
+            mapOf("Cookie" to "session=ok\\u0085Injected: yes"),
+        )
+        assertTrue(sanitized.isEmpty())
+    }
+
+    @Test
     fun removesStaleRangeAndHopByHopHeaders() {
         val sanitized = PlaybackHttpUrlPolicy.sanitizeRequestHeaders(
             mapOf(
