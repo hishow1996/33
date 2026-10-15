@@ -207,7 +207,6 @@ object CloudTranscription {
     }
 
 
-    /** Kawa limits uploads to 10 MB. Split PCM WAV into 8 MiB chunks and restore global timestamps. */
     /** Kawa limits uploads to 10 MB. Process one 8 MiB PCM chunk at a time to bound disk usage. */
     private suspend fun transcribeKawa(
         apiKey: String,
@@ -340,11 +339,16 @@ object CloudTranscription {
                         val text = item.optString("text").trim()
                         val start = item.optDouble("time_start", Double.NaN)
                         val end = item.optDouble("time_end", Double.NaN)
-                        if (text.isBlank() || !start.isFinite() || !end.isFinite() || end <= start) continue
-                        val safeDuration = durationMs.coerceAtLeast(1L)
-                        val startMs = (offsetMs + (start * 1000.0).toLong()).coerceIn(0L, safeDuration - 1L)
-                        val endMs = (offsetMs + (end * 1000.0).toLong()).coerceIn(startMs + 1L, safeDuration)
-                        cues += Triple(startMs, endMs, text)
+                        if (text.isBlank()) continue
+                        val chunkDurationMs = (size + 31L) / 32L
+                        val timeline = mapChunkCue(
+                            offsetMs = offsetMs,
+                            localStartSeconds = start,
+                            localEndSeconds = end,
+                            chunkDurationMs = chunkDurationMs,
+                            totalDurationMs = durationMs,
+                        ) ?: continue
+                        cues += Triple(timeline.first, timeline.second, text)
                     }
                 } finally {
                     runCatching { chunk.delete() }
@@ -353,6 +357,40 @@ object CloudTranscription {
         }
         if (cues.isEmpty()) throw IOException("Kawa 没有返回有效字幕时间轴；可切回本地 Whisper 重试")
         return Result(cues.sortedBy { it.first }, detectedLanguage)
+    }
+
+    /**
+     * Convert a provider's chunk-local seconds to the whole-media timeline without allowing an
+     * invalid timestamp to overflow when the chunk offset is added. Provider times occasionally
+     * exceed the uploaded chunk; clamp only the end, and reject starts outside that chunk.
+     */
+    internal fun mapChunkCue(
+        offsetMs: Long,
+        localStartSeconds: Double,
+        localEndSeconds: Double,
+        chunkDurationMs: Long,
+        totalDurationMs: Long,
+    ): Pair<Long, Long>? {
+        if (offsetMs < 0L || chunkDurationMs <= 0L || totalDurationMs <= 0L) return null
+        if (!localStartSeconds.isFinite() || !localEndSeconds.isFinite() ||
+            localStartSeconds < 0.0 || localEndSeconds <= localStartSeconds
+        ) return null
+
+        val globalOffset = offsetMs.coerceAtMost(totalDurationMs)
+        val remainingMediaMs = totalDurationMs - globalOffset
+        val usableChunkMs = minOf(chunkDurationMs, remainingMediaMs)
+        if (usableChunkMs <= 0L) return null
+
+        // Compare before conversion: multiplying a huge but finite Double by 1000 can overflow.
+        if (localStartSeconds >= usableChunkMs.toDouble() / 1_000.0) return null
+        val startMs = (localStartSeconds * 1_000.0).toLong().coerceIn(0L, usableChunkMs - 1L)
+        val endMsDouble = localEndSeconds * 1_000.0
+        val endMs = if (!endMsDouble.isFinite() || endMsDouble >= usableChunkMs.toDouble()) {
+            usableChunkMs
+        } else {
+            endMsDouble.toLong().coerceAtLeast(startMs + 1L).coerceAtMost(usableChunkMs)
+        }
+        return (globalOffset + startMs) to (globalOffset + endMs)
     }
 
     internal fun kawaChunkRanges(pcmBytes: Long): List<Pair<Long, Long>> {

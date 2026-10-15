@@ -50,6 +50,68 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun mapsKawaChunkLocalTimesWithinWholeMediaTimeline() {
+        assertEquals(
+            262_194L to 262_254L,
+            CloudTranscription.mapChunkCue(
+                offsetMs = 262_144L,
+                localStartSeconds = 0.05,
+                localEndSeconds = 0.11,
+                chunkDurationMs = 262_144L,
+                totalDurationMs = 600_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun clampsKawaCueEndAtChunkBoundaryAndRejectsStartOutsideChunk() {
+        assertEquals(
+            9_990L to 10_000L,
+            CloudTranscription.mapChunkCue(
+                offsetMs = 9_000L,
+                localStartSeconds = 0.99,
+                localEndSeconds = 9.0,
+                chunkDurationMs = 1_000L,
+                totalDurationMs = 20_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            CloudTranscription.mapChunkCue(
+                offsetMs = 9_000L,
+                localStartSeconds = 1.2,
+                localEndSeconds = 1.4,
+                chunkDurationMs = 1_000L,
+                totalDurationMs = 20_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun invalidAndOverflowingKawaTimestampsCannotWrapIntoEarlierCues() {
+        assertEquals(
+            null,
+            CloudTranscription.mapChunkCue(
+                offsetMs = 262_144L,
+                localStartSeconds = Double.MAX_VALUE,
+                localEndSeconds = Double.MAX_VALUE,
+                chunkDurationMs = 262_144L,
+                totalDurationMs = 600_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            CloudTranscription.mapChunkCue(
+                offsetMs = 10_000L,
+                localStartSeconds = 0.5,
+                localEndSeconds = 0.2,
+                chunkDurationMs = 1_000L,
+                totalDurationMs = 20_000L,
+            ),
+        )
+    }
+
+    @Test
     fun kawaChunksAreBoundedContiguousAndCoverTheWholePcm() {
         val chunkLimit = 8L * 1024L * 1024L
         val pcmBytes = chunkLimit * 2L + 12_344L
