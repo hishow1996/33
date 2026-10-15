@@ -6,7 +6,10 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
+import io.translatetube.local.yt.executeCancellableHttpCall
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.OkHttpClient
@@ -30,31 +33,58 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
     override val name = "Piper"
     private val appCtx = context.applicationContext
     private val dir: File = PiperModels.modelDir(appCtx, modelId)
+    private val definition: PiperModelDef = PiperModels.byId(modelId)
+        ?: throw IllegalArgumentException("未知 Piper 模型：$modelId")
+    private val model: File = dir.listFiles()
+        ?.filter { it.isFile && it.extension.equals("onnx", ignoreCase = true) }
+        ?.sortedBy { it.name }
+        ?.firstOrNull()
+        ?: File(dir, "model.onnx")
+
     override val cacheKey: String
-        get() = "$name-$modelId-${dir.lastModified()}"
+        get() {
+            val signature = dir.listFiles().orEmpty()
+                .filter { it.isFile && (it.extension.equals("onnx", true) || it.name in setOf("tokens.txt", "lexicon.txt", "phone.fst", "date.fst", "number.fst")) }
+                .sortedBy { it.name }
+                .joinToString(",") { "${it.name}:${it.length()}:${it.lastModified()}" }
+            return "$name-$modelId-$signature"
+        }
 
     private val tts: OfflineTts
 
     init {
-        val model = File(dir, "model.onnx")
         val tokens = File(dir, "tokens.txt")
         val dataDir = File(dir, "espeak-ng-data")
         require(model.isFile) { "Piper 模型文件缺失：${model.absolutePath}" }
         require(tokens.isFile) { "Piper 词表缺失：${tokens.absolutePath}" }
+        val lexicon = File(dir, "lexicon.txt")
+        val ruleFsts = PiperModelFilePolicy.CHINESE_RULE_FST_NAMES.map { File(dir, it) }
+        if (definition.supportsChineseOutput) {
+            require(lexicon.isFile && ruleFsts.all { it.isFile }) {
+                "中文 Piper 模型资源不完整：需要 lexicon.txt、phone.fst、date.fst 和 number.fst"
+            }
+        } else {
+            require(dataDir.isDirectory) { "Piper 语音数据目录缺失：${dataDir.absolutePath}" }
+        }
+
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
                 vits = OfflineTtsVitsModelConfig(
                     model = model.absolutePath,
                     tokens = tokens.absolutePath,
-                    dataDir = dataDir.absolutePath,
+                    lexicon = if (definition.supportsChineseOutput) lexicon.absolutePath else "",
+                    dataDir = if (definition.supportsChineseOutput) "" else dataDir.absolutePath,
                 ),
                 numThreads = 2,
                 debug = false,
                 provider = "cpu",
             ),
+            ruleFsts = if (definition.supportsChineseOutput) {
+                ruleFsts.joinToString(",") { it.absolutePath }
+            } else "",
             maxNumSentences = 2,
         )
-        // assets=null → 与 Kokoro 一致，走文件系统绝对路径加载
+        // assets=null → use absolute filesystem paths just like Kokoro.
         tts = OfflineTts(null, config)
     }
 
@@ -64,8 +94,9 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 22050)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
-        // piper 模型基本为单说话人，sid=0 即可；负值按 0 处理
-        val sid = if (speakerId > 0) speakerId else 0
+        // Piper models in this catalog are single-speaker. Passing a UI speaker index > 0
+        // to a one-speaker native model can cause invalid speaker selection or synthesis failure.
+        val sid = 0
         val audio = tts.generate(normalizedText, sid, safeSpeed)
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
@@ -87,6 +118,8 @@ data class PiperModelDef(
     val voiceLabel: String,
     val archive: String,
     val sizeMB: Int,
+    /** The current translation pipeline speaks Chinese, so only these models are compatible. */
+    val supportsChineseOutput: Boolean = false,
 )
 
 /** Piper 模型清单、安装状态与下载解压管理。 */
@@ -107,6 +140,14 @@ object PiperModels {
         PiperModelDef("pl_darkman_medium", "波兰语", "Darkman 男声", "vits-piper-pl_PL-darkman-medium.tar.bz2", 122),
         PiperModelDef("uk_ukrainian_tts", "乌克兰语", "Ukrainian-TTS 女声", "vits-uk_UA-ukrainian_tts-medium.tar.bz2", 120),
         PiperModelDef("fa_amir_medium", "波斯语", "Amir 男声", "vits-piper-fa_IR-amir-medium.tar.bz2", 122),
+        PiperModelDef(
+            "zh_cn_chaowen_medium", "中文", "超文女声",
+            "vits-piper-zh_CN-chaowen-medium.tar.bz2", 64, supportsChineseOutput = true,
+        ),
+        PiperModelDef(
+            "zh_cn_xiao_ya_medium", "中文", "晓雅女声",
+            "vits-piper-zh_CN-xiao_ya-medium.tar.bz2", 64, supportsChineseOutput = true,
+        ),
     )
 
     fun byId(id: String): PiperModelDef? = catalog.firstOrNull { it.id == id }
@@ -116,14 +157,30 @@ object PiperModels {
     fun modelDir(ctx: Context, id: String): File = File(piperRoot(ctx), id)
 
     fun installedIds(ctx: Context): Set<String> =
-        piperRoot(ctx).listFiles { f -> f.isDirectory && PiperModels.complete(f) }
-            ?.map { it.name }?.toSet() ?: emptySet()
+        piperRoot(ctx).listFiles { f ->
+            if (!f.isDirectory) return@listFiles false
+            val definition = byId(f.name) ?: return@listFiles false
+            complete(f, definition)
+        }?.map { it.name }?.toSet() ?: emptySet()
 
     /** 校验目录内三个关键资源齐全。 */
-    private fun complete(dir: File): Boolean =
-        File(dir, "model.onnx").isFile && File(dir, "tokens.txt").isFile && File(dir, "espeak-ng-data").isDirectory
+    private fun complete(dir: File, definition: PiperModelDef): Boolean {
+        val rootFiles = dir.listFiles()
+            ?.filter { it.isFile }
+            ?.map { it.name }
+            ?.toSet()
+            .orEmpty()
+        return PiperModelFilePolicy.isComplete(
+            rootFileNames = rootFiles,
+            hasEspeakData = File(dir, "espeak-ng-data").isDirectory,
+            requiresChineseAssets = definition.supportsChineseOutput,
+        )
+    }
 
-    fun modelReady(ctx: Context, id: String): Boolean = complete(modelDir(ctx, id))
+    fun modelReady(ctx: Context, id: String): Boolean {
+        val definition = byId(id) ?: return false
+        return complete(modelDir(ctx, id), definition)
+    }
 
     private val _installed = MutableStateFlow<Set<String>>(emptySet())
     val installed: StateFlow<Set<String>> = _installed
@@ -162,7 +219,7 @@ object PiperModels {
         val root = piperRoot(ctx)
         root.mkdirs()
         val dest = modelDir(ctx, def.id)
-        if (complete(dest)) {
+        if (complete(dest, def)) {
             refreshInstalled(ctx)
             return@withContext
         }
@@ -170,7 +227,8 @@ object PiperModels {
         val url = "$BASE/${def.archive}"
         try {
             val request = Request.Builder().url(url).build()
-            http.newCall(request).execute().use { response ->
+            val ownerJob = currentCoroutineContext()[Job]
+            executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
                 if (!response.isSuccessful) {
                     throw java.io.IOException("模型下载失败：HTTP ${response.code}")
                 }
@@ -196,7 +254,7 @@ object PiperModels {
             }
             checkActive()
             extractArchive(archive, dest, checkActive)
-            if (!complete(dest)) {
+            if (!complete(dest, def)) {
                 throw java.io.IOException("模型包不完整：缺少 model.onnx / tokens.txt / espeak-ng-data")
             }
             onProgress(100)

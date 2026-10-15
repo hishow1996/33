@@ -558,11 +558,7 @@ class PlaybackService : MediaSessionService() {
             importedLines = importedLines,
             previousKey = resumeState?.translationCacheKey,
         )
-        val configuredTtsName = when (configuredTts) {
-            "system" -> "系统 TTS"
-            "kokoro" -> "Kokoro"
-            else -> "未知配音引擎"
-        }
+        val configuredTtsName = ttsDisplayName(configuredTts)
         ui.value = PlayerUiState(
             phase = if (resumeState != null) Phase.TRANSLATING else Phase.PARSING,
             key = key,
@@ -1934,19 +1930,18 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             if (finalLines.isNotEmpty()) {
                 val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("tts_engine", "kokoro") ?: "kokoro"
-                val selectedTtsName = when (selectedTts) {
-                    "system" -> "系统 TTS"
-                    "kokoro" -> "Kokoro"
-                    else -> "未知配音引擎"
-                }
+                val selectedTtsName = ttsDisplayName(selectedTts)
                 updateUiForSession(key) { it.copy(ttsEngineName = selectedTtsName) }
 
                 val selectedEngineReady = when (selectedTts) {
                     "system" -> true
                     "kokoro" -> kokoroRuntimeReady()
+                    "piper" -> piperModelReadyForChinese()
                     else -> false
                 }
-                if (selectedEngineReady && isChineseLanguage(srcLang)) {
+                // Chinese source material already speaks the target language. Do not require a
+                // TTS model just to show Chinese subtitles over the original Chinese audio.
+                if (isChineseLanguage(srcLang)) {
                     // 中文源视频：字幕文本即中文，原声就是目标语言——
                     // 只显示中文字幕、保留原声，跳过 TTS 配音（避免把中文再念一遍）。
                     // startupDubbing 为 null 时首句等待逻辑自动跳过，公共尾部照常开播。
@@ -2017,10 +2012,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 ttsEngineName = selectedTtsName,
                                 dubbingStatus = "${selectedTtsName} 初始化失败",
                                 muteOriginal = false,
-                                noModelHint = if (selectedTts == "system")
-                                    "已选择系统 TTS，但系统配音引擎初始化失败：$reason。不会自动切换到 Kokoro。请检查手机的文字转语音服务和中文语音数据。"
-                                else
-                                    "已选择 Kokoro 模型，但初始化失败：$reason。不会自动切换到系统 TTS。请检查配音模型文件。",
+                                noModelHint = when (selectedTts) {
+                                    "system" -> "已选择系统 TTS，但系统配音引擎初始化失败：$reason。不会自动切换到 Kokoro。请检查手机的文字转语音服务和中文语音数据。"
+                                    "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
+                                    else -> "已选择 Kokoro 模型，但初始化失败：$reason。不会自动切换到系统 TTS。请检查配音模型文件。"
+                                },
                                 error = null
                             )
                         }
@@ -2031,7 +2027,18 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 } else {
                     val message = when (selectedTts) {
                         "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。应用不会自动切换到系统 TTS；下载完整的配音模型后再试。"
-                        else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro 或系统 TTS。应用不会擅自切换引擎。"
+                        "piper" -> {
+                            val modelId = getSharedPreferences("settings", MODE_PRIVATE)
+                                .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                            val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                            when {
+                                definition == null -> "当前 Piper 模型编号无效，请在设置中重新选择中文 Piper 模型。"
+                                !definition.supportsChineseOutput -> "当前视频的配音目标是中文，所选 Piper 模型为「${definition.langLabel}」，不能用于中文配音。请在设置中选择中文 Piper 模型。"
+                                !io.translatetube.local.tts.PiperModels.modelReady(this, modelId) -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
+                                else -> "Piper 中文配音初始化失败，请检查模型文件后重试。"
+                            }
+                        }
+                        else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro、Piper 或系统 TTS。应用不会擅自切换引擎。"
                     }
                     updateUiForSession(key) {
                         it.copy(
@@ -2834,6 +2841,26 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         android.util.Log.w("PlaybackService", "Kokoro runtime readiness check failed", it)
     }.getOrDefault(false)
 
+    private fun ttsDisplayName(engineId: String): String = when (engineId) {
+        "system" -> "系统 TTS"
+        "kokoro" -> "Kokoro"
+        "piper" -> {
+            val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+            val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+            val def = io.translatetube.local.tts.PiperModels.byId(id)
+            if (def == null) "Piper" else "Piper · ${def.voiceLabel}"
+        }
+        else -> "未知配音引擎"
+    }
+
+    private fun piperModelReadyForChinese(): Boolean {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val id = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+        val definition = io.translatetube.local.tts.PiperModels.byId(id) ?: return false
+        return definition.supportsChineseOutput &&
+            io.translatetube.local.tts.PiperModels.modelReady(this, id)
+    }
+
     private fun makeTts(engineId: String? = null): TtsEngine {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val selected = engineId ?: (prefs.getString("tts_engine", "kokoro") ?: "kokoro")
@@ -2846,9 +2873,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 KokoroTts(this, speakerId = prefs.getInt("kokoro_speaker", 14))
             }
             "piper" -> {
-                val modelId = prefs.getString("piper_model", "en_us_amy_low") ?: "en_us_amy_low"
+                val modelId = prefs.getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                    ?: throw IllegalStateException("未知 Piper 模型「$modelId」，请在设置中重新选择")
+                if (!definition.supportsChineseOutput) {
+                    throw IllegalStateException("当前翻译目标是中文，所选 Piper 模型为「${definition.langLabel}」。请在设置中选择中文 Piper 模型。")
+                }
                 if (!io.translatetube.local.tts.PiperModels.modelReady(this, modelId)) {
-                    throw IllegalStateException("已选择 Piper，但所选语种模型尚未下载，请在设置中下载")
+                    throw IllegalStateException("已选择 Piper 中文配音，但模型尚未下载或文件不完整，请在设置中下载中文 Piper 模型")
                 }
                 io.translatetube.local.tts.PiperTts(this, modelId)
             }

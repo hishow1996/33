@@ -599,16 +599,27 @@ private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
 private fun PiperModelSection() {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
-    var selected by remember { mutableStateOf(prefs.getString("piper_model", "en_us_amy_low") ?: "en_us_amy_low") }
+    var selected by remember {
+        mutableStateOf(
+            prefs.getString("piper_model", null)
+                ?.takeIf { io.translatetube.local.tts.PiperModels.byId(it)?.supportsChineseOutput == true }
+                ?: "zh_cn_chaowen_medium"
+        )
+    }
     val installed by io.translatetube.local.tts.PiperModels.installed.collectAsState()
     val scope = rememberCoroutineScope()
     var busyId by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf(0f) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { io.translatetube.local.tts.PiperModels.refreshInstalled(ctx.applicationContext) }
+    LaunchedEffect(Unit) {
+        if (prefs.getString("piper_model", null) != selected) {
+            prefs.edit().putString("piper_model", selected).apply()
+        }
+        io.translatetube.local.tts.PiperModels.refreshInstalled(ctx.applicationContext)
+    }
 
     Text(
-        "选择要下载的语种；下载后点击行设为当前配音模型。",
+        "当前翻译目标为中文，请下载中文 Piper 模型；其他语种模型暂不能用于中文配音。",
         color = SubText, style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(start = 8.dp, top = 4.dp),
     )
@@ -620,11 +631,11 @@ private fun PiperModelSection() {
         )
     }
     Spacer(Modifier.height(6.dp))
-    io.translatetube.local.tts.PiperModels.catalog.forEach { def ->
+    io.translatetube.local.tts.PiperModels.catalog.filter { it.supportsChineseOutput }.forEach { def ->
         val isInstalled = installed.contains(def.id)
         Row(
             Modifier.fillMaxWidth()
-                .clickable(enabled = isInstalled) {
+                .clickable(enabled = isInstalled && def.supportsChineseOutput) {
                     selected = def.id
                     prefs.edit().putString("piper_model", def.id).apply()
                 }
@@ -639,11 +650,11 @@ private fun PiperModelSection() {
                         prefs.edit().putString("piper_model", def.id).apply()
                     }
                 },
-                enabled = isInstalled,
+                enabled = isInstalled && def.supportsChineseOutput,
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
             Column(Modifier.weight(1f)) {
-                Text("${def.label} · ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                Text("${def.label} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                 when {
                     busyId == def.id -> {
                         LinearProgressIndicator(

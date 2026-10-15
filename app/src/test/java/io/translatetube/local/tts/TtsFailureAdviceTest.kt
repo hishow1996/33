@@ -22,6 +22,14 @@ class TtsFailureAdviceTest {
     }
 
     @Test
+    fun piperAdviceMentionsChineseModelAndPronunciationAssets() {
+        val message = TtsFailureAdvice.missingAudioHint("Piper")
+        assertTrue(message.contains("中文 Piper 模型"))
+        assertTrue(message.contains("词典"))
+        assertFalse(message.contains("下载 Kokoro 模型"))
+    }
+
+    @Test
     fun unknownEngineGetsNeutralAdvice() {
         val message = TtsFailureAdvice.missingAudioHint("")
         assertTrue(message.contains("当前选择的配音引擎"))
