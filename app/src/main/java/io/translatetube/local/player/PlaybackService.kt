@@ -2789,7 +2789,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 remoteMediaUserAgent.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
             }
             withContext(Dispatchers.IO) {
-                extractor.setDataSource(mediaUrl, streamHeaders, null)
+                // MediaExtractor 只有 (path, headers) 两参重载；headers 里带 UA/Cookie/Referer
+                extractor.setDataSource(mediaUrl, streamHeaders)
             }
             var chosen = -1
             var bestChannels = -1
@@ -2837,7 +2838,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 work.copyTo(destination, overwrite = true)
                 work.delete()
             }
-            destination
+            return destination
         } catch (t: Throwable) {
             runCatching { muxer?.release() }
             runCatching { work.delete() }

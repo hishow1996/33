@@ -59,6 +59,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -665,11 +666,22 @@ fun WebVideoScreen(
                 // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
                 val displayCandidates = remember(candidatesState.value, verifiedUrls) {
                     candidatesState.value
-                        .mapIndexed { index, c -> Triple(c, index) }
+                        .mapIndexed { index, c -> Pair(c, index) }
                         .sortedWith(
-                            compareByDescending<Triple<WebVideoCandidate, Int>> { it.first.url in verifiedUrls }
-                                .thenByDescending { WebVideoProbePolicy.candidateRank(it.first.url) }
-                                .thenBy { it.second },
+                            object : Comparator<Pair<WebVideoCandidate, Int>> {
+                                override fun compare(
+                                    a: Pair<WebVideoCandidate, Int>,
+                                    b: Pair<WebVideoCandidate, Int>,
+                                ): Int {
+                                    val aVerified = a.first.url in verifiedUrls
+                                    val bVerified = b.first.url in verifiedUrls
+                                    if (aVerified != bVerified) return if (bVerified) 1 else -1
+                                    val aRank = WebVideoProbePolicy.candidateRank(a.first.url)
+                                    val bRank = WebVideoProbePolicy.candidateRank(b.first.url)
+                                    if (aRank != bRank) return bRank - aRank
+                                    return a.second - b.second
+                                }
+                            },
                         )
                         .map { it.first }
                 }
