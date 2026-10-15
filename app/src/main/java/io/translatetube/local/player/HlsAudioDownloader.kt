@@ -501,7 +501,7 @@ internal object HlsAudioDownloader {
                 }
                 // Flush the completed payload before atomically publishing its final cache name.
                 java.io.RandomAccessFile(part, "rw").use { it.fd.sync() }
-                installCompletedSegment(part, destination, ownerJob)
+                installCompletedSegment(part, destination, ownerJob, awaitResume)
                 destination.setLastModified(System.currentTimeMillis())
                 return destination
             } catch (error: Exception) {
@@ -521,10 +521,11 @@ internal object HlsAudioDownloader {
      * Atomically publish one completed segment. The fallback copy is chunked and cancellable.
      * Failure must not delete an existing destination, which may still be the last good cache.
      */
-    internal fun installCompletedSegment(
+    internal suspend fun installCompletedSegment(
         part: File,
         destination: File,
         ownerJob: Job? = null,
+        awaitResume: suspend () -> Unit = {},
     ) {
         if (part.renameTo(destination)) return
         val installing = File(destination.parentFile, destination.name + ".installing")
