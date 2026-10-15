@@ -134,11 +134,7 @@ object SubtitleParsers {
             val timing = parseTimedTextTiming(match.groupValues[1]) ?: continue
             val rawText = match.groupValues[2]
             // Plain text needs no Android Html conversion; escaped entities and markup still do.
-            val decodedText = if (rawText.contains('&') || rawText.contains('<')) {
-                android.text.Html.fromHtml(rawText, android.text.Html.FROM_HTML_MODE_LEGACY).toString()
-            } else {
-                rawText
-            }
+            val decodedText = SubtitleTextDecoder.decode(rawText.replace(htmlTagRegex, ""))
             val text = decodedText.trim()
             if (text.isNotEmpty()) out += SubLine(out.size, timing.first, timing.second, text)
         }
@@ -203,10 +199,8 @@ object SubtitleParsers {
             }
             if (end <= start) continue
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
-            val text = android.text.Html.fromHtml(
-                body,
-                android.text.Html.FROM_HTML_MODE_LEGACY,
-            ).toString().replace('\u00a0', ' ').trim()
+            val text = SubtitleTextDecoder.decode(body.replace(htmlTagRegex, ""))
+                .replace('\u00a0', ' ').replace(Regex("[ \\t]+"), " ").trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return normalizeTimeline(out, checkActive)
@@ -404,7 +398,8 @@ object SubtitleParsers {
     }
 
     private fun stripTags(s: String): String =
-        SubtitleTextDecoder.decode(s.replace(htmlTagRegex, "")).trim()
+        SubtitleTextDecoder.decode(s.replace(htmlTagRegex, ""))
+            .replace(Regex("[ \\t]+"), " ").trim()
 
     private fun parseVttTs(value: String): Long? {
         val clean = value.trim().replace(",", ".")

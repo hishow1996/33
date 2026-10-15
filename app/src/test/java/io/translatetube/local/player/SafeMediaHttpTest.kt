@@ -75,9 +75,9 @@ class SafeMediaHttpTest {
     @Test
     fun rejectsControlCharactersInForwardedHeadersBeforeMakingARequest() {
         val invalidHeaders = listOf(
-            mapOf("Cookie" to "session=private\\r\\nInjected: yes"),
+            mapOf("Cookie" to "session=private\r\nInjected: yes"),
             mapOf("Cookie" to ("session=private" + 0x85.toChar() + "Injected: yes")),
-            mapOf("Referer" to "https://site.example/watch\\r\\nX: yes"),
+            mapOf("Referer" to "https://site.example/watch\r\nX: yes"),
         )
         for (headers in invalidHeaders) {
             val error = runCatching {
@@ -201,7 +201,7 @@ class SafeMediaHttpTest {
             server.enqueue(
                 MockResponse()
                     .setBody("audio payload")
-                    .setBodyDelay(10, TimeUnit.SECONDS)
+                    .setBodyDelay(500, TimeUnit.MILLISECONDS)
             )
             server.start()
             val ownerJob = SupervisorJob()
