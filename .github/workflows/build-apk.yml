@@ -10,11 +10,19 @@ on:
       - app/src/main/java/io/translatetube/local/ui/screens/WebVideoScreen.kt
       - app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
       - app/src/main/java/io/translatetube/local/player/PlaybackService.kt
+      - app/src/main/java/io/translatetube/local/player/DubbingEngine.kt
+      - app/src/main/java/io/translatetube/local/player/RemoteMediaRetryPolicy.kt
+      - app/src/main/java/io/translatetube/local/translate/Engines.kt
+      - app/src/main/java/io/translatetube/local/ui/screens/ApiManagerScreen.kt
+      - app/src/main/java/io/translatetube/local/ui/screens/WebVideoProbePolicy.kt
       - app/src/main/java/io/translatetube/local/player/HlsAudioDownloader.kt
       - app/src/main/java/io/translatetube/local/yt/YtDlpRepo.kt
       - app/src/main/java/io/translatetube/local/data/ModelDownloadManager.kt
       - app/src/main/java/io/translatetube/local/data/ModelDownloadForegroundService.kt
       - app/src/test/java/io/translatetube/local/player/HlsAudioDownloaderTest.kt
+      - app/src/test/java/io/translatetube/local/player/RemoteMediaRetryPolicyTest.kt
+      - app/src/test/java/io/translatetube/local/translate/GeminiModelFallbackPolicyTest.kt
+      - app/src/test/java/io/translatetube/local/ui/screens/WebVideoProbePolicyTest.kt
       - .github/workflows/build-apk.yml
 
 permissions:
