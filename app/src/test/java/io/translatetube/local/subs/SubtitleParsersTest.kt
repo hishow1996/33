@@ -20,6 +20,62 @@ class SubtitleParsersTest {
     }
 
     @Test
+    fun noteBlocksBetweenCuesAreNotAppendedToSubtitleText() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:01.000
+            first cue
+
+            NOTE translator metadata
+            this comment must not become spoken subtitle text
+
+            00:00:01.000 --> 00:00:02.000
+            second cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("first cue", "second cue"), parsed.map { it.text })
+    }
+
+    @Test
+    fun orphanTextAfterBlankCueBoundaryIsNotAttachedToPreviousCue() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:01.000
+            first cue
+
+            text without a timestamp
+
+            00:00:01.000 --> 00:00:02.000
+            second cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("first cue", "second cue"), parsed.map { it.text })
+    }
+
+    @Test
+    fun vttExportSkipsEmptyAndInvalidTimeWindowsAndSortsCues() {
+        val exported = SubtitleParsers.toVtt(
+            listOf(
+                SubLine(0, 2_000L, 1_000L, "reversed"),
+                SubLine(1, -1L, 500L, "negative start"),
+                SubLine(2, 1_000L, 2_000L, "valid"),
+                SubLine(3, 0L, 1L, "   "),
+            ),
+        )
+
+        org.junit.Assert.assertTrue(exported.contains("valid"))
+        org.junit.Assert.assertFalse(exported.contains("reversed"))
+        org.junit.Assert.assertFalse(exported.contains("negative start"))
+        org.junit.Assert.assertTrue(exported.indexOf("valid") < exported.indexOf("reversed"))
+    }
+
+    @Test
     fun skipsAssCueWhoseTimestampRoundsPastLongRange() {
         val source = """
             [Events]
