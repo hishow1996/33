@@ -6,28 +6,31 @@ import org.junit.Test
 class ImportedSubtitlePolicyTest {
     @Test
     fun preservesRepeatedChineseWordingInAnImportedTranslation() {
-        val cue = ImportedSubtitlePolicy.splitBilingualCue("Hello there\\n哈哈哈哈")
+        val cue = ImportedSubtitlePolicy.splitBilingualCue("""Hello there
+哈哈哈哈""")
         assertEquals("Hello there", cue.originalText)
         assertEquals("哈哈哈哈", cue.translationText)
     }
 
     @Test
     fun preservesTextThatLooksLikeAnInternalProgressLabel() {
-        val cue = ImportedSubtitlePolicy.splitBilingualCue("We are speaking\\n正在翻译")
+        val cue = ImportedSubtitlePolicy.splitBilingualCue("""We are speaking
+正在翻译""")
         assertEquals("We are speaking", cue.originalText)
         assertEquals("正在翻译", cue.translationText)
     }
 
     @Test
     fun removesOnlyTheSelectedTranslationRowWhenRowsHaveEqualText() {
-        val cue = ImportedSubtitlePolicy.splitBilingualCue("OK\\nOK")
+        val cue = ImportedSubtitlePolicy.splitBilingualCue("""OK
+OK""")
         assertEquals("OK", cue.originalText)
         assertEquals("OK", cue.translationText)
     }
 
     @Test
     fun fallsBackToTheRawCueWhenItHasNoNonBlankLines() {
-        val cue = ImportedSubtitlePolicy.splitBilingualCue("  \\n ")
+        val cue = ImportedSubtitlePolicy.splitBilingualCue("  ")
         assertEquals("", cue.originalText)
         assertEquals("", cue.translationText)
     }
