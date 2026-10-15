@@ -23,7 +23,9 @@ class HlsAudioDownloaderTest {
             }
 
             val error = runCatching {
-                HlsAudioDownloader.installCompletedSegment(part, destination)
+                kotlinx.coroutines.runBlocking {
+                    HlsAudioDownloader.installCompletedSegment(part, destination)
+                }
             }.exceptionOrNull()
 
             assertTrue(error is IllegalStateException)
