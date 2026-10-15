@@ -324,7 +324,9 @@ object SubtitleParsers {
             }.getOrNull() ?: continue
             val (start, end) = times
             if (start < 0L || end <= start) continue
-            val text = p.drop(9).joinToString(",").replace(assOverrideRegex, "").replace(assLinebreakRegex, "\n").trim()
+            val text = SubtitleTextDecoder.decode(
+                p.drop(9).joinToString(",").replace(assOverrideRegex, "").replace(assLinebreakRegex, "\n")
+            ).trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return normalizeTimeline(out, checkActive)
@@ -373,7 +375,8 @@ object SubtitleParsers {
         return out
     }
 
-    private fun stripTags(s: String) = s.replace(htmlTagRegex, "").replace("&nbsp;", " ").trim()
+    private fun stripTags(s: String): String =
+        SubtitleTextDecoder.decode(s.replace(htmlTagRegex, "")).trim()
 
     private fun parseVttTs(value: String): Long? {
         val clean = value.trim().replace(",", ".")
