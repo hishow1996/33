@@ -237,6 +237,10 @@ class PlayerManager(private val ctx: Context) {
         artist: String = "",
         artworkUrl: String? = null,
     ): Boolean {
+        // Clearing Media3 state resets playWhenReady and the timeline. Capture both first so a
+        // quality switch does not jump back to 00:00 or unexpectedly pause an active session.
+        val resumePositionMs = player.currentPosition.coerceAtLeast(0L)
+        val resumePlayback = player.playWhenReady
         clearPreviousYouTubeSource()
         if (!isValidHttpMediaUrl(videoUrl)) {
             errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
@@ -245,6 +249,7 @@ class PlayerManager(private val ctx: Context) {
         if (muxed) {
             return try {
                 setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
+                restoreQualitySwitchState(resumePositionMs, resumePlayback)
                 true
             } catch (e: Exception) {
                 errorSink.value = "无法初始化 YouTube 合并视频流：${e.message ?: e.javaClass.simpleName}"
@@ -267,12 +272,19 @@ class PlayerManager(private val ctx: Context) {
                 )
             player.setMediaSource(MergingMediaSource(videoSource, audioSource))
             player.prepare()
+            restoreQualitySwitchState(resumePositionMs, resumePlayback)
             true
         } catch (e: Exception) {
             android.util.Log.e("PlayerManager", "YouTube quality setup failed", e)
             errorSink.value = "无法初始化 ${title.ifEmpty { "YouTube" }} 视频流：${e.message ?: e.javaClass.simpleName}"
             false
         }
+    }
+
+    /** Restore the position and intent after a successful quality-source replacement. */
+    private fun restoreQualitySwitchState(positionMs: Long, resumePlayback: Boolean) {
+        player.seekTo(positionMs.coerceAtLeast(0L))
+        if (resumePlayback) player.play() else player.pause()
     }
 
     private fun isValidHttpMediaUrl(value: String): Boolean = runCatching {
