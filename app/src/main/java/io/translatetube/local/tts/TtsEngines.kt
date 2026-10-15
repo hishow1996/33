@@ -245,7 +245,8 @@ class SystemTts(context: Context) : TtsEngine {
             if (result != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
             }
-            if (!completed.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+            val timeoutMs = SystemTtsTimeoutPolicy.timeoutMs(text, safeSpeed)
+            if (!completed.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
                 runCatching { tts.stop() }
                 throw IllegalStateException("系统 TTS 合成超时")
             }
