@@ -225,7 +225,6 @@ object AudioExtract {
                     if (!sawInputEos) {
                         val inBufferIndex = codec.dequeueInputBuffer(10_000)
                         if (inBufferIndex >= 0) {
-                            loopMadeProgress = true
                             val inputBuffer = codec.getInputBuffer(inBufferIndex)
                                 ?: throw IllegalStateException("音频解码器没有输入缓冲区")
                             val size = extractor.readSampleData(inputBuffer, 0)
@@ -234,16 +233,22 @@ object AudioExtract {
                                     inBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM,
                                 )
                                 sawInputEos = true
+                                loopMadeProgress = true
                             } else {
                                 codec.queueInputBuffer(inBufferIndex, 0, size, extractor.sampleTime, 0)
-                                extractor.advance()
+                                val hasNextSample = extractor.advance()
+                                loopMadeProgress = loopMadeProgress ||
+                                    CodecProgressPolicy.inputMakesProgress(size, hasNextSample)
                             }
                         }
                     }
 
                     val outBufferIndex = codec.dequeueOutputBuffer(info, 10_000)
                     if (outBufferIndex >= 0) {
-                        loopMadeProgress = true
+                        loopMadeProgress = loopMadeProgress || CodecProgressPolicy.outputMakesProgress(
+                            outputBytes = info.size,
+                            endOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0,
+                        )
                         val outputBuffer = codec.getOutputBuffer(outBufferIndex)
                             ?: throw IllegalStateException("音频解码器没有输出缓冲区")
                         val endOffset = info.offset.toLong() + info.size.toLong()
