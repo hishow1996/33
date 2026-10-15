@@ -5,6 +5,21 @@ import org.junit.Test
 
 class SubtitleParsersTest {
     @Test
+    fun decodesHtmlEntitiesWithoutTreatingDecodedAngleBracketsAsMarkup() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:02.000
+            Tom &amp; Jerry: &quot;yes&quot; &#39;ok&#39; &lt;literal&gt; &nbsp; &#x1F600;
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("Tom & Jerry: \"yes\" 'ok' <literal> 😀", parsed.single().text)
+    }
+
+    @Test
     fun skipsAssCueWhoseTimestampRoundsPastLongRange() {
         val source = """
             [Events]
