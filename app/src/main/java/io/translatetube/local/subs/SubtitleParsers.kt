@@ -29,6 +29,7 @@ object SubtitleParsers {
     private val placeholderNormalizationRegex = Regex("[\\s…。.！!·:：]+")
     private val punctuationSymbolsWhitespaceRegex = Regex("[\\p{P}\\p{S}\\s]")
     private val chineseCharRegex = Regex("[\\u4E00-\\u9FFF]")
+    private val assDialogueHeaderRegex = Regex("""(?im)^\s*Dialogue\s*:""")
     private val assOverrideRegex = Regex("""\{[^}]*\}""")
     private val assLinebreakRegex = Regex("""\\N|\\n""")
     private val htmlTagRegex = Regex("<[^>]+>")
@@ -259,7 +260,7 @@ object SubtitleParsers {
         val parsed = when {
             t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t, checkActive)
             t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t, checkActive)
-            t.contains("Dialogue:") -> parseAss(t, checkActive)
+            assDialogueHeaderRegex.containsMatchIn(t) -> parseAss(t, checkActive)
             t.startsWith("<?xml") || t.startsWith("<tt", ignoreCase = true) ||
                 ttmlRootRegex.containsMatchIn(t) ->
                 parseTtml(t, checkActive).ifEmpty { parseTimedTextXml(t, checkActive) }

@@ -15,7 +15,17 @@ class YtDlpMediaPolicyTest {
         assertFalse(YtDlpMediaPolicy.isSafeHttpUrl("file:///tmp/video.mp4"))
         assertFalse(YtDlpMediaPolicy.isSafeHttpUrl("https://user:pass@media.example/video.mp4"))
         assertFalse(YtDlpMediaPolicy.isSafeHttpUrl("https://media.example:99999/video.mp4"))
+        assertFalse(YtDlpMediaPolicy.isSafeHttpUrl("https://media.example:/video.mp4"))
         assertFalse(YtDlpMediaPolicy.isSafeHttpUrl("not a url"))
+    }
+
+    @Test
+    fun cookieHeaderRejectsLineBreaksButAllowsMissingOrOrdinaryCookies() {
+        assertTrue(YtDlpMediaPolicy.isSafeCookieHeader(null))
+        assertTrue(YtDlpMediaPolicy.isSafeCookieHeader(""))
+        assertTrue(YtDlpMediaPolicy.isSafeCookieHeader("session=a; theme=dark"))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\r\nInjected: yes"))
+        assertFalse(YtDlpMediaPolicy.isSafeCookieHeader("session=a\n"))
     }
 
     @Test

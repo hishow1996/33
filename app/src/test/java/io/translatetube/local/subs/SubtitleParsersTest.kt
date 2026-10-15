@@ -336,6 +336,19 @@ class SubtitleParsersTest {
     }
 
     @Test
+    fun autoDetectsIndentedLowercaseAssDialogueLines() {
+        val source = """
+                dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,lowercase cue
+                DIALOGUE: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,uppercase cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAuto(source)
+
+        assertEquals(listOf("lowercase cue", "uppercase cue"), parsed.map { it.text })
+        assertEquals(listOf(1_000L, 3_000L), parsed.map { it.startMs })
+    }
+
+    @Test
     fun malformedExplicitTtmlEndDoesNotSilentlyFallBackToDuration() {
         val source = """
             <tt><body>

@@ -225,6 +225,9 @@ object YtDlpRepo {
         cookieHeader: String? = null,
     ): File = withContext(Dispatchers.IO) {
         if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
+        if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
+            throw IllegalArgumentException("Cookie 请求头不能包含换行符")
+        }
         ensureReady(ctx)
         val parent = dest.parentFile
         if (parent == null || dest.name.endsWith(".part")) {
@@ -246,9 +249,6 @@ object YtDlpRepo {
                 addOption("--newline")
                 addOption("-o", outputTemplate)
                 cookieHeader?.takeIf { it.isNotBlank() }?.let {
-                    if (it.any { character -> character == '\r' || character == '\n' }) {
-                        throw IllegalArgumentException("Cookie 请求头不能包含换行符")
-                    }
                     addOption("--add-headers", "Cookie:$it")
                 }
             }
@@ -346,6 +346,9 @@ object YtDlpRepo {
      */
     suspend fun resolve(ctx: Context, pageUrl: String, cookieHeader: String? = null): ResolvedMedia {
         if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
+        if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
+            throw IllegalArgumentException("Cookie 请求头不能包含换行符")
+        }
         ensureReady(ctx)
         return withContext(Dispatchers.IO) {
             val request = YoutubeDLRequest(pageUrl.trim()).apply {

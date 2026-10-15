@@ -46,6 +46,7 @@ class YouTubeStreamSelectorTest {
                 YouTubeVideoCandidate(240, "not-a-url", false, "mp4", 10),
                 YouTubeVideoCandidate(240, "https://cdn.test:0/zero-port.mp4", false, "mp4", 1000),
                 YouTubeVideoCandidate(240, "https://cdn.test:99999/invalid-port.mp4", false, "mp4", 2000),
+                YouTubeVideoCandidate(240, "https://cdn.test:/empty-port.mp4", false, "mp4", 3000),
                 YouTubeVideoCandidate(240, "https://cdn.test/240.mp4", false, "mp4", 100),
             )
         )

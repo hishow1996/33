@@ -13,12 +13,17 @@ internal data class YtDlpFormatCandidate(
 )
 
 internal object YtDlpMediaPolicy {
+    /** Cookie headers are passed through yt-dlp command options and must not contain header delimiters. */
+    fun isSafeCookieHeader(value: String?): Boolean =
+        value == null || value.none { it == '\r' || it == '\n' }
+
     fun isSafeHttpUrl(value: String): Boolean {
         val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return false
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         return scheme in setOf("http", "https") &&
             !uri.host.isNullOrBlank() &&
             uri.userInfo == null &&
+            !uri.rawAuthority.orEmpty().endsWith(":") &&
             (uri.port == -1 || uri.port in 1..65535)
     }
 

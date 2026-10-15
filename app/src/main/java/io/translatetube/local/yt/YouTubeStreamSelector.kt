@@ -26,6 +26,7 @@ internal object YouTubeStreamSelector {
             runCatching {
                 val uri = java.net.URI(trimmed)
                 !uri.host.isNullOrBlank() && uri.userInfo == null &&
+                    !uri.rawAuthority.orEmpty().endsWith(":") &&
                     (uri.port == -1 || uri.port in 1..65535)
             }.getOrDefault(false)
     }
