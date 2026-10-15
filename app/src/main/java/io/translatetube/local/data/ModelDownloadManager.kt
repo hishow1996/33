@@ -287,9 +287,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     }
 
     private fun clearPauseIfIdle() {
-        if (!isActiveModelState(_tts.value) && !isActiveModelState(_asr.value) &&
-            ttsJob?.isActive != true && asrJob?.isActive != true
-        ) {
+        // Job cancellation is asynchronous; state is switched to FAILED synchronously by cancel().
+        // Use the published phases here so a cancelled last task cannot leave future tasks paused.
+        if (!isActiveModelState(_tts.value) && !isActiveModelState(_asr.value)) {
             resumeDownloads()
         }
     }
