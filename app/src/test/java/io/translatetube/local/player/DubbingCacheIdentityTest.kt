@@ -51,10 +51,11 @@ class DubbingCacheIdentityTest {
         assertEquals(key(), key())
     }
     @Test
-    fun synthesisContentVersionInvalidatesOlderPcmCacheNames() {
-        val current = key()
-        assertNotEquals(current, current.replace("v8-speed-", "v7-speed-"))
-        assertNotEquals(current, key(cueDurationMs = 1_401L))
+    fun synthesisEngineVersionAndCueWindowInvalidatePcmCacheNames() {
+        val oldEngine = key(engineKey = "SystemTTS|engine-a|voice-a-v8")
+        val currentEngine = key(engineKey = "SystemTTS|engine-a|voice-a-v9")
+        assertNotEquals(oldEngine, currentEngine)
+        assertNotEquals(key(), key(cueDurationMs = 1_401L))
     }
 
 }
