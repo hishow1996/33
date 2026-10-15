@@ -3,6 +3,7 @@ package io.translatetube.local.translate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Test
 
 class ModelTranslationParserTest {
@@ -55,6 +56,20 @@ class ModelTranslationParserTest {
         assertEquals("繁體中文", LangMap.display("zh_Hant_TW"))
         assertEquals("the original language", LangMap.display("und"))
         assertFalse(LangMap.isMlkitSupported("xx-zz"))
+    }
+
+    @Test
+    fun redactsProviderSpecificCredentialAliasesFromDiagnosticUrls() {
+        val url = "https://api.example.test/translate?api-key=secret-a&x-goog-api-key=secret-b" +
+            "&client_secret=secret-c&access-token=secret-d&monkey=banana&sl=en"
+            .toHttpUrl()
+        val diagnostic = safeDiagnosticUrl(url)
+        assertFalse(diagnostic.contains("secret-a"))
+        assertFalse(diagnostic.contains("secret-b"))
+        assertFalse(diagnostic.contains("secret-c"))
+        assertFalse(diagnostic.contains("secret-d"))
+        assertTrue(diagnostic.contains("monkey=banana"))
+        assertTrue(diagnostic.contains("sl=en"))
     }
 
 }
