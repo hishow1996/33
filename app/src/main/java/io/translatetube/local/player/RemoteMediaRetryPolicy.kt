@@ -22,6 +22,6 @@ internal object RemoteMediaRetryPolicy {
             "unauthorized",
             "forbidden",
             "expired",
-        ).any(detail::contains)
+        ).any { marker -> detail.contains(marker) }
     }
 }
