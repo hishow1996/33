@@ -39,6 +39,8 @@ class ModelTranslationParserTest {
         assertEquals("ja", LangMap.mlkit("JA-jp"))
         assertEquals("en", LangMap.mlkitSource("auto"))
         assertEquals("en", LangMap.mlkitSource(""))
+        assertEquals("en", LangMap.mlkitSource("und"))
+        assertEquals("en", LangMap.mlkitSource("unknown"))
     }
 
     @Test
@@ -47,6 +49,11 @@ class ModelTranslationParserTest {
         assertEquals("zh-CN", LangMap.google("zh_Hans", target = true))
         assertEquals("zh-TW", LangMap.google("ZH-hant-TW", target = true))
         assertEquals("auto", LangMap.google("AUTO"))
+        assertEquals("auto", LangMap.google("und"))
+        assertEquals("auto", LangMap.google("unknown"))
+        assertEquals("英语", LangMap.display("en-US"))
+        assertEquals("繁體中文", LangMap.display("zh_Hant_TW"))
+        assertEquals("the original language", LangMap.display("und"))
         assertFalse(LangMap.isMlkitSupported("xx-zz"))
     }
 
