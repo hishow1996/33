@@ -239,8 +239,10 @@ class PlayerManager(private val ctx: Context) {
     ): Boolean {
         // Clearing Media3 state resets playWhenReady and the timeline. Capture both first so a
         // quality switch does not jump back to 00:00 or unexpectedly pause an active session.
-        val resumePositionMs = player.currentPosition.coerceAtLeast(0L)
-        val resumePlayback = player.playWhenReady
+        val resumeState = PlayerQualitySwitchPolicy.capture(
+            player.currentPosition,
+            player.playWhenReady,
+        )
         clearPreviousYouTubeSource()
         if (!isValidHttpMediaUrl(videoUrl)) {
             errorSink.value = "YouTube 视频流地址无效（不是有效的 HTTP/HTTPS 地址）"
@@ -249,7 +251,7 @@ class PlayerManager(private val ctx: Context) {
         if (muxed) {
             return try {
                 setUriSource(Uri.parse(videoUrl), title, artist, artworkUrl)
-                restoreQualitySwitchState(resumePositionMs, resumePlayback)
+                restoreQualitySwitchState(resumeState)
                 true
             } catch (e: Exception) {
                 errorSink.value = "无法初始化 YouTube 合并视频流：${e.message ?: e.javaClass.simpleName}"
@@ -272,7 +274,7 @@ class PlayerManager(private val ctx: Context) {
                 )
             player.setMediaSource(MergingMediaSource(videoSource, audioSource))
             player.prepare()
-            restoreQualitySwitchState(resumePositionMs, resumePlayback)
+            restoreQualitySwitchState(resumeState)
             true
         } catch (e: Exception) {
             android.util.Log.e("PlayerManager", "YouTube quality setup failed", e)
@@ -282,9 +284,9 @@ class PlayerManager(private val ctx: Context) {
     }
 
     /** Restore the position and intent after a successful quality-source replacement. */
-    private fun restoreQualitySwitchState(positionMs: Long, resumePlayback: Boolean) {
-        player.seekTo(positionMs.coerceAtLeast(0L))
-        if (resumePlayback) player.play() else player.pause()
+    private fun restoreQualitySwitchState(state: PlayerQualityResumeState) {
+        player.seekTo(state.positionMs)
+        if (state.wasPlaying) player.play() else player.pause()
     }
 
     private fun isValidHttpMediaUrl(value: String): Boolean = runCatching {
