@@ -37,6 +37,7 @@ object YtDlpRepo {
 
     private const val TAG = "YtDlpRepo"
     private const val MAX_RELEASE_METADATA_BYTES = 1024L * 1024L
+    private const val MAX_PYPI_METADATA_BYTES = 8L * 1024L * 1024L
 
     @Volatile private var inited = false
 
@@ -51,6 +52,8 @@ object YtDlpRepo {
         /** 上次成功检查的时间戳（ms） */
         val lastCheckMs: Long = 0L,
         val checking: Boolean = false,
+        /** 最近一次检测失败原因，供设置页显示。 */
+        val error: String? = null,
     )
 
     private val _updateState = MutableStateFlow(UpdateState())
@@ -109,14 +112,17 @@ object YtDlpRepo {
             }
         }
         // 强制路径 / 本进程已 init：以运行时真实版本为准
-        _updateState.value = _updateState.value.copy(checking = true)
+        _updateState.value = _updateState.value.copy(checking = true, error = null)
         try {
             // 手动点击“检查更新”时也要先初始化本机运行时；否则 YoutubeDL.version()
             // 在尚未 init 的冷启动进程中会失败，造成“已获取最新版但无法读取本机版本”。
             if (force) ensureReady(appCtx)
             val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
             val latestKnown = fetchLatestReleaseTag() ?: run {
-                _updateState.value = _updateState.value.copy(checking = false)
+                _updateState.value = _updateState.value.copy(
+                    checking = false,
+                    error = "无法获取上游最新版：GitHub 版本接口、发布页和 PyPI 均未返回有效版本号，请检查网络或代理设置后重试",
+                )
                 return@withContext
             }
             val hasUpdate = currentVersion != null && currentVersion != latestKnown
@@ -159,24 +165,102 @@ object YtDlpRepo {
         return "$date-$slot"
     }
 
-    private fun fetchLatestReleaseTag(): String? = runCatching {
-        checkHttp.newCall(
-            Request.Builder()
-                .url("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")
-                .header("Accept", "application/vnd.github+json")
+    /**
+     * 多来源读取上游稳定版：
+     * 1) GitHub REST API；
+     * 2) GitHub latest 发布页的最终重定向地址（可避开 API 限流/部分网关拦截）；
+     * 3) PyPI 项目元数据兜底。
+     *
+     * 显式设置 User-Agent：GitHub REST API 对缺少该请求头的客户端可能拒绝请求。
+     */
+    private fun fetchLatestReleaseTag(): String? {
+        fetchVersionText(
+            url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+            accept = "application/vnd.github+json",
+            maxBytes = MAX_RELEASE_METADATA_BYTES,
+            source = "GitHub API",
+        )?.let { json ->
+            val tag = runCatching {
+                JSONObject(json).optString("tag_name").trim().takeIf { it.isNotEmpty() }
+            }.getOrNull()
+            if (tag != null) return tag
+        }
+
+        // 不下载整个发布页，只检查 HTTP 重定向最终指向的 /releases/tag/<version>。
+        runCatching {
+            val request = Request.Builder()
+                .url("https://github.com/yt-dlp/yt-dlp/releases/latest")
+                .header("User-Agent", "TranslateTube-Android")
+                .header("Accept", "text/html")
                 .build()
-        ).execute().use { response ->
-            if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) return@runCatching null
-            val body = response.body ?: return@runCatching null
-            if (body.contentLength() > MAX_RELEASE_METADATA_BYTES) return@runCatching null
+            checkHttp.newCall(request).execute().use { response ->
+                if (response.code != 200) {
+                    Log.w(TAG, "GitHub release page returned HTTP ${response.code}")
+                    return@use null
+                }
+                val marker = "/releases/tag/"
+                val path = response.request.url.encodedPath
+                val encodedTag = path.substringAfter(marker, "").substringBefore('/')
+                if (encodedTag.isBlank() || path == response.request.url.encodedPath && !path.contains(marker)) {
+                    null
+                } else {
+                    java.net.URLDecoder.decode(encodedTag, "UTF-8")
+                        .takeIf { it.isNotBlank() && it != "latest" }
+                }
+            }
+        }.onFailure { Log.w(TAG, "GitHub release-page version lookup failed", it) }
+            .getOrNull()?.let { return it }
+
+        // PyPI 和官方 GitHub 稳定版通常使用同一发布版本号；作为 API / 网页被拦截时的兜底。
+        fetchVersionText(
+            url = "https://pypi.org/pypi/yt-dlp/json",
+            accept = "application/json",
+            maxBytes = MAX_PYPI_METADATA_BYTES,
+            source = "PyPI",
+        )?.let { json ->
+            val version = runCatching {
+                JSONObject(json).optJSONObject("info")?.optString("version")
+                    ?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+            }.getOrNull()
+            if (version != null) return version
+        }
+        Log.w(TAG, "Unable to fetch yt-dlp stable version from all sources")
+        return null
+    }
+
+    private fun fetchVersionText(
+        url: String,
+        accept: String,
+        maxBytes: Long,
+        source: String,
+    ): String? = try {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "TranslateTube-Android")
+            .header("Accept", accept)
+            .build()
+        checkHttp.newCall(request).execute().use { response ->
+            if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
+                Log.w(TAG, "$source version lookup returned HTTP ${response.code}")
+                return@use null
+            }
+            val body = response.body ?: return@use null
+            val length = body.contentLength()
+            if (length > maxBytes) {
+                Log.w(TAG, "$source version metadata exceeded size limit: $length")
+                return@use null
+            }
             val bytes = BoundedTextPayload.readBytes(
                 body.byteStream(),
-                maxBytes = MAX_RELEASE_METADATA_BYTES,
-                resourceLabel = "yt-dlp 版本检查响应",
+                maxBytes = maxBytes,
+                resourceLabel = "yt-dlp $source 版本检查响应",
             )
-            JSONObject(String(bytes, Charsets.UTF_8)).optString("tag_name").takeIf { it.isNotBlank() }
+            String(bytes, Charsets.UTF_8)
         }
-    }.getOrNull()
+    } catch (error: Exception) {
+        Log.w(TAG, "$source version lookup failed", error)
+        null
+    }
 
     /** 懒初始化（线程安全）。 */
     suspend fun ensureReady(ctx: Context): Unit = withContext(Dispatchers.IO) {
