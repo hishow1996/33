@@ -14,13 +14,16 @@ internal object DubbingQueueOrder {
         if (queued.isEmpty() || totalLines <= 0 || currentIndex !in 0 until totalLines) {
             return queued
         }
-        val remaining = queued.toMutableSet()
-        val ordered = ArrayList<Int>(queued.size)
+        val validQueued = queued.filter { it in 0 until totalLines }
+        if (validQueued.isEmpty()) return emptyList()
+        val remaining = validQueued.toMutableSet()
+        val ordered = ArrayList<Int>(validQueued.size)
         val ahead = lookAhead.coerceAtLeast(0)
-        for (index in currentIndex..minOf(totalLines - 1, currentIndex + ahead)) {
+        val lastPromoted = minOf(totalLines.toLong() - 1L, currentIndex.toLong() + ahead.toLong()).toInt()
+        for (index in currentIndex..lastPromoted) {
             if (remaining.remove(index)) ordered += index
         }
-        queued.forEach { index ->
+        validQueued.forEach { index ->
             if (remaining.remove(index)) ordered += index
         }
         return ordered

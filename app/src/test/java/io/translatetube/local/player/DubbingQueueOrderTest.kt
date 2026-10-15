@@ -53,6 +53,19 @@ class DubbingQueueOrderTest {
     }
 
     @Test
+    fun hugeLookAheadCannotOverflowAndOutOfRangeQueueItemsAreIgnored() {
+        assertEquals(
+            listOf(Int.MAX_VALUE - 2, Int.MAX_VALUE - 1),
+            DubbingQueueOrder.prioritize(
+                queued = listOf(-1, Int.MAX_VALUE, Int.MAX_VALUE - 1, Int.MAX_VALUE - 2),
+                currentIndex = Int.MAX_VALUE - 2,
+                totalLines = Int.MAX_VALUE,
+                lookAhead = Int.MAX_VALUE,
+            ),
+        )
+    }
+
+    @Test
     fun invalidTargetLeavesQueueUnchanged() {
         val original = listOf(0, 2, 4)
         assertEquals(original, DubbingQueueOrder.prioritize(original, -1, 5))

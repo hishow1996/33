@@ -2,6 +2,8 @@ package io.translatetube.local.player
 
 import java.io.IOException
 import java.util.Locale
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlinx.coroutines.CancellationException
 
 /** Shared bounded retry policy for remote audio and HLS segment downloads. */
@@ -11,9 +13,8 @@ internal object MediaDownloadRetryPolicy {
     /** Refresh a cached YouTube StreamInfo once when its signed media URL is stale. */
     fun shouldRefreshSignedStream(error: Throwable): Boolean {
         if (hasCancellationCause(error)) return false
-        val messages = generateSequence(error) { it.cause }
-            .mapNotNull { it.message }
-            .joinToString(" ")
+        val chain = causeChain(error)
+        val messages = chain.mapNotNull { it.message }.joinToString(" ")
         val statusCode = Regex("(?:HTTP\\s*|失败\\s*)[（(]?(\\d{3})")
             .find(messages)
             ?.groupValues
@@ -36,7 +37,7 @@ internal object MediaDownloadRetryPolicy {
     fun shouldRetry(error: Throwable): Boolean {
         if (hasCancellationCause(error)) return false
 
-        val chain = generateSequence(error) { it.cause }.toList()
+        val chain = causeChain(error)
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
         val statusCode = Regex("(?:HTTP\\s*|失败\\s*)[（(]?(\\d{3})")
             .find(messages)
@@ -54,5 +55,17 @@ internal object MediaDownloadRetryPolicy {
     }
 
     private fun hasCancellationCause(error: Throwable): Boolean =
-        generateSequence(error) { it.cause }.any { it is CancellationException }
+        causeChain(error).any { it is CancellationException }
+
+    /** Throwable causes are normally linear, but hand-built wrappers can form cycles. */
+    private fun causeChain(error: Throwable): List<Throwable> {
+        val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        val result = ArrayList<Throwable>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current)) {
+            result += current
+            current = current.cause
+        }
+        return result
+    }
 }

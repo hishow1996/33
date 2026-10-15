@@ -64,12 +64,13 @@ internal object MediaUrlCacheIdentity {
     }
 
     fun canonicalUrl(value: String): String {
-        val uri = runCatching { URI(value.trim()) }.getOrNull()
-            ?: return value.trim()
+        val rawValue = value.trim()
+        val uri = runCatching { URI(rawValue) }.getOrNull()
+            ?: return "invalid-url-sha256:${sha256(rawValue)}"
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
         val host = uri.host?.lowercase(Locale.ROOT)
         if (scheme == null || !hasValidHttpAuthority(uri, scheme) || host.isNullOrBlank()) {
-            return value.trim()
+            return "invalid-url-sha256:${sha256(rawValue)}"
         }
 
         val port = when {

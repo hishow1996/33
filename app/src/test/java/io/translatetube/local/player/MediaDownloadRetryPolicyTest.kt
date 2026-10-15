@@ -52,6 +52,16 @@ class MediaDownloadRetryPolicyTest {
     }
 
     @Test
+    fun cyclicCauseChainsDoNotHangRetryDetection() {
+        val first = IOException("HTTP 503: service unavailable")
+        val second = IllegalStateException("wrapped failure")
+        first.initCause(second)
+        second.initCause(first)
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(first))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(first))
+    }
+
+    @Test
     fun ytDlpFallbackIsSuppressedForCancellationAndInactiveSessions() {
         assertTrue(MediaDownloadRetryPolicy.shouldFallbackToStreaming(IOException("format unsupported"), true))
         assertFalse(MediaDownloadRetryPolicy.shouldFallbackToStreaming(CancellationException("cancelled"), true))

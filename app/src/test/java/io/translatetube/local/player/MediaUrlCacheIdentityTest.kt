@@ -58,8 +58,10 @@ class MediaUrlCacheIdentityTest {
         val invalid = "https://cdn.example:99999/media.mp4?token=abc"
         val zeroPort = "https://cdn.example:0/media.mp4?token=abc"
         val valid = "https://cdn.example/media.mp4?token=abc"
-        assertEquals(invalid, MediaUrlCacheIdentity.canonicalUrl(invalid))
-        assertEquals(zeroPort, MediaUrlCacheIdentity.canonicalUrl(zeroPort))
+        assertTrue(MediaUrlCacheIdentity.canonicalUrl(invalid).startsWith("invalid-url-sha256:"))
+        assertTrue(MediaUrlCacheIdentity.canonicalUrl(zeroPort).startsWith("invalid-url-sha256:"))
+        assertFalse(MediaUrlCacheIdentity.canonicalUrl(invalid).contains("token=abc"))
+        assertNotEquals(MediaUrlCacheIdentity.canonicalUrl(invalid), MediaUrlCacheIdentity.canonicalUrl(zeroPort))
         assertNotEquals(MediaUrlCacheIdentity.key(valid), MediaUrlCacheIdentity.key(invalid))
     }
 

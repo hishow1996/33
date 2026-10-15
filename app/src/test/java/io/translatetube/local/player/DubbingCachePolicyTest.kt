@@ -21,6 +21,16 @@ class DubbingCachePolicyTest {
     }
 
     @Test
+    fun largeAggregateSizesDoNotOverflowAndSkipUnnecessaryEvictions() {
+        val huge = DubbingCacheEntry("huge", Long.MAX_VALUE, 1L, false)
+        val small = DubbingCacheEntry("small", 10L, 2L, false)
+        assertEquals(
+            listOf(huge),
+            DubbingCachePolicy.filesToEvict(listOf(huge, small), 10L),
+        )
+    }
+
+    @Test
     fun keepsAllFilesWhenAlreadyWithinBudget() {
         val entries = listOf(
             DubbingCacheEntry("active", 20L, 1L, true),

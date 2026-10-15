@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import java.math.BigInteger
+
 /** Metadata used to prune old per-video PCM caches without touching the active video's cache. */
 internal data class DubbingCacheEntry(
     val path: String,
@@ -17,15 +19,17 @@ internal object DubbingCachePolicy {
         budgetBytes: Long = BUDGET_BYTES,
     ): List<DubbingCacheEntry> {
         val valid = entries.filter { it.bytes > 0L }
-        var totalBytes = valid.sumOf { it.bytes }
-        val budget = budgetBytes.coerceAtLeast(0L)
+        var totalBytes = valid.fold(BigInteger.ZERO) { total, entry ->
+            total.add(BigInteger.valueOf(entry.bytes))
+        }
+        val budget = BigInteger.valueOf(budgetBytes.coerceAtLeast(0L))
         if (totalBytes <= budget) return emptyList()
 
         val evicted = mutableListOf<DubbingCacheEntry>()
         for (entry in valid.asSequence().filterNot { it.isCurrentVideo }.sortedBy { it.lastModified }) {
             if (totalBytes <= budget) break
             evicted += entry
-            totalBytes = (totalBytes - entry.bytes).coerceAtLeast(0L)
+            totalBytes = totalBytes.subtract(BigInteger.valueOf(entry.bytes)).max(BigInteger.ZERO)
         }
         return evicted
     }
