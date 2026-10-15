@@ -28,6 +28,26 @@ class VadSegmentMergePolicyTest {
     }
 
     @Test
+    fun overlappingWindowsDoNotDuplicateAudioWhenTheirUnionExceedsTheLimit() {
+        assertEquals(
+            listOf(0L to 25_000L, 25_000L to 30_000L),
+            VadSegmentMergePolicy.merge(
+                listOf(0L to 25_000L, 24_000L to 30_000L),
+            ),
+        )
+    }
+
+    @Test
+    fun clipsOnlyExcessOverlapAndDropsAnInsignificantRemainder() {
+        assertEquals(
+            listOf(0L to 25_000L),
+            VadSegmentMergePolicy.merge(
+                listOf(0L to 25_000L, 24_900L to 25_100L),
+            ),
+        )
+    }
+
+    @Test
     fun nearbyCuesMergeOnlyWhenTheCombinedDurationStaysWithinLimit() {
         val segments = listOf(
             0L to 10_000L,

@@ -50,7 +50,17 @@ internal object VadSegmentMergePolicy {
             if (shouldMerge && last != null) {
                 merged[merged.lastIndex] = last.first to unionEnd
             } else {
-                merged += start to end
+                // If combining would exceed Whisper's hard window, do not emit the overlapping
+                // samples twice. Start the next window at the previous end and discard only a
+                // too-short remainder; normal short overlaps are still merged above.
+                val nonOverlappingStart = if (last != null && start < last.second) {
+                    last.second
+                } else {
+                    start
+                }
+                if (end - nonOverlappingStart >= MIN_SEGMENT_MS) {
+                    merged += nonOverlappingStart to end
+                }
             }
         }
         return merged
