@@ -66,7 +66,7 @@ object SubtitleParsers {
             }
             if (inNoteBlock) continue
             if (pendingStart < 0 &&
-                (line == "NOTE" || line.startsWith("NOTE ") || line.startsWith("NOTE\\t"))
+                (line == "NOTE" || line.startsWith("NOTE ") || line.startsWith("NOTE\t"))
             ) {
                 inNoteBlock = true
                 continue
