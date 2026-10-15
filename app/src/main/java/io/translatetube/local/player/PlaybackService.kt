@@ -3183,8 +3183,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     hi = mid - 1
                 }
             }
-            // 仅用于字幕列表定位；如果上一行已经结束，不将它作为配音行。
-            highlightLine = ans
+            // Do not keep highlighting the last-started cue after its end time.
+            // This makes subtitle focus follow the actual media timeline, including gaps.
+            highlightLine = ans.takeIf { index ->
+                index >= 0 && ms >= ls[index].startMs && ms < ls[index].endMs
+            } ?: -1
         }
         if (highlightLine != lastLineIdx) {
             lastLineIdx = highlightLine
