@@ -597,7 +597,7 @@ private val PROBE_SCRIPT = """
     function enhanceTouchTargets(root) {
       if (!root || !root.querySelectorAll) return;
       try {
-        var selector = 'button,[role="button"],a[href],[onclick],[aria-label],input[type="button"],input[type="submit"],[class*="control"],[class*="Control"],[class*="icon"],[class*="Icon"],[class*="btn"],[class*="Btn"]';
+        var selector = 'button,[role="button"],a[href],[onclick],[aria-label],input[type="button"],input[type="submit"],[class*="control"],[class*="Control"],[class*="icon"],[class*="Icon"],[class*="btn"],[class*="Btn"],[class*="back"],[class*="Back"],[class*="left"],[class*="Left"],[class*="arrow"],[class*="Arrow"],[class*="fanhui"],[title*="返回"],[aria-label*="返回"]';
         var nodes = root.querySelectorAll(selector);
         for (var i = 0; i < nodes.length && i < 500; i++) {
           var el = nodes[i];
@@ -605,7 +605,8 @@ private val PROBE_SCRIPT = """
           if (el.closest && el.closest('[aria-hidden="true"]')) continue;
           var rect = el.getBoundingClientRect();
           if (!rect || rect.width <= 0 || rect.height <= 0 || rect.width > 90 || rect.height > 90) continue;
-          var classes = String(el.className || '') + ' ' + String(el.id || '') + ' ' + String(el.title || '');
+          var classes = String(el.className || '') + ' ' + String(el.id || '') + ' ' +
+            String(el.title || '') + ' ' + String(el.getAttribute('aria-label') || '');
           var isControl = el.tagName === 'BUTTON' ||
             el.getAttribute('role') === 'button' ||
             el.hasAttribute('onclick') ||
@@ -615,9 +616,28 @@ private val PROBE_SCRIPT = """
           el.style.setProperty('touch-action', 'manipulation', 'important');
           el.style.setProperty('-webkit-tap-highlight-color', 'transparent', 'important');
           el.style.setProperty('box-sizing', 'border-box', 'important');
-          // Do not enlarge control boxes or override site-defined pointer-events:
-          // adjacent overlay buttons can overlap on compact players, and hidden/disabled controls
-          // must remain non-interactive according to the original page styles.
+
+          // The site's upper-left "back/episode list" icon can sit under a transparent video
+          // overlay even while neighbouring controls work. Only promote a visible, enabled
+          // back-like target at the top-left of the WebView; do not alter unrelated controls.
+          var descriptor = classes;
+          var ancestor = el.parentElement;
+          for (var depth = 0; ancestor && depth < 3; depth++, ancestor = ancestor.parentElement) {
+            descriptor += ' ' + String(ancestor.className || '') + ' ' + String(ancestor.id || '') +
+              ' ' + String(ancestor.title || '') + ' ' + String(ancestor.getAttribute('aria-label') || '');
+          }
+          var isBackControl = /back|return|prev|previous|arrow|chevron|jiantou|fanhui|left|返回|上一页|上一级|返回列表/i.test(descriptor);
+          var enabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+          if (isBackControl && enabled && rect.top >= 0 && rect.top < 150 && rect.left >= 0 && rect.left < 150) {
+            var clickable = el.closest && el.closest('button,a[href],[role="button"],[onclick],[tabindex]');
+            clickable = clickable || el;
+            if (!clickable.disabled && clickable.getAttribute('aria-disabled') !== 'true') {
+              clickable.style.setProperty('pointer-events', 'auto', 'important');
+              clickable.style.setProperty('position', 'relative', 'important');
+              clickable.style.setProperty('z-index', '2147483000', 'important');
+              clickable.style.setProperty('touch-action', 'manipulation', 'important');
+            }
+          }
           el.__elephantTouchTargetPatched = true;
         }
         // Same-origin frames can be enhanced; cross-origin frames remain protected by WebView.
