@@ -60,9 +60,10 @@ class ModelTranslationParserTest {
 
     @Test
     fun redactsProviderSpecificCredentialAliasesFromDiagnosticUrls() {
-        val url = "https://api.example.test/translate?api-key=secret-a&x-goog-api-key=secret-b" +
-            "&client_secret=secret-c&access-token=secret-d&monkey=banana&sl=en"
-            .toHttpUrl()
+        val url = (
+            "https://api.example.test/translate?api-key=secret-a&x-goog-api-key=secret-b" +
+                "&client_secret=secret-c&access-token=secret-d&monkey=banana&sl=en"
+            ).toHttpUrl()
         val diagnostic = safeDiagnosticUrl(url)
         assertFalse(diagnostic.contains("secret-a"))
         assertFalse(diagnostic.contains("secret-b"))
