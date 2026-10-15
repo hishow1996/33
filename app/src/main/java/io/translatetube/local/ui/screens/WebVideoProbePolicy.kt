@@ -33,8 +33,13 @@ internal object WebVideoProbePolicy {
 
         // Some sites place a QR/ad beacon in a hidden HTML5 audio element. It is not the
         // programme audio and commonly returns JSON/HTML when reopened from the media picker.
-        val fileName = uri.rawPath.orEmpty().substringAfterLast('/').lowercase(java.util.Locale.ROOT)
+        val normalizedPath = uri.rawPath.orEmpty().lowercase(java.util.Locale.ROOT)
+        val fileName = normalizedPath.substringAfterLast('/')
+        // These are site probe/beacon assets, not episode media. YFSP currently exposes a
+        // static /media/test.mp4 alongside the real CDN stream; selecting it makes Media3
+        // report ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED.
         if (fileName == "scan_qr.mp3") return false
+        if (fileName == "test.mp4" && normalizedPath.contains("/static/media/")) return false
 
         return true
     }
