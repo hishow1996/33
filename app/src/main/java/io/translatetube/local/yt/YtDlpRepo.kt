@@ -7,6 +7,7 @@ import android.util.Log
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.mapper.VideoFormat
+import com.yausername.youtubedl_android.mapper.VideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -219,6 +220,7 @@ object YtDlpRepo {
      *
      * @param onProgress 0..100
      */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun downloadAudio(
         ctx: Context,
         pageUrl: String,
@@ -231,14 +233,30 @@ object YtDlpRepo {
             throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         ensureReady(ctx)
+        val ownerJob = currentCoroutineContext()[kotlinx.coroutines.Job]
+        ownerJob?.ensureActive()
+        val processId = "elephant-audio-" + java.util.UUID.randomUUID().toString()
+        val cancellationHandle = ownerJob?.invokeOnCompletion(
+            onCancelling = true,
+            invokeImmediately = true,
+        ) { cause ->
+            if (cause is java.util.concurrent.CancellationException) {
+                YoutubeDL.destroyProcessById(processId)
+            }
+        }
         val parent = dest.parentFile
         if (parent == null || dest.name.endsWith(".part")) {
+            cancellationHandle?.dispose()
             throw IllegalArgumentException("下载目标路径不合法")
         }
-        // yt-dlp can leave partial files after cancellation or process failure. Keep all output
-        // in an isolated staging directory and publish only one validated, complete media file.
-        val stagingDir = File(parent, ".${dest.nameWithoutExtension}.ytdlp-${System.nanoTime()}")
-        if (!stagingDir.mkdirs()) throw java.io.IOException("无法创建 yt-dlp 音频暂存目录")
+        val stagingDir = File(
+            parent,
+            "." + dest.nameWithoutExtension + ".ytdlp-" + System.nanoTime(),
+        )
+        if (!stagingDir.mkdirs()) {
+            cancellationHandle?.dispose()
+            throw java.io.IOException("无法创建 yt-dlp 音频暂存目录")
+        }
         val outputTemplate = File(stagingDir, "audio.%(ext)s").absolutePath
         try {
             val request = YoutubeDLRequest(pageUrl.trim()).apply {
@@ -251,17 +269,19 @@ object YtDlpRepo {
                 addOption("--newline")
                 addOption("-o", outputTemplate)
                 cookieHeader?.takeIf { it.isNotBlank() }?.let {
-                    addOption("--add-headers", "Cookie:$it")
+                    addOption("--add-headers", "Cookie:" + it)
                 }
             }
             try {
-                YoutubeDL.execute(request) { percent, _, _ ->
+                YoutubeDL.execute(request, processId) { percent, _, _ ->
                     if (percent >= 0f) onProgress(percent.toInt().coerceIn(0, 100))
                 }
             } catch (e: java.io.InterruptedIOException) {
-                // Preserve cooperative cancellation so no fallback download starts after cancel.
                 currentCoroutineContext().ensureActive()
                 throw IllegalStateException("yt-dlp 下载被中断", e)
+            } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
+                throw error
             }
             currentCoroutineContext().ensureActive()
             val outputs = stagingDir.listFiles().orEmpty()
@@ -279,14 +299,14 @@ object YtDlpRepo {
                 throw IllegalStateException(reason)
             }
             currentCoroutineContext().ensureActive()
-            // The staging folder is created below the cache parent, so publication stays on the
-            // same filesystem. If rename fails, keep any previous valid cache untouched.
             if (!downloaded.renameTo(dest)) {
                 throw IllegalStateException("yt-dlp 音频已下载，但无法原子保存缓存；旧缓存仍保留")
             }
             dest.setLastModified(System.currentTimeMillis())
             dest
         } finally {
+            cancellationHandle?.dispose()
+            YoutubeDL.destroyProcessById(processId)
             runCatching { stagingDir.deleteRecursively() }
         }
     }
@@ -347,55 +367,77 @@ object YtDlpRepo {
      * @param cookieHeader 站点 Cookie（如 WebView 已登录态），可显著提高需登录站点的成功率；
      *                    格式为 "k=v; k2=v2"。
      */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun resolve(ctx: Context, pageUrl: String, cookieHeader: String? = null): ResolvedMedia {
         if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
         if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
             throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
+        currentCoroutineContext().ensureActive()
         ensureReady(ctx)
+        currentCoroutineContext().ensureActive()
         return withContext(Dispatchers.IO) {
-            val request = YoutubeDLRequest(pageUrl.trim()).apply {
-                // 合集/播放列表页只取单视频，避免多行 JSON 撞坏单视频解析
-                addOption("--no-playlist")
-                // 网络层超时：防慢站点/死链把解析进程挂死
-                addOption("--socket-timeout", "20")
-                addOption("--retries", "3")
-                if (!cookieHeader.isNullOrBlank()) {
-                    addOption("--add-headers", "Cookie:$cookieHeader")
+            val ownerJob = currentCoroutineContext()[kotlinx.coroutines.Job]
+            ownerJob?.ensureActive()
+            val processId = "elephant-resolve-" + java.util.UUID.randomUUID().toString()
+            val cancellationHandle = ownerJob?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is java.util.concurrent.CancellationException) {
+                    // getInfo() supplies no process ID; execute() lets us stop the native process.
+                    YoutubeDL.destroyProcessById(processId)
                 }
             }
-            val info = YoutubeDL.getInfo(request)
-            val formats = info.formats.orEmpty()
-            val playableFormats = formats.mapNotNull { format ->
-                val url = format.url?.takeIf { YtDlpMediaPolicy.isSafeHttpUrl(it) } ?: return@mapNotNull null
-                YtDlpFormatCandidate(
-                    url = url,
-                    extension = format.ext,
-                    hasVideo = !format.vcodec.isNullOrBlank() && format.vcodec != "none",
-                    hasAudio = !format.acodec.isNullOrBlank() && format.acodec != "none",
-                    bitrate = format.tbr.toDouble(),
+            try {
+                val request = YoutubeDLRequest(pageUrl.trim()).apply {
+                    addOption("--dump-json")
+                    addOption("--no-playlist")
+                    addOption("--socket-timeout", "20")
+                    addOption("--retries", "3")
+                    if (!cookieHeader.isNullOrBlank()) {
+                        addOption("--add-headers", "Cookie:" + cookieHeader)
+                    }
+                }
+                val response = YoutubeDL.execute(request, processId)
+                currentCoroutineContext().ensureActive()
+                val info: VideoInfo = YoutubeDL.objectMapper.readValue(response.out, VideoInfo::class.java)
+                val formats = info.formats.orEmpty()
+                val playableFormats = formats.mapNotNull { format ->
+                    val url = format.url?.takeIf { YtDlpMediaPolicy.isSafeHttpUrl(it) } ?: return@mapNotNull null
+                    YtDlpFormatCandidate(
+                        url = url,
+                        extension = format.ext,
+                        hasVideo = !format.vcodec.isNullOrBlank() && format.vcodec != "none",
+                        hasAudio = !format.acodec.isNullOrBlank() && format.acodec != "none",
+                        bitrate = format.tbr.toDouble(),
+                    )
+                }
+                val url = YtDlpMediaPolicy.selectPlayableUrl(
+                    formats = playableFormats,
+                    fallbackUrl = info.url.takeIf { formats.isEmpty() },
+                ) ?: throw IllegalStateException(
+                    "yt-dlp 未返回可播放的视频流；只找到音频流或媒体地址格式无效"
                 )
+                val headers = info.httpHeaders.orEmpty()
+                val effectiveCookie = headers["Cookie"].orEmpty().ifBlank { cookieHeader.orEmpty() }
+                synchronized(resolvedOrigins) {
+                    resolvedOrigins[url] = ClaimedOrigin(pageUrl.trim(), effectiveCookie.ifBlank { null })
+                }
+                ResolvedMedia(
+                    title = info.title ?: info.fulltitle ?: "yt-dlp 视频",
+                    durationSec = info.duration,
+                    mediaUrl = url,
+                    referrer = headers["Referer"].orEmpty(),
+                    cookie = effectiveCookie,
+                )
+            } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
+                throw error
+            } finally {
+                cancellationHandle?.dispose()
+                YoutubeDL.destroyProcessById(processId)
             }
-            val url = YtDlpMediaPolicy.selectPlayableUrl(
-                formats = playableFormats,
-                fallbackUrl = info.url.takeIf { formats.isEmpty() },
-            ) ?: throw IllegalStateException(
-                "yt-dlp 未返回可播放的视频流；只找到音频流或媒体地址格式无效"
-            )
-            // 透传给播放器的 Cookie 优先用请求头里的（保持与解析一致的登录态）
-            val headers = info.httpHeaders.orEmpty()
-            val effectiveCookie = headers["Cookie"].orEmpty().ifBlank { cookieHeader.orEmpty() }
-            // 记录会话级来源标记：转写音频将优先经 yt-dlp 直下纯音频（downloadAudio）
-            synchronized(resolvedOrigins) {
-                resolvedOrigins[url] = ClaimedOrigin(pageUrl.trim(), effectiveCookie.ifBlank { null })
-            }
-            ResolvedMedia(
-                title = info.title ?: info.fulltitle ?: "yt-dlp 视频",
-                durationSec = info.duration,
-                mediaUrl = url,
-                referrer = headers["Referer"].orEmpty(),
-                cookie = effectiveCookie,
-            )
         }
     }
 

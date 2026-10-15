@@ -176,6 +176,7 @@ class PlaybackService : MediaSessionService() {
         const val CH_MAIN = "playback"
         const val ACTION_TOGGLE_PROCESSING_PAUSE = "io.translatetube.local.action.TOGGLE_PROCESSING_PAUSE"
         const val ACTION_CANCEL_PROCESSING = "io.translatetube.local.action.CANCEL_PROCESSING"
+        const val EXTRA_PROCESSING_SESSION_KEY = "io.translatetube.local.extra.PROCESSING_SESSION_KEY"
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -249,13 +250,20 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val requestedSession = intent?.getStringExtra(EXTRA_PROCESSING_SESSION_KEY)
+        if (!requestedSession.isNullOrBlank() && requestedSession != ui.value.key) {
+            updateProcessingNotification(ui.value)
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_TOGGLE_PROCESSING_PAUSE -> {
                 toggleProcessingPause()
+                updateProcessingNotification(ui.value)
                 return START_NOT_STICKY
             }
             ACTION_CANCEL_PROCESSING -> {
                 cancelProcessing()
+                updateProcessingNotification(ui.value)
                 return START_NOT_STICKY
             }
         }
@@ -495,10 +503,15 @@ class PlaybackService : MediaSessionService() {
                 if (isProcessingPhase(state.phase)) {
                     val toggleIntent = Intent(this@PlaybackService, PlaybackService::class.java)
                         .setAction(ACTION_TOGGLE_PROCESSING_PAUSE)
-                    val togglePending = PendingIntent.getService(
-                        this@PlaybackService, 1002, toggleIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                    )
+                        .setData(Uri.parse("translate-tube://processing/pause/" + Uri.encode(state.key)))
+                        .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
+                    val processingPendingFlags =
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    val togglePending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@PlaybackService, 1002, toggleIntent, processingPendingFlags)
+                    } else {
+                        PendingIntent.getService(this@PlaybackService, 1002, toggleIntent, processingPendingFlags)
+                    }
                     addAction(
                         if (state.isProcessingPaused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
                         if (state.isProcessingPaused) "继续" else "暂停",
@@ -506,10 +519,13 @@ class PlaybackService : MediaSessionService() {
                     )
                     val cancelIntent = Intent(this@PlaybackService, PlaybackService::class.java)
                         .setAction(ACTION_CANCEL_PROCESSING)
-                    val cancelPending = PendingIntent.getService(
-                        this@PlaybackService, 1003, cancelIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                    )
+                        .setData(Uri.parse("translate-tube://processing/cancel/" + Uri.encode(state.key)))
+                        .putExtra(EXTRA_PROCESSING_SESSION_KEY, state.key)
+                    val cancelPending = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@PlaybackService, 1003, cancelIntent, processingPendingFlags)
+                    } else {
+                        PendingIntent.getService(this@PlaybackService, 1003, cancelIntent, processingPendingFlags)
+                    }
                     addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
                 }
                 // Always replace or clear the previous stage's progress state.

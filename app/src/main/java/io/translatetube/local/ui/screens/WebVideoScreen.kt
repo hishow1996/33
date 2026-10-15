@@ -82,6 +82,7 @@ fun WebVideoScreen(
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
     var pageTitle by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
+    var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val screenActive = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(true) }
@@ -110,12 +111,28 @@ fun WebVideoScreen(
 
     fun cancelYtDlp() {
         ytDlpRunGeneration.incrementAndGet()
-        ytDlpJob?.cancel()
+        ytDlpJob?.cancel(CancellationException("用户取消视频解析"))
         ytDlpJob = null
         ytDlpBusy = false
         ytDlpHint = null
         ytDlpAutoAttempts = 1
         status = "已取消视频解析"
+    }
+
+    fun cancelWebParsing() {
+        val wasLoading = pageLoading
+        val view = webViewState.value
+        if (wasLoading) runCatching { view?.stopLoading() }
+        if (ytDlpBusy || ytDlpJob != null) cancelYtDlp()
+        pageLoading = false
+        ytDlpAutoAttempts = 1
+        runCatching {
+            view?.evaluateJavascript(
+                "(function(){if(window.__elephantVideoProbeTimer){clearInterval(window.__elephantVideoProbeTimer);window.__elephantVideoProbeTimer=null;}})();",
+                null,
+            )
+        }
+        status = if (wasLoading) "已停止网页加载和视频解析" else "已取消视频解析"
     }
 
     fun runYtDlp(target: String) {
@@ -176,6 +193,7 @@ fun WebVideoScreen(
         ytDlpBusy = false
         ytDlpAutoAttempts = 0
         ytDlpHint = null
+        pageLoading = true
         candidatesState.value = emptyList()
         currentPage = target
         address = target
@@ -298,6 +316,21 @@ fun WebVideoScreen(
                 factory = { ctx ->
                     WebView(ctx).apply {
                         webViewState.value = this
+                        isClickable = true
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        setOnTouchListener { touchedView, event ->
+                            when (event.actionMasked) {
+                                android.view.MotionEvent.ACTION_DOWN,
+                                android.view.MotionEvent.ACTION_POINTER_DOWN ->
+                                    touchedView.parent?.requestDisallowInterceptTouchEvent(true)
+                                android.view.MotionEvent.ACTION_UP,
+                                android.view.MotionEvent.ACTION_CANCEL ->
+                                    touchedView.parent?.requestDisallowInterceptTouchEvent(false)
+                            }
+                            // Observe only: return false so the webpage still receives the original tap.
+                            false
+                        }
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
@@ -357,6 +390,7 @@ fun WebVideoScreen(
                             override fun onPageFinished(view: WebView, url: String) {
                                 super.onPageFinished(view, url)
                                 if (!screenActive.get() || url != currentPage) return
+                                pageLoading = false
                                 address = url
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
@@ -402,6 +436,7 @@ fun WebVideoScreen(
                                 if (request.isForMainFrame) {
                                     mainHandler.post {
                                         if (screenActive.get() && request.url.toString() == currentPage) {
+                                            pageLoading = false
                                             status = "网页加载失败：${error.description}"
                                         }
                                     }
@@ -416,7 +451,7 @@ fun WebVideoScreen(
             )
 
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (ytDlpBusy) {
+            if (pageLoading || ytDlpBusy) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -427,12 +462,15 @@ fun WebVideoScreen(
                         strokeWidth = 2.dp,
                     )
                     Text(
-                        "正在解析视频资源…",
+                        if (ytDlpBusy) "正在解析视频资源…" else "正在加载网页并检测视频…",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
                     )
-                    TextButton(onClick = { cancelYtDlp() }) { Text("取消解析") }
+                    TextButton(onClick = { cancelWebParsing() }) {
+                        Text(if (ytDlpBusy) "取消解析" else "停止加载")
+                    }
                 }
             }
             if (ytDlpHint != null) {
@@ -553,8 +591,47 @@ private val PROBE_SCRIPT = """
 (function() {
   try {
     if (window.__elephantVideoProbeTimer) clearInterval(window.__elephantVideoProbeTimer);
+
+    // Embedded players often use compact icon-only controls. Expand only small
+    // controls that look interactive; never synthesize a click on the user's behalf.
+    function enhanceTouchTargets(root) {
+      if (!root || !root.querySelectorAll) return;
+      try {
+        var selector = 'button,[role="button"],a[href],[onclick],[aria-label],input[type="button"],input[type="submit"],[class*="control"],[class*="Control"],[class*="icon"],[class*="Icon"],[class*="btn"],[class*="Btn"]';
+        var nodes = root.querySelectorAll(selector);
+        for (var i = 0; i < nodes.length && i < 500; i++) {
+          var el = nodes[i];
+          if (!el || el.__elephantTouchTargetPatched) continue;
+          if (el.closest && el.closest('[aria-hidden="true"]')) continue;
+          var rect = el.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0 || rect.width > 90 || rect.height > 90) continue;
+          var classes = String(el.className || '') + ' ' + String(el.id || '') + ' ' + String(el.title || '');
+          var isControl = el.tagName === 'BUTTON' ||
+            el.getAttribute('role') === 'button' ||
+            el.hasAttribute('onclick') ||
+            el.hasAttribute('aria-label') ||
+            /control|button|btn|icon|action|back|share|vip|fullscreen|full-screen|play|pause|volume|menu|progress/i.test(classes);
+          if (!isControl) continue;
+          el.style.setProperty('touch-action', 'manipulation', 'important');
+          el.style.setProperty('-webkit-tap-highlight-color', 'transparent', 'important');
+          el.style.setProperty('box-sizing', 'border-box', 'important');
+          if (rect.width < 42) el.style.setProperty('min-width', '42px', 'important');
+          if (rect.height < 42) el.style.setProperty('min-height', '42px', 'important');
+          el.__elephantTouchTargetPatched = true;
+        }
+        // Same-origin frames can be enhanced; cross-origin frames remain protected by WebView.
+        var frames = root.querySelectorAll('iframe');
+        for (var j = 0; j < frames.length && j < 40; j++) {
+          try {
+            if (frames[j].contentDocument) enhanceTouchTargets(frames[j].contentDocument);
+          } catch (ignoredFrame) {}
+        }
+      } catch (ignoredTargets) {}
+    }
+
     function collect() {
       try {
+        enhanceTouchTargets(document);
         var videos = Array.prototype.slice.call(document.querySelectorAll('video'), 0, 120);
         var rows = videos.map(function(v) {
           var src = v.currentSrc || v.src || '';
