@@ -51,29 +51,51 @@ object LangMap {
     }
 
     /** Unknown source language falls back to English; never pass UI sentinel "auto" to ML Kit. */
-    fun mlkitSource(code: String): String =
-        mlkit(if (code.isBlank() || code.equals("auto", ignoreCase = true)) "en" else code)
+    fun mlkitSource(code: String): String {
+        val normalized = code.trim()
+        return if (
+            normalized.isEmpty() ||
+            normalized.equals("auto", ignoreCase = true) ||
+            normalized.equals("und", ignoreCase = true) ||
+            normalized.equals("unknown", ignoreCase = true) ||
+            normalized.equals("undefined", ignoreCase = true)
+        ) "en" else mlkit(normalized)
+    }
 
     fun isMlkitSupported(code: String): Boolean = mlkit(code) in mlkit.values
 
     /** Canonical code for Google's public web and Cloud Translation endpoints. */
     internal fun google(code: String, target: Boolean = false): String {
         val raw = code.trim().replace('_', '-')
-        if (raw.isEmpty() || raw.equals("auto", ignoreCase = true)) return if (target) "zh-CN" else "auto"
-        return when (raw.lowercase(java.util.Locale.ROOT)) {
+        val normalized = raw.lowercase(java.util.Locale.ROOT)
+        if (normalized.isEmpty() || normalized == "auto" ||
+            normalized == "und" || normalized == "unknown" || normalized == "undefined"
+        ) return if (target) "zh-CN" else "auto"
+        return when (normalized) {
             "zh", "zh-cn", "zh-hans", "zh-hans-cn", "zh-sg" -> "zh-CN"
             "zh-tw", "zh-hant", "zh-hant-tw", "zh-hk" -> "zh-TW"
             else -> raw.substringBefore('-').lowercase(java.util.Locale.ROOT)
         }
     }
 
-    /** 引擎无关的显示名（空/未知 → 让 LLM 自行识别） */
-    fun display(code: String) = when (code) {
-        "zh", "zh-Hans", "zh-CN" -> "中文"; "en" -> "英语"; "ja" -> "日语"; "ko" -> "韩语"
-        "fr" -> "法语"; "de" -> "德语"; "es" -> "西班牙语"; "pt" -> "葡萄牙语"; "ru" -> "俄语"
-        "it" -> "意大利语"; "ar" -> "阿拉伯语"; "hi" -> "印地语"; "th" -> "泰语"; "vi" -> "越南语"
-        "id" -> "印尼语"; "nl" -> "荷兰语"; "pl" -> "波兰语"; "tr" -> "土耳其语"; "sv" -> "瑞典语"
-        "", "auto" -> "the original language"
-        else -> code
+    /** Human-readable language labels for model prompts, including region-tagged subtitles. */
+    fun display(code: String): String {
+        val normalized = code.trim().replace('_', '-').lowercase(java.util.Locale.ROOT)
+        if (normalized.isEmpty() || normalized in setOf("auto", "und", "unknown", "undefined")) {
+            return "the original language"
+        }
+        if (normalized.startsWith("zh-hant") || normalized == "zh-tw" ||
+            normalized.startsWith("zh-tw-") || normalized == "zh-hk"
+        ) return "繁體中文"
+        if (normalized.startsWith("zh") || normalized == "cmn") return "中文"
+        if (normalized == "yue") return "粤语"
+        return when (mlkit(code)) {
+            "en" -> "英语"; "ja" -> "日语"; "ko" -> "韩语"; "fr" -> "法语"; "de" -> "德语"
+            "es" -> "西班牙语"; "pt" -> "葡萄牙语"; "ru" -> "俄语"; "it" -> "意大利语"
+            "ar" -> "阿拉伯语"; "hi" -> "印地语"; "th" -> "泰语"; "vi" -> "越南语"
+            "id" -> "印尼语"; "nl" -> "荷兰语"; "pl" -> "波兰语"; "tr" -> "土耳其语"
+            "sv" -> "瑞典语"; "da" -> "丹麦语"; "fi" -> "芬兰语"; "no" -> "挪威语"
+            else -> code.trim().ifBlank { "the original language" }
+        }
     }
 }
