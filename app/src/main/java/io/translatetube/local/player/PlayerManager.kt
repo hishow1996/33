@@ -305,12 +305,8 @@ class PlayerManager(private val ctx: Context) {
         if (state.wasPlaying) player.play() else player.pause()
     }
 
-    private fun isValidHttpMediaUrl(value: String): Boolean = runCatching {
-        val uri = Uri.parse(value)
-        (uri.scheme?.equals("https", ignoreCase = true) == true ||
-            uri.scheme?.equals("http", ignoreCase = true) == true) &&
-            !uri.host.isNullOrBlank()
-    }.getOrDefault(false)
+    private fun isValidHttpMediaUrl(value: String): Boolean =
+        PlaybackHttpUrlPolicy.isValidMediaUrl(value)
 
     /** 本地文件 / 直链；网页源可附带当前 WebView 会话的 Referer/Cookie。 */
     fun setUriSource(
@@ -325,13 +321,14 @@ class PlayerManager(private val ctx: Context) {
             .setUri(uri)
             .setMediaMetadata(buildMetadata(title, artist, artworkUrl))
             .build()
-        if (requestHeaders.isEmpty()) {
+        val safeRequestHeaders = PlaybackHttpUrlPolicy.sanitizeRequestHeaders(requestHeaders)
+        if (safeRequestHeaders.isEmpty()) {
             player.setMediaItem(item)
         } else {
             val remoteHttpFactory = DefaultHttpDataSource.Factory()
                 .setUserAgent(UA)
                 .setAllowCrossProtocolRedirects(true)
-                .setDefaultRequestProperties(requestHeaders)
+                .setDefaultRequestProperties(safeRequestHeaders)
             val remoteMediaSourceFactory = DefaultMediaSourceFactory(
                 DefaultDataSource.Factory(ctx, remoteHttpFactory)
             )

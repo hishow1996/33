@@ -22,6 +22,7 @@ import io.translatetube.local.data.SourceType
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
+import io.translatetube.local.subs.SubtitleFileDecoder
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.LangMap
@@ -49,6 +50,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
 import java.io.File
+import java.io.OutputStreamWriter
 import java.security.MessageDigest
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
@@ -699,9 +701,17 @@ class PlaybackService : MediaSessionService() {
                     }
                     val output = contentResolver.openOutputStream(outputUri, "wt")
                         ?: throw IllegalStateException("无法写入所选文件")
-                    output.use {
+                    OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
+                        // Write in bounded chunks: avoid allocating a second full-size UTF-8 byte
+                        // array for a large subtitle, and let task cancellation stop the save promptly.
+                        var offset = 0
+                        while (offset < content.length) {
+                            ownerJob?.ensureActive()
+                            val count = minOf(8 * 1024, content.length - offset)
+                            writer.write(content, offset, count)
+                            offset += count
+                        }
                         ownerJob?.ensureActive()
-                        it.write(content.toByteArray(Charsets.UTF_8))
                     }
                 }
                 updateUiForSession(sessionKey) {
@@ -753,14 +763,13 @@ class PlaybackService : MediaSessionService() {
                     val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取字幕文件")
                     input.use {
-                        String(
+                        SubtitleFileDecoder.decode(
                             BoundedTextPayload.readBytes(
                                 it,
                                 maxBytes = 8L * 1024L * 1024L,
                                 resourceLabel = "导入的已翻译字幕文件",
                                 checkActive = { ownerJob?.ensureActive() },
                             ),
-                            Charsets.UTF_8,
                         )
                     }
                 }
