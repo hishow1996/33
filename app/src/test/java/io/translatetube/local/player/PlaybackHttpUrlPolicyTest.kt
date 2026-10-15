@@ -25,6 +25,9 @@ class PlaybackHttpUrlPolicyTest {
         assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("file:///tmp/video.mp4"))
         assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("javascript:alert(1)"))
         assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("https://cdn.example/video.mp4\r\nX: y"))
+        assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("\nhttps://cdn.example/video.mp4"))
+        assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("https://cdn.example/video.mp4\n"))
+        assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("https://cdn.example/video.mp4" + 0x85.toChar()))
         assertFalse(PlaybackHttpUrlPolicy.isValidMediaUrl("https://cdn.example/a video.mp4"))
     }
 
