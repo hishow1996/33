@@ -316,7 +316,7 @@ object PiperModels {
                         while (true) {
                             checkActive()
                             ownerJob?.ensureActive()
-                            val n = input.read(buffer)
+                            val n = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                             if (n < 0) break
                             if (!PiperModelFilePolicy.isWithinLimit(done, n.toLong(), MAX_ARCHIVE_BYTES)) {
                                 throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
@@ -437,7 +437,7 @@ object PiperModels {
                     while (written < entry.size) {
                         checkActive()
                         val wanted = minOf(buffer.size.toLong(), entry.size - written).toInt()
-                        val count = tar.read(buffer, 0, wanted)
+                        val count = io.translatetube.local.util.ProgressSafeInput.read(tar, buffer, 0, wanted)
                         if (count < 0) throw java.io.IOException("Piper 模型文件解压不完整：${entry.name}")
                         if (count == 0) continue
                         if (!PiperModelFilePolicy.isWithinLimit(extractedBytes, count.toLong(), MAX_EXTRACTED_BYTES) ||
