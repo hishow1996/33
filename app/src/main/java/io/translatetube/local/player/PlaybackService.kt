@@ -3200,10 +3200,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     try {
                         // Prefer Kokoro for its stable Chinese voice; use a ready Chinese Piper
                         // model when Kokoro is not installed. Never silently fall back to a network API.
-                        val fallbackId = when {
-                            kokoroRuntimeReady() -> "kokoro"
-                            piperModelReadyForChinese() -> "piper"
-                            else -> null
+                        val fallbackId = withContext(Dispatchers.IO) {
+                            when {
+                                kokoroRuntimeReady() -> "kokoro"
+                                piperModelReadyForChinese() -> "piper"
+                                else -> null
+                            }
                         }
                         if (fallbackId == null) {
                             engine.failTtsFallback(
