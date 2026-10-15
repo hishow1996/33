@@ -13,7 +13,7 @@ data class SubLine(
 object SubtitleParsers {
 
     // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
-    private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{3}""")
+    private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}""")
     private val ttmlCueRegex = Regex(
         "<p\\b([^>]*)>(.*?)</p\\s*>",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
@@ -186,11 +186,16 @@ object SubtitleParsers {
                 .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
             val start = (attrs["begin"] ?: attrs["start"])?.let { parseTtmlTime(it) }
                 ?.takeIf { it >= 0L } ?: continue
-            val explicitEnd = attrs["end"]?.let { parseTtmlTime(it) }
-            val end = explicitEnd ?: attrs["dur"]?.let { durationText ->
-                val duration = parseTtmlTime(durationText) ?: return@let null
-                if (duration <= 0L || start > Long.MAX_VALUE - duration) null else start + duration
-            } ?: continue
+            // An explicit but malformed end is not equivalent to a missing end. Do not
+            // silently replace broken absolute timing with a relative duration and shift the cue.
+            val end = if (attrs.containsKey("end")) {
+                attrs["end"]?.let { parseTtmlTime(it) } ?: continue
+            } else {
+                val durationText = attrs["dur"] ?: continue
+                val duration = parseTtmlTime(durationText) ?: continue
+                if (duration <= 0L || start > Long.MAX_VALUE - duration) continue
+                start + duration
+            }
             if (end <= start) continue
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
             val text = android.text.Html.fromHtml(
@@ -331,8 +336,10 @@ object SubtitleParsers {
         val out = mutableListOf<SubLine>()
         for ((lineIndex, raw) in src.lineSequence().withIndex()) {
             if ((lineIndex and 0xff) == 0) checkActive()
-            if (!raw.startsWith("Dialogue:")) continue
-            val body = raw.removePrefix("Dialogue:").trim()
+            // Exporters are inconsistent about indentation and keyword casing.
+            val dialogue = raw.trimStart()
+            if (!dialogue.startsWith("Dialogue:", ignoreCase = true)) continue
+            val body = dialogue.substringAfter(':').trim()
             val p = body.split(",").toMutableList()
             if (p.size < 10) continue
             val times = runCatching {
