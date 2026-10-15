@@ -769,17 +769,12 @@ class PlaybackService : MediaSessionService() {
                 }.filter { it.startMs >= 0L && it.endMs > it.startMs }
                 ensureCurrentSession(sessionKey)
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
-                val chinesePattern = Regex("[\\u4e00-\\u9fff]")
                 val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
-                    val parts = line.text.lines().map { it.trim() }.filter { it.isNotBlank() }
-                    val translation = parts.lastOrNull { chinesePattern.containsMatchIn(it) }
-                        ?: parts.lastOrNull()
-                        ?: line.text.trim()
-                    val original = parts.filter { it != translation }.joinToString("\n").ifBlank { translation }
+                    val cue = io.translatetube.local.subs.ImportedSubtitlePolicy.splitBilingualCue(line.text)
                     line.copy(
                         index = index,
-                        text = original,
-                        zh = SubtitleParsers.cleanTranslatedText(translation) ?: translation,
+                        text = cue.originalText,
+                        zh = cue.translationText,
                     )
                 })
                 ensureCurrentSession(sessionKey)
