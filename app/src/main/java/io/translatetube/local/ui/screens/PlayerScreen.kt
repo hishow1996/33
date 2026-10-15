@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Face
@@ -326,15 +327,22 @@ fun PlayerScreen(
                 Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
-                Text(
-                    "←",
-                    color = OnBg,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.clip(CircleShape)
-                        .clickable { exitFloating(); PlaybackService.instance?.saveProgress(); onBack() }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-                Spacer(Modifier.width(8.dp))
+                IconButton(
+                    onClick = {
+                        exitFloating()
+                        PlaybackService.instance?.saveProgress()
+                        onBack()
+                    },
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ArrowBack,
+                        contentDescription = "返回主页",
+                        tint = OnBg,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("视频播放", color = OnBg, style = MaterialTheme.typography.titleLarge)
                     Text("外文原声 · 中文配音", color = SubText, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
@@ -499,7 +507,7 @@ fun PlayerScreen(
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                             if (phase == Phase.ERROR) {
                                 Text("加载失败", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                                Spacer(Modifier.height(6.dp))
+                                Spacer(Modifier.height(3.dp))
                                 Text(state.error ?: "", color = SubText, style = MaterialTheme.typography.bodySmall)
                                 Spacer(Modifier.height(8.dp))
                                 TextButton(onClick = { retryCurrentTask() }) {
@@ -1035,18 +1043,18 @@ private fun ModeButton(
     onClick: () -> Unit,
 ) {
     Surface(
-        modifier = modifier.height(72.dp),
+        modifier = modifier.height(60.dp),
         onClick = onClick,
         color = if (selected) Color(0xFFE4EDFF) else Color.White,
         shape = RoundedCornerShape(18.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) Color(0xFFE4EDFF) else OutlineSoft),
     ) {
         Column(
-            Modifier.fillMaxSize().padding(vertical = 8.dp),
+            Modifier.fillMaxSize().padding(vertical = 5.dp),
             horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
-            Text(glyph, color = BrandBright, style = MaterialTheme.typography.titleLarge)
+            Text(glyph, color = BrandBright, style = MaterialTheme.typography.titleMedium.copy(fontSize = 20.sp))
             Text(title, color = if (selected) BrandBright else OnBg, style = MaterialTheme.typography.bodyMedium)
         }
     }
@@ -1445,7 +1453,7 @@ private fun SubtitleList(
             Modifier.fillMaxWidth(),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            Text("中文字幕", color = OnBg, style = MaterialTheme.typography.titleLarge)
+            Text("中文字幕", color = OnBg, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onCopy) {
                 Icon(Icons.Filled.ContentCopy, contentDescription = "复制双语字幕", tint = SubText)
@@ -1455,8 +1463,8 @@ private fun SubtitleList(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f),
-            contentPadding = PaddingValues(vertical = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (state.lines.isEmpty() && state.phase == Phase.READY) {
                 item {
@@ -1493,7 +1501,7 @@ private fun SubtitleList(
                             }
                         )
                         .clickable { svc?.seek(line.startMs) }
-                        .padding(horizontal = 14.dp, vertical = if (activeDub) 17.dp else 11.dp),
+                        .padding(horizontal = 12.dp, vertical = if (activeDub) 10.dp else 7.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -1504,7 +1512,7 @@ private fun SubtitleList(
                             else -> SubText
                         },
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (activeDub) 23.sp else if (active) 19.sp else 17.sp,
+                            fontSize = if (activeDub) 20.sp else if (active) 17.sp else 15.sp,
                             fontWeight = when {
                                 activeDub -> FontWeight.Black
                                 active -> FontWeight.SemiBold
@@ -1522,13 +1530,13 @@ private fun SubtitleList(
                         Text(
                             line.text,
                             color = Color(0xFF626873),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                     if (active) {
-                        Spacer(Modifier.height(7.dp))
+                        Spacer(Modifier.height(4.dp))
                         Surface(
                             onClick = {
                                 val ids = listOf(-1, 0, 1, 2, 3)
