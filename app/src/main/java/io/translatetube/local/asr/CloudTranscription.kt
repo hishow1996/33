@@ -78,13 +78,9 @@ object CloudTranscription {
      */
     internal fun shouldRetryKawaPoll(error: Throwable): Boolean {
         val chain = generateSequence(error) { it.cause }.toList()
-        if (chain.any {
-                it is kotlinx.coroutines.CancellationException ||
-                    it is java.util.concurrent.CancellationException
-            }
-        ) return false
+        if (chain.any { it is java.util.concurrent.CancellationException }) return false
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
-        val statusCode = Regex("""HTTP\\s*(\\d{3})""", RegexOption.IGNORE_CASE)
+        val statusCode = Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
             .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
         if (statusCode != null) {
             return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
