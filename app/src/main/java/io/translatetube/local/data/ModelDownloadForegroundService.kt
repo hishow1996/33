@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.net.Uri
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import io.translatetube.local.R
@@ -50,6 +51,12 @@ class ModelDownloadForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val modelManager = (application as TranslateTubeApp).modelDownload
+        when (intent?.action) {
+            ACTION_TOGGLE_PAUSE -> modelManager.togglePauseAll()
+            ACTION_CANCEL_ACTIVE -> modelManager.cancelAll()
+        }
+
         // Must enter foreground immediately after the service starts.
         startForegroundCompat(
             buildNotification(
@@ -116,12 +123,15 @@ class ModelDownloadForegroundService : Service() {
                         detail = "返回设置可查看模型状态",
                     )
                 }
+                val paused = active && manager.isPaused
                 val notification = buildNotification(
-                    title = content.title,
-                    text = content.detail,
+                    title = if (paused) "已暂停 · ${content.title}" else content.title,
+                    text = if (paused) "已暂停 · ${content.detail}" else content.detail,
                     ongoing = active,
                     progress = content.progress,
                     indeterminate = content.indeterminate,
+                    showActions = active,
+                    paused = paused,
                 )
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 nm.notify(NOTIFICATION_ID, notification)
@@ -162,6 +172,8 @@ class ModelDownloadForegroundService : Service() {
         ongoing: Boolean = true,
         progress: Int? = null,
         indeterminate: Boolean = false,
+        showActions: Boolean = false,
+        paused: Boolean = false,
     ): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_brand)
@@ -181,6 +193,32 @@ class ModelDownloadForegroundService : Service() {
                 )
             )
             .apply {
+                if (showActions) {
+                    val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    val toggleIntent = Intent(this@ModelDownloadForegroundService, ModelDownloadForegroundService::class.java)
+                        .setAction(ACTION_TOGGLE_PAUSE)
+                        .setData(Uri.parse("translate-tube://models/pause"))
+                    val togglePending = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@ModelDownloadForegroundService, 7303, toggleIntent, flags)
+                    } else {
+                        PendingIntent.getService(this@ModelDownloadForegroundService, 7303, toggleIntent, flags)
+                    }
+                    addAction(
+                        if (paused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
+                        if (paused) "继续" else "暂停",
+                        togglePending,
+                    )
+
+                    val cancelIntent = Intent(this@ModelDownloadForegroundService, ModelDownloadForegroundService::class.java)
+                        .setAction(ACTION_CANCEL_ACTIVE)
+                        .setData(Uri.parse("translate-tube://models/cancel"))
+                    val cancelPending = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        PendingIntent.getForegroundService(this@ModelDownloadForegroundService, 7304, cancelIntent, flags)
+                    } else {
+                        PendingIntent.getService(this@ModelDownloadForegroundService, 7304, cancelIntent, flags)
+                    }
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
+                }
                 if (progress != null) {
                     setProgress(100, progress.coerceIn(0, 100), false)
                 } else {
@@ -224,6 +262,8 @@ class ModelDownloadForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_TOGGLE_PAUSE = "io.translatetube.local.action.TOGGLE_MODEL_DOWNLOAD_PAUSE"
+        const val ACTION_CANCEL_ACTIVE = "io.translatetube.local.action.CANCEL_MODEL_DOWNLOAD"
         private const val CHANNEL_ID = "model_downloads"
         private const val NOTIFICATION_ID = 7302
     }
