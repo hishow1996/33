@@ -56,6 +56,13 @@ internal object SafeMediaHttp {
                 .url(current)
                 .header("User-Agent", userAgent)
             requestHeaders.forEach { (name, value) ->
+                val isForwardedHeader = name.equals("Referer", ignoreCase = true) ||
+                    name.equals("Cookie", ignoreCase = true) ||
+                    name.equals("Range", ignoreCase = true)
+                if (!isForwardedHeader) return@forEach
+                if (value.length > 8 * 1024 || value.any { Character.isISOControl(it) }) {
+                    throw IllegalArgumentException("媒体请求头包含控制字符或超过 8 KB 限制。")
+                }
                 if (value.isBlank()) return@forEach
                 when {
                     name.equals("Referer", ignoreCase = true) -> {
