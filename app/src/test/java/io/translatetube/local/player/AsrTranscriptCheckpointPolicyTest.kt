@@ -67,6 +67,30 @@ class AsrTranscriptCheckpointPolicyTest {
     }
 
     @Test
+    fun restoredRowsMustFollowSegmentOrderWhenStartTimesTie() {
+        val completed = listOf(0L to 1_000L, 0L to 2_000L, 2_500L to 3_000L)
+        assertTrue(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(
+                    Triple(0L, 1_000L, "first"),
+                    Triple(0L, 2_000L, "second"),
+                    Triple(2_500L, 3_000L, "third"),
+                ),
+                completed,
+            )
+        )
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(
+                    Triple(0L, 2_000L, "second before first"),
+                    Triple(0L, 1_000L, "first after second"),
+                ),
+                completed.take(2),
+            )
+        )
+    }
+
+    @Test
     fun onlyResumesMatchingCheckpointWithValidProcessedCount() {
         val pcm = FloatArray(128_000) { index -> ((index % 113) - 56) / 56f }
         val signature = AsrTranscriptCheckpointPolicy.signature(

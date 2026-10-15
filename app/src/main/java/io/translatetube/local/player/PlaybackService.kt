@@ -551,7 +551,11 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
-        val cacheKeyBase = remoteMediaUrl?.let(::remoteCacheIdentity) ?: key
+        // Match the session isolation used by the downloaded-audio cache. A signed URL can
+        // serve different private media to different cookie sessions or page origins.
+        val cacheKeyBase = remoteMediaUrl?.let {
+            MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
+        } ?: key
         val effectiveTranslationCacheKey = TranslationCacheIdentity.forProvider(
             baseKey = cacheKeyBase,
             activeId = activeTranslationId,
@@ -1268,7 +1272,11 @@ class PlaybackService : MediaSessionService() {
             val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             // Keep signed media URLs out of subtitle-cache keys. The playback/history identity
             // remains unchanged so the original page can still be resumed from local history.
-            val cacheKeyBase = remoteMediaUrl?.let(::remoteCacheIdentity) ?: key
+            // Match the session isolation used by the downloaded-audio cache. A signed URL can
+            // serve different private media to different cookie sessions or page origins.
+            val cacheKeyBase = remoteMediaUrl?.let {
+                MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
+            } ?: key
             val translationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
                 activeId = selectedTranslationId,
@@ -2545,9 +2553,6 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         }
     }
 
-    /** Stable translation identity excludes rotating URL signatures and authentication tokens. */
-    private fun remoteCacheIdentity(url: String): String =
-        MediaUrlCacheIdentity.key(url)
 
     /**
      * Download a direct or finite HLS webpage media URL into a bounded cache for Whisper.

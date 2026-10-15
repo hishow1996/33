@@ -126,14 +126,19 @@ internal object MediaUrlCacheIdentity {
      * Identity for downloaded audio additionally scopes reuse to the current page origin and a
      * one-way digest of its WebView cookie. Cookie bytes are never written into a cache key.
      */
-    fun audioKey(url: String, referrer: String, cookie: String?): String {
-        val material = listOf(
-            canonicalUrl(url),
-            "referrer-origin=${origin(referrer)}",
-            "cookie-sha256=${sha256(cookie.orEmpty())}",
-        ).joinToString("\n")
-        return "remote-audio-sha256:${sha256(material)}"
-    }
+    /** Identity for subtitle/translation caches scoped to the page origin and cookie session. */
+    fun remoteSessionKey(url: String, referrer: String, cookie: String?): String =
+        "remote-session-sha256:${sha256(sessionScopeMaterial(url, referrer, cookie))}"
+
+    /** Downloaded-audio identity uses the same scope but a separate namespace. */
+    fun audioKey(url: String, referrer: String, cookie: String?): String =
+        "remote-audio-sha256:${sha256(sessionScopeMaterial(url, referrer, cookie))}"
+
+    private fun sessionScopeMaterial(url: String, referrer: String, cookie: String?): String = listOf(
+        canonicalUrl(url),
+        "referrer-origin=${origin(referrer)}",
+        "cookie-sha256=${sha256(cookie.orEmpty())}",
+    ).joinToString("\n")
 
     private fun origin(value: String): String {
         val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return ""

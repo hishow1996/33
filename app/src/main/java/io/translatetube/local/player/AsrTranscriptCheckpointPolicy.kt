@@ -74,14 +74,19 @@ internal object AsrTranscriptCheckpointPolicy {
         processedSegments: List<Pair<Long, Long>>,
     ): Boolean {
         if (rows.size > processedSegments.size) return false
-        val allowedSegments = processedSegments.toHashSet()
-        val seenSegments = HashSet<Pair<Long, Long>>(rows.size)
-        var previousStart = -1L
+        val segmentIndexes = HashMap<Pair<Long, Long>, Int>(processedSegments.size)
+        for ((index, bounds) in processedSegments.withIndex()) {
+            // Ambiguous bounds make a checkpoint impossible to validate unambiguously.
+            if (segmentIndexes.put(bounds, index) != null) return false
+        }
+        var previousSegmentIndex = -1
         for ((start, end, text) in rows) {
-            if (start < 0L || end <= start || text.isBlank() || start < previousStart) return false
-            val bounds = start to end
-            if (bounds !in allowedSegments || !seenSegments.add(bounds)) return false
-            previousStart = start
+            if (start < 0L || end <= start || text.isBlank()) return false
+            val segmentIndex = segmentIndexes[start to end] ?: return false
+            // Start timestamps alone do not order segments when boundaries share a start time.
+            // Require the exact VAD segment order; this also rejects duplicates in one pass.
+            if (segmentIndex <= previousSegmentIndex) return false
+            previousSegmentIndex = segmentIndex
         }
         return true
     }

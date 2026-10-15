@@ -65,6 +65,45 @@ class MediaUrlCacheIdentityTest {
     }
 
     @Test
+    fun subtitleCacheIdentityIgnoresRotatingSignaturesButSeparatesCookieSessionsAndOrigins() {
+        val urlA = "https://cdn.example/video.mp4?token=old-token&expires=1000"
+        val urlB = "https://CDN.example:443/video.mp4?expires=2000&token=new-token"
+        val first = MediaUrlCacheIdentity.remoteSessionKey(
+            urlA,
+            "https://site.example/watch?id=1",
+            "session=alpha",
+        )
+
+        assertEquals(
+            first,
+            MediaUrlCacheIdentity.remoteSessionKey(
+                urlB,
+                "https://site.example/another-page",
+                "session=alpha",
+            ),
+        )
+        assertNotEquals(
+            first,
+            MediaUrlCacheIdentity.remoteSessionKey(
+                urlB,
+                "https://site.example/another-page",
+                "session=beta",
+            ),
+        )
+        assertNotEquals(
+            first,
+            MediaUrlCacheIdentity.remoteSessionKey(
+                urlB,
+                "https://other.example/watch?id=1",
+                "session=alpha",
+            ),
+        )
+        assertFalse(first.contains("old-token"))
+        assertFalse(first.contains("new-token"))
+        assertFalse(first.contains("session=alpha"))
+    }
+
+    @Test
     fun audioCacheIsStableForRotatingSignaturesButScopedToCookieSessionAndPageOrigin() {
         val urlA = "https://cdn.example/video.mp4?token=old"
         val urlB = "https://cdn.example/video.mp4?token=new"
