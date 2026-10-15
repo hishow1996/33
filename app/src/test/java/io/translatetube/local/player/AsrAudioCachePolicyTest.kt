@@ -21,10 +21,28 @@ class AsrAudioCachePolicyTest {
         assertTrue(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_024L))
         assertTrue(AsrAudioCachePolicy.isCompleteDownload(-1L, 1_024L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(0L, 1_024L))
+        assertFalse(AsrAudioCachePolicy.isCompleteDownload(-2L, 1_024L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_023L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_025L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, 0L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, AsrAudioCachePolicy.MAX_AUDIO_BYTES + 1))
+    }
+
+    @Test
+    fun onlyPrunesPartialsOlderThanGracePeriodWithSaneTimestamps() {
+        val now = 10_000_000_000L
+        assertTrue(
+            AsrAudioCachePolicy.isStalePartial(
+                now - AsrAudioCachePolicy.PARTIAL_TTL_MS - 1L, now,
+            )
+        )
+        assertFalse(
+            AsrAudioCachePolicy.isStalePartial(
+                now - AsrAudioCachePolicy.PARTIAL_TTL_MS, now,
+            )
+        )
+        assertFalse(AsrAudioCachePolicy.isStalePartial(now + 1L, now))
+        assertFalse(AsrAudioCachePolicy.isStalePartial(0L, now))
     }
 
     @Test

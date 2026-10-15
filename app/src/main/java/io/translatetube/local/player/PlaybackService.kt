@@ -2693,12 +2693,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
     private fun pruneAsrAudioCache(directory: File, keep: File?) {
         val allFiles = directory.listFiles() ?: return
         val now = System.currentTimeMillis()
-        // A process killed during download may leave a large .part file. Remove abandoned partials
-        // after six hours; active downloads update their modification time as bytes are written.
+        // A process killed during download may leave a large .part file. Retire it only after
+        // six hours, and coordinate deletion with the final .bin lease so an old-but-active
+        // download cannot lose its partial payload while another cache is being pruned.
         allFiles.filter { file ->
             file.isFile && file.name.endsWith(".part") &&
-                (now - file.lastModified() > 6L * 60L * 60L * 1_000L)
-        }.forEach { it.delete() }
+                AsrAudioCachePolicy.isStalePartial(file.lastModified(), now)
+        }.forEach { file ->
+            val destinationPath = file.absolutePath.removeSuffix(".part")
+            activeAsrAudioPaths.deleteIfUnleased(destinationPath) { file.delete() }
+        }
         val files = allFiles.filter { it.isFile && it.name.endsWith(".bin") }
         var totalBytes = 0L
 

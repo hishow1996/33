@@ -202,8 +202,8 @@ object YtDlpRepo {
 
     /**
      * 用 yt-dlp 直接下载网页视频的纯音频（bestaudio），供 Whisper 转写。
-     * 不转码不合并（bestaudio 单流），文件由调用方放入 ASR 音频缓存（.bin）；
-     * yt-dlp 原生 .part 中间文件与缓存清理策略（6h 过期）天然兼容。
+     * 不转码不合并（优先 bestaudio），文件由调用方放入 ASR 音频缓存（.bin）。
+     * 所有中间产物都留在独立暂存目录，只有校验完成的媒体文件才会发布到缓存路径。
      *
      * @param onProgress 0..100
      */

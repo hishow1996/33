@@ -16,6 +16,23 @@ class YtDlpAudioPolicyTest {
     }
 
     @Test
+    fun rejectsFragmentFilesSubtitlesAndThumbnailsEvenIfTheyLookNonEmpty() {
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.webm.part-Frag1"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.vtt"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("thumbnail.webp"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput("audio.json"))
+        assertFalse(YtDlpAudioPolicy.isCandidateOutput(".audio.webm"))
+    }
+
+    @Test
+    fun acceptsKnownAudioAndVideoContainers() {
+        assertTrue(YtDlpAudioPolicy.isCandidateOutput("audio.opus"))
+        assertTrue(YtDlpAudioPolicy.isCandidateOutput("audio.m4a"))
+        assertTrue(YtDlpAudioPolicy.isCandidateOutput("audio.mp4"))
+        assertTrue(YtDlpAudioPolicy.isCandidateOutput("audio.webm"))
+    }
+
+    @Test
     fun acceptsShortNonEmptyClips() {
         assertTrue(YtDlpAudioPolicy.isValidDownload(true, 8_192L))
         assertTrue(YtDlpAudioPolicy.isValidDownload(true, 999_999L))

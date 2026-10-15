@@ -4,15 +4,20 @@ package io.translatetube.local.yt
 internal object YtDlpAudioPolicy {
     const val MAX_AUDIO_BYTES = 160L * 1024L * 1024L
 
-    /** Only completed media files qualify; yt-dlp control/partial files must never be published. */
+    // The command's output template always includes an extension. An allowlist prevents an
+    // unexpected sidecar (subtitle, thumbnail, JSON, or fragment file) being renamed to .bin.
+    private val MEDIA_EXTENSIONS = setOf(
+        "3gp", "aac", "ac3", "aiff", "alac", "amr", "ape", "avi", "eac3",
+        "flac", "flv", "m2ts", "m4a", "m4b", "m4p", "m4v", "mka", "mkv",
+        "mov", "mp2", "mp3", "mp4", "mpeg", "mpg", "ogg", "oga", "opus",
+        "ts", "tta", "wav", "webm", "wma", "wmv", "wv",
+    )
+
+    /** Only recognized media containers qualify; partial files and sidecars are never published. */
     fun isCandidateOutput(name: String): Boolean {
         val lower = name.lowercase(java.util.Locale.ROOT)
-        return lower.isNotBlank() &&
-            !lower.endsWith(".part") &&
-            !lower.endsWith(".ytdl") &&
-            !lower.endsWith(".tmp") &&
-            !lower.endsWith(".json") &&
-            !lower.endsWith(".description")
+        if (lower.isBlank() || lower.startsWith(".")) return false
+        return lower.substringAfterLast('.', "") in MEDIA_EXTENSIONS
     }
 
     fun isValidDownload(isFile: Boolean, sizeBytes: Long): Boolean =
