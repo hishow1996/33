@@ -276,7 +276,7 @@ internal object HlsAudioDownloader {
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 ownerJob?.ensureActive()
-                                val count = input.read(buffer)
+                                val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                                 if (count < 0) break
                                 mergedBytes += count
                                 if (mergedBytes > MAX_BYTES) {
@@ -289,6 +289,8 @@ internal object HlsAudioDownloader {
                     output.flush()
                 }
 
+                // Persist merged bytes before the completed cache is published under its final name.
+                java.io.RandomAccessFile(assemblyPart, "rw").use { it.fd.sync() }
                 if (!AsrAudioCachePolicy.isCompleteDownload(-1L, assemblyPart.length())) {
                     throw IllegalStateException("HLS 音频缓存为空或超过 160 MB 限制。")
                 }
@@ -444,7 +446,7 @@ internal object HlsAudioDownloader {
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 ownerJob?.ensureActive()
-                                val count = input.read(buffer)
+                                val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                                 if (count < 0) break
                                 if (payloadPrefixSize < payloadPrefix.size) {
                                     val copyCount = minOf(count, payloadPrefix.size - payloadPrefixSize)
@@ -472,6 +474,8 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("HLS BYTERANGE 片段不完整：清单要求 ${byteRangeLength} 字节，实际收到 ${actualBytes} 字节。")
                     }
                 }
+                // Flush the completed payload before atomically publishing its final cache name.
+                java.io.RandomAccessFile(part, "rw").use { it.fd.sync() }
                 installCompletedSegment(part, destination, ownerJob)
                 destination.setLastModified(System.currentTimeMillis())
                 return destination
@@ -506,7 +510,7 @@ internal object HlsAudioDownloader {
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         ownerJob?.ensureActive()
-                        val count = input.read(buffer)
+                        val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                         if (count < 0) break
                         output.write(buffer, 0, count)
                     }
@@ -674,7 +678,7 @@ internal object HlsAudioDownloader {
                 val bytes = ByteArray(16 * 1024)
                 while (true) {
                     ownerJob?.ensureActive()
-                    val count = input.read(bytes)
+                    val count = io.translatetube.local.util.ProgressSafeInput.read(input, bytes)
                     if (count < 0) break
                     if (buffer.size().toLong() + count > MAX_PLAYLIST_BYTES) {
                         throw IllegalStateException("HLS 清单超过 2 MB 限制，已停止解析。")
