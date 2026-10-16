@@ -81,4 +81,56 @@ class SubtitleCacheValidationPolicyTest {
         )
     }
 
+    @Test
+    fun restoresMatchingImportedCacheRowsAndLeavesIncompleteRowsForRetry() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "Hello"),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "How are you?"),
+            io.translatetube.local.subs.SubLine(2, 2_000L, 3_000L, "Goodbye"),
+        )
+        val cached = listOf(
+            SubtitleCacheValidationPolicy.CachedTranslationRow(0L, 1_000L, "Hello", "你好"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(1_000L, 2_000L, "How are you?", "正在翻译"),
+            SubtitleCacheValidationPolicy.CachedTranslationRow(2_000L, 3_000L, "Goodbye", null),
+        )
+
+        val restored = SubtitleCacheValidationPolicy.restoreTranslationsForSource(source, cached)
+        val restoredLines = restored ?: throw AssertionError("Expected matching cache to restore")
+        assertTrue(restoredLines.map { it.zh } == listOf("你好", null, null))
+        assertTrue(restoredLines.map { it.text } == source.map { it.text })
+        assertTrue(restoredLines.map { it.startMs to it.endMs } == source.map { it.startMs to it.endMs })
+    }
+
+    @Test
+    fun rejectsImportedCacheWhenSubtitleTextOrTimelineDiffers() {
+        val source = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "Hello"),
+            io.translatetube.local.subs.SubLine(1, 1_000L, 2_000L, "Goodbye"),
+        )
+        val validRow = SubtitleCacheValidationPolicy.CachedTranslationRow(
+            0L, 1_000L, "Hello", "你好",
+        )
+        val validSecond = SubtitleCacheValidationPolicy.CachedTranslationRow(
+            1_000L, 2_000L, "Goodbye", "再见",
+        )
+        assertTrue(
+            SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+                source,
+                listOf(validRow, validSecond.copy(sourceText = "Different source")),
+            ) == null
+        )
+        assertTrue(
+            SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+                source,
+                listOf(validRow.copy(endMs = 900L), validSecond),
+            ) == null
+        )
+        assertTrue(
+            SubtitleCacheValidationPolicy.restoreTranslationsForSource(
+                source,
+                listOf(validRow.copy(translatedText = "正在翻译"), validSecond.copy(translatedText = "")),
+            ) == null
+        )
+    }
+
 }

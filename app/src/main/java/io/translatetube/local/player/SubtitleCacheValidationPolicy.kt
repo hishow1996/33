@@ -5,6 +5,38 @@ import io.translatetube.local.subs.SubLine
 
 /** Structural guards for persisted subtitle timelines before binary-search playback uses them. */
 internal object SubtitleCacheValidationPolicy {
+    data class CachedTranslationRow(
+        val startMs: Long,
+        val endMs: Long,
+        val sourceText: String,
+        val translatedText: String?,
+    )
+
+    /**
+     * Restore an imported translation cache only when every cached cue still maps to the exact
+     * source text and timeline. Partial valid caches are allowed; missing/placeholder rows remain
+     * null so translateLines can retry just those rows.
+     */
+    fun restoreTranslationsForSource(
+        sourceLines: List<SubLine>,
+        cachedRows: List<CachedTranslationRow>,
+    ): List<SubLine>? {
+        if (sourceLines.isEmpty() || sourceLines.size != cachedRows.size) return null
+        if (!hasValidTimeline(cachedRows.map { Triple(it.startMs, it.endMs, it.sourceText) })) return null
+        if (!hasRecoverableTranslationRows(cachedRows.map { it.translatedText })) return null
+        if (sourceLines.indices.any { index ->
+            val source = sourceLines[index]
+            val cached = cachedRows[index]
+            source.startMs != cached.startMs ||
+                source.endMs != cached.endMs ||
+                source.text != cached.sourceText
+        }) return null
+
+        return sourceLines.mapIndexed { index, source ->
+            source.copy(zh = SubtitleParsers.cleanTranslatedText(cachedRows[index].translatedText))
+        }
+    }
+
     /**
      * Keep original cue times intact, but reject malformed or out-of-order rows. Equal start times
      * are valid because captions may overlap; descending starts violate the playback index contract.

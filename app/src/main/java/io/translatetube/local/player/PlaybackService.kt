@@ -1112,12 +1112,57 @@ class PlaybackService : MediaSessionService() {
                         sourceLang = srcLang,
                     )
                 }
+                // Reuse a matching translation cache when the same subtitle file is imported again.
+                // Only valid rows are restored; missing or placeholder rows remain eligible for retry.
+                val cachedImportedLines = if (isChineseLanguage(srcLang)) {
+                    null
+                } else {
+                    val cachedEntry = AppDatabase.get(this@PlaybackService)
+                        .subtitleCacheDao().get(importedCacheKey)
+                    if (cachedEntry == null) {
+                        null
+                    } else {
+                        val restored = runCatching {
+                            val cacheRows = org.json.JSONArray(cachedEntry.linesJson)
+                            val rows = (0 until cacheRows.length()).map { index ->
+                                val row = cacheRows.optJSONObject(index)
+                                    ?: throw IllegalArgumentException("字幕缓存第 ${index + 1} 行不是对象")
+                                SubtitleCacheValidationPolicy.CachedTranslationRow(
+                                    startMs = row.optLong("s", Long.MIN_VALUE),
+                                    endMs = row.optLong("e", Long.MIN_VALUE),
+                                    sourceText = row.optString("t"),
+                                    translatedText = row.optString("zh").takeIf { it.isNotBlank() },
+                                )
+                            }
+                            SubtitleCacheValidationPolicy.restoreTranslationsForSource(parsedLines, rows)
+                        }.getOrNull()
+                        if (restored == null) {
+                            android.util.Log.w(
+                                "PlaybackService",
+                                "Ignoring imported subtitle translation cache that failed source/timeline validation",
+                            )
+                            AppDatabase.get(this@PlaybackService).subtitleCacheDao().delete(importedCacheKey)
+                        } else {
+                            android.util.Log.i(
+                                "PlaybackService",
+                                "Reusing imported subtitle translation cache; unfinished rows will be retried",
+                            )
+                        }
+                        restored
+                    }
+                }
                 // Use immutable copies so StateFlow/Compose sees translated subtitle text.
                 val translatedLines = applySavedLineOverrides(
                     if (isChineseLanguage(srcLang)) {
                         SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(parsedLines)
                     } else {
-                        translateLines(sessionKey, parsedLines, srcLang, importedCacheKey)
+                        translateLines(
+                            sessionKey,
+                            cachedImportedLines ?: parsedLines,
+                            srcLang,
+                            importedCacheKey,
+                            activeTranslationId,
+                        )
                     }
                 )
                 awaitRetiredDubbingEngines()
