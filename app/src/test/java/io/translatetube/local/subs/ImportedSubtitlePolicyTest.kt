@@ -34,4 +34,12 @@ OK""")
         assertEquals("", cue.originalText)
         assertEquals("", cue.translationText)
     }
+
+    @Test
+    fun prefersChineseTranslationWhenOriginalJapaneseContainsKanji() {
+        val cue = ImportedSubtitlePolicy.splitBilingualCue("日本語の字幕です\n这是中文字幕")
+        assertEquals("日本語の字幕です", cue.originalText)
+        assertEquals("这是中文字幕", cue.translationText)
+    }
+
 }
