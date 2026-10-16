@@ -124,8 +124,7 @@ class DubbingStartPositionPolicyTest {
 
 
 
-/** Regression tests for the single-map readiness state used by the 100 ms playback ticker. */
-class DubbingReadinessStateTest {
+// Regression tests for the single-map readiness state used by the 100 ms playback ticker.
     @Test
     fun readyAudioAndSilentFallbackHaveDistinctStates() {
         val readiness = DubbingReadiness()
@@ -188,7 +187,6 @@ class DubbingReadinessStateTest {
         assertEquals(0, readiness.readyCount())
         assertFalse(readiness.isReady(-1))
     }
-}
 
 
     @Test
