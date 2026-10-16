@@ -11,4 +11,11 @@ internal object DubbingCacheAudioPolicy {
         if (cachedAudio == false && !translatedText.isNullOrBlank()) return null
         return cachedAudio
     }
+
+    /**
+     * A cache row must agree with whether this cue needs spoken audio.
+     * Empty translations intentionally map to an empty marker; translated cues must contain audio.
+     */
+    fun isCompatibleWithTranslation(hasAudio: Boolean, translatedText: String?): Boolean =
+        hasAudio == !translatedText.isNullOrBlank()
 }
