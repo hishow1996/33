@@ -22,6 +22,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 private val http: OkHttpClient = OkHttpClient.Builder()
@@ -167,6 +168,47 @@ private fun responseRoute(response: okhttp3.Response): String {
     return hops.asReversed().joinToString(" -> ")
 }
 
+/** Only retry transient transport failures and temporary provider throttling/server errors. */
+private const val MAX_TRANSLATION_REQUEST_RETRIES = 2
+private val retryableTranslationHttpStatusRegex =
+    Regex("""\bHTTP\s+(408|425|429|500|502|503|504)\b""", RegexOption.IGNORE_CASE)
+
+internal fun isRetryableTranslationFailure(error: Throwable): Boolean {
+    val chain = generateSequence(error) { it.cause }.take(12).toList()
+    // Cancellation must never be converted into another network attempt.
+    if (chain.any { it is CancellationException }) return false
+    if (chain.any { it is IOException }) return true
+    return chain.any { retryableTranslationHttpStatusRegex.containsMatchIn(it.message.orEmpty()) }
+}
+
+/**
+ * Retry a small, fixed number of times on temporary network/provider failures. The backoff is
+ * cancellable and permanent failures such as invalid API keys are surfaced immediately.
+ */
+private suspend fun <T> withBoundedTranslationRetries(
+    ownerJob: Job?,
+    request: () -> T,
+): T {
+    var retries = 0
+    while (true) {
+        currentCoroutineContext().ensureActive()
+        ownerJob?.ensureActive()
+        try {
+            return request()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (retries >= MAX_TRANSLATION_REQUEST_RETRIES ||
+                !isRetryableTranslationFailure(error)
+            ) {
+                throw error
+            }
+            retries += 1
+            kotlinx.coroutines.delay(if (retries == 1) 400L else 900L)
+        }
+    }
+}
+
 private const val MAX_TRANSLATION_RESPONSE_BYTES = 16L * 1024L * 1024L
 
 private fun readTranslationResponse(
@@ -192,7 +234,7 @@ private fun readTranslationResponse(
     return text
 }
 
-private fun post(
+private suspend fun post(
     url: String,
     headers: Map<String, String>,
     body: String,
@@ -200,21 +242,27 @@ private fun post(
 ): String {
     val b = Request.Builder().url(url).post(body.toRequestBody(JSON))
     headers.forEach { (k, v) -> b.header(k, v) }
-    return io.translatetube.local.yt.executeCancellableHttpCall(
-        http.newCall(b.build()), ownerJob,
-    ) { response -> readTranslationResponse(response, ownerJob) }
+    val request = b.build()
+    return withBoundedTranslationRetries(ownerJob) {
+        io.translatetube.local.yt.executeCancellableHttpCall(
+            http.newCall(request), ownerJob,
+        ) { response -> readTranslationResponse(response, ownerJob) }
+    }
 }
 
-private fun get(
+private suspend fun get(
     url: String,
     headers: Map<String, String>,
     ownerJob: Job?,
 ): String {
     val b = Request.Builder().url(url).get()
     headers.forEach { (k, v) -> b.header(k, v) }
-    return io.translatetube.local.yt.executeCancellableHttpCall(
-        http.newCall(b.build()), ownerJob,
-    ) { response -> readTranslationResponse(response, ownerJob) }
+    val request = b.build()
+    return withBoundedTranslationRetries(ownerJob) {
+        io.translatetube.local.yt.executeCancellableHttpCall(
+            http.newCall(request), ownerJob,
+        ) { response -> readTranslationResponse(response, ownerJob) }
+    }
 }
 
 /**
