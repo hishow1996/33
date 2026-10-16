@@ -2552,7 +2552,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         val src = if (srcLang == "auto") "" else srcLang
         val batchSize = 10
         val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
-        for (batchIndices in pendingIndices.chunked(batchSize)) {
+        // Checkpoint the first batch immediately, then every few successful batches and
+        // always at the end. This bounds crash recovery loss while avoiding serializing the full
+        // subtitle timeline to Room after every 10 translated cues.
+        val translationBatches = pendingIndices.chunked(batchSize)
+        for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
             awaitProcessingResumed(key)
             // The playback layer calls the engine once per small batch, so carry the previous
             // completed cues here; otherwise engine-local context resets at every boundary.
@@ -2656,7 +2660,17 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )
             }
-            // Persist a checkpoint only after this batch is complete and every row has a valid translation.
+            // Keep UI progress per batch, but serialize the full cache less often.
+            // The first successful batch and final batch are always checkpointed.
+            val completedBatchCount = batchIndex + 1
+            if (!io.translatetube.local.translate.TranslationCheckpointPolicy.shouldPersistCheckpoint(
+                    completedBatchCount = completedBatchCount,
+                    totalBatches = translationBatches.size,
+                )
+            ) {
+                continue
+            }
+            // Persist only after the triggering batch is complete and every pending row is valid.
             val cacheRows = org.json.JSONArray()
             for (line in updatedLines) cacheRows.put(
                 org.json.JSONObject()
