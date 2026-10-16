@@ -607,4 +607,30 @@ class SubtitleParsersTest {
         assertEquals("é", SubtitleTextDecoder.decode("&eacute;"))
     }
 
+
+    @Test
+    fun parsesNamespacePrefixedTtmlElementsAndLineBreaks() {
+        val source = """<?xml version="1.0"?><tt:tt xmlns:tt="http://www.w3.org/ns/ttml"><tt:body><tt:div><tt:p begin="1s" end="3s">first<tt:br/>second</tt:p></tt:div></tt:body></tt:tt>"""
+
+        val parsed = SubtitleParsers.parseAuto(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(3_000L, parsed.single().endMs)
+        assertEquals("first\nsecond", parsed.single().text)
+    }
+
+    @Test
+    fun webVttExportEscapesLiteralMarkupAndRoundTripsSpecialCharacters() {
+        val rows = listOf(SubLine(0, 0L, 1_000L, "Use <b>literal</b> & quotes"))
+
+        val exported = SubtitleParsers.toVtt(rows)
+
+        assertEquals(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nUse &lt;b&gt;literal&lt;/b&gt; &amp; quotes\n\n",
+            exported,
+        )
+        assertEquals("Use <b>literal</b> & quotes", SubtitleParsers.parseVtt(exported).single().text)
+    }
+
 }
