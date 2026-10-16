@@ -114,4 +114,46 @@ class DubbingTimelineTest {
         assertFalse(DubbingTimeline.isPlayableCue(SubLine(4, 1_000, 2_000, "   ")))
     }
 
+
+    @Test
+    fun longCueCanBeFoundBehindThousandsOfExpiredOverlappingRows() {
+        val rows = buildList {
+            add(SubLine(0, 0L, 20_000L, "long active cue"))
+            for (index in 1..10_000) {
+                val start = index * 2L
+                add(SubLine(index, start, start + 1L, "short cue $index"))
+            }
+        }
+
+        assertEquals(0, DubbingTimeline(rows).lineAt(15_001L))
+    }
+
+    @Test
+    fun indexedLookupMatchesBruteForceForUnorderedOverlappingCueSets() {
+        val rows = List(1_200) { index ->
+            val start = ((index * 37) % 8_000).toLong()
+            val duration = ((index * 17) % 1_200 + 1).toLong()
+            SubLine(index, start, start + duration, "cue $index")
+        }
+        val timeline = DubbingTimeline(rows)
+
+        for (position in 0L..10_000L step 47L) {
+            var expectedIndex = -1
+            var latestStart = Long.MIN_VALUE
+            rows.forEachIndexed { index, line ->
+                if (
+                    DubbingTimeline.isPlayableCue(line) &&
+                    line.startMs <= position &&
+                    position < line.endMs &&
+                    (line.startMs > latestStart ||
+                        line.startMs == latestStart && index > expectedIndex)
+                ) {
+                    expectedIndex = index
+                    latestStart = line.startMs
+                }
+            }
+            assertEquals("position=$position", expectedIndex, timeline.lineAt(position))
+        }
+    }
+
 }
