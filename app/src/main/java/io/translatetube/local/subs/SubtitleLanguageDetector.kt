@@ -85,6 +85,26 @@ object SubtitleLanguageDetector {
         }
     }
 
+    /**
+     * Detect from the first bounded slice of cues instead of joining an entire media transcript.
+     * Sampling more short cues reduces the chance that names or "OK" captions dominate the hint.
+     */
+    fun detectFromCues(cues: Iterable<String>, maxCues: Int = 120): String {
+        if (maxCues <= 0) return "auto"
+        val sample = StringBuilder()
+        var cueCount = 0
+        for (cue in cues) {
+            if (cueCount >= maxCues || sample.length >= 12_000) break
+            cueCount++
+            if (cue.isBlank()) continue
+            if (sample.isNotEmpty()) sample.append(' ')
+            val remaining = 12_000 - sample.length
+            if (remaining <= 0) break
+            sample.append(cue, 0, minOf(cue.length, remaining))
+        }
+        return detect(sample.toString())
+    }
+
     fun detect(text: String): String {
         val sample = text.take(12_000)
         if (sample.isBlank()) return "auto"
