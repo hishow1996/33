@@ -7,7 +7,7 @@ package io.translatetube.local.tts
  */
 internal object SystemTtsOutputAudioPolicy {
     const val TARGET_SAMPLE_RATE = 16_000
-    const val CACHE_SIGNATURE = "system-tts-resample-16k-v3-edge-trim"
+    const val CACHE_SIGNATURE = "system-tts-resample-16k-v4-cancellable-sanitize"
     const val MAX_RESAMPLED_SAMPLES = 4_000_000
 
     fun targetSampleCount(
@@ -26,14 +26,40 @@ internal object SystemTtsOutputAudioPolicy {
         return kotlin.math.round(estimated).toInt().coerceAtLeast(1)
     }
 
-    fun normalize(audio: TtsAudio, targetSampleRate: Int = TARGET_SAMPLE_RATE): TtsAudio {
-        if (audio.samples.isEmpty() || audio.sampleRate == targetSampleRate) return audio
+    fun normalize(
+        audio: TtsAudio,
+        targetSampleRate: Int = TARGET_SAMPLE_RATE,
+        checkActive: () -> Unit = {},
+    ): TtsAudio {
+        checkActive()
+        if (audio.samples.isEmpty()) return audio
+        if (audio.sampleRate == targetSampleRate) {
+            var needsSanitizing = false
+            for (index in audio.samples.indices) {
+                if ((index and 0x1fff) == 0) checkActive()
+                val sample = audio.samples[index]
+                if (!sample.isFinite() || sample < -1f || sample > 1f) {
+                    needsSanitizing = true
+                    break
+                }
+            }
+            if (!needsSanitizing) return audio
+            val clean = FloatArray(audio.samples.size)
+            for (index in audio.samples.indices) {
+                if ((index and 0x1fff) == 0) checkActive()
+                val sample = audio.samples[index]
+                clean[index] = if (sample.isFinite()) sample.coerceIn(-1f, 1f) else 0f
+            }
+            checkActive()
+            return TtsAudio(clean, audio.sampleRate)
+        }
         val outputCount = targetSampleCount(audio.samples.size, audio.sampleRate, targetSampleRate)
             ?: return audio
         val output = FloatArray(outputCount)
         val scale = audio.sampleRate.toDouble() / targetSampleRate.toDouble()
         val source = audio.samples
         for (index in output.indices) {
+            if ((index and 0x1fff) == 0) checkActive()
             val sourcePosition = index.toDouble() * scale
             val left = sourcePosition.toInt().coerceIn(0, source.lastIndex)
             val right = (left + 1).coerceAtMost(source.lastIndex)
@@ -42,7 +68,9 @@ internal object SystemTtsOutputAudioPolicy {
             val b = source[right].takeIf { it.isFinite() }?.coerceIn(-1f, 1f) ?: 0f
             output[index] = (a + (b - a) * fraction).coerceIn(-1f, 1f)
         }
+        checkActive()
         TtsPcmSanitizer.sanitizeInPlace(output)
+        checkActive()
         return TtsAudio(output, targetSampleRate)
     }
 
@@ -53,10 +81,17 @@ internal object SystemTtsOutputAudioPolicy {
     fun prepareForPlayback(
         audio: TtsAudio,
         targetSampleRate: Int = TARGET_SAMPLE_RATE,
+        checkActive: () -> Unit = {},
     ): TtsAudio {
-        val normalized = normalize(audio, targetSampleRate)
+        checkActive()
+        val normalized = normalize(audio, targetSampleRate, checkActive)
         if (normalized.samples.isEmpty()) return normalized
-        val trimmed = TtsEdgeSilenceTrimmer.trim(normalized.samples, normalized.sampleRate)
+        val trimmed = TtsEdgeSilenceTrimmer.trim(
+            normalized.samples,
+            normalized.sampleRate,
+            checkActive,
+        )
+        checkActive()
         return if (trimmed === normalized.samples) normalized else normalized.copy(samples = trimmed)
     }
 }

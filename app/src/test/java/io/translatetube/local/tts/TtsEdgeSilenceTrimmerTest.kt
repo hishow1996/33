@@ -69,4 +69,44 @@ class TtsEdgeSilenceTrimmerTest {
         val samples = FloatArray(10) { 0.3f }
         assertSame(samples, TtsEdgeSilenceTrimmer.trim(samples, 0))
     }
+
+@Test
+    fun silenceScanCanBeCancelledDuringLongInput() {
+        val samples = FloatArray(100_000)
+        var checks = 0
+        val error = runCatching {
+            TtsEdgeSilenceTrimmer.trim(samples, rate) {
+                checks++
+                if (checks == 3) throw java.util.concurrent.CancellationException("stale system TTS audio")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertTrue(checks >= 3)
+    }
+
+    @Test
+    fun trimmingCopyCanBeCancelledWithoutPublishingPartialAudio() {
+        val samples = FloatArray(100_000) { index ->
+            if (index in 45_000..55_000) 0.5f else 0f
+        }
+        var checks = 0
+        val error = runCatching {
+            TtsEdgeSilenceTrimmer.trim(samples, rate) {
+                checks++
+                if (checks == 5) throw java.util.concurrent.CancellationException("copy cancelled")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
+    @Test
+    fun cancellationCheckRunsEvenForEmptyOrPassthroughAudio() {
+        val error = runCatching {
+            TtsEdgeSilenceTrimmer.trim(floatArrayOf(0.5f), rate) {
+                throw java.util.concurrent.CancellationException("already stale")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
 }

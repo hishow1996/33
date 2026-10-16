@@ -35,7 +35,9 @@ class DubbingTimingTest {
 
         assertEquals(0, invalid.sampleCount)
         assertEquals(0, beforeStart.startSample)
+        assertEquals(0, beforeStart.sampleCount)
         assertEquals(0, afterEnd.sampleCount)
+        assertEquals(16_000, afterEnd.startSample)
     }
 
     @Test
@@ -256,6 +258,35 @@ class DubbingTimingTest {
         assertEquals(0.5f, playable[127], 0.0001f)
         assertEquals(0.5f, playable[128], 0.0001f)
         assertEquals(0.5f, cached[100], 0.0f)
+    }
+
+
+@Test
+    fun cueBeforeStartNeverProducesPlayableSamples() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 16_000,
+            sampleRate = 16_000,
+            lineStartMs = 2_000L,
+            lineEndMs = 3_000L,
+            positionMs = 1_999L,
+            playerSpeed = 1f,
+        )
+        assertEquals(0, plan.startSample)
+        assertEquals(0, plan.sampleCount)
+    }
+
+    @Test
+    fun positionExactlyAtCueEndIsTerminal() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 16_000,
+            sampleRate = 16_000,
+            lineStartMs = 2_000L,
+            lineEndMs = 3_000L,
+            positionMs = 3_000L,
+            playerSpeed = 1f,
+        )
+        assertEquals(16_000, plan.startSample)
+        assertEquals(0, plan.sampleCount)
     }
 
 }

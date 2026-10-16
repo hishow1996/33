@@ -305,4 +305,43 @@ class SystemTtsWavDecoderTest {
         if (padding != 0) bytes.put(0)
         return bytes.array()
     }
+
+@Test
+    fun boundedReadChecksCancellationBetweenChunks() {
+        val input = java.io.ByteArrayInputStream(ByteArray(100_000))
+        var checks = 0
+        val error = runCatching {
+            SystemTtsWavDecoder.readExactBoundedBytes(input, 100_000L) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("stale WAV read")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(2, checks)
+    }
+
+    @Test
+    fun frameDecodeChecksCancellationWhileConvertingSamples() {
+        val samples = ByteArray(40_000 * 2)
+        // Put one nonzero PCM16 sample in an otherwise silent WAV so the silence guard passes.
+        samples[0] = 0x40
+        val bytes = wave(1, 1, 16_000, 16, samples)
+        var checks = 0
+        val error = runCatching {
+            SystemTtsWavDecoder.decode(bytes) {
+                checks++
+                if (checks == 3) throw java.util.concurrent.CancellationException("decode superseded")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
+    @Test
+    fun acceptsExistingCallersWithoutExplicitCancellationCheck() {
+        val audio = SystemTtsWavDecoder.decode(
+            wave(1, 1, 16_000, 16, byteArrayOf(0, 64, 1, 0))
+        )
+        assertEquals(2, audio.samples.size)
+    }
+
 }

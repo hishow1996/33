@@ -265,11 +265,18 @@ class SystemTts(context: Context) : TtsEngine {
             activeFailure?.let { failure ->
                 throw IllegalStateException(failure)
             }
-            val audio = readWav(tmp)
+            val checkTtsActive = {
+                if (closed) throw java.util.concurrent.CancellationException("系统 TTS 已关闭，本次合成已取消")
+            }
+            val audio = SystemTtsWavDecoder.decode(tmp, checkTtsActive)
+            checkTtsActive()
             if (audio.samples.isEmpty()) {
                 throw IllegalStateException("系统 TTS 已返回，但生成的 WAV 没有可播放音频")
             }
-            val normalized = SystemTtsOutputAudioPolicy.prepareForPlayback(audio)
+            val normalized = SystemTtsOutputAudioPolicy.prepareForPlayback(
+                audio,
+                checkActive = checkTtsActive,
+            )
             android.util.Log.d(
                 "SystemTts",
                 "PCM output: input=${audio.sampleRate}Hz/${audio.samples.size} samples, " +

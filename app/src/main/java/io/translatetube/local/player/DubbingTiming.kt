@@ -42,11 +42,19 @@ internal object DubbingTiming {
             return DubbingPlaybackPlan(0, 0, 1.0f, safePlayerSpeed, false)
         }
 
-        // Media timestamps are non-negative. Normalize hostile/extreme caller values before
-        // subtraction so malformed data cannot overflow the elapsed-time calculation.
+        // A stale caller must not start this cue early when a seek lands before its start.
+        // A playhead at/after the end is terminal too; preserve the end offset for diagnostics.
+        if (positionMs < lineStartMs) {
+            return DubbingPlaybackPlan(0, 0, 1.0f, safePlayerSpeed, false)
+        }
+        if (positionMs >= lineEndMs) {
+            return DubbingPlaybackPlan(sampleCount, 0, 1.0f, safePlayerSpeed, false)
+        }
+
+        // Media timestamps are non-negative and position is now inside the cue, so both
+        // subtractions are non-negative and cannot overflow Long.
         val lineDurationMs = lineEndMs - lineStartMs
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        val elapsedMs = (safePositionMs - lineStartMs).coerceIn(0L, lineDurationMs)
+        val elapsedMs = positionMs - lineStartMs
         val remainingMs = lineDurationMs - elapsedMs
         if (remainingMs < MIN_REMAINING_WINDOW_MS) {
             // A tiny late fragment is usually unintelligible; skip it instead of playing a

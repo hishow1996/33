@@ -56,4 +56,39 @@ class DubbingPcmValidationTest {
         assertFalse(DubbingPcmValidation.isAudibleSample(0.000001f))
         assertFalse(DubbingPcmValidation.isAudibleSample(Float.NaN))
     }
+
+@Test
+    fun cancellablePrefixCopyPreservesExactSamples() {
+        val source = FloatArray(40_000) { index -> index / 40_000f }
+        val copied = DubbingPcmValidation.copyPrefix(source, 20_001)
+        assertEquals(20_001, copied.size)
+        assertEquals(source[0], copied[0], 0f)
+        assertEquals(source[20_000], copied[20_000], 0f)
+    }
+
+    @Test
+    fun prefixCopyRejectsNegativeOversizedAndOutOfSourceRanges() {
+        assertTrue(runCatching { DubbingPcmValidation.copyPrefix(floatArrayOf(1f), -1) }
+            .exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { DubbingPcmValidation.copyPrefix(floatArrayOf(1f), 2) }
+            .exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching {
+            DubbingPcmValidation.copyPrefix(FloatArray(DubbingPcmValidation.MAX_SAMPLE_COUNT + 1), DubbingPcmValidation.MAX_SAMPLE_COUNT + 1)
+        }.exceptionOrNull() is IllegalArgumentException)
+    }
+
+    @Test
+    fun prefixCopyRespondsToCancellationDuringCopy() {
+        val source = FloatArray(50_000) { 0.5f }
+        var checks = 0
+        val error = runCatching {
+            DubbingPcmValidation.copyPrefix(source, source.size) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("copy obsolete PCM")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(2, checks)
+    }
+
 }

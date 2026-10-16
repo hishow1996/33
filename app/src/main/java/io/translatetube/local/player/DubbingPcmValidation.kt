@@ -14,6 +14,30 @@ internal object DubbingPcmValidation {
     fun isSampleCountAllowed(sampleCount: Int): Boolean =
         sampleCount in 1..MAX_SAMPLE_COUNT
 
+    /**
+     * Cancellable prefix copy for long neural-TTS results. FloatArray.copyOf() cannot observe a
+     * seek/release while copying tens of megabytes on lower-memory devices.
+     */
+    fun copyPrefix(
+        samples: FloatArray,
+        requestedCount: Int,
+        checkActive: () -> Unit = {},
+    ): FloatArray {
+        require(requestedCount in 0..samples.size) { "PCM 截取长度超出原音频范围" }
+        require(requestedCount <= MAX_SAMPLE_COUNT) { "PCM 截取长度超过内存安全上限" }
+        checkActive()
+        val result = FloatArray(requestedCount)
+        var offset = 0
+        while (offset < requestedCount) {
+            checkActive()
+            val count = minOf(8_192, requestedCount - offset)
+            samples.copyInto(result, destinationOffset = offset, startIndex = offset, endIndex = offset + count)
+            offset += count
+        }
+        checkActive()
+        return result
+    }
+
     fun isValidAudio(
         sampleRate: Int,
         samples: FloatArray,

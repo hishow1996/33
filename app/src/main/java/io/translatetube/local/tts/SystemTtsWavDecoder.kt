@@ -15,23 +15,31 @@ internal object SystemTtsWavDecoder {
     private const val MAX_WAV_BYTES = 16L * 1024L * 1024L
     private const val MAX_FRAMES = 4_000_000
 
-    fun decode(file: File): TtsAudio {
+    fun decode(file: File, checkActive: () -> Unit = {}): TtsAudio {
+        checkActive()
         val size = file.length()
         if (size !in MIN_WAV_BYTES..MAX_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件大小异常：$size 字节")
         }
-        val bytes = FileInputStream(file).use { readExactBoundedBytes(it, size) }
-        return decode(bytes)
+        val bytes = FileInputStream(file).use { readExactBoundedBytes(it, size, checkActive) }
+        checkActive()
+        return decode(bytes, checkActive)
     }
 
     /** Read exactly the previously validated size and detect truncation or concurrent growth. */
-    internal fun readExactBoundedBytes(input: InputStream, expectedSize: Long): ByteArray {
+    internal fun readExactBoundedBytes(
+        input: InputStream,
+        expectedSize: Long,
+        checkActive: () -> Unit = {},
+    ): ByteArray {
+        checkActive()
         if (expectedSize !in MIN_WAV_BYTES..MAX_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件大小异常：$expectedSize 字节")
         }
         val bytes = ByteArray(expectedSize.toInt())
         var offset = 0
         while (offset < bytes.size) {
+            if ((offset and 0x3fff) == 0) checkActive()
             val count = input.read(bytes, offset, bytes.size - offset)
             if (count < 0) throw IllegalStateException("系统 TTS WAV 文件在读取时被截断")
             if (count == 0) {
@@ -42,13 +50,16 @@ internal object SystemTtsWavDecoder {
                 offset += count
             }
         }
+        checkActive()
         if (input.read() >= 0) {
             throw IllegalStateException("系统 TTS WAV 文件在读取时发生变化，已拒绝不完整音频")
         }
+        checkActive()
         return bytes
     }
 
-    fun decode(bytes: ByteArray): TtsAudio {
+    fun decode(bytes: ByteArray, checkActive: () -> Unit = {}): TtsAudio {
+        checkActive()
         if (bytes.size < MIN_WAV_BYTES) {
             throw IllegalStateException("系统 TTS WAV 文件过短")
         }
@@ -94,7 +105,9 @@ internal object SystemTtsWavDecoder {
         val riffEnd = riffEndLong.toInt()
 
         // RIFF chunk order is not fixed; keep scanning after data until fmt is also found.
+        var chunkIndex = 0
         while (offset + 8 <= riffEnd) {
+            if ((chunkIndex++ and 0x3ff) == 0) checkActive()
             val id = idAt(offset)
             val chunkSize = i32(offset + 4)
             if (chunkSize < 0) {
@@ -209,8 +222,10 @@ internal object SystemTtsWavDecoder {
         }
 
         val samples = FloatArray(frameCount)
+        var hasAudibleSample = false
         var p = dataStart
         for (frame in 0 until frameCount) {
+            if ((frame and 0x1fff) == 0) checkActive()
             var sum = 0f
             for (channel in 0 until channels) {
                 val value = when {
@@ -233,8 +248,10 @@ internal object SystemTtsWavDecoder {
                 p += bytesPerSample
             }
             samples[frame] = (sum / channels).coerceIn(-1f, 1f)
+            if (kotlin.math.abs(samples[frame]) > 0.00001f) hasAudibleSample = true
         }
-        if (samples.none { kotlin.math.abs(it) > 0.00001f }) {
+        checkActive()
+        if (!hasAudibleSample) {
             throw IllegalStateException("系统 TTS WAV 只有静音采样")
         }
         return TtsAudio(samples, sampleRate)

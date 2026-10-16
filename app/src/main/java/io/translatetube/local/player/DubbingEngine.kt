@@ -164,18 +164,33 @@ class DubbingEngine(
     @Volatile private var playbackStartedLine = -1
 
     fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
-        // Publish the TTS instance, subtitle list and cache-init Job atomically with release().
-        // Otherwise a concurrent retirement could miss this TTS instance or the newly launched job.
-        synchronized(cacheWriteLock) {
-            if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
-            this.tts = tts
-            ttsInstances.clear()
-            ttsInstances.add(tts)
-            fallbackRequested.set(false)
-            this.lines = lines.map { line ->
-                line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage))
-            }
-            this.timeline = DubbingTimeline(this.lines)
+        require(lines.size <= DubbingTimeline.MAX_INPUT_CUE_COUNT) {
+            "字幕行数超过配音安全上限，无法初始化配音"
+        }
+        // Build and validate the next immutable timeline before publishing any field. A bad
+        // imported timeline must not leave the currently attached engine half-reconfigured.
+        val preparedLines = lines.map { line ->
+            line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage))
+        }
+        val preparedTimeline = try {
+            DubbingTimeline(preparedLines)
+        } catch (error: Exception) {
+            runCatching { tts.close() }
+            throw error
+        }
+        var ttsPublished = false
+        try {
+            // Publish the TTS instance, subtitle list and cache-init Job atomically with release().
+            // Otherwise a concurrent retirement could miss this TTS instance or the newly launched job.
+            synchronized(cacheWriteLock) {
+                if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
+                this.tts = tts
+                ttsInstances.clear()
+                ttsInstances.add(tts)
+                ttsPublished = true
+                fallbackRequested.set(false)
+                this.lines = preparedLines
+                this.timeline = preparedTimeline
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
             _totalLines.value = this.lines.size
@@ -291,6 +306,12 @@ class DubbingEngine(
                     }
                 }
             }
+        }
+        } catch (error: Exception) {
+            // If release won the race before ownership was published, close the incoming engine
+            // here; otherwise release() now owns it and will close it after active synthesis exits.
+            if (!ttsPublished) runCatching { tts.close() }
+            throw error
         }
     }
 
@@ -514,7 +535,15 @@ class DubbingEngine(
                         cueDurationMs = cueDurationMs,
                     )
                     val boundedSamples = if (maxUsefulSamples in 1 until readyAudio.samples.size) {
-                        readyAudio.samples.copyOf(maxUsefulSamples).takeIf {
+                        DubbingPcmValidation.copyPrefix(
+                            samples = readyAudio.samples,
+                            requestedCount = maxUsefulSamples,
+                            checkActive = {
+                                if (released || workerJob?.isActive == false) {
+                                    throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
+                                }
+                            },
+                        ).takeIf {
                             DubbingPcmValidation.isValidAudio(
                                 readyAudio.sampleRate,
                                 it,
@@ -1648,6 +1677,7 @@ class DubbingEngine(
     ) {
         if (released) return
         val line = lines.getOrNull(idx) ?: return
+        if (!DubbingTimeline.isPlayableCue(line)) return
         stop()
         activeVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
         // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
@@ -1997,7 +2027,7 @@ class DubbingEngine(
      * blocking provider call has unwound. Existing matching disk-cache rows are still reusable.
      */
     fun setSpeed(s: Float) {
-        val next = s.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val next = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(s)
         if (next == speed || released) return
         speed = next
         restartSynthesisForCurrentConfiguration()

@@ -85,4 +85,47 @@ class SystemTtsOutputAudioPolicyTest {
         assertSame(silent, SystemTtsOutputAudioPolicy.prepareForPlayback(silent))
     }
 
+
+@Test
+    fun sameRateNonFiniteOrOutOfRangePcmIsCopiedAndSanitized() {
+        val source = TtsAudio(floatArrayOf(2f, -2f, Float.NaN, Float.POSITIVE_INFINITY, 0.5f), 16_000)
+        val normalized = SystemTtsOutputAudioPolicy.normalize(source)
+        assertTrue(normalized !== source)
+        assertEquals(16_000, normalized.sampleRate)
+        assertTrue(normalized.samples.contentEquals(floatArrayOf(1f, -1f, 0f, 0f, 0.5f)))
+        assertEquals(2f, source.samples[0], 0f)
+    }
+
+    @Test
+    fun alreadySafeSameRateAudioKeepsTheZeroCopyFastPath() {
+        val source = TtsAudio(floatArrayOf(-1f, 0f, 0.7f), 16_000)
+        assertSame(source, SystemTtsOutputAudioPolicy.normalize(source))
+    }
+
+    @Test
+    fun sameRateSanitizationCanBeCancelledBeforePublishingAudio() {
+        val source = TtsAudio(FloatArray(30_000) { 2f }, 16_000)
+        var checks = 0
+        val error = runCatching {
+            SystemTtsOutputAudioPolicy.normalize(source) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("stale conversion")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
+    @Test
+    fun resamplingCanBeCancelledBeforeReturningAudio() {
+        val source = TtsAudio(FloatArray(30_000) { 0.25f }, 48_000)
+        var checks = 0
+        val error = runCatching {
+            SystemTtsOutputAudioPolicy.normalize(source) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("stale resample")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
 }
