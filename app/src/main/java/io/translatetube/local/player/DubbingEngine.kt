@@ -445,7 +445,7 @@ class DubbingEngine(
                     var lastFailure: Exception? = null
                     for (attempt in 0..1) {
                         try {
-                            val generated = tts!!.synth(text, synthesisSpeed, line.speakerId)
+                            val generated = tts!!.synthCancellable(text, synthesisSpeed, line.speakerId, ::checkSynthesisActive)
                             // TTS providers perform blocking work; observe cancellation as soon
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -503,7 +503,7 @@ class DubbingEngine(
                     val readyAudio = if (fasterSpeed > synthesisSpeed + 0.05f) {
                         try {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            val faster = tts!!.synth(text, fasterSpeed, line.speakerId)
+                            val faster = tts!!.synthCancellable(text, fasterSpeed, line.speakerId, ::checkSynthesisActive)
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             // Apply the same finite, audible-PCM validation to the adaptive
                             // retry as to the original synthesis. A non-empty array may still be
@@ -1743,7 +1743,11 @@ class DubbingEngine(
                         positionMs = position,
                         playerSpeed = currentSpeed,
                     )
-                    val playbackSamples = DubbingTiming.slice(samples, plan, sr)
+                    val playbackSamples = DubbingTiming.slice(samples, plan, sr) {
+                        if (released || playbackGeneration.get() != generation) {
+                            throw kotlinx.coroutines.CancellationException("配音切片已过期")
+                        }
+                    }
                     // Keep this line selected when its speech has naturally ended. Otherwise a
                     // 100 ms player tick would repeatedly restart the same cue.
                     if (playbackSamples.isEmpty() || released || playbackGeneration.get() != generation) {

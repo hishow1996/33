@@ -24,6 +24,8 @@ internal object DubbingTiming {
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L
+    private const val COPY_CHUNK_SAMPLES = 8_192
+    private const val COPY_CHECK_MASK = 0x1fff
 
     fun normalizePlayerSpeed(speed: Float): Float =
         speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
@@ -108,7 +110,13 @@ internal object DubbingTiming {
     }
 
     /** Copy the exact playable window; fade an overlong tail to avoid a hard cut. */
-    fun slice(samples: FloatArray, plan: DubbingPlaybackPlan, sampleRate: Int): FloatArray {
+    fun slice(
+        samples: FloatArray,
+        plan: DubbingPlaybackPlan,
+        sampleRate: Int,
+        checkActive: () -> Unit = {},
+    ): FloatArray {
+        checkActive()
         if (plan.sampleCount <= 0 || plan.startSample !in 0 until samples.size) return FloatArray(0)
         val end = (plan.startSample.toLong() + plan.sampleCount)
             .coerceAtMost(samples.size.toLong()).toInt()
@@ -116,13 +124,20 @@ internal object DubbingTiming {
         // The common path plays the entire cached cue unmodified. Reuse its array instead
         // of duplicating up to 32 MB on the heap before AudioTrack copies it to native memory.
         if (plan.startSample == 0 && end == samples.size && !plan.truncated) return samples
-        val result = samples.copyOfRange(plan.startSample, end)
-        // Starting from a mid-cue sample (late TTS or a seek) can begin at non-zero amplitude.
-        // A very short fade-in prevents a click without delaying the cue's timeline start.
+        // Copy in bounded blocks so a seek or engine replacement does not wait for a monolithic copy.
+        val result = FloatArray(end - plan.startSample)
+        var copied = 0
+        while (copied < result.size) {
+            checkActive()
+            val count = min(COPY_CHUNK_SAMPLES, result.size - copied)
+            samples.copyInto(result, copied, plan.startSample + copied, plan.startSample + copied + count)
+            copied += count
+        }
         if (plan.startSample > 0 && sampleRate > 0) {
             val fadeSamples = min(sampleRate * FADE_IN_MS / 1_000, result.size / 2)
             if (fadeSamples > 1) {
                 for (i in 0 until fadeSamples) {
+                    if ((i and COPY_CHECK_MASK) == 0) checkActive()
                     val gain = i.toDouble() / (fadeSamples - 1).toDouble()
                     result[i] = (result[i] * gain).toFloat()
                 }
@@ -133,12 +148,14 @@ internal object DubbingTiming {
             if (fadeSamples > 1) {
                 val fadeStart = result.size - fadeSamples
                 for (i in 0 until fadeSamples) {
+                    if ((i and COPY_CHECK_MASK) == 0) checkActive()
                     val progress = (i + 1).toDouble() / fadeSamples
                     val gain = 0.5 * (1.0 + cos(PI * progress))
                     result[fadeStart + i] = (result[fadeStart + i] * gain).toFloat()
                 }
             }
         }
+        checkActive()
         return result
     }
 }

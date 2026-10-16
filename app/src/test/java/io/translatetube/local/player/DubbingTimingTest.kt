@@ -54,6 +54,24 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun cancellationInterruptsLargeTimingWindowCopy() {
+        val samples = FloatArray(20_000) { 0.25f }
+        val plan = DubbingPlaybackPlan(1, samples.size - 1, 1.0f, 1.0f, false)
+        var checks = 0
+        var cancelled = false
+        try {
+            DubbingTiming.slice(samples, plan, 16_000) {
+                checks++
+                if (checks >= 3) throw IllegalStateException("cancel test")
+            }
+        } catch (_: IllegalStateException) {
+            cancelled = true
+        }
+        assertTrue(cancelled)
+        assertTrue("slice checks cancellation between copy blocks", checks >= 3)
+    }
+
+    @Test
     fun fullUnmodifiedCueReusesInputArrayToAvoidAnotherLargePcmAllocation() {
         val samples = FloatArray(32_000) { 0.25f }
         val plan = DubbingTiming.createPlan(

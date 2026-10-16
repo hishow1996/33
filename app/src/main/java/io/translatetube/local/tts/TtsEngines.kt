@@ -17,6 +17,20 @@ interface TtsEngine {
     /** Stable synthesis configuration identity, used to avoid stale PCM cache hits. */
     val cacheKey: String get() = name
     fun synth(text: String, speed: Float = 1.0f, speakerId: Int = -1): TtsAudio
+
+    /** Cancellation-aware path for post-processing work after a provider returns PCM. */
+    fun synthCancellable(
+        text: String,
+        speed: Float = 1.0f,
+        speakerId: Int = -1,
+        checkActive: () -> Unit,
+    ): TtsAudio {
+        checkActive()
+        val result = synth(text, speed, speakerId)
+        checkActive()
+        return result
+    }
+
     fun close()
 }
 
@@ -54,25 +68,33 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
         tts = OfflineTts(null, config)
     }
 
-    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
+        synthInternal(text, speed, speakerId) {}
+
+    override fun synthCancellable(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio =
+        synthInternal(text, speed, speakerId, checkActive)
+
+    private fun synthInternal(
+        text: String, speed: Float, speakerId: Int, checkActive: () -> Unit,
+    ): TtsAudio {
+        checkActive()
         if (text.isBlank()) return TtsAudio(FloatArray(0), 24000)
-        // Validate before regex normalization so a pathological input cannot allocate another
-        // giant string before reaching the safety bound.
         TtsTextPolicy.validate(text)
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
+        checkActive()
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
             android.util.Log.w("KokoroTts", "Invalid generated audio: rate=$sampleRate samples=${audio.samples.size}")
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
-        // Sanitize the JNI-returned array in place to avoid a second full PCM allocation.
-        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples)
-        // Trim leading/trailing silence so the dubbing starts in step with the subtitle cue.
-        return TtsAudio(TtsEdgeSilenceTrimmer.trim(clean, sampleRate), sampleRate)
+        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
+        val trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
+        checkActive()
+        return TtsAudio(trimmed, sampleRate)
     }
 
     override fun close() = tts.release()
@@ -216,7 +238,15 @@ class SystemTts(context: Context) : TtsEngine {
     }
 
     @Synchronized
-    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
+        synthInternal(text, speed, speakerId) {}
+
+    @Synchronized
+    override fun synthCancellable(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio =
+        synthInternal(text, speed, speakerId, checkActive)
+
+    private fun synthInternal(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio {
+        checkActive()
         if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
         TtsTextPolicy.validate(text)
 
@@ -256,16 +286,34 @@ class SystemTts(context: Context) : TtsEngine {
                 throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
             }
             val timeoutMs = SystemTtsTimeoutPolicy.timeoutMs(text, safeSpeed)
-            if (!completed.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            val timeoutDeadlineNanos = System.nanoTime() +
+                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+            try {
+                var completedInTime = false
+                while (!completedInTime) {
+                    checkActive()
+                    val remainingNanos = timeoutDeadlineNanos - System.nanoTime()
+                    if (remainingNanos <= 0L) {
+                        runCatching { tts.stop() }
+                        throw IllegalStateException("系统 TTS 合成超时")
+                    }
+                    val waitMs = minOf(
+                        100L,
+                        java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1L),
+                    )
+                    completedInTime = completed.await(waitMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            } catch (cancelled: java.util.concurrent.CancellationException) {
                 runCatching { tts.stop() }
-                throw IllegalStateException("系统 TTS 合成超时")
+                throw cancelled
             }
-            // close() also releases this latch; never decode a file after that early wake-up.
+            checkActive()
             if (closed) throw IllegalStateException("系统 TTS 已关闭，本次合成已取消")
             activeFailure?.let { failure ->
                 throw IllegalStateException(failure)
             }
             val checkTtsActive = {
+                checkActive()
                 if (closed) throw java.util.concurrent.CancellationException("系统 TTS 已关闭，本次合成已取消")
             }
             val audio = SystemTtsWavDecoder.decode(tmp, checkTtsActive)

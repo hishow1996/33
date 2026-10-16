@@ -95,24 +95,31 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         tts = OfflineTts(null, config)
     }
 
-    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
+    override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
+        synthInternal(text, speed, speakerId) {}
+
+    override fun synthCancellable(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio =
+        synthInternal(text, speed, speakerId, checkActive)
+
+    private fun synthInternal(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio {
+        checkActive()
         if (text.isBlank()) return TtsAudio(FloatArray(0), 22050)
         TtsTextPolicy.validate(text)
         val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 22050)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
-        // Piper models in this catalog are single-speaker. Passing a UI speaker index > 0
-        // to a one-speaker native model can cause invalid speaker selection or synthesis failure.
         val sid = 0
         val audio = tts.generate(normalizedText, sid, safeSpeed)
+        checkActive()
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
             android.util.Log.w("PiperTts", "Invalid generated audio: rate=$sampleRate samples=${audio.samples.size}")
             return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
         }
-        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples)
-        // 裁掉句首句尾静音，让 Piper 配音起点贴近字幕起点
-        return TtsAudio(TtsEdgeSilenceTrimmer.trim(clean, sampleRate), sampleRate)
+        val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
+        val trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
+        checkActive()
+        return TtsAudio(trimmed, sampleRate)
     }
 
     override fun close() = tts.release()
