@@ -1680,7 +1680,10 @@ class PlaybackService : MediaSessionService() {
                 if (fetchedLines.isEmpty()) return null
 
                 val sourceArr = org.json.JSONArray()
-                fetchedLines.forEach { line ->
+                for ((index, line) in fetchedLines.withIndex()) {
+                    if ((index and 0xff) == 0) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    }
                     sourceArr.put(
                         org.json.JSONObject()
                             .put("s", line.startMs)
@@ -1688,6 +1691,8 @@ class PlaybackService : MediaSessionService() {
                             .put("t", line.text)
                     )
                 }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                ensureCurrentSession(key)
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
                         sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
@@ -2089,14 +2094,17 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                                 ensureCurrentSession(key)
                                 val rowsJson = org.json.JSONArray()
-                                rows.forEach { (startMs, endMs, text) ->
+                                for ((rowIndex, row) in rows.withIndex()) {
+                                    if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
                                     rowsJson.put(
                                         org.json.JSONObject()
-                                            .put("s", startMs)
-                                            .put("e", endMs)
-                                            .put("t", text)
+                                            .put("s", row.first)
+                                            .put("e", row.second)
+                                            .put("t", row.third)
                                     )
                                 }
+                                ownerJob?.ensureActive()
+                                ensureCurrentSession(key)
                                 val language = engine.lastLang.takeIf { it.isNotBlank() }
                                     ?: restoredAsrLanguage
                                 val checkpointJson = org.json.JSONObject()
@@ -2105,6 +2113,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                     .put("totalSegments", segs.size)
                                     .put("processedSegments", processed)
                                     .put("rows", rowsJson)
+                                ownerJob?.ensureActive()
                                 db.subtitleCacheDao().put(
                                     io.translatetube.local.data.SubtitleCacheEntity(
                                         partialAsrCacheKey,
@@ -2240,7 +2249,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 ensureCurrentSession(key)
                 if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
-                    for (line in transcribedLines) {
+                    for ((index, line) in transcribedLines.withIndex()) {
+                        if ((index and 0xff) == 0) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        }
                         sourceArr.put(
                             org.json.JSONObject()
                                 .put("s", line.startMs)
@@ -2248,6 +2260,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 .put("t", line.text)
                         )
                     }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    ensureCurrentSession(key)
                     db.subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             sourceSubtitleCacheKey,
