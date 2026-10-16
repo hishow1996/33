@@ -15,7 +15,9 @@ internal object DubbingStartPositionPolicy {
         requestedPositionMs: Long?,
         latestCursor: DubbingTimelineCursor,
     ): Long? {
-        if (lineIndex < 0 || lineEndMs <= lineStartMs) return null
+        // Subtitle time is media-relative and must not begin before zero. Reject malformed
+        // intervals here as well as in the parser so every caller gets the same invariant.
+        if (lineIndex < 0 || lineStartMs < 0L || lineEndMs <= lineStartMs) return null
 
         // Any non-negative cursor is a real player snapshot, including position 0.
         // Once a snapshot exists it is authoritative: after a seek, never fall back to an
