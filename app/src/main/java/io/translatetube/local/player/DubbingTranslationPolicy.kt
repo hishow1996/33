@@ -18,8 +18,8 @@ internal object DubbingTranslationPolicy {
         // A video-level language is more reliable than guessing from one short cue. In particular,
         // Japanese captions written only in Kanji can otherwise be mistaken for Chinese.
         val detectedSource = if (hasLanguageHint) hint else SubtitleLanguageDetector.detect(sourceText)
-        val chineseSource = detectedSource.startsWith("zh") ||
-            detectedSource == "cmn" || detectedSource.startsWith("yue")
+        val primaryLanguage = detectedSource.substringBefore('-')
+        val chineseSource = primaryLanguage in setOf("zh", "cmn", "yue")
         if (chineseSource) {
             // Preserve literal Chinese captions even if their text resembles a UI progress label.
             return sourceText.trim()
