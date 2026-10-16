@@ -17,12 +17,12 @@ object SubtitleParsers {
     // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
     private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}""")
     private val ttmlCueRegex = Regex(
-        "<p\\b([^>]*)>(.*?)</p\\s*>",
+        "<(?:[A-Za-z_][\w.-]*:)?p\b([^>]*)>(.*?)</(?:[A-Za-z_][\w.-]*:)?p\s*>",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
     )
     private val ttmlAttributeRegex = Regex("""([A-Za-z_:][\w:.-]*)\s*=\s*["']([^"']*)["']""")
-    private val ttmlLineBreakRegex = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
-    private val ttmlRootRegex = Regex("""<tt[\s>]""", RegexOption.IGNORE_CASE)
+    private val ttmlLineBreakRegex = Regex("""<(?:[A-Za-z_][\w.-]*:)?br\s*/?>""", RegexOption.IGNORE_CASE)
+    private val ttmlRootRegex = Regex("""<(?:[A-Za-z_][\w.-]*:)?tt[\s>]""", RegexOption.IGNORE_CASE)
     private val translationProgressRegex = Regex("^(正在)?翻译中\\d*/\\d*行?$")
     private val translationChunkRegex = Regex("(?<=[。！？!?；;，,])")
     private val whitespaceRegex = Regex("\\s+")
@@ -163,10 +163,16 @@ object SubtitleParsers {
                 val caption = captionText(line)
                 if (caption.isBlank()) return@forEach
                 appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
-                caption.lines().forEach { appendLine(it.trimEnd()) }
+                caption.lines().forEach { appendLine(escapeVttCueText(it).trimEnd()) }
                 appendLine()
             }
     }
+
+    /** Emit plain text as WebVTT cue text, not accidental markup or entity references. */
+    private fun escapeVttCueText(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
 
     private fun sameCaptionText(left: String, right: String): Boolean {
         fun normalize(value: String): String = value.trim()
@@ -259,7 +265,7 @@ object SubtitleParsers {
     fun parseTtml(src: String): List<SubLine> = parseTtml(src) {}
 
     internal fun parseTtml(src: String, checkActive: () -> Unit): List<SubLine> {
-        if (!src.contains("<tt", ignoreCase = true) && !src.contains("<p", ignoreCase = true)) {
+        if (!ttmlRootRegex.containsMatchIn(src) && !ttmlCueRegex.containsMatchIn(src)) {
             return emptyList()
         }
         val out = mutableListOf<SubLine>()
