@@ -462,12 +462,27 @@ class PlaybackService : MediaSessionService() {
             Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
-            Phase.READY -> when {
-                isDubbingPreparationIncomplete(state) -> (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
-                    "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
-                } else state.progress.ifBlank { "正在生成中文配音" }
-                state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
-                else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
+            Phase.READY -> {
+                val waitTitle = VideoProcessingFlowPolicy.readyNotificationWaitTitle(
+                    waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
+                    waitingForDubbingEngine = state.waitingForDubbingEngine,
+                )
+                when {
+                    waitTitle != null -> waitTitle to state.noModelHint
+                        ?.takeIf { it.isNotBlank() }
+                        .orEmpty()
+                        .ifBlank {
+                            state.progress.ifBlank {
+                                "已可以播放视频；配置对应引擎后重新打开视频以继续处理"
+                            }
+                        }
+                    isDubbingPreparationIncomplete(state) ->
+                        (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
+                            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                        } else state.progress.ifBlank { "正在生成中文配音" }
+                    state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
+                    else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
+                }
             }
             Phase.ERROR -> "处理遇到问题" to (state.error ?: "打开应用查看详情")
             else -> "大象翻译" to "等待开始"

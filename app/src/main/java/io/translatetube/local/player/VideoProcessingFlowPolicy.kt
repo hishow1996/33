@@ -206,6 +206,18 @@ object VideoProcessingFlowPolicy {
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
         if (flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION) 3 else 2
 
+    /** Notification title for a READY player whose translation or dubbing setup is still blocked. */
+    fun readyNotificationWaitTitle(
+        waitingForTranscriptionEngine: Boolean,
+        waitingForDubbingEngine: Boolean,
+    ): String? = when {
+        waitingForTranscriptionEngine && waitingForDubbingEngine ->
+            "视频可播放 · 等待转写与配音引擎"
+        waitingForTranscriptionEngine -> "视频可播放 · 等待转写引擎"
+        waitingForDubbingEngine -> "视频可播放 · 等待配音引擎"
+        else -> null
+    }
+
     /** Keep READY-state status text aligned with the engine that actually blocks completion. */
     fun readyProgress(
         waitingForTranscriptionEngine: Boolean,

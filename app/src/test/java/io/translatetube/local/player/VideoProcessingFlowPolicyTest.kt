@@ -206,6 +206,38 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun readyNotificationDoesNotClaimDubbingIsCompleteWhileEnginesAreMissing() {
+        assertEquals(
+            "视频可播放 · 等待转写引擎",
+            VideoProcessingFlowPolicy.readyNotificationWaitTitle(
+                waitingForTranscriptionEngine = true,
+                waitingForDubbingEngine = false,
+            ),
+        )
+        assertEquals(
+            "视频可播放 · 等待配音引擎",
+            VideoProcessingFlowPolicy.readyNotificationWaitTitle(
+                waitingForTranscriptionEngine = false,
+                waitingForDubbingEngine = true,
+            ),
+        )
+        assertEquals(
+            "视频可播放 · 等待转写与配音引擎",
+            VideoProcessingFlowPolicy.readyNotificationWaitTitle(
+                waitingForTranscriptionEngine = true,
+                waitingForDubbingEngine = true,
+            ),
+        )
+        assertEquals(
+            null,
+            VideoProcessingFlowPolicy.readyNotificationWaitTitle(
+                waitingForTranscriptionEngine = false,
+                waitingForDubbingEngine = false,
+            ),
+        )
+    }
+
+    @Test
     fun readyProgressNamesTheEngineThatActuallyBlocksCompletion() {
         assertEquals(
             "视频可正常播放；字幕与配音等待转写引擎就绪（详见播放页提示）",
