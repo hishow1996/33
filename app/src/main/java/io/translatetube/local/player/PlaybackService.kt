@@ -3283,10 +3283,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             }.getOrDefault(0L).coerceAtLeast(0L)
             var lastProgressPercent = -1
             val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
-            val outputFormat = when {
-                trackMime.contains("vorbis") || trackMime.contains("opus") ->
+            val outputFormat = when (AudioTrackContainerPolicy.choose(trackMime)) {
+                AudioTrackContainerPolicy.Container.WEBM ->
                     android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
-                else -> android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                AudioTrackContainerPolicy.Container.MP4 ->
+                    android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                null -> throw IllegalStateException(
+                    "当前设备无法安全封装网页音频编码（$trackMime）；已停止直接抽轨，避免生成损坏的音频缓存。请重试或使用 yt-dlp 解析。"
+                )
             }
             muxer = android.media.MediaMuxer(work.absolutePath, outputFormat)
             val muxerTrack = muxer.addTrack(trackFormat)
@@ -3331,9 +3335,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     "提取出的音轨为空或超过 160 MB 缓存上限；已停止处理以保护手机存储。"
                 )
             }
+            // Flush the completed muxer output before publishing it as the reusable cache file.
+            java.io.RandomAccessFile(work, "rw").use { it.fd.sync() }
             if (!work.renameTo(destination)) {
-                work.copyTo(destination, overwrite = true)
-                work.delete()
+                // Never copy directly over the old cache: a failed/partial copy could destroy the
+                // last good file. The caller's catch removes only this .part file on failure.
+                throw IllegalStateException(
+                    "音轨提取完成，但无法原子保存缓存文件；原有缓存已保留，请重试。"
+                )
             }
             onProgressPercent(100)
             return destination
