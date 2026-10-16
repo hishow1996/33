@@ -1227,7 +1227,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 registerDubbingFailureHandler(d, tts, sessionKey)
-                d.attach(tts, translatedLines)
+                d.attach(tts, translatedLines, sourceLanguage = srcLang)
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2311,7 +2311,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 noModelHint = null,
                             )
                         }
-                        d.attach(tts, finalLines)
+                        d.attach(tts, finalLines, sourceLanguage = srcLang)
                         try {
                             ensureCurrentSession(key)
                         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -3871,7 +3871,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 }
                 pendingTts = null
                 registerDubbingFailureHandler(d, tts, sessionKey)
-                d.attach(tts, updated)
+                d.attach(tts, updated, sourceLanguage = sessionSourceLang)
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -4072,7 +4072,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 pendingTts = null
                 replacementDubbing = engine
                 registerDubbingFailureHandler(engine, tts, sessionKey)
-                engine.attach(tts, updated)
+                engine.attach(tts, updated, sourceLanguage = sourceLang)
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {

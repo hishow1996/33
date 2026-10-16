@@ -121,7 +121,7 @@ class DubbingEngine(
     // Set only after AudioTrack.play() succeeds; PCM readiness alone does not mean voice is audible.
     @Volatile private var playbackStartedLine = -1
 
-    fun attach(tts: TtsEngine, lines: List<SubLine>) {
+    fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
         // Publish the TTS instance, subtitle list and cache-init Job atomically with release().
         // Otherwise a concurrent retirement could miss this TTS instance or the newly launched job.
         synchronized(cacheWriteLock) {
@@ -131,7 +131,7 @@ class DubbingEngine(
             ttsInstances.add(tts)
             fallbackRequested.set(false)
             this.lines = lines.map { line ->
-                line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh))
+                line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage))
             }
             this.timeline = DubbingTimeline(this.lines)
             synthesisErrorReported.set(false)

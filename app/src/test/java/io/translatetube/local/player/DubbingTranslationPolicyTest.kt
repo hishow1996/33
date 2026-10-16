@@ -27,4 +27,24 @@ class DubbingTranslationPolicyTest {
         assertNull(DubbingTranslationPolicy.usableText("Hello world", null))
         assertNull(DubbingTranslationPolicy.usableText("Hello world", "   "))
     }
+    @Test
+    fun knownJapaneseLanguageKeepsKanjiOnlyCueFromBeingMisclassifiedAsChinese() {
+        assertEquals("东京", DubbingTranslationPolicy.usableText("東京", "东京", "ja"))
+    }
+
+    @Test
+    fun knownChineseLanguagePreservesMixedHanAndLatinCaption() {
+        assertEquals("你好 OK", DubbingTranslationPolicy.usableText("你好 OK", null, "zh-Hans"))
+    }
+
+    @Test
+    fun autoLanguageStillUsesPerCueDetectionForImportedBilingualSubtitle() {
+        assertEquals("正在翻译", DubbingTranslationPolicy.usableText("正在翻译", null, "auto"))
+    }
+
+    @Test
+    fun knownForeignLanguageStillRejectsAnEchoEvenWhenCueLooksLikeKanjiOnly() {
+        assertNull(DubbingTranslationPolicy.usableText("東京", "東京", "ja"))
+    }
+
 }
