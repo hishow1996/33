@@ -6,6 +6,35 @@ import org.junit.Test
 
 class TranscriptTimelinePolicyTest {
     @Test
+    fun normalizationStopsPromptlyWhenOwnerJobIsCancelled() {
+        val cues = List(2_000) { index ->
+            Triple(index.toLong() * 100L, index.toLong() * 100L + 80L, "cue-$index")
+        }
+        val error = runCatching {
+            TranscriptTimelinePolicy.normalize(cues, 1_000_000L) {
+                throw java.util.concurrent.CancellationException("cancelled")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
+    @Test
+    fun removesDuplicateRowsAndCapsOverlapAtTheNextCue() {
+        val normalized = TranscriptTimelinePolicy.normalize(
+            listOf(
+                Triple(1_000L, 2_000L, "b"),
+                Triple(0L, 1_500L, "a"),
+                Triple(1_000L, 2_000L, "b"),
+            ),
+            audioDurationMs = 3_000L,
+        )
+        assertEquals(
+            listOf(Triple(0L, 1_000L, "a"), Triple(1_000L, 2_000L, "b")),
+            normalized,
+        )
+    }
+
+    @Test
     fun sortsOutOfOrderProviderCuesByTheirVideoTimestamps() {
         val normalized = TranscriptTimelinePolicy.normalize(
             listOf(
