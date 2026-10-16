@@ -508,6 +508,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             parentDir.usableSpace,
         )
         if (!ModelStoragePreflightPolicy.hasEnoughSpace(usableSpace, requiredStorageBytes)) {
+            // A previous force-stop may have left a non-resumable partial archive in cache.
+            // Free it before returning a storage error so the user can reclaim space and retry.
+            pkg.delete()
             state.value = ModelState(
                 status = ModelStatus.FAILED,
                 error = "可用存储空间不足：下载和安装该模型预计至少需要 ${ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间，请释放空间后重试。",

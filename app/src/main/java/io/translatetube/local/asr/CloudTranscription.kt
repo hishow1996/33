@@ -2,6 +2,7 @@ package io.translatetube.local.asr
 
 import android.content.Context
 import io.translatetube.local.translate.Crypto
+import io.translatetube.local.translate.SourceLanguagePolicy
 import io.translatetube.local.yt.executeCancellableHttpCall
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -97,14 +98,12 @@ object CloudTranscription {
      * Both "no" and "nn" are supported and must retain their distinct meanings.
      */
     internal fun cartesiaLanguageCode(language: String): String? {
-        val normalized = language.trim().lowercase(java.util.Locale.ROOT)
-        if (normalized.isEmpty() || normalized == "auto") return null
+        val normalized = SourceLanguagePolicy.normalizeTag(language)
+        if (SourceLanguagePolicy.isUndetermined(normalized)) return null
 
-        // Callers may hold BCP-47 tags such as "en-US" or "zh_CN", while this API
-        // expects a two-letter ISO-639-1 language code. Strip the region/script suffix;
-        // for malformed/unsupported shapes prefer provider auto-detection over a bad request.
-        val primary = normalized.substringBefore('-').substringBefore('_')
-        if (primary in setOf("auto", "und", "unknown", "undefined")) return null
+        // Cartesia expects a two-letter ISO-639-1 code. Strip any canonicalized script/region
+        // suffix; unknown ASR/UI sentinels are omitted rather than sent as invalid language IDs.
+        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
         return primary.takeIf { code ->
             code.length == 2 && code.all { it in 'a'..'z' }
         }
@@ -112,11 +111,8 @@ object CloudTranscription {
 
     /** Kawa's automatic-detection mode is represented by omitting the language field. */
     internal fun kawaLanguageCode(language: String): String? {
-        val value = language.trim()
-        val primary = value.replace('_', '-').substringBefore('-').lowercase(java.util.Locale.ROOT)
-        return value.takeIf {
-            it.isNotEmpty() && primary !in setOf("auto", "und", "unknown", "undefined")
-        }
+        val value = SourceLanguagePolicy.normalizeTag(language)
+        return value.takeUnless(SourceLanguagePolicy::isUndetermined)
     }
 
     private val kawaJobIdPattern = Regex("[A-Za-z0-9_-]{1,256}")

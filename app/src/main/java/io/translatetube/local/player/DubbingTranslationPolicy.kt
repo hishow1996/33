@@ -12,14 +12,13 @@ internal object DubbingTranslationPolicy {
         sourceLanguage: String = "auto",
     ): String? {
         if (sourceText.isBlank()) return null
-        val hint = sourceLanguage.trim().replace('_', '-').lowercase(java.util.Locale.ROOT)
-        val hasLanguageHint = hint.isNotEmpty() &&
-            hint !in setOf("auto", "und", "unknown", "undefined")
+        val hint = io.translatetube.local.translate.SourceLanguagePolicy.normalizeTag(sourceLanguage)
+        val hasLanguageHint = !io.translatetube.local.translate.SourceLanguagePolicy.isUndetermined(hint)
         // A video-level language is more reliable than guessing from one short cue. In particular,
         // Japanese captions written only in Kanji can otherwise be mistaken for Chinese.
-        val detectedSource = if (hasLanguageHint) hint else SubtitleLanguageDetector.detect(sourceText)
-        val primaryLanguage = detectedSource.substringBefore('-')
-        val chineseSource = primaryLanguage in setOf("zh", "cmn", "yue")
+        val detectedSource = if (hasLanguageHint) hint.lowercase(java.util.Locale.ROOT)
+            else SubtitleLanguageDetector.detect(sourceText)
+        val chineseSource = io.translatetube.local.translate.SourceLanguagePolicy.isChinese(detectedSource)
         if (chineseSource) {
             // Preserve literal Chinese captions even if their text resembles a UI progress label.
             return sourceText.trim()

@@ -26,6 +26,7 @@ import io.translatetube.local.subs.SubtitleFileDecoder
 import io.translatetube.local.translate.Crypto
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.LangMap
+import io.translatetube.local.translate.SourceLanguagePolicy
 import io.translatetube.local.translate.MlKitEngine
 import io.translatetube.local.translate.GoogleHybridEngine
 import io.translatetube.local.translate.TranslationEngine
@@ -1446,10 +1447,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     /** Chinese subtitle tracks must not be translated into Chinese again. */
-    private fun isChineseLanguage(tag: String): Boolean {
-        val normalized = tag.trim().lowercase()
-        return normalized.startsWith("zh") || normalized == "cmn" || normalized.startsWith("yue")
-    }
+    private fun isChineseLanguage(tag: String): Boolean =
+        SourceLanguagePolicy.isChinese(tag)
 
     /**
      * Treat a non-Chinese cue whose cached "translation" exactly mirrors its source as unfinished.
@@ -2795,7 +2794,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             )
         }
 
-        val src = if (srcLang == "auto") "" else srcLang
+        val src = SourceLanguagePolicy.sourceForTranslation(srcLang)
         val batchSize = 10
         val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
         // Checkpoint the first batch immediately, then every few successful batches and

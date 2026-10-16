@@ -11,6 +11,8 @@ import kotlin.math.roundToLong
  */
 internal object WhisperSubtitleTimelinePolicy {
     private const val MAX_CUE_DURATION_MS = 3_600L
+    /** Bound token/timestamp arrays before joining text or allocating timeline stacks. */
+    private const val MAX_TOKEN_COUNT = 200_000
     private const val MAX_CJK_CODE_POINTS = 24
     private const val MAX_OTHER_CODE_POINTS = 64
     private const val MIN_LAST_TOKEN_DURATION_MS = 80L
@@ -31,6 +33,7 @@ internal object WhisperSubtitleTimelinePolicy {
         expectedText: String,
     ): List<Triple<Long, Long, String>> {
         if (tokens.isEmpty() || tokens.size != timestampsSeconds.size) return emptyList()
+        if (tokens.size > MAX_TOKEN_COUNT) return emptyList()
         if (segmentStartMs < 0L || segmentEndMs <= segmentStartMs) return emptyList()
         if (expectedText.isBlank()) return emptyList()
 
@@ -130,15 +133,27 @@ internal object WhisperSubtitleTimelinePolicy {
         }
 
         fun codePointCount(value: String): Int = value.codePointCount(0, value.length)
-        fun isCjk(value: String): Boolean = value.any { char ->
-            char in '\u2E80'..'\u9FFF' ||
-                char in '\uF900'..'\uFAFF' ||
-                char in '\u3040'..'\u30FF' ||
-                char in '\uAC00'..'\uD7AF'
+        fun isCjk(value: String): Boolean {
+            var offset = 0
+            while (offset < value.length) {
+                val codePoint = value.codePointAt(offset)
+                if (
+                    codePoint in 0x2E80..0x9FFF ||
+                    codePoint in 0xF900..0xFAFF ||
+                    codePoint in 0x3040..0x30FF ||
+                    codePoint in 0xAC00..0xD7AF ||
+                    codePoint in 0x20000..0x2FA1F ||
+                    codePoint in 0x30000..0x323AF
+                ) return true
+                offset += Character.charCount(codePoint)
+            }
+            return false
         }
         fun endsSentence(token: String): Boolean {
             val last = token.trimEnd().lastOrNull() ?: return false
-            return last in charArrayOf('。', '！', '？', '!', '?', '.', '；', ';')
+            // Avoid allocating a punctuation array for every token in long transcripts.
+            return last == '。' || last == '！' || last == '？' ||
+                last == '!' || last == '?' || last == '.' || last == '；' || last == ';'
         }
 
         for (token in timedTokens) {

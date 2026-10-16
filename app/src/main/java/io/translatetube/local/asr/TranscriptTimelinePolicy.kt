@@ -34,11 +34,16 @@ internal object TranscriptTimelinePolicy {
                 if (end > rawStart) chronological += Triple(rawStart, end, text)
             }
         }
-        chronological.sortWith(
-            compareBy<Triple<Long, Long, String>> { it.first }
-                .thenBy { it.second }
-                .thenBy { it.third },
-        )
+        // Long timelines can take noticeable time to sort on older phones. Check cancellation
+        // during comparisons as well as before/after sort so a cancelled parse does not linger.
+        val cueOrder = compareBy<Triple<Long, Long, String>> { it.first }
+            .thenBy { it.second }
+            .thenBy { it.third }
+        var comparisons = 0
+        chronological.sortWith { left, right ->
+            if ((comparisons++ and 0x3ff) == 0) checkActive()
+            cueOrder.compare(left, right)
+        }
         checkActive()
 
         // Identical rows become adjacent after sorting; discard them without an extra HashSet.

@@ -1,5 +1,6 @@
 package io.translatetube.local.translate
 
+import java.text.Normalizer
 import java.util.Locale
 
 /** Shared validation for live translation batches and restored subtitle caches. */
@@ -12,8 +13,8 @@ internal object SubtitleTranslationQualityPolicy {
 
     fun isSourceEcho(sourceText: String?, translatedText: String?, sourceLanguage: String): Boolean {
         if (sourceText.isNullOrBlank() || translatedText.isNullOrBlank()) return false
-        val language = sourceLanguage.trim().lowercase(Locale.ROOT)
-        if (language.startsWith("zh") || language == "cmn" || language.startsWith("yue")) return false
+        val language = SourceLanguagePolicy.normalizeTag(sourceLanguage)
+        if (SourceLanguagePolicy.isChinese(language)) return false
 
         // Numbers, symbol-only cues, URLs and email addresses are valid even when unchanged.
         // Treating them as failed translations can make a perfectly valid subtitle batch fail.
@@ -32,5 +33,7 @@ internal object SubtitleTranslationQualityPolicy {
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */
     private fun normalize(value: String): String =
-        value.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
+        Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .lowercase(Locale.ROOT)
+            .filter { it.isLetterOrDigit() }
 }

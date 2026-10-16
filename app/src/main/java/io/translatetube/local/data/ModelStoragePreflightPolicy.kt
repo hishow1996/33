@@ -18,7 +18,7 @@ internal object ModelStoragePreflightPolicy {
 
     /** Zero means Android could not report free space; don't falsely block the download in that case. */
     fun hasEnoughSpace(usableBytes: Long, requiredBytes: Long): Boolean =
-        usableBytes <= 0L || (requiredBytes >= 0L && usableBytes >= requiredBytes)
+        requiredBytes >= 0L && (usableBytes <= 0L || usableBytes >= requiredBytes)
 
     fun minimumKnownUsableSpace(vararg candidates: Long): Long =
         candidates.filter { it > 0L }.minOrNull() ?: 0L

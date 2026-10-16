@@ -5,6 +5,9 @@ import io.translatetube.local.subs.SubLine
 
 /** Structural guards for persisted subtitle timelines before binary-search playback uses them. */
 internal object SubtitleCacheValidationPolicy {
+    /** Match the ASR timeline bound and reject hostile cache sizes before allocating a hash set. */
+    private const val MAX_CACHED_CUE_COUNT = 500_000
+
     data class CachedTranslationRow(
         val startMs: Long,
         val endMs: Long,
@@ -21,7 +24,9 @@ internal object SubtitleCacheValidationPolicy {
         sourceLines: List<SubLine>,
         cachedRows: List<CachedTranslationRow>,
     ): List<SubLine>? {
-        if (sourceLines.isEmpty() || sourceLines.size != cachedRows.size) return null
+        if (sourceLines.isEmpty() || sourceLines.size != cachedRows.size ||
+            sourceLines.size > MAX_CACHED_CUE_COUNT
+        ) return null
         if (!hasValidTimeline(cachedRows.map { Triple(it.startMs, it.endMs, it.sourceText) })) return null
         if (!hasRecoverableTranslationRows(cachedRows.map { it.translatedText })) return null
         if (sourceLines.indices.any { index ->
@@ -42,7 +47,7 @@ internal object SubtitleCacheValidationPolicy {
      * are valid because captions may overlap; descending starts violate the playback index contract.
      */
     fun hasValidTimeline(rows: List<Triple<Long, Long, String>>): Boolean {
-        if (rows.isEmpty()) return false
+        if (rows.isEmpty() || rows.size > MAX_CACHED_CUE_COUNT) return false
         var previousStart = -1L
         val uniqueRows = HashSet<Triple<Long, Long, String>>(rows.size)
         for ((startMs, endMs, text) in rows) {
