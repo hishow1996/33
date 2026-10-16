@@ -215,13 +215,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         // StateFlow starts from NOT_DOWNLOADED, but models survive process restarts. Reconcile
         // persisted status against the same file checks used by the playback engines so the
         // settings page and foreground notification agree before another task is started.
+        val ttsIsReady = runCatching { ModelFiles.ttsReady(ctx) }.getOrDefault(false)
+        val asrIsReady = runCatching { ModelFiles.asrReady(ctx) }.getOrDefault(false)
         _tts.value = ModelState(
-            status = ModelAvailabilityPolicy.initialStatus(runCatching { ModelFiles.ttsReady(ctx) }.getOrDefault(false)),
-            progress = if (runCatching { ModelFiles.ttsReady(ctx) }.getOrDefault(false)) 100 else 0,
+            status = ModelAvailabilityPolicy.initialStatus(ttsIsReady),
+            progress = if (ttsIsReady) 100 else 0,
         )
         _asr.value = ModelState(
-            status = ModelAvailabilityPolicy.initialStatus(runCatching { ModelFiles.asrReady(ctx) }.getOrDefault(false)),
-            progress = if (runCatching { ModelFiles.asrReady(ctx) }.getOrDefault(false)) 100 else 0,
+            status = ModelAvailabilityPolicy.initialStatus(asrIsReady),
+            progress = if (asrIsReady) 100 else 0,
         )
     }
 
