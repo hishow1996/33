@@ -86,6 +86,9 @@ fun PlayerScreen(
     mediaUserAgent: String? = null,
 ) {
     val ctx = LocalContext.current
+    val selectedTtsEngine = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        .getString("tts_engine", "kokoro") ?: "kokoro"
+    val voiceSelectionEnabled = selectedTtsEngine != "piper"
     val state by PlaybackService.ui.collectAsState()
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
@@ -403,11 +406,12 @@ fun PlayerScreen(
                             icon = Icons.Filled.Face,
                             title = if (isSpeakerBusy) "正在识别人物…" else "识别并区分人物",
                             description = when {
+                                selectedTtsEngine == "piper" -> "Piper 当前为单人音色；切换 Kokoro 或支持多音色的系统 TTS 后可用"
                                 isSpeakerBusy -> "正在分析字幕中的说话人"
                                 state.lines.isEmpty() -> "生成或导入字幕后可使用"
                                 else -> "自动区分说话人，便于对照和配音"
                             },
-                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy,
+                            enabled = state.lines.isNotEmpty() && !isSpeakerBusy && voiceSelectionEnabled,
                             onClick = {
                                 advancedMenuExpanded = false
                                 PlaybackService.instance?.autoAssignSpeakers()
@@ -577,6 +581,7 @@ fun PlayerScreen(
                         state = state,
                         svc = PlaybackService.instance,
                         listState = listState,
+                        voiceSelectionEnabled = voiceSelectionEnabled,
                         onCopy = { copySubtitles() },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -1434,6 +1439,7 @@ private fun SubtitleList(
     state: PlayerUiState,
     svc: PlaybackService?,
     listState: androidx.compose.foundation.lazy.LazyListState,
+    voiceSelectionEnabled: Boolean,
     onCopy: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1539,45 +1545,62 @@ private fun SubtitleList(
                     }
                     if (active) {
                         Spacer(Modifier.height(4.dp))
-                        var voicePickerExpanded by remember(i) { mutableStateOf(false) }
-                        Box {
+                        if (!voiceSelectionEnabled) {
                             Surface(
-                                onClick = { voicePickerExpanded = true },
                                 shape = RoundedCornerShape(50),
-                                color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
-                                contentColor = if (activeDub) Color(0xFF30343B) else SubText,
+                                color = SurfaceHigh.copy(alpha = 0.45f),
+                                contentColor = SubText,
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    Icon(Icons.Filled.Face, contentDescription = "选择本句配音音色", modifier = Modifier.size(16.dp))
-                                    Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
-                                    Icon(Icons.Filled.MoreVert, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
+                                    Icon(Icons.Filled.Face, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Text("Piper 单人音色", style = MaterialTheme.typography.labelMedium)
                                 }
                             }
-                            DropdownMenu(
-                                expanded = voicePickerExpanded,
-                                onDismissRequest = { voicePickerExpanded = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text(if (line.speakerId == -1) "默认音色（当前）" else "默认音色") },
-                                    enabled = line.speakerId != -1,
-                                    onClick = {
-                                        voicePickerExpanded = false
-                                        svc?.setLineSpeaker(i, -1)
-                                    },
-                                )
-                                (0..53).forEach { voiceId ->
+                        } else {
+                            var voicePickerExpanded by remember(i) { mutableStateOf(false) }
+                            Box {
+                                Surface(
+                                    onClick = { voicePickerExpanded = true },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
+                                    contentColor = if (activeDub) Color(0xFF30343B) else SubText,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Icon(Icons.Filled.Face, contentDescription = "选择本句配音音色", modifier = Modifier.size(16.dp))
+                                        Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
+                                        Icon(Icons.Filled.MoreVert, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = voicePickerExpanded,
+                                    onDismissRequest = { voicePickerExpanded = false },
+                                ) {
                                     DropdownMenuItem(
-                                        text = { Text(if (line.speakerId == voiceId) "音色 $voiceId（当前）" else "音色 $voiceId") },
-                                        enabled = line.speakerId != voiceId,
+                                        text = { Text(if (line.speakerId == -1) "默认音色（当前）" else "默认音色") },
+                                        enabled = line.speakerId != -1,
                                         onClick = {
                                             voicePickerExpanded = false
-                                            svc?.setLineSpeaker(i, voiceId)
+                                            svc?.setLineSpeaker(i, -1)
                                         },
                                     )
+                                    (0..53).forEach { voiceId ->
+                                        DropdownMenuItem(
+                                            text = { Text(if (line.speakerId == voiceId) "音色 $voiceId（当前）" else "音色 $voiceId") },
+                                            enabled = line.speakerId != voiceId,
+                                            onClick = {
+                                                voicePickerExpanded = false
+                                                svc?.setLineSpeaker(i, voiceId)
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
