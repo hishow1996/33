@@ -61,6 +61,8 @@ object CloudTranscription {
 
     /** Bound JSON allocation on memory-constrained phones when a provider returns malformed data. */
     internal const val MAX_RESPONSE_BODY_BYTES = 16L * 1024L * 1024L
+    /** Prevent unusually large word arrays from multiplying the memory cost of JSON parsing. */
+    internal const val MAX_PROVIDER_WORD_COUNT = 200_000
 
     // A force-stop can bypass finally cleanup for both staging and request WAV files.
     // Match only our own filename prefixes and leave recently modified work untouched.
@@ -102,14 +104,20 @@ object CloudTranscription {
         // expects a two-letter ISO-639-1 language code. Strip the region/script suffix;
         // for malformed/unsupported shapes prefer provider auto-detection over a bad request.
         val primary = normalized.substringBefore('-').substringBefore('_')
+        if (primary in setOf("auto", "und", "unknown", "undefined")) return null
         return primary.takeIf { code ->
             code.length == 2 && code.all { it in 'a'..'z' }
         }
     }
 
     /** Kawa's automatic-detection mode is represented by omitting the language field. */
-    internal fun kawaLanguageCode(language: String): String? =
-        language.trim().takeIf { it.isNotEmpty() && !it.equals("auto", ignoreCase = true) }
+    internal fun kawaLanguageCode(language: String): String? {
+        val value = language.trim()
+        val primary = value.replace('_', '-').substringBefore('-').lowercase(java.util.Locale.ROOT)
+        return value.takeIf {
+            it.isNotEmpty() && primary !in setOf("auto", "und", "unknown", "undefined")
+        }
+    }
 
     private val kawaJobIdPattern = Regex("[A-Za-z0-9_-]{1,256}")
 
@@ -213,6 +221,48 @@ object CloudTranscription {
         }
     }
 
+    /**
+     * Validate the canonical WAV produced by this app before uploading it. A stale/truncated cache
+     * should fail locally instead of spending bandwidth or cloud transcription quota.
+     */
+    internal fun validatePcm16MonoWav(file: File) {
+        if (!file.isFile || file.length() <= 44L) {
+            throw IOException("待转写 WAV 文件不存在或没有有效音频数据")
+        }
+        val actualLength = file.length()
+        val header = ByteArray(44)
+        try {
+            java.io.RandomAccessFile(file, "r").use { it.readFully(header) }
+        } catch (error: Exception) {
+            throw IOException("无法读取 WAV 文件头", error)
+        }
+        fun ascii(offset: Int, length: Int): String =
+            String(header, offset, length, Charset.forName("US-ASCII"))
+        val values = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+        val riffLength = values.getInt(4).toLong() and 0xffff_ffffL
+        val formatLength = values.getInt(16)
+        val formatCode = values.getShort(20).toInt() and 0xffff
+        val channels = values.getShort(22).toInt() and 0xffff
+        val sampleRate = values.getInt(24)
+        val byteRate = values.getInt(28)
+        val blockAlign = values.getShort(32).toInt() and 0xffff
+        val bitsPerSample = values.getShort(34).toInt() and 0xffff
+        val dataLength = values.getInt(40).toLong() and 0xffff_ffffL
+        if (ascii(0, 4) != "RIFF" || ascii(8, 4) != "WAVE" ||
+            ascii(12, 4) != "fmt " || ascii(36, 4) != "data" ||
+            formatLength != 16 || formatCode != 1 || channels != 1 ||
+            sampleRate != 16_000 || byteRate != 32_000 ||
+            blockAlign != 2 || bitsPerSample != 16
+        ) {
+            throw IOException("WAV 格式不符合云端转写要求：需要 16 kHz、单声道、PCM16")
+        }
+        if (dataLength <= 0L || dataLength % 2L != 0L ||
+            dataLength != actualLength - 44L || riffLength != actualLength - 8L
+        ) {
+            throw IOException("WAV 文件头声明的长度与实际音频数据不一致")
+        }
+    }
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -308,6 +358,7 @@ object CloudTranscription {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
         require(wavFile.isFile && wavFile.length() > 44L) { "待转写音频为空" }
+        validatePcm16MonoWav(wavFile)
         if (durationMs <= 0L) throw IOException("待转写音频时长无效，无法建立字幕时间轴")
         checkActive()
         val ownerJob = currentCoroutineContext()[Job]
@@ -405,6 +456,9 @@ object CloudTranscription {
         val wordsArray = root.optJSONArray("words")
             ?: root.optJSONObject("transcript")?.optJSONArray("words")
             ?: throw IOException("云端转写没有返回词级时间戳，请检查服务商模型与接口权限")
+        if (wordsArray.length() > MAX_PROVIDER_WORD_COUNT) {
+            throw IOException("云端转写返回的词级记录过多，已停止处理以保护设备内存；请缩短视频后重试")
+        }
         val safeDuration = durationMs.coerceAtLeast(1L)
         val words = ArrayList<TimedWord>(wordsArray.length())
 
@@ -420,7 +474,7 @@ object CloudTranscription {
             words += TimedWord(token, interval.first, interval.second)
         }
 
-        val cues = groupWords(words, safeDuration)
+        val cues = groupWords(words, safeDuration, checkActive)
         if (cues.isEmpty()) {
             throw IOException("云端识别没有生成有效时间轴字幕；可切回本地 Whisper 重试")
         }
@@ -553,7 +607,7 @@ object CloudTranscription {
                             delay((500L + attempts.toLong() * 250L).coerceAtMost(5_000L))
                             continue
                         }
-                        when (val stateName = status.optString("status")) {
+                        when (val stateName = status.optString("status").trim().lowercase(java.util.Locale.ROOT)) {
                             "succeeded" -> {
                                 onProgress("第 ${chunkNumber}/${ranges.size} 段识别完成，整理时间戳…")
                                 result = status.optJSONObject("result")
@@ -581,6 +635,9 @@ object CloudTranscription {
                     obj.optString("language").takeIf { it.isNotBlank() }?.let { detectedLanguage = it }
                     val transcript = obj.optJSONArray("transcript")
                         ?: throw IOException("Kawa 返回结果缺少分段时间戳")
+                    if (transcript.length() > MAX_PROVIDER_WORD_COUNT) {
+                        throw IOException("Kawa 返回的字幕分段过多，已停止处理以保护设备内存")
+                    }
                     for (i in 0 until transcript.length()) {
                         checkActive()
                         val item = transcript.optJSONObject(i) ?: continue
@@ -718,20 +775,34 @@ object CloudTranscription {
         return result
     }
 
-    internal fun groupWords(words: List<TimedWord>, durationMs: Long): List<Triple<Long, Long, String>> {
-        // Defend this grouping boundary too, rather than assuming every caller has already
-        // validated provider data. Clip only word ends; words starting outside the media are junk.
+    internal fun groupWords(
+        words: List<TimedWord>,
+        durationMs: Long,
+        checkActive: () -> Unit = {},
+    ): List<Triple<Long, Long, String>> {
         if (durationMs <= 0L || words.isEmpty()) return emptyList()
-        val orderedWords = words.asSequence()
-            .map { it.copy(text = it.text.trim()) }
-            .filter { it.text.isNotEmpty() && it.startMs >= 0L &&
-                it.startMs < durationMs && it.endMs > it.startMs }
-            .map { it.copy(endMs = it.endMs.coerceAtMost(durationMs)) }
-            .filter { it.endMs > it.startMs }
-            .distinctBy { Triple(it.startMs, it.endMs, it.text) }
-            .sortedWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
-            .toList()
+        if (words.size > MAX_PROVIDER_WORD_COUNT) {
+            throw IllegalArgumentException("云端转写词级记录超过安全上限")
+        }
+        // Validate and deduplicate in one pass without a chain of temporary sequences.
+        val orderedWords = ArrayList<TimedWord>(words.size)
+        val seen = HashSet<TimedWord>(words.size)
+        for (index in words.indices) {
+            if ((index and 0xff) == 0) checkActive()
+            val raw = words[index]
+            val text = raw.text.trim()
+            if (text.isEmpty() || raw.startMs < 0L ||
+                raw.startMs >= durationMs || raw.endMs <= raw.startMs
+            ) continue
+            val normalized = raw.copy(text = text, endMs = raw.endMs.coerceAtMost(durationMs))
+            if (normalized.endMs > normalized.startMs && seen.add(normalized)) {
+                orderedWords += normalized
+            }
+        }
         if (orderedWords.isEmpty()) return emptyList()
+        orderedWords.sortWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
+        checkActive()
+
         val result = mutableListOf<Triple<Long, Long, String>>()
         val text = StringBuilder()
         var cueStart = 0L
@@ -751,7 +822,9 @@ object CloudTranscription {
             cueEnd = 0L
         }
 
-        for (word in orderedWords) {
+        for (index in orderedWords.indices) {
+            if ((index and 0xff) == 0) checkActive()
+            val word = orderedWords[index]
             val pauseMs = if (text.isNotEmpty()) word.startMs - cueEnd else 0L
             if (text.isNotEmpty() && pauseMs > MAX_WORD_GAP_MS) flush()
             if (text.isNotEmpty() &&
@@ -767,6 +840,7 @@ object CloudTranscription {
                 flush()
             }
         }
+        checkActive()
         flush()
         return result
     }
