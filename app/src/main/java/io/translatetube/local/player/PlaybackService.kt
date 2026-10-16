@@ -1784,7 +1784,7 @@ class PlaybackService : MediaSessionService() {
                             waitingForDubbingEngine = false,
                             phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
                             progress = "视频音频已提取完成；转写等待引擎就绪" +
-                                if (asrProvider == "local") "（设置 → 转写引擎）" else "（设置 → 转写引擎）",
+                                if (asrProvider == "local") "（设置 → 转写引擎 → 本地 Whisper）" else "（设置 → 转写引擎）",
                         )
                     }
                 } else {
