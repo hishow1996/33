@@ -474,4 +474,14 @@ class HlsAudioDownloaderTest {
             HlsAudioDownloader.parseMediaPlaylist("https://cdn.example/index.m3u8", emptyMapUri)
         }.exceptionOrNull() is IllegalStateException)
     }
+    @Test
+    fun segmentCacheBudgetAccountingCannotOverflowLongTotals() {
+        val budget = 160L * 1024L * 1024L
+        assertEquals(60L, HlsAudioDownloader.boundedCacheByteTotal(listOf(10L, 20L, 30L), budget))
+        assertEquals(budget + 1L, HlsAudioDownloader.boundedCacheByteTotal(listOf(Long.MAX_VALUE, 10L), budget))
+        assertEquals(budget + 1L, HlsAudioDownloader.boundedCacheByteTotal(listOf(budget, 1L), budget))
+        assertEquals(budget + 1L, HlsAudioDownloader.boundedCacheByteTotal(listOf(-1L), budget))
+        assertEquals(Long.MAX_VALUE, HlsAudioDownloader.boundedCacheByteTotal(listOf(Long.MAX_VALUE, 1L), Long.MAX_VALUE))
+    }
+
 }

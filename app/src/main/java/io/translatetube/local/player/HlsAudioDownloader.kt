@@ -23,6 +23,18 @@ internal object HlsAudioDownloader {
     private const val MAX_MASTER_DEPTH = 4
     private const val MAX_BYTES = 160L * 1024L * 1024L
 
+    /** Counts only up to budget + 1, so corrupted cache folders cannot overflow byte totals. */
+    internal fun boundedCacheByteTotal(sizes: Iterable<Long>, budget: Long = MAX_BYTES): Long {
+        val safeBudget = budget.coerceAtLeast(0L)
+        val overBudget = if (safeBudget == Long.MAX_VALUE) Long.MAX_VALUE else safeBudget + 1L
+        var total = 0L
+        for (size in sizes) {
+            if (size < 0L || size > safeBudget - total) return overBudget
+            total += size
+        }
+        return total
+    }
+
     // Cache pruning is folder-wide. Serialize HLS downloads so one task cannot treat another
     // task's in-progress segment directory as stale data and delete it during pruning.
     private val downloadMutex = kotlinx.coroutines.sync.Mutex()
@@ -381,9 +393,9 @@ internal object HlsAudioDownloader {
             }
             return latest
         }
-        fun size(directory: File): Long = directory.walkTopDown()
-            .filter { it.isFile }
-            .sumOf { it.length() }
+        fun size(directory: File): Long = boundedCacheByteTotal(
+            directory.walkTopDown().filter { it.isFile }.map { it.length() }.asIterable(),
+        )
 
         directories.filter { it.absolutePath != keep.absolutePath }.forEach { directory ->
             val activity = lastActivity(directory)
@@ -394,12 +406,16 @@ internal object HlsAudioDownloader {
         val surviving = parent.listFiles()
             ?.filter { it.isDirectory && it.name.endsWith(".segments") }
             .orEmpty()
-        var totalBytes = surviving.sumOf { directory -> size(directory) }
+        var totalBytes = boundedCacheByteTotal(surviving.asSequence().map { directory -> size(directory) }.asIterable())
         for (directory in surviving.sortedBy { item -> lastActivity(item) }) {
             if (totalBytes <= MAX_BYTES) break
             if (directory.absolutePath == keep.absolutePath) continue
-            val bytes = size(directory)
-            if (directory.deleteRecursively()) totalBytes -= bytes
+            if (directory.deleteRecursively()) {
+                // Recompute rather than subtracting an individually capped directory size; once a
+                // total crosses the budget, an exact aggregate is intentionally no longer retained.
+                val remaining = surviving.filter { it.exists() }
+                totalBytes = boundedCacheByteTotal(remaining.asSequence().map { size(it) }.asIterable())
+            }
         }
     }
 

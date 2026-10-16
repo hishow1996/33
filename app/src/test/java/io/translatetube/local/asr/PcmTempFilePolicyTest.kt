@@ -77,4 +77,20 @@ class PcmTempFilePolicyTest {
         assertFalse(PcmTempFilePolicy.canAppendSamples(-1L, 1))
         assertFalse(PcmTempFilePolicy.canAppendSamples(0L, -1))
     }
+    @Test
+    fun rejectsDeclaredPayloadsLargerThanScratchBudgetBeforeCheckingFileLength() {
+        val tiny = File.createTempFile("pcm-budget-test", ".s16le")
+        try {
+            tiny.writeBytes(byteArrayOf(1, 0))
+            assertFalse(
+                PcmTempFilePolicy.hasCompletePcm16Payload(
+                    tiny,
+                    PcmTempFilePolicy.MAX_PCM_BYTES / 2L + 1L,
+                )
+            )
+        } finally {
+            tiny.delete()
+        }
+    }
+
 }
