@@ -113,7 +113,9 @@ internal object WhisperSubtitleTimelinePolicy {
         var cueEndMs = -1L
 
         fun flushCue() {
-            val caption = text.toString().trim()
+            // Token text can carry tokenizer-specific repeated boundary spaces. Keep the
+            // actual subtitle display consistent with the whitespace-tolerant alignment check.
+            val caption = text.toString().trim().replace(Regex("\\s+"), " ")
             if (caption.isNotBlank() && cueStartMs >= 0L && cueEndMs > cueStartMs) {
                 cues += Triple(cueStartMs, cueEndMs, caption)
             }

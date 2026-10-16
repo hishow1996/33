@@ -38,21 +38,19 @@ class WhisperSubtitleTimelinePolicyTest {
 
     @Test
     fun acceptsWhitespaceDifferencesButStillRejectsActualTextMismatch() {
-        val args = mapOf(
-            "tokens" to listOf("Hello  ", " world"),
-            "timestamps" to listOf(0.0f, 0.5f),
-            "durations" to listOf(0.4f, 0.5f),
-        )
+        val tokens = listOf("Hello  ", " world")
+        val timestamps = listOf(0.0f, 0.5f)
+        val durations = listOf(0.4f, 0.5f)
         val whitespaceVariant = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
-            tokens = args.getValue("tokens") as List<String>,
-            timestampsSeconds = args.getValue("timestamps") as List<Float>,
-            durationsSeconds = args.getValue("durations") as List<Float>,
+            tokens = tokens,
+            timestampsSeconds = timestamps,
+            durationsSeconds = durations,
             segmentStartMs = 0L,
             segmentEndMs = 2_000L,
             expectedText = "Hello world",
         )
         assertTrue(whitespaceVariant.isNotEmpty())
-        assertEquals("Hello  world", whitespaceVariant.single().third)
+        assertEquals("Hello world", whitespaceVariant.single().third)
 
         assertTrue(
             WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
