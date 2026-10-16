@@ -253,12 +253,7 @@ object PiperModels {
     }
 
     private fun publishStage(id: String, stage: String) {
-        val status = when {
-            stage.startsWith("正在解压") || stage.startsWith("模型文件校验") ->
-                PiperModelDownloadStatus.EXTRACTING
-            stage == "Piper 模型已就绪" -> PiperModelDownloadStatus.READY
-            else -> PiperModelDownloadStatus.DOWNLOADING
-        }
+        val status = PiperDownloadStagePolicy.statusFor(stage)
         updateDownloadState(id) { current ->
             current.copy(
                 status = status,
@@ -284,7 +279,7 @@ object PiperModels {
         }
 
         val job = synchronized(downloadStateLock) {
-            if (downloadJobs[id]?.isActive == true) return false
+            if (downloadJobs[id]?.let { !it.isCompleted && !it.isCancelled } == true) return false
             _downloadStates.value = _downloadStates.value + (
                 id to PiperModelDownloadState(
                     status = PiperModelDownloadStatus.DOWNLOADING,
