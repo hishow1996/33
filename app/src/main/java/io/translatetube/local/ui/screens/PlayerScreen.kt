@@ -1582,53 +1582,37 @@ private fun speakerLabel(id: Int): String = when (id) {
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
-    val title: String
-    val detail: String
-    val stageIndex: Int
-    val fraction: Float?
-
-    when (state.phase) {
-        Phase.PARSING -> {
-            title = "正在分析视频"
-            detail = state.progress.ifBlank { "获取视频信息与可用字幕、音轨" }
-            stageIndex = 0
-            fraction = null
-        }
-        Phase.DOWNLOADING_AUDIO -> {
-            title = "正在准备音轨"
-            detail = state.progress.ifBlank { "检查并读取视频音频" }
-            stageIndex = 1
-            fraction = progressPercent(state.progress)
-        }
-        Phase.TRANSCRIBING -> {
-            title = "正在识别语音"
-            detail = state.progress.ifBlank { "把语音转换成带时间轴的文本" }
-            stageIndex = 2
-            fraction = progressRatio(state.progress) ?: progressPercent(state.progress)
-        }
-        Phase.TRANSLATING -> {
-            title = "正在翻译字幕"
-            detail = state.progress.ifBlank { "逐句翻译并整理字幕时间轴" }
-            stageIndex = 3
-            fraction = progressRatio(state.progress)
-                ?: if (state.totalLines > 0) {
-                    (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
-                } else null
-        }
-        Phase.SYNTHESIZING -> {
-            title = "正在准备配音"
-            detail = state.progress.ifBlank { "按字幕顺序生成语音" }
-            stageIndex = 4
-            fraction = if (state.totalLines > 0) {
-                (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+    val source = VideoProcessingFlowPolicy.sourceKind(state.key)
+    val flow = state.processingFlow
+    val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    val title = VideoProcessingFlowPolicy.mainTitle(
+        source = source,
+        phase = state.phase,
+        flow = flow,
+        isPaused = state.isProcessingPaused,
+        waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR,
+    )
+    val detail = when {
+        state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
+        state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
+        state.progress.isNotBlank() -> state.progress
+        else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
+    }
+    val stageIndex = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase)
+        .coerceIn(0, (steps.size - 1).coerceAtLeast(0))
+    val stageCount = steps.size.coerceAtLeast(1)
+    val fraction = when (state.phase) {
+        Phase.PARSING -> null
+        Phase.DOWNLOADING_AUDIO -> progressPercent(state.progress)
+        Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)
+        Phase.TRANSLATING -> progressRatio(state.progress)
+            ?: if (state.totalLines > 0) {
+                (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
             } else null
-        }
-        else -> {
-            title = "正在处理视频"
-            detail = state.progress
-            stageIndex = 0
-            fraction = null
-        }
+        Phase.SYNTHESIZING -> if (state.totalLines > 0) {
+            (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+        } else null
+        else -> null
     }
 
     val pct = fraction?.coerceIn(0f, 1f)
@@ -1707,8 +1691,8 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            if (pct != null) "阶段 ${stageIndex + 1}/5 · 实际进度 ${(pct * 100).toInt()}%"
-            else "阶段 ${stageIndex + 1}/5 · 当前阶段暂无精确百分比",
+            if (pct != null) "阶段 ${stageIndex + 1}/${stageCount} · 实际进度 ${(pct * 100).toInt()}%"
+            else "阶段 ${stageIndex + 1}/${stageCount} · 当前阶段暂无精确百分比",
             color = SubText,
             style = MaterialTheme.typography.labelSmall,
         )
