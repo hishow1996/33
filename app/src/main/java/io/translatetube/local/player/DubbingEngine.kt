@@ -1107,6 +1107,22 @@ class DubbingEngine(
     }
 
     /** Continue partial writes and tolerate a few transient zero-progress responses from OEM audio sinks. */
+    /**
+     * An asynchronous playAt() request may become obsolete before its audio starts. Clear only
+     * its own not-yet-started row: never overwrite a newer generation or a successfully started cue.
+     */
+    private fun clearUnstartedLineIfCurrent(idx: Int, generation: Int) {
+        synchronized(playbackControlLock) {
+            if (!released &&
+                playbackGeneration.get() == generation &&
+                _currentLine.value == idx &&
+                playbackStartedLine != idx
+            ) {
+                _currentLine.value = -1
+            }
+        }
+    }
+
     private fun writeFully(track: AudioTrack, samples: FloatArray): Int =
         AudioTrackWritePolicy.writeFully(
             sampleCount = samples.size,
@@ -1635,7 +1651,10 @@ class DubbingEngine(
                     }
                     val samples = outputPcm.samples
                     val sr = outputPcm.sampleRate
-                    if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
+                    if (samples.isEmpty() || released || playbackGeneration.get() != generation) {
+                        if (samples.isEmpty()) clearUnstartedLineIfCurrent(idx, generation)
+                        return@execute
+                    }
 
                     val position = DubbingStartPositionPolicy.choose(
                         lineIndex = idx,
@@ -1643,7 +1662,10 @@ class DubbingEngine(
                         lineEndMs = line.endMs,
                         requestedPositionMs = positionMs,
                         latestCursor = latestTimelineCursor,
-                    ) ?: return@execute
+                    ) ?: run {
+                        clearUnstartedLineIfCurrent(idx, generation)
+                        return@execute
+                    }
                     val currentSpeed = DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
                     val plan = DubbingTiming.createPlan(
                         sampleCount = samples.size,
@@ -1657,6 +1679,7 @@ class DubbingEngine(
                     // Keep this line selected when its speech has naturally ended. Otherwise a
                     // 100 ms player tick would repeatedly restart the same cue.
                     if (playbackSamples.isEmpty() || released || playbackGeneration.get() != generation) {
+                        if (playbackSamples.isEmpty()) clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
                     }
 
@@ -1743,6 +1766,7 @@ class DubbingEngine(
                     if (!alignToLatestTimelinePosition()) {
                         newTrack.release()
                         created = null
+                        clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
                     }
 
@@ -1778,6 +1802,7 @@ class DubbingEngine(
                         if (track === newTrack) track = null
                         newTrack.release()
                         created = null
+                        clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
                     }
                     if (released || playbackGeneration.get() != generation) {
@@ -1807,6 +1832,7 @@ class DubbingEngine(
                         if (track === newTrack) track = null
                         runCatching { newTrack.release() }
                         created = null
+                        clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
                     }
                     created = null
