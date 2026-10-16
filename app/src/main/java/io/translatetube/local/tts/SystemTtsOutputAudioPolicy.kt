@@ -1,13 +1,13 @@
 package io.translatetube.local.tts
 
 /**
- * Normalize Android system-TTS output to a common playback rate before it enters the PCM cache.
- * Some OEM audio stacks accept common model rates such as 24 kHz more reliably than the
- * provider-specific WAV rate. The cap avoids a second large PCM allocation on very long cues.
+ * Normalize Android system-TTS output to the same 16 kHz rate used by the playback path before
+ * it enters the PCM cache. This avoids upsampling to an intermediate rate and then downsampling
+ * again for AudioTrack. The cap prevents a second large PCM allocation on long cues.
  */
 internal object SystemTtsOutputAudioPolicy {
-    const val TARGET_SAMPLE_RATE = 24_000
-    const val CACHE_SIGNATURE = "system-tts-resample-24k-v1"
+    const val TARGET_SAMPLE_RATE = 16_000
+    const val CACHE_SIGNATURE = "system-tts-resample-16k-v2"
     const val MAX_RESAMPLED_SAMPLES = 4_000_000
 
     fun targetSampleCount(
