@@ -551,14 +551,20 @@ class DubbingEngine(
                             cacheError,
                         )
                     }
+                    checkSynthesisActive()
                     val retainedInMemory = synchronized(mem) {
-                        mem[idx] = DubbingPcmMemoryEntry(
-                            samples = boundedSamples,
-                            sampleRate = readyAudio.sampleRate,
-                            cacheIdentity = persistedCacheIdentity ?: cacheFile(idx, synthesisSpeed).name,
-                        )
-                        mem.containsKey(idx)
+                        if (!released && workerJob?.isActive != false) {
+                            mem[idx] = DubbingPcmMemoryEntry(
+                                samples = boundedSamples,
+                                sampleRate = readyAudio.sampleRate,
+                                cacheIdentity = persistedCacheIdentity ?: cacheFile(idx, synthesisSpeed).name,
+                            )
+                            mem.containsKey(idx)
+                        } else {
+                            false
+                        }
                     }
+                    checkSynthesisActive()
                     if (!cachePersisted && !retainedInMemory) {
                         reportSynthesisError(
                             "第 ${idx + 1} 句已合成，但缓存写入失败，且该句音频超出可用内存缓存容量，无法安全播放。请释放存储空间后重试。"
@@ -833,7 +839,11 @@ class DubbingEngine(
         cacheIdentity: String,
     ) {
         synchronized(mem) {
-            mem[idx] = DubbingPcmMemoryEntry(samples, sampleRate, cacheIdentity)
+            // A cache reader may finish just as this engine is retired. Never repopulate its
+            // in-memory PCM LRU after release has begun.
+            if (!released) {
+                mem[idx] = DubbingPcmMemoryEntry(samples, sampleRate, cacheIdentity)
+            }
         }
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
@@ -2100,6 +2110,10 @@ class DubbingEngine(
             if (released) return
             released = true
         }
+        // A retired engine must not retain every decoded PCM cue while its cancellation handlers
+        // unwind. rememberMemoryAudio() also checks released under this same map lock, so an old
+        // cache reader cannot repopulate the LRU after this clear.
+        synchronized(mem) { mem.clear() }
         synchronized(playbackControlLock) {
             activePlaybackGuard = null
             playbackGeneration.incrementAndGet()
