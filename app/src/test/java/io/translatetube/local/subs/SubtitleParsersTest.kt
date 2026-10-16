@@ -1,6 +1,7 @@
 package io.translatetube.local.subs
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SubtitleParsersTest {
