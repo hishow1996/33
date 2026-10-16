@@ -96,4 +96,78 @@ class DubbingReadinessTest {
         assertFalse(readiness.isReady(1))
         assertFalse(readiness.isSilent(1))
     }
+
+    @Test
+    fun progressPrefixStopsAtFirstPendingCueAndResumesWhenItBecomesReady() {
+        val readiness = DubbingReadiness()
+        val progress = DubbingReadinessProgress(readiness)
+
+        progress.markPrepared(0, true, 4)
+        progress.markPrepared(1, true, 4)
+        progress.markPrepared(2, false, 4)
+        assertEquals(DubbingReadinessProgressSnapshot(3, 3), progress.refresh(4))
+
+        assertEquals(DubbingReadinessProgressSnapshot(1, 2), progress.markPending(1, 4))
+        assertEquals(DubbingReadinessProgressSnapshot(3, 3), progress.markPrepared(1, true, 4))
+        assertEquals(DubbingReadinessProgressSnapshot(3, 3), progress.refresh(4))
+    }
+
+    @Test
+    fun progressTracksReadyRowsBeyondAGapWithoutInflatingThePrefix() {
+        val progress = DubbingReadinessProgress(DubbingReadiness())
+
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.clear(5))
+        assertEquals(DubbingReadinessProgressSnapshot(0, 1), progress.markPrepared(3, true, 5))
+        assertEquals(DubbingReadinessProgressSnapshot(0, 2), progress.markPrepared(1, false, 5))
+        assertEquals(DubbingReadinessProgressSnapshot(2, 3), progress.markPrepared(0, true, 5))
+        assertEquals(DubbingReadinessProgressSnapshot(4, 4), progress.markPrepared(2, true, 5))
+    }
+
+    @Test
+    fun concurrentReadinessMutationsPublishAConsistentPrefixSnapshot() {
+        val readiness = DubbingReadiness()
+        val progress = DubbingReadinessProgress(readiness)
+        val total = 64
+        val start = java.util.concurrent.CountDownLatch(1)
+        val errors = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val threads = (0 until 4).map { worker ->
+            Thread {
+                start.await()
+                repeat(400) { step ->
+                    val index = (step * 17 + worker * 11) % total
+                    val publish: (DubbingReadinessProgressSnapshot) -> Unit = { snapshot ->
+                        var expectedPrefix = 0
+                        while (expectedPrefix < total && readiness.isReady(expectedPrefix)) {
+                            expectedPrefix++
+                        }
+                        if (
+                            snapshot.preparedUntil != expectedPrefix ||
+                            snapshot.preparedCount != readiness.readyCount()
+                        ) {
+                            errors.add(
+                                "published=" + snapshot +
+                                    " expectedPrefix=" + expectedPrefix +
+                                    " ready=" + readiness.readyCount()
+                            )
+                        }
+                    }
+                    if ((step + worker) % 4 == 0) {
+                        progress.markPending(index, total, publish)
+                    } else {
+                        progress.markPrepared(
+                            index,
+                            hasAudio = step % 2 == 0,
+                            totalLines = total,
+                            publish = publish,
+                        )
+                    }
+                }
+            }.apply { start() }
+        }
+        start.countDown()
+        threads.forEach { it.join() }
+
+        assertTrue("inconsistent readiness snapshots: " + errors, errors.isEmpty())
+    }
+
 }
