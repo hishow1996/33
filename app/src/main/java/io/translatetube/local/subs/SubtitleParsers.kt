@@ -26,6 +26,7 @@ object SubtitleParsers {
     private val translationProgressRegex = Regex("^(正在)?翻译中\\d*/\\d*行?$")
     private val translationChunkRegex = Regex("(?<=[。！？!?；;，,])")
     private val whitespaceRegex = Regex("\\s+")
+    private val inlineWhitespaceRegex = Regex("[ \\t]+")
     private val captionComparisonTrailingPunctuation = setOf(
         '.', ',', '!', '?', '。', '，', '！', '？', '；', ';', ':', '：', '…', '、'
     )
@@ -171,22 +172,32 @@ object SubtitleParsers {
         return normalize(left) == normalize(right)
     }
 
-    private fun formatSrtTime(ms: Long): String {
+    private fun formatSrtTime(ms: Long): String = formatTimestamp(ms, ',')
+
+    private fun formatVttTime(ms: Long): String = formatTimestamp(ms, '.')
+
+    /** Avoid per-cue Formatter/vararg allocations when exporting long subtitle tracks. */
+    private fun formatTimestamp(ms: Long, decimalSeparator: Char): String {
         val safe = ms.coerceAtLeast(0L)
         val hours = safe / 3_600_000L
         val minutes = (safe % 3_600_000L) / 60_000L
         val seconds = (safe % 60_000L) / 1_000L
         val millis = safe % 1_000L
-        return String.format(Locale.ROOT, "%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
+        return buildString(24) {
+            appendPadded(hours, 2)
+            append(':')
+            appendPadded(minutes, 2)
+            append(':')
+            appendPadded(seconds, 2)
+            append(decimalSeparator)
+            appendPadded(millis, 3)
+        }
     }
 
-    private fun formatVttTime(ms: Long): String {
-        val safe = ms.coerceAtLeast(0L)
-        val hours = safe / 3_600_000L
-        val minutes = (safe % 3_600_000L) / 60_000L
-        val seconds = (safe % 60_000L) / 1_000L
-        val millis = safe % 1_000L
-        return String.format(Locale.ROOT, "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
+    private fun StringBuilder.appendPadded(value: Long, width: Int) {
+        val digits = value.toString()
+        repeat((width - digits.length).coerceAtLeast(0)) { append('0') }
+        append(digits)
     }
 
     /** YouTube timedtext XML（<transcript><text start="1.2" dur="3.4">…</text>）兜底 */
@@ -267,7 +278,7 @@ object SubtitleParsers {
             if (end <= start) continue
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
             val text = SubtitleTextDecoder.decode(body.replace(htmlTagRegex, ""))
-                .replace('\u00a0', ' ').replace(Regex("[ \\t]+"), " ").trim()
+                .replace('\u00a0', ' ').replace(inlineWhitespaceRegex, " ").trim()
             if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
         }
         return normalizeTimeline(out, checkActive)
@@ -490,7 +501,7 @@ object SubtitleParsers {
 
     private fun stripTags(s: String): String =
         SubtitleTextDecoder.decode(s.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, ""))
-            .replace(Regex("[ \\t]+"), " ").trim()
+            .replace(inlineWhitespaceRegex, " ").trim()
 
     private fun parseVttTs(value: String): Long? {
         val clean = value.trim().replace(",", ".")
@@ -504,15 +515,6 @@ object SubtitleParsers {
         val millis = hours.toDouble() * 3_600_000.0 + minutes.toDouble() * 60_000.0 + seconds * 1_000.0
         if (!millis.isFinite() || millis >= Long.MAX_VALUE.toDouble()) return null
         return millis.toLong()
-    }
-
-    private fun parseTs(s: String): Long {
-        val clean = s.replace(",", ".")
-        val bits = clean.split(":")
-        val h = if (bits.size == 3) bits[0].toLong() else 0
-        val m = bits[bits.size - 2].toLong()
-        val sec = bits.last().toDouble()
-        return ((h * 3600 + m * 60 + sec) * 1000).toLong()
     }
 
     private fun parseAssTs(s: String): Long {
