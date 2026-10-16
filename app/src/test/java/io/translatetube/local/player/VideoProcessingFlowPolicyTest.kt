@@ -24,7 +24,7 @@ class VideoProcessingFlowPolicyTest {
         assertEquals(5, web.size)
         assertEquals(5, local.size)
         assertTrue(youtube[1].contains("YouTube"))
-        assertEquals("获取原文字幕", youtube[2])
+        assertEquals("读取可用原文字幕", youtube[2])
         assertEquals("提取视频音轨", web[1])
         assertTrue(web[2].contains("转写原文"))
         assertEquals("提取本地视频音轨", local[1])
