@@ -569,7 +569,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     stageMessage = "正在解压并安装模型…",
                 )
                 withContext(Dispatchers.IO) {
-                    destDir.mkdirs()
+                    // Do not pre-create destDir: extraction recovery must be able to distinguish
+                    // "destination missing after a crash" from a real installed directory.
                     val extractionJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                     extractTarBz2(
                         pkg = pkg,
@@ -782,6 +783,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         }
     }
 
+    private fun isModelDirectoryReady(dir: File): Boolean =
+        if (dir.name == "tts") ModelFiles.ttsDirectoryReady(dir)
+        else ModelFiles.asrDirectoryCoreReady(dir)
+
     private fun extractTarBz2(
         pkg: File,
         destDir: File,
@@ -796,10 +801,49 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         // directory. Never delete the only known-good copy when the destination is missing.
         if (old.exists()) {
             if (!old.isDirectory) throw java.io.IOException("模型备份路径不是目录，无法安全恢复")
-            if (destDir.exists()) {
-                if (!old.deleteRecursively()) throw java.io.IOException("无法清理上次模型安装留下的旧备份")
-            } else if (!old.renameTo(destDir)) {
-                throw java.io.IOException("上次模型安装中断，无法恢复保留的模型目录")
+            val destinationReady = destDir.exists() && isModelDirectoryReady(destDir)
+            val backupReady = isModelDirectoryReady(old)
+            when (
+                ModelInstallRecoveryPolicy.decide(
+                    destinationExists = destDir.exists(),
+                    destinationReady = destinationReady,
+                    backupExists = true,
+                    backupReady = backupReady,
+                )
+            ) {
+                ModelInstallRecoveryPolicy.Action.KEEP_DESTINATION -> {
+                    // A fully validated destination wins; a stale backup is no longer required.
+                    if (!old.deleteRecursively()) {
+                        throw java.io.IOException("模型已就绪，但无法清理上次安装留下的旧备份")
+                    }
+                }
+                ModelInstallRecoveryPolicy.Action.RESTORE_BACKUP -> {
+                    val invalid = File(parent, destDir.name + ".invalid")
+                    if (invalid.exists() && !invalid.deleteRecursively()) {
+                        throw java.io.IOException("无法清理上次模型安装留下的不完整目录")
+                    }
+                    if (destDir.exists() && !destDir.renameTo(invalid)) {
+                        throw java.io.IOException("无法暂存不完整模型以恢复旧版本")
+                    }
+                    if (!old.renameTo(destDir)) {
+                        val restoreError = java.io.IOException("上次模型安装中断，无法恢复保留的模型目录")
+                        if (invalid.exists() && !invalid.renameTo(destDir)) {
+                            restoreError.addSuppressed(
+                                java.io.IOException("恢复失败后的目标目录仍保留在 ${invalid.absolutePath}")
+                            )
+                        }
+                        throw restoreError
+                    }
+                    // The old backup is now the destination. The invalid interrupted install is
+                    // disposable, but failure to delete it must not destroy the recovered model.
+                    runCatching { invalid.deleteRecursively() }
+                }
+                ModelInstallRecoveryPolicy.Action.REMOVE_INVALID_BACKUP,
+                ModelInstallRecoveryPolicy.Action.INSTALL_FRESH -> {
+                    if (!old.deleteRecursively()) {
+                        throw java.io.IOException("无法清理不完整的模型备份，已停止覆盖以保护现有文件")
+                    }
+                }
             }
         }
         val staging = File(parent, destDir.name + ".extract")
