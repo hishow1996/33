@@ -96,6 +96,8 @@ data class PlayerUiState(
     val subtitleTrackStatus: String = "",
     val isProcessingPaused: Boolean = false,
     val processingFlow: ProcessingFlow = ProcessingFlow.AUTO,
+    /** Last active pipeline stage when processing entered ERROR. */
+    val failedPhase: Phase? = null,
 )
 
 private data class YouTubeQualitySource(
@@ -569,7 +571,19 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         transform: (PlayerUiState) -> PlayerUiState,
     ) {
-        ui.update { current -> if (current.key == sessionKey) transform(current) else current }
+        ui.update { current ->
+            if (current.key != sessionKey) {
+                current
+            } else {
+                val updated = transform(current)
+                when {
+                    updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
+                        updated.copy(failedPhase = current.phase)
+                    updated.phase != Phase.ERROR -> updated.copy(failedPhase = null)
+                    else -> updated
+                }
+            }
+        }
     }
 
     override fun onDestroy() {

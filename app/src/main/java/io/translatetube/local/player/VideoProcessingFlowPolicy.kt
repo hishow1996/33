@@ -90,8 +90,16 @@ object VideoProcessingFlowPolicy {
         }
     }
 
-    fun stageIndex(source: VideoSourceKind, flow: ProcessingFlow, phase: Phase): Int {
-        if (phase == Phase.ERROR) return 0
+    fun stageIndex(
+        source: VideoSourceKind,
+        flow: ProcessingFlow,
+        phase: Phase,
+        failedPhase: Phase? = null,
+    ): Int {
+        if (phase == Phase.ERROR) {
+            val stoppedAt = failedPhase?.takeIf { it != Phase.ERROR } ?: return 0
+            return stageIndex(source, flow, stoppedAt)
+        }
         return when (flow) {
             ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION -> when (phase) {
                 Phase.IDLE, Phase.PARSING -> 0

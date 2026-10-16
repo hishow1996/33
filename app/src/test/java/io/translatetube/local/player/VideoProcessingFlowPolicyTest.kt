@@ -112,6 +112,45 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun failureProgressPointsToTheLastActiveStageInsteadOfResettingToTheFirst() {
+        assertEquals(
+            3,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.WEB,
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                Phase.ERROR,
+                Phase.TRANSLATING,
+            ),
+        )
+        assertEquals(
+            2,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.LOCAL,
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                Phase.ERROR,
+                Phase.TRANSCRIBING,
+            ),
+        )
+        assertEquals(
+            1,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.LOCAL,
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                Phase.ERROR,
+                Phase.SYNTHESIZING,
+            ),
+        )
+        assertEquals(
+            0,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.WEB,
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                Phase.ERROR,
+            ),
+        )
+    }
+
+    @Test
     fun processingPageTitleDistinguishesSourceAndFailures() {
         assertEquals("YouTube 视频翻译配音", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.YOUTUBE))
         assertEquals("网页视频翻译配音", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB))

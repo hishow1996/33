@@ -814,18 +814,21 @@ private fun VideoParsingPage(
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
-    val currentStage = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase).let { stage ->
-        // 转写引擎未就绪（模型/Key 缺失）：只点亮到转写阶段，不把翻译/配音伪装成完成。
-        if (state.noModelHint != null) minOf(stage, VideoProcessingFlowPolicy.transcriptionStageIndex(source, flow))
-        else stage
+    val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
+    val rawCurrentStage = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase, state.failedPhase)
+    val currentStage = when {
+        state.noModelHint != null && state.phase != Phase.ERROR ->
+            minOf(rawCurrentStage, VideoProcessingFlowPolicy.transcriptionStageIndex(source, flow))
+        state.phase == Phase.ERROR -> rawCurrentStage.coerceIn(0, (steps.size - 1).coerceAtLeast(0))
+        else -> rawCurrentStage
     }
     val fraction = when (state.phase) {
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
-            (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
-    val mainTitle = VideoProcessingFlowPolicy.mainTitle(
+    val mainTitle = if (isCancelled) "处理已取消" else VideoProcessingFlowPolicy.mainTitle(
         source = source,
         flow = flow,
         phase = state.phase,
@@ -859,7 +862,7 @@ private fun VideoParsingPage(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                VideoProcessingFlowPolicy.pageTitle(source, flow, failed = state.phase == Phase.ERROR),
+                VideoProcessingFlowPolicy.pageTitle(source, flow, failed = state.phase == Phase.ERROR && !isCancelled),
                 color = OnBg,
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
@@ -943,8 +946,10 @@ private fun VideoParsingPage(
                 Text("处理进度", color = OnBg, style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(12.dp))
                 steps.forEachIndexed { index, label ->
-                    val done = state.phase != Phase.ERROR && index < currentStage
+                    val done = index < currentStage
                     val active = state.phase != Phase.ERROR && index == currentStage
+                    val failed = state.phase == Phase.ERROR && !isCancelled && index == currentStage
+                    val cancelled = isCancelled && index == currentStage
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
@@ -952,6 +957,8 @@ private fun VideoParsingPage(
                         Box(
                             Modifier.size(27.dp).clip(CircleShape)
                                 .background(when {
+                                    failed -> Color(0xFFFFE8E8)
+                                    cancelled -> Color(0xFFFFF1DA)
                                     done -> Color(0xFFE7F5ED)
                                     active -> Color(0xFFE8F0FF)
                                     else -> Color(0xFFF0F3F7)
@@ -959,6 +966,8 @@ private fun VideoParsingPage(
                             contentAlignment = androidx.compose.ui.Alignment.Center,
                         ) {
                             when {
+                                failed -> Text("!", color = DangerRed, style = MaterialTheme.typography.titleMedium)
+                                cancelled -> Text("Ⅱ", color = BrandBright, style = MaterialTheme.typography.titleMedium)
                                 done -> Text("✓", color = Color(0xFF21945A), style = MaterialTheme.typography.titleMedium)
                                 active -> CircularProgressIndicator(
                                     modifier = Modifier.size(17.dp),
@@ -971,7 +980,12 @@ private fun VideoParsingPage(
                         Spacer(Modifier.width(12.dp))
                         Text(
                             label,
-                            color = if (active) BrandBright else OnBg,
+                            color = when {
+                                failed -> DangerRed
+                                cancelled -> BrandBright
+                                active -> BrandBright
+                                else -> OnBg
+                            },
                             style = MaterialTheme.typography.bodyLarge.copy(
                                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal
                             ),
@@ -979,16 +993,18 @@ private fun VideoParsingPage(
                         )
                         Text(
                             when {
+                                failed -> "失败"
+                                cancelled -> "已取消"
                                 done -> "完成"
                                 active -> if (fraction != null) ((fraction * 100).toInt().toString() + "%") else "进行中"
-                                state.phase == Phase.ERROR && index == 0 -> "检查失败"
                                 state.phase == Phase.ERROR -> "未执行"
                                 else -> "待处理"
                             },
                             color = when {
+                                failed -> DangerRed
+                                cancelled -> BrandBright
                                 done -> Color(0xFF21945A)
                                 active -> BrandBright
-                                state.phase == Phase.ERROR && index == 0 -> DangerRed
                                 else -> SubText
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -1761,7 +1777,8 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
-    val title = VideoProcessingFlowPolicy.mainTitle(
+    val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
+    val title = if (isCancelled) "处理已取消" else VideoProcessingFlowPolicy.mainTitle(
         source = source,
         phase = state.phase,
         flow = flow,
@@ -1775,11 +1792,16 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
     val stageCount = steps.size.coerceAtLeast(1)
-    val rawStageIndex = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase)
-    val stageIndex = rawStageIndex.coerceIn(0, (stageCount - 1).coerceAtLeast(0))
-    val stageNumber = if (state.phase == Phase.READY) stageCount else stageIndex + 1
+    val lastStageIndex = (stageCount - 1).coerceAtLeast(0)
+    val rawStageIndex = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase, state.failedPhase)
+    val stageIndex = when {
+        state.noModelHint != null && state.phase != Phase.ERROR ->
+            minOf(rawStageIndex, VideoProcessingFlowPolicy.transcriptionStageIndex(source, flow)).coerceIn(0, lastStageIndex)
+        else -> rawStageIndex.coerceIn(0, lastStageIndex)
+    }
+    val stageNumber = if (state.phase == Phase.READY && state.noModelHint == null) stageCount else stageIndex + 1
     val fraction = when (state.phase) {
-        Phase.READY -> 1f
+        Phase.READY -> if (state.noModelHint == null) 1f else null
         Phase.PARSING -> null
         Phase.DOWNLOADING_AUDIO -> progressPercent(state.progress)
         Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)
@@ -1788,7 +1810,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
                 (state.lines.count { SubtitleParsers.preferredTranslationText(it) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
             } else null
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
-            (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
         else -> null
     }
@@ -1845,6 +1867,8 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             }
             Text(
                 when {
+                    isCancelled -> "已取消"
+                    state.noModelHint != null && state.phase != Phase.ERROR -> "等待"
                     state.phase == Phase.READY -> "完成"
                     state.phase == Phase.ERROR -> "失败"
                     pct != null -> "${(pct * 100).toInt()}%"
@@ -1875,8 +1899,11 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         Spacer(Modifier.height(10.dp))
         Text(
             when {
+                state.noModelHint != null && state.phase != Phase.ERROR ->
+                    "等待转写引擎就绪 · 阶段 ${stageNumber}/${stageCount}"
                 state.phase == Phase.READY -> "全部阶段已完成 · ${stageCount}/${stageCount}"
-                state.phase == Phase.ERROR -> "处理失败 · 失败信息见上方提示"
+                isCancelled -> "处理已取消 · 停在阶段 ${stageNumber}/${stageCount}"
+                state.phase == Phase.ERROR -> "第 ${stageNumber}/${stageCount} 阶段失败 · 失败信息见上方提示"
                 pct != null -> "阶段 ${stageNumber}/${stageCount} · 实际进度 ${(pct * 100).toInt()}%"
                 else -> "阶段 ${stageNumber}/${stageCount} · 当前阶段暂无精确百分比"
             },
