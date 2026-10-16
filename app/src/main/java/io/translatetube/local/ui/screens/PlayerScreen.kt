@@ -1716,7 +1716,7 @@ private fun phaseText(p: Phase, progress: String): String = when (p) {
     Phase.PARSING -> "解析视频信息…"
     Phase.DOWNLOADING_AUDIO -> progress.ifEmpty { "下载音频…" }
     Phase.TRANSCRIBING -> progress.ifEmpty { "语音转写…" }
-    Phase.TRANSLATING -> progress.ifEmpty { "翻译字幕…" }
+    Phase.TRANSLATING -> progress.ifEmpty { "正在将原文字幕翻译成中文…" }
     Phase.SYNTHESIZING -> progress.ifEmpty { "配音准备…" }
     Phase.READY -> "就绪"
     Phase.ERROR -> "失败"
