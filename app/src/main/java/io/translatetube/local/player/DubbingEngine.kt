@@ -991,7 +991,7 @@ class DubbingEngine(
     ) {
         if (chunkEndSample >= samples.size || chunkEndSample <= chunkStartSample) return
         val chunkSampleCount = chunkEndSample - chunkStartSample
-        val markerPosition = DubbingChunkTransitionPolicy.prefetchMarkerPosition(
+        val markerCandidates = DubbingChunkTransitionPolicy.markerPositionCandidates(
             chunkSampleCount = chunkSampleCount,
             sampleRate = sampleRate,
             playbackRate = activePlaybackRate,
@@ -1205,7 +1205,24 @@ class DubbingEngine(
             },
             Handler(Looper.getMainLooper()),
         )
-        sourceTrack.setNotificationMarkerPosition(markerPosition)
+        var lastMarkerResult = AudioTrack.ERROR
+        for ((candidateIndex, markerPosition) in markerCandidates.withIndex()) {
+            lastMarkerResult = sourceTrack.setNotificationMarkerPosition(markerPosition)
+            if (lastMarkerResult == AudioTrack.SUCCESS) {
+                if (candidateIndex > 0) {
+                    android.util.Log.w(
+                        "DubbingEngine",
+                        "OEM rejected early dubbing marker; falling back to end marker at $markerPosition",
+                    )
+                }
+                return
+            }
+            android.util.Log.w(
+                "DubbingEngine",
+                "AudioTrack rejected dubbing marker $markerPosition (status=$lastMarkerResult)",
+            )
+        }
+        throw IllegalStateException("无法注册配音分段切换标记：AudioTrack 状态 $lastMarkerResult")
     }
 
     private data class CreatedStaticChunk(
