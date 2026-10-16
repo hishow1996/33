@@ -1597,6 +1597,10 @@ class DubbingEngine(
                         syncRate = plan.syncRate,
                         lineStartMs = line.startMs,
                         lineEndMs = line.endMs,
+                        // The first buffer may already have skipped elapsed speech during setup.
+                        // Marker positions are track-local, so pass the exact remaining head offset
+                        // instead of assuming playback starts at sample zero.
+                        initialHeadPosition = (skippedSamples - chunkStart).coerceAtLeast(0),
                     )
                     newTrack.play()
                     created = null
