@@ -1266,7 +1266,18 @@ class DubbingEngine(
                 try {
                     val loaded = load(idx) {
                         !released && playbackGeneration.get() == generation
-                    } ?: return@execute
+                    } ?: run {
+                        // A missing/corrupt cache is queued for re-synthesis by load(). Do not
+                        // leave this cue selected as if its audio were active: otherwise later
+                        // ticks see the same index and never call playAt() after the retry finishes.
+                        if (!released && playbackGeneration.get() == generation &&
+                            _currentLine.value == idx
+                        ) {
+                            playbackStartedLine = -1
+                            _currentLine.value = -1
+                        }
+                        return@execute
+                    }
                     // Android 9/OEM AudioTrack implementations can reject common TTS rates such
                     // as 22.05/24 kHz in static mode. Normalize speech output to 16 kHz mono PCM
                     // before constructing a track; lower 8 kHz engines remain at their native rate.
