@@ -3557,6 +3557,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         if (st.muteOriginal) 1f else 0.35f,
                         positionMs = ms,
                         playerSpeed = pm.playbackSpeed(),
+                        playbackAllowed = {
+                            val latest = ui.value
+                            ::pm.isInitialized &&
+                                pm.player.isPlaying &&
+                                latest.key == st.key &&
+                                latest.dubbingOn &&
+                                dubbing === d
+                        },
                     )
                 } else {
                     d.updatePlayerSpeed(pm.playbackSpeed())

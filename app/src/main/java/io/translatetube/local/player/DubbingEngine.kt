@@ -86,6 +86,8 @@ class DubbingEngine(
      * construction remain outside this lock; only the short start operation is guarded.
      */
     private val playbackControlLock = Any()
+    /** Live owner guard supplied by PlaybackService; checked on the audio thread immediately before play(). */
+    @Volatile private var activePlaybackGuard: (() -> Boolean)? = null
     @Volatile private var released = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -121,7 +123,7 @@ class DubbingEngine(
                 currentGeneration = playbackGeneration.get(),
                 expectedGeneration = expectedGeneration,
                 currentTrackIsSource = track === target,
-            )
+            ) || !isActivePlaybackAllowedLocked()
         ) {
             false
         } else {
@@ -131,9 +133,13 @@ class DubbingEngine(
         }
     }
 
+    private fun isActivePlaybackAllowedLocked(): Boolean =
+        runCatching { activePlaybackGuard?.invoke() ?: true }.getOrDefault(false)
+
     private fun invalidatePlayback(): Int = synchronized(playbackControlLock) {
         playbackStartedLine = -1
         _currentLine.value = -1
+        activePlaybackGuard = null
         playbackGeneration.incrementAndGet()
     }
 
@@ -1575,6 +1581,7 @@ class DubbingEngine(
         volume: Float = 1.0f,
         positionMs: Long? = null,
         playerSpeed: Float = 1.0f,
+        playbackAllowed: (() -> Boolean)? = null,
     ) {
         if (released) return
         val line = lines.getOrNull(idx) ?: return
@@ -1584,6 +1591,7 @@ class DubbingEngine(
         // override it while cache loading / AudioTrack creation is still in progress.
         activePlayerSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
         val generation = synchronized(playbackControlLock) {
+            activePlaybackGuard = playbackAllowed
             playbackStartedLine = -1
             _currentLine.value = idx
             playbackGeneration.incrementAndGet()
@@ -1793,7 +1801,8 @@ class DubbingEngine(
                     created = null
                     val ownsStartedTrack = synchronized(playbackControlLock) {
                         !released && playbackGeneration.get() == generation &&
-                            track === newTrack && playbackStartedLine == idx
+                            track === newTrack && playbackStartedLine == idx &&
+                            isActivePlaybackAllowedLocked()
                     }
                     if (ownsStartedTrack) {
                         runCatching { onPlaybackStarted?.invoke(idx) }
@@ -2028,7 +2037,10 @@ class DubbingEngine(
             if (released) return
             released = true
         }
-        synchronized(playbackControlLock) { playbackGeneration.incrementAndGet() }
+        synchronized(playbackControlLock) {
+            activePlaybackGuard = null
+            playbackGeneration.incrementAndGet()
+        }
         val oldTtsInstances = ttsInstances.toList()
         ttsInstances.clear()
         tts = null

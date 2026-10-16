@@ -6,6 +6,14 @@ import org.junit.Test
 
 class DubbingPlaybackOwnerPolicyTest {
     @Test
+    fun liveStartGuardRejectsPauseDisableAndEngineReplacement() {
+        assertTrue(DubbingPlaybackOwnerPolicy.mayStartAudio(true, true, true))
+        assertFalse(DubbingPlaybackOwnerPolicy.mayStartAudio(true, false, true))
+        assertFalse(DubbingPlaybackOwnerPolicy.mayStartAudio(false, true, true))
+        assertFalse(DubbingPlaybackOwnerPolicy.mayStartAudio(true, true, false))
+    }
+
+    @Test
     fun keepsVoiceOnlyWhileCurrentEngineIsEnabledAndVideoIsPlaying() {
         assertFalse(
             DubbingPlaybackOwnerPolicy.shouldStop(
