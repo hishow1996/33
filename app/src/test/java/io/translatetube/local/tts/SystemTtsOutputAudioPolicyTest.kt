@@ -62,4 +62,26 @@ class SystemTtsOutputAudioPolicyTest {
         assertEquals(null, SystemTtsOutputAudioPolicy.targetSampleCount(100, 7_999))
         assertEquals(null, SystemTtsOutputAudioPolicy.targetSampleCount(100, 24_000, 0))
     }
+
+    @Test
+    fun trimsLeadingAndTrailingSilenceAfterRateNormalization() {
+        val sourceSamples = FloatArray(5_000).apply {
+            for (index in 2_000 until 3_000) this[index] = 0.25f
+        }
+        val result = SystemTtsOutputAudioPolicy.prepareForPlayback(TtsAudio(sourceSamples, 16_000))
+
+        // 25 ms of padding on each side remains; long leading/trailing silence is removed.
+        assertEquals(16_000, result.sampleRate)
+        assertEquals(1_800, result.samples.size)
+        assertEquals(0f, result.samples[0], 0f)
+        assertEquals(0.25f, result.samples[400], 0f)
+        assertEquals(0f, result.samples.last(), 0f)
+    }
+
+    @Test
+    fun preservesEntirelySilentSystemTtsAudio() {
+        val silent = TtsAudio(FloatArray(2_000), 16_000)
+        assertSame(silent, SystemTtsOutputAudioPolicy.prepareForPlayback(silent))
+    }
+
 }
