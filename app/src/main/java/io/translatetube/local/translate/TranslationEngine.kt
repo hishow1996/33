@@ -60,13 +60,12 @@ object LangMap {
 
     /** Unknown source language falls back to English; never pass UI sentinel "auto" to ML Kit. */
     fun mlkitSource(code: String): String {
-        val normalized = code.trim()
+        val normalized = code.trim().replace('_', '-')
+        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        // Detection sentinels can carry script/region suffixes (for example und-Latn).
         return if (
             normalized.isEmpty() ||
-            normalized.equals("auto", ignoreCase = true) ||
-            normalized.equals("und", ignoreCase = true) ||
-            normalized.equals("unknown", ignoreCase = true) ||
-            normalized.equals("undefined", ignoreCase = true)
+            primary in setOf("auto", "und", "unknown", "undefined")
         ) "en" else mlkit(normalized)
     }
 
