@@ -144,12 +144,22 @@ internal object HlsAudioDownloader {
                 val attrs = nextVariant
                 val bandwidth = attrs["AVERAGE-BANDWIDTH"]?.toLongOrNull()?.takeIf { it > 0L }
                     ?: attrs["BANDWIDTH"]?.toLongOrNull()?.takeIf { it > 0L }
-                    ?: Long.MAX_VALUE
-                variants += Variant(line, bandwidth, attrs["AUDIO"])
+                // A STREAM-INF without a positive declared bandwidth is not a usable variant.
+                // Do not silently assign it Long.MAX_VALUE and accidentally choose it when every
+                // row in the master is malformed.
+                if (bandwidth != null) variants += Variant(line, bandwidth, attrs["AUDIO"])
                 nextVariant = null
             }
         }
-        if (variants.isEmpty()) return null
+        if (nextVariant != null) {
+            throw IllegalStateException("HLS 主清单的 STREAM-INF 后缺少媒体变体地址。")
+        }
+        if (variants.isEmpty()) {
+            if (lines.any { it.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true) }) {
+                throw IllegalStateException("HLS 主清单没有声明有效带宽的媒体变体。")
+            }
+            return null
+        }
 
         // Start with the lowest-bandwidth variant, but do not choose its video-only URL when it
         // references an audio group absent from the master playlist. Try the next viable variant

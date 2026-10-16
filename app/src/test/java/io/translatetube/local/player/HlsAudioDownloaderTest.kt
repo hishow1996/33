@@ -534,4 +534,37 @@ class HlsAudioDownloaderTest {
         )
     }
 
+    @Test
+    fun rejectsMasterWithOnlyInvalidBandwidthVariants() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=0
+            video/zero.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=-1
+            video/negative.m3u8
+            #EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=unknown
+            video/unknown.m3u8
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/master.m3u8", master)
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("有效带宽"))
+    }
+
+    @Test
+    fun rejectsMasterVariantDeclarationWithoutFollowingMediaUrl() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=300000
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/master.m3u8", master)
+        }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("缺少媒体变体地址"))
+    }
+
 }
