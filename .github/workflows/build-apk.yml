@@ -1,11 +1,7 @@
 name: Build Android APK
 
-# Temporary push trigger for the explicitly requested build; restore manual-only after verification.
+# APKs are built only after an explicit manual request.
 on:
-  # Temporarily enable push-triggered builds while an explicitly requested build is verified.
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -18,6 +14,8 @@ concurrency:
 
 jobs:
   build:
+    # Never build APKs on a source push; the user must explicitly dispatch this workflow.
+    if: github.event_name == 'workflow_dispatch'
     name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
