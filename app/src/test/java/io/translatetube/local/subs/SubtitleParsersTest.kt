@@ -522,4 +522,30 @@ class SubtitleParsersTest {
         assertEquals(2_000L, parsed.single().endMs)
     }
 
+
+    @Test
+    fun subtitleExportsKeepHoursBeyondTwoDigitsWithoutLocaleFormatting() {
+        val startMs = 123L * 3_600_000L + 5_006L
+        val rows = listOf(SubLine(0, startMs, startMs + 1_000L, "original", "译文"))
+
+        assertEquals(
+            "1\\n123:00:05,006 --> 123:00:06,006\\n译文\\n\\n",
+            SubtitleParsers.toSrt(rows),
+        )
+        assertEquals(
+            "WEBVTT\\n\\n123:00:05.006 --> 123:00:06.006\\noriginal\\n\\n",
+            SubtitleParsers.toVtt(rows),
+        )
+    }
+
+    @Test
+    fun ttmlNormalizesInlineSpacesWithoutCollapsingExplicitLineBreaks() {
+        val source = "<tt><body><div><p begin=\\"1s\\" end=\\"3s\\">one    two<br/>three\\t\\tfour</p></div></body></tt>"
+
+        val parsed = SubtitleParsers.parseTtml(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("one two\\nthree four", parsed.single().text)
+    }
+
 }
