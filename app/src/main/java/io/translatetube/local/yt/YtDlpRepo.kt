@@ -276,6 +276,14 @@ object YtDlpRepo {
         return null
     }
 
+    /** 最近一次版本探测中各源的失败明细（设置页错误文案直接引用，便于用户反馈定位）。 */
+    @Volatile
+    private var lastProbeDetail: String? = null
+
+    private fun recordProbe(source: String, detail: String) {
+        lastProbeDetail = ((lastProbeDetail ?: "") + "；" + source + "：" + detail)
+    }
+
     private fun fetchVersionText(
         url: String,
         accept: String,
@@ -290,12 +298,14 @@ object YtDlpRepo {
         checkHttp.newCall(request).execute().use { response ->
             if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
                 Log.w(TAG, "$source version lookup returned HTTP ${response.code}")
+                recordProbe(source, "HTTP " + response.code)
                 return@use null
             }
             val body = response.body ?: return@use null
             val length = body.contentLength()
             if (length > maxBytes) {
                 Log.w(TAG, "$source version metadata exceeded size limit: $length")
+                recordProbe(source, "响应超过大小限制")
                 return@use null
             }
             val bytes = BoundedTextPayload.readBytes(
