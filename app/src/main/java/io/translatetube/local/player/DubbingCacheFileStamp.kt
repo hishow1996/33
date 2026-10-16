@@ -2,6 +2,11 @@ package io.translatetube.local.player
 
 import java.io.File
 
+private fun cacheFileIdentity(file: File): String? = runCatching {
+    val stat = android.system.Os.stat(file.absolutePath)
+    "${stat.st_dev}:${stat.st_ino}"
+}.getOrNull()
+
 /**
  * Lightweight fingerprint used before removing a cache file that was inspected as corrupt.
  * Cache writers publish with atomic rename, so a reader must not delete a newer replacement
@@ -17,7 +22,7 @@ internal data class DubbingCacheFileStamp(
         file.isFile &&
             file.length() == length &&
             file.lastModified() == lastModifiedMs &&
-            (fileIdentity == null || currentFileIdentity(file) == fileIdentity)
+            (fileIdentity == null || cacheFileIdentity(file) == fileIdentity)
 
     companion object {
         /**
@@ -26,17 +31,12 @@ internal data class DubbingCacheFileStamp(
          * cache. Android's stat identity distinguishes the replacement without hashing the PCM.
          * Fall back to the legacy metadata pair if the filesystem/runtime exposes no identity.
          */
-        private fun currentFileIdentity(file: File): String? = runCatching {
-            val stat = android.system.Os.stat(file.absolutePath)
-            "${stat.st_dev}:${stat.st_ino}"
-        }.getOrNull()
-
         fun capture(file: File): DubbingCacheFileStamp? {
             if (!file.isFile) return null
             val stamp = DubbingCacheFileStamp(
                 length = file.length(),
                 lastModifiedMs = file.lastModified(),
-                fileIdentity = currentFileIdentity(file),
+                fileIdentity = cacheFileIdentity(file),
             )
             // Avoid returning a mixed fingerprint if an atomic replacement happened while
             // reading metadata. On Android, the identity also catches same-length/same-mtime swaps.
