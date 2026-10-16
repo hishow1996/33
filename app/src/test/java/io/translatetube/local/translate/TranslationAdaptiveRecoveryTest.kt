@@ -14,7 +14,7 @@ class TranslationAdaptiveRecoveryTest {
         ) { rows, _ ->
             calls += rows.size
             if (rows.size > 2) {
-                List(rows.size) { index -> if (index == 0) "译文" else "" }
+                List(rows.size) { "" }
             } else {
                 rows.map { "中文：$it" }
             }
@@ -90,4 +90,24 @@ class TranslationAdaptiveRecoveryTest {
         assertTrue(sizes.contains(4))
         assertTrue(sizes.count { it == 2 } >= 2)
     }
+    @Test
+    fun retriesOnlyMissingRowsAndKeepsAlreadyTranslatedRows() = runBlocking {
+        val calls = mutableListOf<List<String>>()
+        val seenContexts = mutableListOf<Pair<List<String>, List<String>>?>()
+        val result = translateBatchWithAdaptiveRecovery(listOf("a", "b", "c", "d")) { rows, context ->
+            calls += rows
+            seenContexts += context
+            if (rows == listOf("a", "b", "c", "d")) {
+                listOf("译:a", "", "译:c", "")
+            } else {
+                rows.map { "译:$it" }
+            }
+        }
+
+        assertEquals(listOf("译:a", "译:b", "译:c", "译:d"), result)
+        assertEquals(listOf(listOf("a", "b", "c", "d"), listOf("b"), listOf("d")), calls)
+        assertTrue(seenContexts[1]?.first?.lastOrNull() == "a")
+        assertTrue(seenContexts[2]?.first?.takeLast(3) == listOf("a", "b", "c"))
+    }
+
 }

@@ -74,16 +74,75 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
 
-    try {
-        val response = translate(lines, context)
-        val complete = response.size == lines.size &&
-            response.indices.all { index -> lines[index].isBlank() || response[index].isNotBlank() }
-        if (complete) return response
+    val response = try {
+        translate(lines, context)
     } catch (error: IllegalStateException) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         if (!isRecoverableTranslationFormatError(error)) throw error
+        null
     }
 
+    if (response != null && response.size == lines.size) {
+        // Keep the provider's valid rows; do not bill/re-request an entire batch just because a
+        // few captions were truncated or omitted. Blank source cues stay blank by definition.
+        val output = response.mapIndexed { index, value ->
+            if (lines[index].isBlank()) "" else value.trim()
+        }.toMutableList()
+        val complete = lines.indices.all { index ->
+            lines[index].isBlank() || output[index].isNotBlank()
+        }
+        if (complete) return output
+
+        val hasUsableResult = lines.indices.any { index ->
+            lines[index].isNotBlank() && output[index].isNotBlank()
+        }
+        if (hasUsableResult) {
+            var cursor = 0
+            while (cursor < lines.size) {
+                if (lines[cursor].isBlank() || output[cursor].isNotBlank()) {
+                    cursor++
+                    continue
+                }
+
+                val missingStart = cursor
+                while (cursor < lines.size &&
+                    lines[cursor].isNotBlank() &&
+                    output[cursor].isBlank()
+                ) {
+                    cursor++
+                }
+                val priorCues = mutableListOf<Pair<String, String>>()
+                val priorSource = context?.first.orEmpty()
+                val priorTarget = context?.second.orEmpty()
+                for (index in 0 until minOf(priorSource.size, priorTarget.size)) {
+                    if (priorSource[index].isNotBlank() && priorTarget[index].isNotBlank()) {
+                        priorCues += priorSource[index] to priorTarget[index]
+                    }
+                }
+                for (index in 0 until missingStart) {
+                    if (lines[index].isNotBlank() && output[index].isNotBlank()) {
+                        priorCues += lines[index] to output[index]
+                    }
+                }
+                val recentCues = priorCues.takeLast(CONTEXT_LINES)
+                val retryContext = if (recentCues.isEmpty()) null else {
+                    recentCues.map { it.first } to recentCues.map { it.second }
+                }
+                val retry = translateBatchWithAdaptiveRecovery(
+                    lines.subList(missingStart, cursor),
+                    retryContext,
+                    translate,
+                )
+                retry.forEachIndexed { offset, value ->
+                    output[missingStart + offset] = value
+                }
+            }
+            return output
+        }
+    }
+
+    // A malformed or wholly missing batch cannot be mapped safely to individual input rows.
+    // Split it in half so every retry makes progress and never shifts one cue onto another.
     if (lines.size == 1) {
         throw IllegalStateException("翻译服务多次未能完整返回单条字幕的译文，请重试或更换翻译模型")
     }
