@@ -100,8 +100,18 @@ internal object AsrTranscriptCheckpointPolicy {
     ): Boolean {
         if (processedSegments.isEmpty()) return rows.isEmpty()
         val uniqueSegments = HashSet<Pair<Long, Long>>(processedSegments.size)
+        var previousSegmentStart = -1L
+        var previousSegmentEnd = -1L
         for ((start, end) in processedSegments) {
-            if (end <= start || !uniqueSegments.add(start to end)) return false
+            // The row validator advances a single cursor by segment end time. Reject malformed
+            // checkpoint metadata whose segment order would make that linear scan skip a valid
+            // segment or accept rows from the wrong segment. Equal starts are permitted for
+            // overlapping VAD windows, provided their end bounds remain monotonic.
+            if (end <= start || start < previousSegmentStart || end < previousSegmentEnd ||
+                !uniqueSegments.add(start to end)
+            ) return false
+            previousSegmentStart = start
+            previousSegmentEnd = end
         }
 
         var segmentCursor = 0

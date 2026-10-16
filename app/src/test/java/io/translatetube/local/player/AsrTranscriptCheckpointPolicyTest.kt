@@ -198,4 +198,27 @@ class AsrTranscriptCheckpointPolicyTest {
             file.delete()
         }
     }
+    @Test
+    fun rejectsUnorderedVadSegmentMetadataBeforeResumingRows() {
+        val validRows = listOf(Triple(0L, 100L, "first"))
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                validRows,
+                listOf(0L to 200L, 100L to 150L),
+            )
+        )
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                validRows,
+                listOf(100L to 200L, 0L to 300L),
+            )
+        )
+        assertTrue(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(0L, 100L, "first"), Triple(100L, 250L, "second")),
+                listOf(0L to 100L, 100L to 250L),
+            )
+        )
+    }
+
 }

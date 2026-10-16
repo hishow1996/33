@@ -51,4 +51,14 @@ class DubbingOutputPcmPolicyTest {
         assertSame(input, DubbingOutputPcmPolicy.normalize(input, 8_000).samples)
     }
 
+    @Test
+    fun keepsTinyNonEmptyHighRatePcmAsOneTargetSample() {
+        val input = floatArrayOf(0.4f)
+        val normalized = DubbingOutputPcmPolicy.normalize(input, 192_000)
+
+        assertEquals(16_000, normalized.sampleRate)
+        assertEquals(1, normalized.samples.size)
+        assertEquals(0.4f, normalized.samples.single(), 0.0001f)
+    }
+
 }

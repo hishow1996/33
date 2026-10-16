@@ -42,8 +42,13 @@ internal object DubbingOutputPcmPolicy {
             }
             return DubbingOutputPcm(sanitized, sampleRate)
         }
-        val outputCountLong = (samples.size.toLong() * PREFERRED_SAMPLE_RATE + sampleRate / 2L) / sampleRate
-        require(outputCountLong in 1L..DubbingPcmValidation.MAX_SAMPLE_COUNT.toLong()) {
+        // A non-empty high-rate provider buffer can be shorter than one target-rate sample
+        // after rounding (for example, one sample at 192 kHz). Preserve that valid cue as one
+        // output sample rather than failing the entire dubbing line.
+        val outputCountLong = (
+            (samples.size.toLong() * PREFERRED_SAMPLE_RATE + sampleRate / 2L) / sampleRate
+        ).coerceAtLeast(1L)
+        require(outputCountLong <= DubbingPcmValidation.MAX_SAMPLE_COUNT.toLong()) {
             "配音重采样后的数据量超过安全上限"
         }
         val outputCount = outputCountLong.toInt()
