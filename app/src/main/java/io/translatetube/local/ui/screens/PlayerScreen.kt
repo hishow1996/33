@@ -815,28 +815,35 @@ private fun VideoParsingPage(
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
-    val waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR
+    val waitingForTranscriptionEngine = state.waitingForTranscriptionEngine && state.phase != Phase.ERROR
+    val waitingForDubbingEngine = state.waitingForDubbingEngine && state.phase != Phase.ERROR
+    val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
     val currentStage = VideoProcessingFlowPolicy.stageIndex(
         source = source,
         flow = flow,
-        phase = state.phase,
+        phase = displayPhase,
         failedPhase = state.failedPhase,
         progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
     val fraction = when (state.phase) {
+        Phase.READY -> if (VideoProcessingFlowPolicy.isCompleted(state.phase, waitingForTranscriptionEngine, waitingForDubbingEngine)) 1f else null
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
-    val mainTitle = if (isCancelled) "处理已取消" else VideoProcessingFlowPolicy.mainTitle(
-        source = source,
-        flow = flow,
-        phase = state.phase,
-        isPaused = state.isProcessingPaused,
-        waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR,
-    )
+    val mainTitle = when {
+        isCancelled -> "处理已取消"
+        waitingForDubbingEngine -> "等待配音引擎就绪"
+        else -> VideoProcessingFlowPolicy.mainTitle(
+            source = source,
+            flow = flow,
+            phase = displayPhase,
+            isPaused = state.isProcessingPaused,
+            waitingForTranscriptionEngine = waitingForTranscriptionEngine,
+        )
+    }
     val detail = when {
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
@@ -901,8 +908,12 @@ private fun VideoParsingPage(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (fraction != null) "当前进度 · " + (fraction * 100).toInt() + "%"
-                    else "当前阶段 · 正在处理中",
+                    when {
+                        waitingForTranscriptionEngine -> "等待转写引擎就绪"
+                        waitingForDubbingEngine -> "等待配音引擎就绪"
+                        fraction != null -> "当前进度 · " + (fraction * 100).toInt() + "%"
+                        else -> "当前阶段 · 正在处理中"
+                    },
                     color = SubText,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -1780,13 +1791,20 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
-    val title = if (isCancelled) "处理已取消" else VideoProcessingFlowPolicy.mainTitle(
-        source = source,
-        phase = state.phase,
-        flow = flow,
-        isPaused = state.isProcessingPaused,
-        waitingForTranscriptionEngine = waitingForTranscriptionEngine,
-    )
+    val waitingForTranscriptionEngine = state.waitingForTranscriptionEngine && state.phase != Phase.ERROR
+    val waitingForDubbingEngine = state.waitingForDubbingEngine && state.phase != Phase.ERROR
+    val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
+    val title = when {
+        isCancelled -> "处理已取消"
+        waitingForDubbingEngine -> "等待配音引擎就绪"
+        else -> VideoProcessingFlowPolicy.mainTitle(
+            source = source,
+            phase = displayPhase,
+            flow = flow,
+            isPaused = state.isProcessingPaused,
+            waitingForTranscriptionEngine = waitingForTranscriptionEngine,
+        )
+    }
     val detail = when {
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
@@ -1795,19 +1813,23 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     }
     val stageCount = steps.size.coerceAtLeast(1)
     val lastStageIndex = (stageCount - 1).coerceAtLeast(0)
-    val waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR
     val rawStageIndex = VideoProcessingFlowPolicy.stageIndex(
         source = source,
         flow = flow,
-        phase = state.phase,
+        phase = displayPhase,
         failedPhase = state.failedPhase,
         progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     )
     val stageIndex = rawStageIndex.coerceIn(0, lastStageIndex)
-    val stageNumber = if (VideoProcessingFlowPolicy.isCompleted(state.phase, waitingForTranscriptionEngine)) stageCount else stageIndex + 1
+    val completed = VideoProcessingFlowPolicy.isCompleted(
+        state.phase,
+        waitingForTranscriptionEngine,
+        waitingForDubbingEngine,
+    )
+    val stageNumber = if (completed) stageCount else stageIndex + 1
     val fraction = when (state.phase) {
-        Phase.READY -> if (VideoProcessingFlowPolicy.isCompleted(state.phase, waitingForTranscriptionEngine)) 1f else null
+        Phase.READY -> if (completed) 1f else null
         Phase.PARSING -> null
         Phase.DOWNLOADING_AUDIO -> progressPercent(state.progress)
         Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)
@@ -1874,8 +1896,10 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
             Text(
                 when {
                     isCancelled -> "已取消"
-                    state.noModelHint != null && state.phase != Phase.ERROR -> "等待"
-                    state.phase == Phase.READY -> "完成"
+                    waitingForTranscriptionEngine -> "等待转写"
+                    waitingForDubbingEngine -> "等待配音"
+                    state.phase == Phase.READY && completed -> "完成"
+                    state.phase == Phase.READY -> "待配音"
                     state.phase == Phase.ERROR -> "失败"
                     pct != null -> "${(pct * 100).toInt()}%"
                     else -> "处理中"
@@ -1905,9 +1929,12 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         Spacer(Modifier.height(10.dp))
         Text(
             when {
-                state.noModelHint != null && state.phase != Phase.ERROR ->
+                waitingForTranscriptionEngine ->
                     "等待转写引擎就绪 · 阶段 ${stageNumber}/${stageCount}"
-                state.phase == Phase.READY -> "全部阶段已完成 · ${stageCount}/${stageCount}"
+                waitingForDubbingEngine ->
+                    "等待配音引擎就绪 · 阶段 ${stageNumber}/${stageCount}"
+                state.phase == Phase.READY && completed -> "全部阶段已完成 · ${stageCount}/${stageCount}"
+                state.phase == Phase.READY -> "配音阶段待完成 · 阶段 ${stageNumber}/${stageCount}"
                 isCancelled -> "处理已取消 · 停在阶段 ${stageNumber}/${stageCount}"
                 state.phase == Phase.ERROR -> "第 ${stageNumber}/${stageCount} 阶段失败 · 失败信息见上方提示"
                 pct != null -> "阶段 ${stageNumber}/${stageCount} · 实际进度 ${(pct * 100).toInt()}%"

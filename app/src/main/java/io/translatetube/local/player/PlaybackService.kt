@@ -89,7 +89,11 @@ data class PlayerUiState(
     val dubbingStatus: String = "",
     val isPlaying: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
-    val noModelHint: String? = null,     // 方案 B：模型未下载引导提示
+    val noModelHint: String? = null,     // 模型/引擎问题的用户提示
+    /** Subtitle generation is blocked because the selected ASR engine is not ready. */
+    val waitingForTranscriptionEngine: Boolean = false,
+    /** Chinese dubbing is blocked because the selected TTS engine is not ready. */
+    val waitingForDubbingEngine: Boolean = false,
     val qualityOptions: List<String> = emptyList(),
     val selectedQuality: String = "",
     val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
@@ -257,6 +261,8 @@ class PlaybackService : MediaSessionService() {
                 error = "已取消处理。点击重试即可重新开始。",
                 muteOriginal = false,
                 noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                 isProcessingPaused = false,
             )
         }
@@ -927,6 +933,8 @@ class PlaybackService : MediaSessionService() {
                         processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
                         error = null,
                         noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                     )
                 }
                 val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -971,6 +979,8 @@ class PlaybackService : MediaSessionService() {
                         sourceLang = "zh",
                         error = null,
                         noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
@@ -1075,6 +1085,8 @@ class PlaybackService : MediaSessionService() {
                         processingFlow = ProcessingFlow.IMPORTED_SUBTITLES,
                         error = null,
                         noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                     )
                 }
                 // Subtitle files can be large. Keep file I/O and parsing off the main thread so
@@ -1218,6 +1230,8 @@ class PlaybackService : MediaSessionService() {
                             dubbingStatus = "中文视频：显示中文字幕，保留原声",
                             muteOriginal = false,
                             noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                             lines = translatedLines,
                             totalLines = translatedLines.size,
                             error = null,
@@ -1766,13 +1780,23 @@ class PlaybackService : MediaSessionService() {
                     updateUiForSession(key) {
                         it.copy(
                             noModelHint = hint,
+                            waitingForTranscriptionEngine = true,
+                            waitingForDubbingEngine = false,
                             phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
                             progress = "视频音频已提取完成；转写等待引擎就绪" +
                                 if (asrProvider == "local") "（设置 → 模型管理）" else "（设置 → 转写引擎）",
                         )
                     }
                 } else {
-                updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
+                updateUiForSession(key) {
+                    it.copy(
+                        phase = Phase.TRANSCRIBING,
+                        progress = "解码音频…",
+                        noModelHint = null,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                    )
+                }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 // A prompt cancellation can discard a successful withContext result before its
                 // caller receives it. Keep a temporary ownership reference so that PCM file can
@@ -2312,6 +2336,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             dubbingStatus = "中文视频：显示中文字幕，保留原声",
                             muteOriginal = false,
                             noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                         )
                     }
                     withContext(Dispatchers.Main) {
@@ -2340,6 +2366,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 ttsEngineName = tts.name,
                                 dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
                                 noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                             )
                         }
                         d.attach(tts, finalLines, sourceLanguage = srcLang)
@@ -2378,6 +2406,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                     "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
                                     else -> "已选择 Kokoro 模型，但初始化失败：$reason。不会自动切换到系统 TTS。请检查配音模型文件。"
                                 },
+                                waitingForTranscriptionEngine = false,
+                                waitingForDubbingEngine = true,
                                 error = null
                             )
                         }
@@ -2407,6 +2437,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             dubbingStatus = "${selectedTtsName} 尚未就绪",
                             muteOriginal = false,
                             noModelHint = message,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = true,
                         )
                     }
                     withContext(Dispatchers.Main) {
@@ -2487,6 +2519,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         error = e.message ?: "API 翻译失败",
                         muteOriginal = false,
                         noModelHint = null,
+                            waitingForTranscriptionEngine = false,
+                            waitingForDubbingEngine = false,
                     )
                 }
             } else {

@@ -195,8 +195,13 @@ object VideoProcessingFlowPolicy {
         Phase.ERROR -> 0
     }
 
-    fun isCompleted(phase: Phase, waitingForTranscriptionEngine: Boolean = false): Boolean =
-        phase == Phase.READY && !waitingForTranscriptionEngine
+    fun isCompleted(
+        phase: Phase,
+        waitingForTranscriptionEngine: Boolean = false,
+        waitingForDubbingEngine: Boolean = false,
+    ): Boolean = phase == Phase.READY &&
+        !waitingForTranscriptionEngine &&
+        !waitingForDubbingEngine
 
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
         if (flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION) 3 else 2

@@ -200,6 +200,7 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
         assertFalse(VideoProcessingFlowPolicy.isCompleted(Phase.READY, waitingForTranscriptionEngine = true))
+        assertFalse(VideoProcessingFlowPolicy.isCompleted(Phase.READY, waitingForDubbingEngine = true))
         assertTrue(VideoProcessingFlowPolicy.isCompleted(Phase.READY))
         assertFalse(VideoProcessingFlowPolicy.isCompleted(Phase.ERROR))
     }
