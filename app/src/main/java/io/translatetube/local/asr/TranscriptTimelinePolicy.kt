@@ -37,7 +37,7 @@ internal object TranscriptTimelinePolicy {
         // This transcript drives a single dubbing track. Provider word timings may cross at
         // phrase boundaries, so cap an earlier cue at the next strictly later cue's start.
         // Process equal-start cues as a group, allowing every row in that group to use the same
-        // next-distinct timestamp without changing the original order or dropping recognized text.
+        // next-distinct timestamp without changing the chronological sort order or dropping recognized text.
         val normalized = arrayOfNulls<Triple<Long, Long, String>>(chronological.size)
         var groupEnd = chronological.lastIndex
         var nextLaterStart: Long? = null

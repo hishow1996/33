@@ -94,8 +94,8 @@ class TranscriptTimelinePolicyTest {
 
         assertEquals(
             listOf(
-                Triple(100L, 500L, "first"),
                 Triple(100L, 500L, "same-start alternate"),
+                Triple(100L, 500L, "first"),
                 Triple(500L, 800L, "next"),
             ),
             normalized,
