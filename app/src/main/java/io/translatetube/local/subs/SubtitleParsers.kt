@@ -155,12 +155,12 @@ object SubtitleParsers {
                 val translated = cleanTranslatedText(line.zh)
                 val caption = when {
                     bilingual && translated != null && !sameCaptionText(source, translated) ->
-                        "$translated\\n$source"
+                        "$translated\n$source"
                     translated != null -> translated
                     else -> source
                 }.trim()
                 if (caption.isBlank()) return@forEach
-                append(caption).append('\\n').append('\\n')
+                append(caption).append('\n').append('\n')
             }
     }.trim()
 
