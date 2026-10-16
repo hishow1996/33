@@ -1773,6 +1773,9 @@ class PlaybackService : MediaSessionService() {
                 }
                 ensureCurrentSession(key)
                 val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
+                // The transcript clock must use the duration of the exact PCM file sent to ASR.
+                // Provider timestamps are relative to this full recording, not to each displayed line.
+                val asrTimelineDurationMs = pcmFile.durationMs
                 val (asrLines, detectedAsrLang) = if (asrProvider == "local") {
 updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val segs = withContext(Dispatchers.IO) {
@@ -1974,15 +1977,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     audioFile.delete()
                     if (transientAudio == audioFile) transientAudio = null
                 }
-                val transcribedLines = asrLines
-                    .mapNotNull { (startMs, endMs, text) ->
-                        val normalized = text.trim()
-                        if (normalized.isBlank() || endMs <= startMs) null
-                        else Triple(startMs, endMs, normalized)
-                    }
-                    .mapIndexed { index, (startMs, endMs, text) ->
-                        SubLine(index, startMs, endMs, text)
-                    }
+                // Some providers/segment boundaries can return cues out of order or with an end
+                // slightly beyond the uploaded PCM duration. Normalize once before caching,
+                // translating, highlighting, and dubbing so every consumer shares the same timeline.
+                val normalizedAsrLines = io.translatetube.local.asr.TranscriptTimelinePolicy.normalize(
+                    asrLines,
+                    asrTimelineDurationMs,
+                )
+                val transcribedLines = normalizedAsrLines.mapIndexed { index, (startMs, endMs, text) ->
+                    SubLine(index, startMs, endMs, text)
+                }
                 if (transcribedLines.isEmpty()) {
                     if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
