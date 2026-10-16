@@ -698,4 +698,23 @@ class SubtitleParsersTest {
         assertEquals("Hello\n\n世界", SubtitleParsers.toPlainText(rows, bilingual = false))
     }
 
+
+    @Test
+    fun sourceEquivalentRepeatedChineseCaptionsSurviveDisplayCopyAndExports() {
+        val line = SubLine(0, 0L, 1_000L, "哈哈哈哈", "哈哈哈哈")
+        val rows = listOf(line)
+
+        assertEquals("哈哈哈哈", SubtitleParsers.preferredTranslationText(line))
+        assertEquals("哈哈哈哈", SubtitleParsers.toPlainText(rows, bilingual = false))
+        assertEquals("哈哈哈哈", SubtitleParsers.toPlainText(rows, bilingual = true))
+        assertEquals(
+            "1\n00:00:00,000 --> 00:00:01,000\n哈哈哈哈\n\n",
+            SubtitleParsers.toSrt(rows),
+        )
+        assertEquals(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n哈哈哈哈\n\n",
+            SubtitleParsers.toBilingualVtt(rows),
+        )
+    }
+
 }
