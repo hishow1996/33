@@ -75,9 +75,11 @@ object LangMap {
     internal fun google(code: String, target: Boolean = false): String {
         val raw = code.trim().replace('_', '-')
         val normalized = raw.lowercase(java.util.Locale.ROOT)
-        if (normalized.isEmpty() || normalized == "auto" ||
-            normalized == "und" || normalized == "unknown" || normalized == "undefined"
-        ) return if (target) "zh-CN" else "auto"
+        val primary = normalized.substringBefore('-')
+        // Script/region tags do not turn placeholders such as und-Latn into real language codes.
+        if (normalized.isEmpty() || primary in setOf("auto", "und", "unknown", "undefined")) {
+            return if (target) "zh-CN" else "auto"
+        }
         return when {
             normalized in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn", "zh-sg") ||
                 normalized.startsWith("zh-hans-") -> "zh-CN"
@@ -99,8 +101,9 @@ object LangMap {
         if (normalized.startsWith("zh-hant") || normalized == "zh-tw" ||
             normalized.startsWith("zh-tw-") || normalized == "zh-hk"
         ) return "繁體中文"
+        if (normalized == "yue" || normalized.startsWith("yue-")) return "粤语"
+        if (normalized.startsWith("cmn-")) return "中文"
         if (normalized.startsWith("zh") || normalized == "cmn") return "中文"
-        if (normalized == "yue") return "粤语"
         return when (mlkit(code)) {
             "en" -> "英语"; "ja" -> "日语"; "ko" -> "韩语"; "fr" -> "法语"; "de" -> "德语"
             "es" -> "西班牙语"; "pt" -> "葡萄牙语"; "ru" -> "俄语"; "it" -> "意大利语"
