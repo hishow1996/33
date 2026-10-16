@@ -3536,7 +3536,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             )
         ) {
             d.stop()
-            pm.originalVolume = 1f
+            if (::pm.isInitialized) pm.originalVolume = 1f
         }
 
         // Keep the displayed duration synchronized with ExoPlayer in case the extractor metadata
