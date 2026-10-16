@@ -24,4 +24,36 @@ class SubtitleTranslationQualityPolicyTest {
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("hello", " ", "en"))
         assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho(null, "hello", "en"))
     }
+    @Test
+    fun acceptsNumbersUrlsAndEmailAddressesWhenTheyRemainUnchanged() {
+        assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("2026", "2026", "en"))
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isSourceEcho(
+                "https://example.com/watch?v=42",
+                "https://example.com/watch?v=42",
+                "en",
+            ),
+        )
+        assertFalse(
+            SubtitleTranslationQualityPolicy.isSourceEcho(
+                "info@example.com",
+                "info@example.com",
+                "en",
+            ),
+        )
+        assertFalse(SubtitleTranslationQualityPolicy.isSourceEcho("— …", "— …", "en"))
+    }
+
+    @Test
+    fun ignoresInternalPunctuationDifferencesWhenDetectingAnUntranslatedEcho() {
+        assertTrue(
+            SubtitleTranslationQualityPolicy.isSourceEcho(
+                "Hello, world!",
+                "hello world",
+                "en",
+            ),
+        )
+    }
+
+
 }
