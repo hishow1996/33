@@ -582,6 +582,17 @@ class DubbingEngine(
                     // After one retry, publish the failure and allow video playback to continue.
                     val detail = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("DubbingEngine", "synth fail line $idx using selected engine ${tts?.name}", e)
+                    // A playback cache miss may have already requested a retry while this cue
+                    // was being synthesized. Defer terminal error reporting until that queued
+                    // attempt has run, otherwise a successful immediate retry leaves a false warning.
+                    val retryRequestedWhileActive = synchronized(pending) {
+                        retryAfterActiveSynthesis.contains(idx)
+                    }
+                    if (DubbingRetryQueuePolicy.shouldDeferFailureForActiveRetry(retryRequestedWhileActive)) {
+                        markCuePrepared(idx, hasAudio = false)
+                        bumpPrepared()
+                        continue
+                    }
                     if (requestTtsFallback(idx, detail)) {
                         // The asynchronous service callback will install the fallback and requeue
                         // this cue. Stop before synthesizing another line with the failed engine.

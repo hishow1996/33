@@ -16,4 +16,8 @@ internal object DubbingRetryQueuePolicy {
             alreadyQueued -> DubbingRetryQueueDecision.ENSURE_WORKER
             else -> DubbingRetryQueueDecision.ENQUEUE
         }
+
+    /** A failure is terminal only when playback hasn't already requested an active-cue retry. */
+    fun shouldDeferFailureForActiveRetry(retryRequestedWhileActive: Boolean): Boolean =
+        retryRequestedWhileActive
 }
