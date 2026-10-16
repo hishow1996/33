@@ -117,6 +117,10 @@ fun PlayerScreen(
     var showSubtitleDownloadDialog by remember { mutableStateOf(false) }
     var pendingSubtitleTrack by remember { mutableStateOf<SubtitleTrackOption?>(null) }
     var pendingSubtitleExportContent by remember { mutableStateOf<String?>(null) }
+    var showPersonVoiceDialog by remember { mutableStateOf(false) }
+    var personVoiceMenuExpanded by remember { mutableStateOf(false) }
+    var personTargetIndex by remember { mutableIntStateOf(-1) }
+    var selectedPersonVoiceId by remember { mutableIntStateOf(-1) }
     val subtitleExportScope = rememberCoroutineScope()
     val isSpeakerBusy = state.progress.contains("人物识别") ||
         state.progress.contains("人物说话") ||
@@ -502,6 +506,28 @@ fun PlayerScreen(
                                 PlaybackService.instance?.autoAssignSpeakers()
                             },
                         )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Face,
+                            title = "人物默认音色",
+                            description = when {
+                                !voiceSelectionEnabled -> "当前配音引擎没有可选择的多种中文音色"
+                                state.lines.isEmpty() -> "生成或导入字幕后可设置"
+                                state.currentLine !in state.lines.indices -> "播放到字幕后可为当前人物设置音色"
+                                else -> "设置当前句音色，或应用到同一人物的全部字幕"
+                            },
+                            enabled = voiceSelectionEnabled && !isSpeakerBusy &&
+                                state.currentLine in state.lines.indices,
+                            onClick = {
+                                advancedMenuExpanded = false
+                                personTargetIndex = state.currentLine
+                                val currentVoice = state.lines.getOrNull(personTargetIndex)?.speakerId ?: -1
+                                selectedPersonVoiceId = currentVoice.takeIf { value ->
+                                    voiceOptions.any { it.first == value }
+                                } ?: -1
+                                personVoiceMenuExpanded = false
+                                showPersonVoiceDialog = true
+                            },
+                        )
                         Divider(
                             modifier = Modifier.padding(horizontal = 12.dp),
                             color = OutlineSoft,
@@ -696,11 +722,6 @@ fun PlayerScreen(
                         state = state,
                         svc = PlaybackService.instance,
                         listState = listState,
-                        selectedTtsEngine = selectedTtsEngine,
-                        systemVoiceCatalog = systemVoiceCatalog,
-                        voiceOptions = voiceOptions,
-                        voiceSelectionEnabled = voiceSelectionEnabled,
-                        onCopy = { copySubtitles() },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -717,6 +738,113 @@ fun PlayerScreen(
             }
         }
         }
+    }
+
+    if (showPersonVoiceDialog) {
+        val targetLine = state.lines.getOrNull(personTargetIndex)
+        val currentVoiceName = voiceOptions.firstOrNull { it.first == selectedPersonVoiceId }?.second
+            ?: if (selectedTtsEngine == "system") "系统默认音色" else "默认音色"
+        AlertDialog(
+            onDismissRequest = {
+                showPersonVoiceDialog = false
+                personVoiceMenuExpanded = false
+            },
+            title = { Text("人物默认音色") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        targetLine?.let { SubtitleParsers.preferredTranslationText(it) ?: it.text }
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { "当前字幕：$it" }
+                            ?: "当前没有可用字幕行，请先播放到有字幕的位置。",
+                        color = OnBg,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Box {
+                        Surface(
+                            onClick = { personVoiceMenuExpanded = true },
+                            enabled = voiceSelectionEnabled,
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFFF2F6FC),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, OutlineSoft),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Icon(Icons.Filled.Face, contentDescription = null, tint = BrandBright)
+                                Text(currentVoiceName, color = OnBg, modifier = Modifier.weight(1f))
+                                Icon(Icons.Filled.MoreVert, contentDescription = "选择音色", tint = SubText)
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = personVoiceMenuExpanded,
+                            onDismissRequest = { personVoiceMenuExpanded = false },
+                        ) {
+                            voiceOptions.forEach { (voiceId, voiceName) ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (selectedPersonVoiceId == voiceId) "$voiceName（已选择）"
+                                            else voiceName
+                                        )
+                                    },
+                                    onClick = {
+                                        selectedPersonVoiceId = voiceId
+                                        personVoiceMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "“默认音色”使用所选配音引擎的默认中文声音。识别并区分人物后，可将当前选择应用到该人物的全部字幕。",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        enabled = targetLine != null && voiceSelectionEnabled,
+                        onClick = {
+                            showPersonVoiceDialog = false
+                            personVoiceMenuExpanded = false
+                            PlaybackService.instance?.setLineSpeaker(
+                                personTargetIndex,
+                                selectedPersonVoiceId,
+                                applyToPerson = true,
+                            )
+                        },
+                    ) { Text("设为此人物默认") }
+                    TextButton(
+                        enabled = targetLine != null && voiceSelectionEnabled,
+                        onClick = {
+                            showPersonVoiceDialog = false
+                            personVoiceMenuExpanded = false
+                            PlaybackService.instance?.setLineSpeaker(personTargetIndex, selectedPersonVoiceId)
+                        },
+                    ) { Text("仅当前句") }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPersonVoiceDialog = false
+                        personVoiceMenuExpanded = false
+                    }
+                ) { Text("取消") }
+            },
+        )
     }
 
     if (showSubtitleDownloadDialog) {
@@ -1593,11 +1721,6 @@ private fun SubtitleList(
     state: PlayerUiState,
     svc: PlaybackService?,
     listState: androidx.compose.foundation.lazy.LazyListState,
-    selectedTtsEngine: String,
-    systemVoiceCatalog: List<String>,
-    voiceOptions: List<Pair<Int, String>>,
-    voiceSelectionEnabled: Boolean,
-    onCopy: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -1606,25 +1729,6 @@ private fun SubtitleList(
             .background(Color.White)
             .padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
-        Row(
-            Modifier.fillMaxWidth().height(32.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        ) {
-            Text("中文字幕", color = OnBg, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold))
-            Spacer(Modifier.weight(1f))
-            Box(
-                Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onCopy),
-                contentAlignment = androidx.compose.ui.Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.ContentCopy,
-                    contentDescription = "复制双语字幕",
-                    tint = SubText,
-                    modifier = Modifier.size(19.dp),
-                )
-            }
-        }
-        HorizontalDivider(color = OutlineSoft, thickness = 1.dp)
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -1699,86 +1803,7 @@ private fun SubtitleList(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    if (active) {
-                        Spacer(Modifier.height(4.dp))
-                        if (!voiceSelectionEnabled) {
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = SurfaceHigh.copy(alpha = 0.45f),
-                                contentColor = SubText,
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    Icon(Icons.Filled.Face, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Text(
-                                        when (selectedTtsEngine) {
-                                            "piper" -> "Piper 单人音色"
-                                            "system" -> if (systemVoiceCatalog.isEmpty()) "系统中文音色尚未检测" else "系统仅有一个可用中文音色"
-                                            else -> "没有可选音色"
-                                        },
-                                        style = MaterialTheme.typography.labelMedium,
-                                    )
-                                }
-                            }
-                        } else {
-                            var voicePickerExpanded by remember(i) { mutableStateOf(false) }
-                            Box {
-                                Surface(
-                                    onClick = { voicePickerExpanded = true },
-                                    shape = RoundedCornerShape(50),
-                                    color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
-                                    contentColor = if (activeDub) Color(0xFF30343B) else SubText,
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Icon(Icons.Filled.Face, contentDescription = "选择本句配音音色", modifier = Modifier.size(16.dp))
-                                        Text(
-                                            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.displayLabel(
-                                                line.speakerId,
-                                                selectedTtsEngine,
-                                                systemVoiceCatalog,
-                                            ).takeIf { selectedTtsEngine == "system" }
-                                                ?: speakerLabel(line.speakerId),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Icon(Icons.Filled.MoreVert, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
-                                    }
-                                }
-                                DropdownMenu(
-                                    expanded = voicePickerExpanded,
-                                    onDismissRequest = { voicePickerExpanded = false },
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("将当前音色应用到此人物的全部字幕") },
-                                        enabled = line.speakerId in -1..53,
-                                        onClick = {
-                                            voicePickerExpanded = false
-                                            svc?.setLineSpeaker(i, line.speakerId, applyToPerson = true)
-                                        },
-                                    )
-                                    HorizontalDivider()
-                                    voiceOptions.forEach { (voiceId, voiceName) ->
-                                        DropdownMenuItem(
-                                            text = { Text(if (line.speakerId == voiceId) "$voiceName（当前）" else voiceName) },
-                                            enabled = line.speakerId != voiceId,
-                                            onClick = {
-                                                voicePickerExpanded = false
-                                                svc?.setLineSpeaker(i, voiceId)
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+
                 }
             }
         }
@@ -1788,9 +1813,6 @@ private fun SubtitleList(
 
 private fun subtitleComparisonKey(text: String): String =
     text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
-
-private fun speakerLabel(id: Int): String = if (id == -1) "默认音色" else "Kokoro 音色 $id"
-
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
