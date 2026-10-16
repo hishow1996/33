@@ -548,4 +548,16 @@ class SubtitleParsersTest {
         assertEquals("one two\\nthree four", parsed.single().text)
     }
 
+
+    @Test
+    fun detectsTranslationPlaceholdersAndProgressWithoutTreatingRealTextAsPlaceholder() {
+        assertTrue(SubtitleParsers.isPlaceholderTranslation(" 正在翻译 "))
+        assertTrue(SubtitleParsers.isPlaceholderTranslation("翻译中 3/5 行"))
+        assertTrue(SubtitleParsers.isPlaceholderTranslation("TRANSLATING"))
+        assertTrue(SubtitleParsers.isPlaceholderTranslation("译文暂不可用"))
+        org.junit.Assert.assertFalse(SubtitleParsers.isPlaceholderTranslation("翻译完成，效果很好"))
+        org.junit.Assert.assertFalse(SubtitleParsers.isPlaceholderTranslation("The translating machine"))
+        org.junit.Assert.assertFalse(SubtitleParsers.isPlaceholderTranslation(null))
+    }
+
 }
