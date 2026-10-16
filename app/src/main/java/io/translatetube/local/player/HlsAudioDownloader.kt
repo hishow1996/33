@@ -599,12 +599,9 @@ internal object HlsAudioDownloader {
         }
 
         ensurePlaylistIsUnencrypted(body)
-        if (lines.any {
-                it.equals("#EXT-X-DISCONTINUITY", ignoreCase = true) ||
-                    it.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:", ignoreCase = true)
-            }) {
-            throw IllegalStateException("该 HLS 含有时间轴切换标记，当前版本不能安全地拼接这些片段。")
-        }
+        // EXT-X-DISCONTINUITY（片头/广告切换导致的时间轴跳变）不再拒绝：
+        // 音频转写只关心语音内容，片段间的时间轴跳变不影响 ASR 结果；
+        // 若个别分段编码参数不兼容，会在解码阶段失败并由上层回落处理。
         validateNoMissingSegments(body)
 
         var initSegment: SegmentSource? = null

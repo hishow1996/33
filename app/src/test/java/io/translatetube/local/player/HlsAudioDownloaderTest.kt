@@ -347,6 +347,27 @@ class HlsAudioDownloaderTest {
 
 
     @Test
+    fun acceptsPlaylistsWithDiscontinuityTagsForTranscription() {
+        // 音频转写用途容忍 EXT-X-DISCONTINUITY（片头/广告切换）：只取语音内容，
+        // 片段间时间轴跳变不影响 ASR 结果，不再整体拒绝。
+        val playlist = """
+            #EXTM3U
+            #EXTINF:6.0,
+            seg-1.ts
+            #EXT-X-DISCONTINUITY
+            #EXTINF:6.0,
+            seg-2.ts
+            #EXT-X-ENDLIST
+        """.trimIndent()
+
+        val parsed = HlsAudioDownloader.parseMediaPlaylist(
+            "https://cdn.example/index.m3u8",
+            playlist,
+        )
+        assertEquals(2, parsed.segments.size)
+    }
+
+    @Test
     fun skipsVariantsWithMissingOrNonPositiveBandwidth() {
         val master = """
             #EXTM3U
