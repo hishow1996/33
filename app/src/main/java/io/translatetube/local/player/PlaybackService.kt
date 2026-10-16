@@ -3702,14 +3702,13 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     val speaker = canonicalSpeakerIds[detectedSpeaker] ?: -1
                     // Assign each diarized person a stable voice for this video. Manual cue
                     // choices take precedence over the automatic speaker mapping.
-                    val suggestedVoice = when {
-                        speaker == 0 -> -1
-                        speaker in 1..53 -> {
-                            val candidate = speaker - 1
-                            if (candidate >= preferredVoice) candidate + 1 else candidate
-                        }
-                        else -> -1
-                    }
+                    val suggestedVoice = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy
+                        .voiceForCanonicalSpeaker(
+                            engineId = selectedTts,
+                            canonicalSpeakerId = speaker,
+                            systemChineseVoiceCount = systemChineseVoiceCount,
+                            preferredKokoroVoice = preferredVoice,
+                        )
                     val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
                     val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..53) {
                         speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
@@ -3904,6 +3903,17 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     }
                     updateUiForSession(sessionKey) {
                         it.copy(progress = "", error = message)
+                    }
+                    return@launch
+                }
+                if (selectedTts == "system" &&
+                    selectedVoice >= (systemChineseVoiceCount - 1).coerceAtLeast(0)
+                ) {
+                    updateUiForSession(sessionKey) {
+                        it.copy(
+                            progress = "",
+                            error = "所选系统音色在当前手机上不可用，请从现有中文音色列表中选择。",
+                        )
                     }
                     return@launch
                 }

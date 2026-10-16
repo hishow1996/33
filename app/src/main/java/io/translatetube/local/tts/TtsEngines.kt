@@ -162,6 +162,15 @@ class SystemTts(context: Context) : TtsEngine {
         }
         defaultChineseVoice = defaultVoice
         chineseVoiceCatalog = catalogue
+        // The player UI must list the same ordered catalogue that synth() indexes. This avoids
+        // pretending that the Kokoro 0-53 palette maps 1:1 to OEM-provided system voices.
+        appCtx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putString(
+                SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                SystemTtsSpeakerVoicePolicy.encodeVoiceCatalog(catalogue.map { it.name }),
+            )
+            .apply()
 
         tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit

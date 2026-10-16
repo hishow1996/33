@@ -86,9 +86,23 @@ fun PlayerScreen(
     mediaUserAgent: String? = null,
 ) {
     val ctx = LocalContext.current
-    val selectedTtsEngine = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
-        .getString("tts_engine", "kokoro") ?: "kokoro"
-    val voiceSelectionEnabled = selectedTtsEngine != "piper"
+    val settingsPrefs = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    val selectedTtsEngine = settingsPrefs.getString("tts_engine", "kokoro") ?: "kokoro"
+    val systemVoiceCatalog = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+        settingsPrefs.getString(io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY, null),
+    )
+    val voiceOptions: List<Pair<Int, String>> = when (selectedTtsEngine) {
+        "system" -> buildList {
+            add(-1 to io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.displayLabel(-1, "system", systemVoiceCatalog))
+            systemVoiceCatalog.drop(1).forEachIndexed { index, voiceName -> add(index to voiceName) }
+        }
+        "piper" -> emptyList()
+        else -> buildList {
+            add(-1 to "Kokoro 默认音色")
+            (0..53).forEach { add(it to "Kokoro 音色 $it") }
+        }
+    }
+    val voiceSelectionEnabled = selectedTtsEngine != "piper" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
@@ -581,6 +595,9 @@ fun PlayerScreen(
                         state = state,
                         svc = PlaybackService.instance,
                         listState = listState,
+                        selectedTtsEngine = selectedTtsEngine,
+                        systemVoiceCatalog = systemVoiceCatalog,
+                        voiceOptions = voiceOptions,
                         voiceSelectionEnabled = voiceSelectionEnabled,
                         onCopy = { copySubtitles() },
                         modifier = Modifier.fillMaxSize(),
@@ -1439,6 +1456,9 @@ private fun SubtitleList(
     state: PlayerUiState,
     svc: PlaybackService?,
     listState: androidx.compose.foundation.lazy.LazyListState,
+    selectedTtsEngine: String,
+    systemVoiceCatalog: List<String>,
+    voiceOptions: List<Pair<Int, String>>,
     voiceSelectionEnabled: Boolean,
     onCopy: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1557,7 +1577,14 @@ private fun SubtitleList(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
                                     Icon(Icons.Filled.Face, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Text("Piper 单人音色", style = MaterialTheme.typography.labelMedium)
+                                    Text(
+                                        when (selectedTtsEngine) {
+                                            "piper" -> "Piper 单人音色"
+                                            "system" -> if (systemVoiceCatalog.isEmpty()) "系统中文音色尚未检测" else "系统仅有一个可用中文音色"
+                                            else -> "没有可选音色"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
                                 }
                             }
                         } else {
@@ -1575,7 +1602,17 @@ private fun SubtitleList(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     ) {
                                         Icon(Icons.Filled.Face, contentDescription = "选择本句配音音色", modifier = Modifier.size(16.dp))
-                                        Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.displayLabel(
+                                                line.speakerId,
+                                                selectedTtsEngine,
+                                                systemVoiceCatalog,
+                                            ).takeIf { selectedTtsEngine == "system" }
+                                                ?: speakerLabel(line.speakerId),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
                                         Icon(Icons.Filled.MoreVert, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
                                     }
                                 }
@@ -1583,17 +1620,9 @@ private fun SubtitleList(
                                     expanded = voicePickerExpanded,
                                     onDismissRequest = { voicePickerExpanded = false },
                                 ) {
-                                    DropdownMenuItem(
-                                        text = { Text(if (line.speakerId == -1) "默认音色（当前）" else "默认音色") },
-                                        enabled = line.speakerId != -1,
-                                        onClick = {
-                                            voicePickerExpanded = false
-                                            svc?.setLineSpeaker(i, -1)
-                                        },
-                                    )
-                                    (0..53).forEach { voiceId ->
+                                    voiceOptions.forEach { (voiceId, voiceName) ->
                                         DropdownMenuItem(
-                                            text = { Text(if (line.speakerId == voiceId) "音色 $voiceId（当前）" else "音色 $voiceId") },
+                                            text = { Text(if (line.speakerId == voiceId) "$voiceName（当前）" else voiceName) },
                                             enabled = line.speakerId != voiceId,
                                             onClick = {
                                                 voicePickerExpanded = false
@@ -1615,7 +1644,7 @@ private fun SubtitleList(
 private fun subtitleComparisonKey(text: String): String =
     text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
 
-private fun speakerLabel(id: Int): String = if (id == -1) "默认音色" else "音色 $id"
+private fun speakerLabel(id: Int): String = if (id == -1) "默认音色" else "Kokoro 音色 $id"
 
 
 @Composable
