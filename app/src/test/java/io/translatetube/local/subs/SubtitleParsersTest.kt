@@ -589,4 +589,22 @@ class SubtitleParsersTest {
         assertEquals("Café É ñ ü ß 😀", parsed.single().text)
     }
 
+
+    @Test
+    fun replacesInvalidNumericCodePointsAndKeepsUnknownNamedEntities() {
+        val decoded = SubtitleTextDecoder.decode("zero &#0; surrogate &#xD800; out-of-range &#x110000; unknown &MadeUpEntity;")
+
+        assertEquals(
+            "zero \uFFFD surrogate \uFFFD out-of-range \uFFFD unknown &MadeUpEntity;",
+            decoded,
+        )
+    }
+
+    @Test
+    fun decoderHandlesUppercaseHexPrefixAndLargeValidCodePoint() {
+        assertEquals("🚀", SubtitleTextDecoder.decode("&#X1F680;"))
+        assertEquals("É", SubtitleTextDecoder.decode("&Eacute;"))
+        assertEquals("é", SubtitleTextDecoder.decode("&eacute;"))
+    }
+
 }
