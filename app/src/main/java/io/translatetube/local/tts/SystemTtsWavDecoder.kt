@@ -120,6 +120,43 @@ internal object SystemTtsWavDecoder {
                     byteRate = i32(chunkDataStart + 8)
                     blockAlign = u16(chunkDataStart + 12)
                     bitsPerSample = u16(chunkDataStart + 14)
+
+                    // Some Android/OEM TTS engines wrap ordinary PCM or IEEE-float audio in
+                    // WAVE_FORMAT_EXTENSIBLE (0xFFFE). Resolve only the canonical PCM/float
+                    // subformat GUIDs; never reinterpret an unknown codec as raw PCM.
+                    if (formatCode == 0xFFFE) {
+                        if (chunkSize < 40) {
+                            throw IllegalStateException("系统 TTS WAV extensible fmt 块过短")
+                        }
+                        val extensionSize = u16(chunkDataStart + 16)
+                        if (extensionSize < 22 || 18 + extensionSize > chunkSize) {
+                            throw IllegalStateException("系统 TTS WAV extensible 格式扩展长度无效")
+                        }
+                        val validBitsPerSample = u16(chunkDataStart + 18)
+                        if (validBitsPerSample != bitsPerSample) {
+                            throw IllegalStateException(
+                                "系统 TTS WAV extensible 有效位数与容器位宽不一致"
+                            )
+                        }
+                        val guid = chunkDataStart + 24
+                        val subFormatCode = i32(guid)
+                        val canonicalGuid = u16(guid + 4) == 0 &&
+                            u16(guid + 6) == 0x0010 &&
+                            (bytes[guid + 8].toInt() and 0xFF) == 0x80 &&
+                            (bytes[guid + 9].toInt() and 0xFF) == 0x00 &&
+                            (bytes[guid + 10].toInt() and 0xFF) == 0x00 &&
+                            (bytes[guid + 11].toInt() and 0xFF) == 0xAA &&
+                            (bytes[guid + 12].toInt() and 0xFF) == 0x00 &&
+                            (bytes[guid + 13].toInt() and 0xFF) == 0x38 &&
+                            (bytes[guid + 14].toInt() and 0xFF) == 0x9B &&
+                            (bytes[guid + 15].toInt() and 0xFF) == 0x71
+                        if (!canonicalGuid || subFormatCode !in listOf(1, 3)) {
+                            throw IllegalStateException(
+                                "系统 TTS WAV extensible 子格式不支持：$subFormatCode"
+                            )
+                        }
+                        formatCode = subFormatCode
+                    }
                 }
                 "data" -> {
                     if (sawDataChunk) {

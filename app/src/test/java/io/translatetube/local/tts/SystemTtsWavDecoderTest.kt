@@ -161,6 +161,80 @@ class SystemTtsWavDecoderTest {
     }
 
     @Test
+    fun decodesExtensiblePcm16AndFloat32UsingTheirCanonicalSubformatGuids() {
+        val pcm = SystemTtsWavDecoder.decode(
+            extensibleWave(
+                formatCode = 1,
+                channels = 1,
+                sampleRate = 16_000,
+                bits = 16,
+                data = byteArrayOf(0, 64, 0, -64),
+            )
+        )
+        assertEquals(2, pcm.samples.size)
+        assertEquals(0.5f, pcm.samples[0], 0.001f)
+        assertEquals(-0.5f, pcm.samples[1], 0.001f)
+
+        val floatData = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            .putFloat(0.25f)
+            .putFloat(-0.75f)
+            .array()
+        val floatPcm = SystemTtsWavDecoder.decode(
+            extensibleWave(3, 1, 24_000, 32, floatData)
+        )
+        assertEquals(2, floatPcm.samples.size)
+        assertEquals(0.25f, floatPcm.samples[0], 0.001f)
+        assertEquals(-0.75f, floatPcm.samples[1], 0.001f)
+    }
+
+    @Test
+    fun rejectsExtensibleWavWithUnknownSubformatGuid() {
+        val bytes = extensibleWave(1, 1, 16_000, 16, byteArrayOf(0, 64, 0, -64))
+        // Change the GUID's final byte. The decoder must not treat an unknown codec as PCM.
+        bytes[59] = 0x70.toByte()
+
+        val error = runCatching { SystemTtsWavDecoder.decode(bytes) }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("子格式不支持"))
+    }
+
+    private fun extensibleWave(
+        formatCode: Int,
+        channels: Int,
+        sampleRate: Int,
+        bits: Int,
+        data: ByteArray,
+    ): ByteArray {
+        val padding = data.size and 1
+        val bytes = ByteBuffer.allocate(68 + data.size + padding).order(ByteOrder.LITTLE_ENDIAN)
+        fun id(value: String) { bytes.put(value.toByteArray(Charsets.US_ASCII)) }
+        id("RIFF")
+        bytes.putInt(bytes.capacity() - 8)
+        id("WAVE")
+        id("fmt ")
+        bytes.putInt(40)
+        bytes.putShort(0xFFFE.toShort())
+        bytes.putShort(channels.toShort())
+        bytes.putInt(sampleRate)
+        bytes.putInt(sampleRate * channels * bits / 8)
+        bytes.putShort((channels * bits / 8).toShort())
+        bytes.putShort(bits.toShort())
+        bytes.putShort(22.toShort()) // cbSize
+        bytes.putShort(bits.toShort()) // validBitsPerSample
+        bytes.putInt(if (channels == 1) 0x4 else 0x3) // channel mask
+        bytes.putInt(formatCode) // SubFormat.Data1 (little-endian)
+        bytes.putShort(0.toShort()) // SubFormat.Data2
+        bytes.putShort(0x0010.toShort()) // SubFormat.Data3
+        bytes.put(byteArrayOf(0x80.toByte(), 0, 0, 0xAA.toByte(), 0, 0x38, 0x9B.toByte(), 0x71))
+        id("data")
+        bytes.putInt(data.size)
+        bytes.put(data)
+        if (padding != 0) bytes.put(0)
+        return bytes.array()
+    }
+
+    @Test
     fun rejectsOversizedWavBeforeReadingItsContents() {
         val file = java.io.File.createTempFile("tts_oversized_", ".wav")
         try {
