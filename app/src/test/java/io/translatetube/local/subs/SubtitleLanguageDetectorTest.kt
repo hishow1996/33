@@ -76,4 +76,19 @@ class SubtitleLanguageDetectorTest {
         )
     }
 
+
+    @Test
+    fun detectsLanguageAcrossMoreThanTheFirstFewShortCues() {
+        val cues = listOf("OK", "Yes", "No", "2026", "Hi") +
+            List(20) { "こんにちは、今日の動画へようこそ。" }
+        assertEquals("ja", SubtitleLanguageDetector.detectFromCues(cues))
+        assertEquals("auto", SubtitleLanguageDetector.detectFromCues(cues, maxCues = 0))
+    }
+
+    @Test
+    fun cueSamplingUsesACharacterBoundForVeryLongCaptions() {
+        val cues = listOf("こんにちは".repeat(3_000), "Hello")
+        assertEquals("ja", SubtitleLanguageDetector.detectFromCues(cues))
+    }
+
 }
