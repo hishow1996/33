@@ -560,4 +560,19 @@ class SubtitleParsersTest {
         org.junit.Assert.assertFalse(SubtitleParsers.isPlaceholderTranslation(null))
     }
 
+
+    @Test
+    fun timedTextXmlPreservesExplicitHtmlLineBreaks() {
+        val source = """<transcript><text start="1.0" dur="2.0">first<br/>second<br>third</text></transcript>"""
+
+        val parsed = SubtitleParsers.parseTimedTextXml(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("first
+second
+third", parsed.single().text)
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(3_000L, parsed.single().endMs)
+    }
+
 }
