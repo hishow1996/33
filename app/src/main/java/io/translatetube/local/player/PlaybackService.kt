@@ -2219,9 +2219,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 // Some providers/segment boundaries can return cues out of order or with an end
                 // slightly beyond the uploaded PCM duration. Normalize once before caching,
                 // translating, highlighting, and dubbing so every consumer shares the same timeline.
+                val timelineOwnerJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
                 val normalizedAsrLines = io.translatetube.local.asr.TranscriptTimelinePolicy.normalize(
                     asrLines,
                     asrTimelineDurationMs,
+                    checkActive = { timelineOwnerJob?.ensureActive() },
                 )
                 val transcribedLines = normalizedAsrLines.mapIndexed { index, (startMs, endMs, text) ->
                     SubLine(index, startMs, endMs, text)
