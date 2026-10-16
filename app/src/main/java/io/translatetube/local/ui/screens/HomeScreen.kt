@@ -41,6 +41,7 @@ import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun HomeScreen(
@@ -49,10 +50,22 @@ fun HomeScreen(
     onResumeTask: (String) -> Unit = {},
 ) {
     val playback by PlaybackService.ui.collectAsState()
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val db = remember { AppDatabase.get(ctx) }
-    val videos by db.videoDao().all().collectAsState(initial = emptyList())
+    val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    var db by remember(ctx) { mutableStateOf<AppDatabase?>(null) }
+    var videos by remember { mutableStateOf<List<VideoEntity>>(emptyList()) }
+    var historyLoaded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // 先完成首帧绘制，再在 IO 线程打开数据库并订阅历史记录；冷启动不被历史库初始化拖住。
+    LaunchedEffect(ctx) {
+        withFrameNanos { }
+        val database = withContext(Dispatchers.IO) { AppDatabase.get(ctx) }
+        db = database
+        database.videoDao().all().collect { items ->
+            videos = items
+            historyLoaded = true
+        }
+    }
     var link by remember { mutableStateOf("") }
     var linkError by remember { mutableStateOf(false) }
     var favoritesOnly by remember { mutableStateOf(false) }
@@ -306,7 +319,7 @@ fun HomeScreen(
                         onPlay = onPlay,
                         onFav = {
                             scope.launch(Dispatchers.IO) {
-                                db.videoDao().setFavorite(video.key, !video.isFavorite)
+                                db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
                             }
                         },
                     )
