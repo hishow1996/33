@@ -1041,7 +1041,13 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                ensureCurrentSession(sessionKey)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
                 dubbing = d
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
@@ -1307,7 +1313,13 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                ensureCurrentSession(sessionKey)
+                try {
+                    ensureCurrentSession(sessionKey)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
                 dubbing = d
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
@@ -2417,7 +2429,13 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             runCatching { tts.close() }
                             throw e
                         }
-                        ensureCurrentSession(key)
+                        try {
+                            ensureCurrentSession(key)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            retireDubbing(d)
+                            runCatching { tts.close() }
+                            throw e
+                        }
                         dubbing = d
                         registerDubbingFailureHandler(d, tts, key)
                         updateUiForSession(key) {
