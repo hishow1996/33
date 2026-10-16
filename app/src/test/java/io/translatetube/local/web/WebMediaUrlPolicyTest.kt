@@ -71,6 +71,17 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
+    fun onlyExplicitAudioExtensionsCanUseAudioFileFallback() {
+        assertEquals(true, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/track.m4a?token=abc"))
+        assertEquals(true, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/track.MP3"))
+        assertEquals(true, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/track.opus?expires=123"))
+        assertEquals(false, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/movie.mp4"))
+        assertEquals(false, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/master.m3u8"))
+        assertEquals(false, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/media?format=mp3"))
+        assertEquals(false, WebMediaUrlPolicy.isExplicitAudioOnlyResource("https://cdn.example/track.mp3\n"))
+    }
+
+    @Test
     fun uppercaseMediaExtensionsRemainRecognizedAcrossLocales() {
         val previous = java.util.Locale.getDefault()
         try {

@@ -3335,6 +3335,55 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         }
     }
 
+    /**
+     * Inspect at most 512 bytes to identify an extension-less HLS playlist. This probe does not
+     * write the response to disk, even if a server ignores the Range request and returns HTTP 200.
+     */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    private suspend fun probeHlsManifestPayload(
+        mediaUrl: String,
+        headers: Map<String, String>,
+    ): Boolean {
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        val probeHeaders = HlsAudioDownloader.headersWithoutInheritedRange(headers) +
+            ("Range" to "bytes=0-511")
+        return withContext(Dispatchers.IO) {
+            ownerJob?.ensureActive()
+            SafeMediaHttp.execute(
+                url = mediaUrl,
+                requestHeaders = probeHeaders,
+                userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                    ?: SafeMediaHttp.DEFAULT_USER_AGENT,
+                ownerJob = ownerJob,
+            ).use responseUse@ { response ->
+                if (response.code !in setOf(200, 206)) {
+                    return@responseUse false
+                }
+                val body = response.body ?: return@responseUse false
+                val contentType = body.contentType()?.toString()
+                    ?.lowercase(java.util.Locale.ROOT)
+                    .orEmpty()
+                if (contentType.contains("mpegurl")) {
+                    return@responseUse true
+                }
+                val prefix = ByteArray(512)
+                val count = body.byteStream().use { input ->
+                    var total = 0
+                    while (total < prefix.size) {
+                        ownerJob?.ensureActive()
+                        val read = input.read(prefix, total, prefix.size - total)
+                        if (read <= 0) break
+                        total += read
+                        // "#EXTM3U" (including a possible UTF-8 BOM) is at most 10 bytes.
+                        if (isHlsManifestPayload(prefix, total)) break
+                    }
+                    total
+                }
+                isHlsManifestPayload(prefix, count)
+            }
+        }
+    }
+
     private suspend fun obtainRemoteMediaAsrFile(
         mediaUrl: String,
         referrer: String,
@@ -3438,21 +3487,24 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         } catch (streamingError: Exception) {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             if (streamingError is kotlinx.coroutines.CancellationException) throw streamingError
-                            android.util.Log.w(
-                                "PlaybackService",
-                                "流式音轨提取失败，回落整文件音频下载",
-                                streamingError,
-                            )
-                            updateUiForSession(sessionKey) { state ->
-                                if (state.key == sessionKey) {
-                                    state.copy(progress = "流式提取不可用，改为下载音频数据…")
-                                } else state
+
+                            // Never download an entire MP4/WebM just because MediaExtractor failed.
+                            // A small Range probe preserves HLS support for URLs without an extension.
+                            val isOpaqueHlsManifest = try {
+                                probeHlsManifestPayload(mediaUrl, headers)
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (probeError: Exception) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                android.util.Log.w(
+                                    "PlaybackService",
+                                    "检查网页媒体是否为 HLS 清单失败",
+                                    probeError,
+                                )
+                                false
                             }
-                            try {
-                                downloadAudio(mediaUrl, destination, sessionKey, headers)
-                            } catch (manifest: HlsManifestPayloadException) {
-                                // Some servers serve HLS playlists from opaque URLs without an .m3u8 suffix.
-                                // Detect the response body, then re-open through the bounded HLS segment path.
+
+                            if (isOpaqueHlsManifest) {
                                 HlsAudioDownloader.download(
                                     mediaUrl,
                                     destination,
@@ -3466,6 +3518,27 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                         } else state
                                     }
                                 }
+                            } else if (
+                                io.translatetube.local.web.WebMediaUrlPolicy
+                                    .isExplicitAudioOnlyResource(mediaUrl)
+                            ) {
+                                // A URL explicitly ending in an audio-only extension is safe to fetch whole.
+                                updateUiForSession(sessionKey) { state ->
+                                    if (state.key == sessionKey) {
+                                        state.copy(progress = "音轨流式读取失败，正在下载独立音频文件…")
+                                    } else state
+                                }
+                                downloadAudio(mediaUrl, destination, sessionKey, headers)
+                            } else {
+                                android.util.Log.w(
+                                    "PlaybackService",
+                                    "网页视频流式音轨提取失败；已阻止整段视频下载",
+                                    streamingError,
+                                )
+                                throw IllegalStateException(
+                                    "网页视频音轨提取失败。为避免把整段视频下载到手机，本次已停止整文件兜底。请重试，或在网页页面选择“用 yt-dlp 解析本页视频”。原因：${streamingError.message ?: streamingError.javaClass.simpleName}",
+                                    streamingError,
+                                )
                             }
                         }
                     }

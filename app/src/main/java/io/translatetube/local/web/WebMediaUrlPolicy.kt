@@ -67,6 +67,19 @@ internal object WebMediaUrlPolicy {
         return uri.toASCIIString()
     }
 
+    /**
+     * Only explicit audio-file extensions may use a full-response fallback. Video containers
+     * must never silently fall back to downloading an entire video just to obtain its soundtrack.
+     */
+    fun isExplicitAudioOnlyResource(input: String): Boolean {
+        if (containsControlCharacters(input)) return false
+        val uri = runCatching { URI(input.trim()) }.getOrNull() ?: return false
+        if (!isValidHttpUri(uri)) return false
+        val path = uri.rawPath.orEmpty().lowercase(Locale.ROOT)
+        return listOf(".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus", ".wav", ".flac", ".mpga")
+            .any(path::endsWith)
+    }
+
     fun unsupportedReason(input: String): String? {
         if (containsControlCharacters(input)) return "媒体地址包含无效控制字符。"
         val raw = input.trim()
