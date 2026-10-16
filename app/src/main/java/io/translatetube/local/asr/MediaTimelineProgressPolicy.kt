@@ -12,6 +12,19 @@ internal object MediaTimelineProgressPolicy {
      * Returns a new percentage only when measured media time advances the display.
      * Values are capped at 99%; the caller emits 100% only after output is finalized successfully.
      */
+    /** Progress for a long sample-scanning pass; completion belongs to the caller after finalize. */
+    fun nextSamplePercent(
+        processedSamples: Long,
+        totalSamples: Long,
+        previousPercent: Int = -1,
+    ): Int? {
+        if (processedSamples < 0L || totalSamples <= 0L || previousPercent >= 100) return null
+        val ratio = processedSamples.toDouble() / totalSamples.toDouble()
+        if (!ratio.isFinite() || ratio < 0.0) return null
+        val candidate = (ratio.coerceAtMost(1.0) * 100.0).toInt().coerceIn(0, 99)
+        return candidate.takeIf { it > previousPercent.coerceIn(-1, 100) }
+    }
+
     fun nextPercent(
         positionUs: Long,
         durationUs: Long,

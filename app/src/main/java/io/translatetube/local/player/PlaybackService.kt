@@ -1959,12 +1959,19 @@ class PlaybackService : MediaSessionService() {
                 // Provider timestamps are relative to this full recording, not to each displayed line.
                 val asrTimelineDurationMs = pcmFile.durationMs
                 val (asrLines, detectedAsrLang) = if (asrProvider == "local") {
-updateUiForSession(key) { it.copy(progress = "语音分段…") }
+updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 val segs = withContext(Dispatchers.IO) {
                     vadSegmentsFromFile(
                         this@PlaybackService,
                         pcmFile,
                         checkActive = { pcmOwnerJob?.ensureActive() },
+                        onProgressPercent = { percent ->
+                            updateUiForSession(key) { state ->
+                                if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                    state.copy(progress = "语音分段 ${percent}%")
+                                } else state
+                            }
+                        },
                     )
                 }
                 ensureCurrentSession(key)

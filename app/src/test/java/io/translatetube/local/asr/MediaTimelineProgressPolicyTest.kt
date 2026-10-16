@@ -29,6 +29,17 @@ class MediaTimelineProgressPolicyTest {
     }
 
     @Test
+    fun sampleProgressIsMonotonicAndLeavesOneHundredForFinalize() {
+        assertEquals(null, MediaTimelineProgressPolicy.nextSamplePercent(-1L, 100L))
+        assertEquals(null, MediaTimelineProgressPolicy.nextSamplePercent(10L, 0L))
+        assertEquals(0, MediaTimelineProgressPolicy.nextSamplePercent(0L, 100L))
+        assertEquals(45, MediaTimelineProgressPolicy.nextSamplePercent(45L, 100L, 20))
+        assertEquals(null, MediaTimelineProgressPolicy.nextSamplePercent(30L, 100L, 45))
+        assertEquals(99, MediaTimelineProgressPolicy.nextSamplePercent(100L, 100L, 98))
+        assertEquals(null, MediaTimelineProgressPolicy.nextSamplePercent(100L, 100L, 99))
+    }
+
+    @Test
     fun outOfRangeTimestampsAreBounded() {
         assertEquals(99, MediaTimelineProgressPolicy.nextPercent(Long.MAX_VALUE, 1L))
     }

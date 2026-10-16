@@ -58,6 +58,7 @@ fun vadSegmentsFromFile(
     pcmFile: AudioExtract.PcmFile,
     sr: Int = 16000,
     checkActive: () -> Unit = {},
+    onProgressPercent: (Int) -> Unit = {},
 ): List<Pair<Long, Long>> {
     VadSegmentMergePolicy.requireSupportedSampleRate(sr)
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
@@ -71,6 +72,16 @@ fun vadSegmentsFromFile(
     val windowBytes = ByteArray(window * 2)
     // Reuse one conversion window for the entire file-backed pass to avoid sustained GC churn.
     val floats = FloatArray(window)
+    var lastProgressPercent = -1
+    fun reportSampleProgress(processedSamples: Long) {
+        val percent = MediaTimelineProgressPolicy.nextSamplePercent(
+            processedSamples = processedSamples,
+            totalSamples = pcmFile.sampleCount,
+            previousPercent = lastProgressPercent,
+        ) ?: return
+        lastProgressPercent = percent
+        onProgressPercent(percent)
+    }
     try {
         BufferedInputStream(FileInputStream(pcmFile.file), 32 * 1024).use { input ->
             var remainingSamples = pcmFile.sampleCount
@@ -87,6 +98,7 @@ fun vadSegmentsFromFile(
                 vad.acceptWaveform(floats)
                 drainVad(vad, sr, segments, pcmFile.sampleCount)
                 remainingSamples -= window
+                reportSampleProgress(pcmFile.sampleCount - remainingSamples)
             }
             if (remainingSamples > 0L) {
                 checkActive()
@@ -110,7 +122,10 @@ fun vadSegmentsFromFile(
     } finally {
         runCatching { vad.release() }
     }
-    return mergeVadSegments(segments)
+    val merged = mergeVadSegments(segments)
+    checkActive()
+    onProgressPercent(100)
+    return merged
 }
 
 private fun newVad(ctx: Context, sr: Int): Vad {
