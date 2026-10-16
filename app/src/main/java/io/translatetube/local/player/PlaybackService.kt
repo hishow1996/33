@@ -3522,6 +3522,23 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             }
         }
 
+        // A pause or dubbing toggle can race with a tick that already captured the previous UI
+        // state. Re-check the live owner after scheduling playback so stale work cannot leave an
+        // AudioTrack speaking after pause, disable, or engine replacement.
+        val latestState = ui.value
+        if (
+            d != null &&
+            DubbingPlaybackOwnerPolicy.shouldStop(
+                hasSelectedLine = d.currentLineIdx() >= 0,
+                dubbingEnabled = latestState.dubbingOn,
+                playerIsPlaying = ::pm.isInitialized && pm.player.isPlaying,
+                engineIsCurrent = dubbing === d,
+            )
+        ) {
+            d.stop()
+            pm.originalVolume = 1f
+        }
+
         // Keep the displayed duration synchronized with ExoPlayer in case the extractor metadata
         // omitted or misreported the duration. This also prevents a permanent 00:00:00 total time.
         val actualDuration = if (::pm.isInitialized) pm.duration() else 0L
