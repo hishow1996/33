@@ -88,4 +88,15 @@ class MediaDownloadRetryPolicyTest {
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频")))
         assertFalse(MediaDownloadRetryPolicy.shouldRetry(CancellationException("task cancelled")))
     }
+    @Test
+    fun nestedHttpErrorsUseTheMostSpecificCauseInsteadOfAStaleWrapperStatus() {
+        val permanentInner = IOException("download wrapper says HTTP 503", IOException("HTTP 404: not found"))
+        assertFalse(MediaDownloadRetryPolicy.shouldRetry(permanentInner))
+        assertTrue(MediaDownloadRetryPolicy.shouldRefreshSignedStream(permanentInner))
+
+        val transientInner = IOException("download wrapper says HTTP 404", IOException("HTTP 503: unavailable"))
+        assertTrue(MediaDownloadRetryPolicy.shouldRetry(transientInner))
+        assertFalse(MediaDownloadRetryPolicy.shouldRefreshSignedStream(transientInner))
+    }
+
 }

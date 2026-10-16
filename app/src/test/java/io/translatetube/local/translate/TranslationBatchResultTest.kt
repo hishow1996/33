@@ -100,4 +100,16 @@ class TranslationBatchResultTest {
         assertTrue(result.missingIndices.isEmpty())
     }
 
+    @Test
+    fun retriesEchoRowsWhenTheProviderOnlyChangesFinalPunctuation() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(1, 2),
+            rawTranslations = listOf("Hello world.", "你好世界。"),
+            sourceTexts = mapOf(1 to "Hello world", 2 to "Hello there"),
+            sourceLanguage = "en",
+        )
+        assertEquals(mapOf(2 to "你好世界。"), result.translations)
+        assertEquals(listOf(1), result.missingIndices)
+    }
+
 }

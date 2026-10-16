@@ -9,17 +9,27 @@ import kotlinx.coroutines.CancellationException
 /** Shared bounded retry policy for remote audio and HLS segment downloads. */
 internal object MediaDownloadRetryPolicy {
     private val retryableHttpCodes = setOf(408, 425, 429, 500, 502, 503, 504)
+    private val httpStatusRegex = Regex("""(?i)(?:HTTP(?:/d+(?:.d+)?)?s*|失败s*[（(]?s*)(d{3})""")
+
+    /** Wrapper messages may describe an earlier attempt; trust the deepest HTTP failure first. */
+    private fun deepestHttpStatus(chain: List<Throwable>): Int? {
+        for (cause in chain.asReversed()) {
+            val status = httpStatusRegex.findAll(cause.message.orEmpty())
+                .lastOrNull()
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+            if (status != null) return status
+        }
+        return null
+    }
 
     /** Refresh a cached YouTube StreamInfo once when its signed media URL is stale. */
     fun shouldRefreshSignedStream(error: Throwable): Boolean {
         if (hasCancellationCause(error)) return false
         val chain = causeChain(error)
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
-        val statusCode = Regex("""(?i)(?:HTTP(?:/\d+(?:\.\d+)?)?\s*|失败\s*[（(]?\s*)(\d{3})""")
-            .find(messages)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
+        val statusCode = deepestHttpStatus(chain)
         if (statusCode != null && statusCode in setOf(401, 403, 404, 410)) return true
         // Protocol/error tokens must not depend on the device's default language.
         val normalized = messages.lowercase(Locale.ROOT)
@@ -39,11 +49,7 @@ internal object MediaDownloadRetryPolicy {
 
         val chain = causeChain(error)
         val messages = chain.mapNotNull { it.message }.joinToString(" ")
-        val statusCode = Regex("""(?i)(?:HTTP(?:/\d+(?:\.\d+)?)?\s*|失败\s*[（(]?\s*)(\d{3})""")
-            .find(messages)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
+        val statusCode = deepestHttpStatus(chain)
 
         // A known HTTP status is stronger evidence than the wrapper type: IOException(404) is
         // permanent and should not consume all retries, while IOException(429/503) is transient.

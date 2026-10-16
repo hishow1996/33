@@ -29,6 +29,7 @@ internal object TranscriptTimelinePolicy {
                 }
             }
             .sortedWith(compareBy<Triple<Long, Long, String>> { it.first }.thenBy { it.second })
+            .distinct()
             .toList()
     }
 }

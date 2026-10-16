@@ -664,6 +664,7 @@ object CloudTranscription {
                 it.startMs < durationMs && it.endMs > it.startMs }
             .map { it.copy(endMs = it.endMs.coerceAtMost(durationMs)) }
             .filter { it.endMs > it.startMs }
+            .distinctBy { Triple(it.startMs, it.endMs, it.text) }
             .sortedWith(compareBy<TimedWord> { it.startMs }.thenBy { it.endMs })
             .toList()
         if (orderedWords.isEmpty()) return emptyList()

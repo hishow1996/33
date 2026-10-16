@@ -1315,9 +1315,8 @@ class PlaybackService : MediaSessionService() {
         val translated = SubtitleParsers.cleanTranslatedText(line.zh)
         if (translated.isNullOrBlank()) return true
         if (isChineseLanguage(srcLang)) return false
-        fun normalize(value: String): String =
-            value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
-        return normalize(line.text) == normalize(translated)
+        return io.translatetube.local.translate.SubtitleTranslationQualityPolicy
+            .isSourceEcho(line.text, translated, srcLang)
     }
 
     /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */

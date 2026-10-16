@@ -67,4 +67,25 @@ class TranscriptTimelinePolicyTest {
             TranscriptTimelinePolicy.normalize(cues, audioDurationMs = 0L),
         )
     }
+    @Test
+    fun removesOnlyExactDuplicateCuesWithoutMergingLegitimateRepeatedSpeech() {
+        val normalized = TranscriptTimelinePolicy.normalize(
+            listOf(
+                Triple(0L, 500L, "hello"),
+                Triple(0L, 500L, "hello"),
+                Triple(500L, 900L, "hello"),
+                Triple(900L, 1_200L, "world"),
+            ),
+            audioDurationMs = 2_000L,
+        )
+        assertEquals(
+            listOf(
+                Triple(0L, 500L, "hello"),
+                Triple(500L, 900L, "hello"),
+                Triple(900L, 1_200L, "world"),
+            ),
+            normalized,
+        )
+    }
+
 }

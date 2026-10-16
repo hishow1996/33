@@ -89,4 +89,22 @@ class WhisperSubtitleTimelinePolicyTest {
         assertEquals(5_700L, cues[1].first)
         assertTrue(cues.zipWithNext().all { (left, right) -> left.first < right.first })
     }
+    @Test
+    fun createsChronologicalCuesForLargeTokenLists() {
+        val tokens = List(3_000) { "a" }
+        val timestamps = List(3_000) { it * 0.05f }
+        val durations = List(3_000) { 0.04f }
+        val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+            tokens = tokens,
+            timestampsSeconds = timestamps,
+            durationsSeconds = durations,
+            segmentStartMs = 0L,
+            segmentEndMs = 200_000L,
+            expectedText = tokens.joinToString(""),
+        )
+        assertTrue(cues.isNotEmpty())
+        assertTrue(cues.all { it.first >= 0L && it.second > it.first && it.second <= 200_000L })
+        assertTrue(cues.zipWithNext().all { (left, right) -> left.first <= right.first })
+    }
+
 }

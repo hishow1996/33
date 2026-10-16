@@ -128,7 +128,9 @@ class DubbingEngine(
             ttsInstances.clear()
             ttsInstances.add(tts)
             fallbackRequested.set(false)
-            this.lines = lines.toList()
+            this.lines = lines.map { line ->
+                line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh))
+            }
             this.timeline = DubbingTimeline(this.lines)
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)

@@ -459,4 +459,19 @@ class CloudTranscriptionTest {
         assertTrue(CloudTranscription.kawaChunkRanges(0L).isEmpty())
         assertTrue(CloudTranscription.kawaChunkRanges(3L).isEmpty())
     }
+    @Test
+    fun duplicateCloudWordRowsDoNotDuplicateWordsInTheRenderedCaption() {
+        val cues = CloudTranscription.groupWords(
+            listOf(
+                CloudTranscription.TimedWord("Hello", 100L, 400L),
+                CloudTranscription.TimedWord("Hello", 100L, 400L),
+                CloudTranscription.TimedWord("world.", 450L, 800L),
+            ),
+            durationMs = 2_000L,
+        )
+        assertEquals(1, cues.size)
+        assertEquals("Hello world.", cues.single().third)
+        assertEquals(100L to 800L, cues.single().first to cues.single().second)
+    }
+
 }

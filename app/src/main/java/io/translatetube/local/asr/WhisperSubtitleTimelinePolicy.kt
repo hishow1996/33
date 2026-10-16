@@ -50,6 +50,23 @@ internal object WhisperSubtitleTimelinePolicy {
         if (validStarts.size > 1 && validStarts.maxOrNull() == validStarts.minOrNull()) return emptyList()
 
         val segmentDurationMs = segmentEndMs - segmentStartMs
+        // Find each token's nearest later timestamp beyond the 5 ms tolerance in linear time.
+        // Re-scanning every suffix is quadratic for long recognition segments on older phones.
+        val nextTimestampIndex = IntArray(timestampsSeconds.size) { -1 }
+        val timestampStack = IntArray(timestampsSeconds.size)
+        var stackSize = 0
+        for (index in timestampsSeconds.indices.reversed()) {
+            val threshold = timestampsSeconds[index].toDouble() + 0.005
+            while (
+                stackSize > 0 &&
+                timestampsSeconds[timestampStack[stackSize - 1]].toDouble() <= threshold
+            ) {
+                stackSize--
+            }
+            if (stackSize > 0) nextTimestampIndex[index] = timestampStack[stackSize - 1]
+            timestampStack[stackSize++] = index
+        }
+
         val timedTokens = ArrayList<TimedToken>(tokens.size)
         for (index in tokens.indices) {
             val token = tokens[index]
@@ -65,11 +82,9 @@ internal object WhisperSubtitleTimelinePolicy {
 
             val declaredDuration = durationsSeconds.getOrNull(index)?.toDouble()
                 ?.takeIf { it.isFinite() && it > 0.01 }
-            val nextStartSeconds = (index + 1 until timestampsSeconds.size)
-                .firstNotNullOfOrNull { nextIndex ->
-                    timestampsSeconds[nextIndex].toDouble()
-                        .takeIf { it.isFinite() && it > startSeconds + 0.005 }
-                }
+            val nextStartSeconds = nextTimestampIndex[index]
+                .takeIf { it >= 0 }
+                ?.let { timestampsSeconds[it].toDouble() }
             val durationMs = when {
                 declaredDuration != null -> (declaredDuration * 1_000.0).roundToLong().coerceAtLeast(1L)
                 nextStartSeconds != null ->

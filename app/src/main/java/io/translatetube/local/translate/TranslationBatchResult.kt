@@ -24,7 +24,7 @@ internal data class TranslationBatchResult(
                 if (sourceIndex < 0) return@forEachIndexed
                 val value = SubtitleParsers.cleanTranslatedText(rawTranslations.getOrNull(position))
                 val sourceEcho = value?.let {
-                    isUntranslatedEcho(sourceTexts[sourceIndex], it, sourceLanguage)
+                    SubtitleTranslationQualityPolicy.isSourceEcho(sourceTexts[sourceIndex], it, sourceLanguage)
                 } == true
                 if (value.isNullOrBlank() || sourceEcho) {
                     // Empty output, status text, and source text returned as its own "translation"
@@ -40,15 +40,6 @@ internal data class TranslationBatchResult(
             return TranslationBatchResult(translated, missing.toList())
         }
 
-        private fun isUntranslatedEcho(source: String?, translated: String, sourceLanguage: String): Boolean {
-            if (source.isNullOrBlank() || translated.isBlank()) return false
-            val language = sourceLanguage.trim().lowercase(java.util.Locale.ROOT)
-            if (language.startsWith("zh") || language == "cmn" || language.startsWith("yue")) return false
 
-            fun normalize(value: String): String =
-                value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
-
-            return normalize(source) == normalize(translated)
-        }
     }
 }
