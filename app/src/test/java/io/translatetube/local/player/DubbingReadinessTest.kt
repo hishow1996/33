@@ -128,11 +128,11 @@ class DubbingReadinessTest {
         val readiness = DubbingReadiness()
         val progress = DubbingReadinessProgress(readiness)
         val total = 64
-        val start = java.util.concurrent.CountDownLatch(1)
+        val startGate = java.util.concurrent.CountDownLatch(1)
         val errors = java.util.concurrent.ConcurrentLinkedQueue<String>()
         val threads = (0 until 4).map { worker ->
             Thread {
-                start.await()
+                startGate.await()
                 repeat(400) { step ->
                     val index = (step * 17 + worker * 11) % total
                     val publish: (DubbingReadinessProgressSnapshot) -> Unit = { snapshot ->
@@ -162,9 +162,9 @@ class DubbingReadinessTest {
                         )
                     }
                 }
-            }.apply { start() }
+            }.apply { this.start() }
         }
-        start.countDown()
+        startGate.countDown()
         threads.forEach { it.join() }
 
         assertTrue("inconsistent readiness snapshots: " + errors, errors.isEmpty())
