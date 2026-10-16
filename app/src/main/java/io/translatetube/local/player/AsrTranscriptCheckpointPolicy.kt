@@ -99,33 +99,37 @@ internal object AsrTranscriptCheckpointPolicy {
         processedSegments: List<Pair<Long, Long>>,
     ): Boolean {
         if (processedSegments.isEmpty()) return rows.isEmpty()
-        val segmentIndexes = HashMap<Pair<Long, Long>, Int>(processedSegments.size)
-        for ((index, bounds) in processedSegments.withIndex()) {
-            if (bounds.second <= bounds.first) return false
-            // Ambiguous VAD bounds make checkpoint recovery impossible to validate safely.
-            if (segmentIndexes.put(bounds, index) != null) return false
+        val uniqueSegments = HashSet<Pair<Long, Long>>(processedSegments.size)
+        for ((start, end) in processedSegments) {
+            if (end <= start || !uniqueSegments.add(start to end)) return false
         }
 
+        var segmentCursor = 0
         var previousSegmentIndex = -1
         var previousStart = -1L
         var previousEnd = -1L
         val seenBounds = HashSet<Pair<Long, Long>>()
         for ((start, end, text) in rows) {
             if (start < 0L || end <= start || text.isBlank()) return false
-            val segmentIndex = processedSegments.indexOfFirst { (segmentStart, segmentEnd) ->
-                start >= segmentStart && end <= segmentEnd
+
+            // Rows are chronological, so advance through VAD segments once rather than rescanning
+            // all completed segments for every fine-grained caption on long videos.
+            while (segmentCursor < processedSegments.size &&
+                end > processedSegments[segmentCursor].second
+            ) {
+                segmentCursor++
             }
-            if (segmentIndex < 0 || segmentIndex < previousSegmentIndex) return false
-            if (segmentIndex == previousSegmentIndex &&
+            if (segmentCursor >= processedSegments.size) return false
+            val (segmentStart, segmentEnd) = processedSegments[segmentCursor]
+            if (start < segmentStart || end > segmentEnd) return false
+            if (segmentCursor < previousSegmentIndex) return false
+            if (segmentCursor == previousSegmentIndex &&
                 (start < previousStart || (start == previousStart && end < previousEnd))
             ) return false
             // Identical intervals can accidentally duplicate a caption during resume.
             if (!seenBounds.add(start to end)) return false
-            if (segmentIndex > previousSegmentIndex) {
-                previousStart = -1L
-                previousEnd = -1L
-            }
-            previousSegmentIndex = segmentIndex
+
+            previousSegmentIndex = segmentCursor
             previousStart = start
             previousEnd = end
         }
