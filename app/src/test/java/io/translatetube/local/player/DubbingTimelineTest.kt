@@ -2,6 +2,8 @@ package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DubbingTimelineTest {
@@ -100,6 +102,16 @@ class DubbingTimelineTest {
         assertEquals(1, timeline.lineAt(6_000))
         assertEquals(0, timeline.lineAt(8_000))
         assertEquals(-1, timeline.lineAt(10_000))
+    }
+
+
+    @Test
+    fun sharedPlayableCueGuardMatchesTheTimelineFilter() {
+        assertTrue(DubbingTimeline.isPlayableCue(SubLine(0, 0, 1_000, "spoken line")))
+        assertFalse(DubbingTimeline.isPlayableCue(SubLine(1, -1, 1_000, "negative start")))
+        assertFalse(DubbingTimeline.isPlayableCue(SubLine(2, 1_000, 1_000, "zero length")))
+        assertFalse(DubbingTimeline.isPlayableCue(SubLine(3, 2_000, 1_000, "reversed window")))
+        assertFalse(DubbingTimeline.isPlayableCue(SubLine(4, 1_000, 2_000, "   ")))
     }
 
 }
