@@ -44,6 +44,8 @@ import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import androidx.compose.ui.layout.ContentScale
+import coil.ImageLoader
+import coil.decode.SvgDecoder
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import androidx.compose.ui.unit.dp
@@ -67,6 +69,14 @@ import kotlinx.coroutines.withContext
 fun ApiManagerScreen(onBack: () -> Unit) {
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
+    val providerLogoImageLoader = remember(ctx.applicationContext) {
+        ImageLoader.Builder(ctx.applicationContext)
+            .components { add(SvgDecoder.Factory()) }
+            .build()
+    }
+    DisposableEffect(providerLogoImageLoader) {
+        onDispose { providerLogoImageLoader.shutdown() }
+    }
     val scope = rememberCoroutineScope()
     val db = remember { AppDatabase.get(ctx) }
     var profiles by remember { mutableStateOf<List<ApiProfile>>(emptyList()) }
@@ -272,7 +282,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ApiProviderLogo(profile = p, selected = selectedProfile)
+                    ApiProviderLogo(profile = p, selected = selectedProfile, imageLoader = providerLogoImageLoader)
                     Text(
                         p.name,
                         color = if (p.enabled) OnBg else SubText,
@@ -603,7 +613,7 @@ private fun preferredApiLogoHost(profile: ApiProfile): String? {
 }
 
 @Composable
-private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
+private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean, imageLoader: ImageLoader) {
     val context = LocalContext.current.applicationContext
     val forceOfficialOnlineLogo = profile.type == "GEMINI" ||
         profile.name.contains("gemini", ignoreCase = true)
@@ -657,6 +667,7 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean) {
                     contentDescription = "${profile.name} 官方网站图标",
                     modifier = Modifier.size(36.dp).clip(RoundedCornerShape(7.dp)),
                     contentScale = ContentScale.Fit,
+                    imageLoader = imageLoader,
                     loading = { GenericApiLogo() },
                     error = { GenericApiLogo() },
                     success = { SubcomposeAsyncImageContent() },
