@@ -110,4 +110,45 @@ class TranslationAdaptiveRecoveryTest {
         assertTrue(seenContexts[2]?.first?.takeLast(3) == listOf("a", "b", "c"))
     }
 
+    @Test
+    fun retriesOnlySourceEchoRowsBeforeReturningBatch() = runBlocking {
+        val calls = mutableListOf<List<String>>()
+        val sourceLanguage = "en"
+        val result = translateBatchWithAdaptiveRecovery(
+            lines = listOf("Hello world", "Good morning"),
+            isAcceptableTranslation = { original, candidate ->
+                !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, sourceLanguage)
+            },
+        ) { rows, _ ->
+            calls += rows
+            if (rows.size == 2) {
+                listOf("Hello world", "早上好")
+            } else {
+                listOf("你好，世界")
+            }
+        }
+
+        assertEquals(listOf("你好，世界", "早上好"), result)
+        assertEquals(listOf(listOf("Hello world", "Good morning"), listOf("Hello world")), calls)
+    }
+
+    @Test
+    fun sourceEchoThatPersistsInSingleRowFailsAfterOneRetry() = runBlocking {
+        var calls = 0
+        val error = runCatching {
+            translateBatchWithAdaptiveRecovery(
+                lines = listOf("Bonjour"),
+                isAcceptableTranslation = { source, candidate ->
+                    !SubtitleTranslationQualityPolicy.isSourceEcho(source, candidate, "fr")
+                },
+            ) { rows, _ ->
+                calls++
+                rows
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertEquals(2, calls)
+    }
+
 }

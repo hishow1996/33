@@ -70,6 +70,9 @@ private fun isRecoverableTranslationFormatError(error: IllegalStateException): B
 internal suspend fun translateBatchWithAdaptiveRecovery(
     lines: List<String>,
     context: Pair<List<String>, List<String>>? = null,
+    isAcceptableTranslation: (source: String, translation: String) -> Boolean = { _, translation ->
+        translation.isNotBlank()
+    },
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
@@ -83,10 +86,14 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     }
 
     if (response != null && response.size == lines.size) {
-        // Keep the provider's valid rows; do not bill/re-request an entire batch just because a
-        // few captions were truncated or omitted. Blank source cues stay blank by definition.
+        // Keep valid results and retry only blank, source-echo, or otherwise rejected rows.
         val output = response.mapIndexed { index, value ->
-            if (lines[index].isBlank()) "" else value.trim()
+            val candidate = value.trim()
+            if (lines[index].isBlank() || !isAcceptableTranslation(lines[index], candidate)) {
+                ""
+            } else {
+                candidate
+            }
         }.toMutableList()
         val complete = lines.indices.all { index ->
             lines[index].isBlank() || output[index].isNotBlank()
@@ -131,6 +138,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
                 val retry = translateBatchWithAdaptiveRecovery(
                     lines.subList(missingStart, cursor),
                     retryContext,
+                    isAcceptableTranslation,
                     translate,
                 )
                 retry.forEachIndexed { offset, value ->
@@ -144,17 +152,37 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     // A malformed or wholly missing batch cannot be mapped safely to individual input rows.
     // Split it in half so every retry makes progress and never shifts one cue onto another.
     if (lines.size == 1) {
-        throw IllegalStateException("翻译服务多次未能完整返回单条字幕的译文，请重试或更换翻译模型")
+        // Even an isolated cue gets one retry: source-echo validation happens inside this helper,
+        // so otherwise a single echoed cue would fail before the caller can recover it.
+        val retry = try {
+            translate(lines, context)
+        } catch (error: IllegalStateException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (!isRecoverableTranslationFormatError(error)) throw error
+            null
+        }
+        val candidate = retry?.singleOrNull()?.trim()
+        if (lines.single().isBlank()) return listOf("")
+        if (!candidate.isNullOrBlank() &&
+            isAcceptableTranslation(lines.single(), candidate)
+        ) {
+            return listOf(candidate)
+        }
+        throw IllegalStateException("翻译服务重试后仍未能完整返回单条字幕的有效译文，请重试或更换翻译模型")
     }
 
     val midpoint = lines.size / 2
     val leftSource = lines.subList(0, midpoint)
     val rightSource = lines.subList(midpoint, lines.size)
-    val leftTranslation = translateBatchWithAdaptiveRecovery(leftSource, context, translate)
+    val leftTranslation = translateBatchWithAdaptiveRecovery(
+        leftSource, context, isAcceptableTranslation, translate,
+    )
     val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
     val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
     val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
-    val rightTranslation = translateBatchWithAdaptiveRecovery(rightSource, rightContext, translate)
+    val rightTranslation = translateBatchWithAdaptiveRecovery(
+        rightSource, rightContext, isAcceptableTranslation, translate,
+    )
     return leftTranslation + rightTranslation
 }
 
@@ -472,7 +500,13 @@ class OpenAiCompatEngine(
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
-            val translated = translateBatchWithAdaptiveRecovery(batch, context) { rows, cueContext ->
+            val translated = translateBatchWithAdaptiveRecovery(
+                lines = batch,
+                context = context,
+                isAcceptableTranslation = { original, candidate ->
+                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang)
+                },
+            ) { rows, cueContext ->
                 translateBatch(rows, srcLang, tgtLang, cueContext)
             }
             out += translated
@@ -589,7 +623,13 @@ class GeminiEngine(
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
-            val translated = translateBatchWithAdaptiveRecovery(batch, context) { rows, cueContext ->
+            val translated = translateBatchWithAdaptiveRecovery(
+                lines = batch,
+                context = context,
+                isAcceptableTranslation = { original, candidate ->
+                    !SubtitleTranslationQualityPolicy.isSourceEcho(original, candidate, srcLang)
+                },
+            ) { rows, cueContext ->
                 translateBatch(rows, srcLang, tgtLang, cueContext)
             }
             out += translated
