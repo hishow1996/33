@@ -115,6 +115,19 @@ object SubtitleParsers {
     fun toVtt(lines: List<SubLine>): String = buildVtt(lines) { it.text }
 
     /**
+     * Return translated text while preserving source captions copied into [SubLine.zh].
+     * Chinese-source flows intentionally set zh == text; duplicate-translation cleanup must not
+     * erase legitimate repeated words from the original caption.
+     */
+    fun preferredTranslationText(line: SubLine): String? {
+        val raw = line.zh?.replace('\u00a0', ' ')?.replace(whitespaceRegex, " ")?.trim()
+            ?.takeIf { it.isNotEmpty() } ?: return null
+        val source = line.text.trim()
+        if (source.isNotEmpty() && sameCaptionText(source, raw)) return source
+        return cleanTranslatedText(raw)
+    }
+
+    /**
      * Export translated captions as SRT. Invalid cues are dropped before sequential numbering.
      * Bilingual output keeps Chinese first and the original text below it.
      */
@@ -125,7 +138,7 @@ object SubtitleParsers {
             .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
             .forEach { line ->
                 val source = line.text.trim()
-                val translated = cleanTranslatedText(line.zh)
+                val translated = preferredTranslationText(line)
                 val caption = when {
                     bilingual && translated != null && !sameCaptionText(source, translated) ->
                         "$translated\n$source"
@@ -152,7 +165,7 @@ object SubtitleParsers {
             .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
             .forEach { line ->
                 val source = line.text.trim()
-                val translated = cleanTranslatedText(line.zh)
+                val translated = preferredTranslationText(line)
                 val caption = when {
                     bilingual && translated != null && !sameCaptionText(source, translated) ->
                         "$translated\n$source"
@@ -167,7 +180,7 @@ object SubtitleParsers {
     /** Export Chinese-first bilingual WebVTT without cloning the entire subtitle list. */
     fun toBilingualVtt(lines: List<SubLine>): String = buildVtt(lines) { line ->
         val source = line.text.trim()
-        val translated = cleanTranslatedText(line.zh)
+        val translated = preferredTranslationText(line)
         when {
             translated != null && !sameCaptionText(source, translated) -> "$translated\n$source"
             translated != null -> translated
