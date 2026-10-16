@@ -906,7 +906,17 @@ class DubbingEngine(
                 if (n > 0 && !hasAudibleSample) {
                     throw java.io.IOException("PCM 缓存包含静音音频")
                 }
-                if (n == 0) {
+                val hasAudio = n > 0
+                if (!DubbingCacheAudioPolicy.isCompatibleWithTranslation(
+                        hasAudio = hasAudio,
+                        translatedText = lines.getOrNull(idx)?.zh,
+                    )
+                ) {
+                    // A stale empty marker must not suppress speech for a translated cue, and
+                    // a non-empty cache must not override a deliberately blank translation.
+                    throw java.io.IOException("PCM 缓存音频状态与字幕译文不一致")
+                }
+                if (!hasAudio) {
                     markCuePrepared(idx, hasAudio = false)
                 } else {
                     synchronized(mem) { mem[idx] = samples to sr }
