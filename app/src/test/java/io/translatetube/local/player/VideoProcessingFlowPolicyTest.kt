@@ -38,7 +38,7 @@ class VideoProcessingFlowPolicyTest {
         val flow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
         val steps = VideoProcessingFlowPolicy.steps(VideoSourceKind.YOUTUBE, flow)
         assertEquals(6, steps.size)
-        assertEquals("提取识别音轨", steps[2])
+        assertEquals("提取视频音轨", steps[2])
         assertEquals("转写原文并生成时间轴字幕", steps[3])
         assertEquals(2, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.DOWNLOADING_AUDIO))
         assertEquals(3, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.TRANSCRIBING))
