@@ -36,8 +36,12 @@ internal object WhisperSubtitleTimelinePolicy {
         fun isControlToken(token: String): Boolean =
             token.startsWith("<|") && token.endsWith("|>")
 
-        val joinedText = tokens.filterNot(::isControlToken).joinToString("").trim()
-        if (joinedText != expectedText.trim()) return emptyList()
+        // Token boundaries may encode repeated whitespace differently from the recognizer's
+        // plain-text output. Normalize whitespace only; any actual character mismatch still
+        // invalidates token timing so we never attach real words to the wrong interval.
+        fun comparableText(value: String): String = value.trim().replace(Regex("\\s+"), " ")
+        val joinedText = tokens.filterNot(::isControlToken).joinToString("")
+        if (comparableText(joinedText) != comparableText(expectedText)) return emptyList()
 
         val validStarts = timestampsSeconds.filter { it.isFinite() && it >= 0f }
         if (validStarts.size != timestampsSeconds.size) return emptyList()
