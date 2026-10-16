@@ -687,12 +687,7 @@ private fun PiperModelSection() {
         )
     }
     val installed by io.translatetube.local.tts.PiperModels.installed.collectAsState()
-    val scope = rememberCoroutineScope()
-    var busyId by remember { mutableStateOf<String?>(null) }
-    var progress by remember { mutableStateOf(0f) }
-    var piperStage by remember { mutableStateOf("准备下载…") }
-    var piperDownloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val downloadStates by io.translatetube.local.tts.PiperModels.downloadStates.collectAsState()
     LaunchedEffect(Unit) {
         if (prefs.getString("piper_model", null) != selected) {
             prefs.edit().putString("piper_model", selected).apply()
@@ -705,16 +700,17 @@ private fun PiperModelSection() {
         color = SubText, style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(start = 8.dp, top = 4.dp),
     )
-    error?.let {
-        Text(
-            it, color = Color(0xFFC0392B),
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(start = 8.dp, top = 2.dp),
-        )
-    }
     Spacer(Modifier.height(6.dp))
     io.translatetube.local.tts.PiperModels.catalog.filter { it.supportsChineseOutput }.forEach { def ->
         val isInstalled = installed.contains(def.id)
+        val modelState = downloadStates[def.id]
+            ?: io.translatetube.local.tts.PiperModelDownloadState(
+                status = if (isInstalled) io.translatetube.local.tts.PiperModelDownloadStatus.READY
+                    else io.translatetube.local.tts.PiperModelDownloadStatus.NOT_DOWNLOADED,
+                progress = if (isInstalled) 100 else 0,
+                stageMessage = if (isInstalled) "Piper 模型已就绪" else null,
+            )
+        val isBusy = modelState.isActive
         Row(
             Modifier.fillMaxWidth()
                 .clickable(enabled = isInstalled && def.supportsChineseOutput) {
@@ -738,63 +734,56 @@ private fun PiperModelSection() {
             Column(Modifier.weight(1f)) {
                 Text("${def.langLabel} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                 when {
-                    busyId == def.id -> {
-                        val installing = piperStage.startsWith("正在解压") ||
-                            piperStage.startsWith("模型文件校验")
-                        if (installing) {
+                    isBusy -> {
+                        if (modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING) {
                             LinearProgressIndicator(
                                 modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
                                 color = BrandBright,
-                            )
-                            Text(
-                                piperStage,
-                                color = SubText,
-                                style = MaterialTheme.typography.labelSmall,
                             )
                         } else {
                             LinearProgressIndicator(
-                                progress = { progress },
+                                progress = { (modelState.progress / 100f).coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
                                 color = BrandBright,
                             )
-                            Text(
-                                "${(progress * 100f).toInt().coerceIn(0, 100)}% · $piperStage",
-                                color = SubText,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
                         }
+                        Text(
+                            "${modelState.progress.coerceIn(0, 99)}% · ${modelState.stageMessage ?: "正在准备下载…"}",
+                            color = SubText,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                     isInstalled -> Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+                    modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.FAILED ||
+                        modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.CANCELLED ->
+                        Text(
+                            modelState.error ?: "下载未完成，可重试",
+                            color = Color(0xFFC0392B),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     else -> Text("未下载", color = SubText, style = MaterialTheme.typography.labelSmall)
                 }
             }
-            if (busyId == def.id) {
-                TextButton(onClick = { piperDownloadJob?.cancel() }) { Text("取消") }
-            } else if (!isInstalled && busyId == null) {
+            if (isBusy) {
+                TextButton(onClick = { io.translatetube.local.tts.PiperModels.cancelDownload(def.id) }) {
+                    Text("取消")
+                }
+            } else if (!isInstalled) {
                 TextButton(onClick = {
-                    busyId = def.id
-                    progress = 0f
-                    piperStage = "正在启动下载…"
-                    error = null
-                    piperDownloadJob = scope.launch {
-                        try {
-                            io.translatetube.local.tts.PiperModels.download(
-                                ctx.applicationContext,
-                                def.id,
-                                onProgress = { p -> progress = (p / 100f).coerceIn(0f, 1f) },
-                                onStage = { stage -> piperStage = stage },
-                            )
-                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                            error = "${def.langLabel}下载已取消"
-                            throw cancelled
-                        } catch (e: Exception) {
-                            error = "${def.langLabel}下载失败：${e.message ?: "未知错误"}"
-                        } finally {
-                            busyId = null
-                            piperDownloadJob = null
-                        }
-                    }
-                }) { Text("下载") }
+                    val app = ctx.applicationContext as io.translatetube.local.TranslateTubeApp
+                    io.translatetube.local.tts.PiperModels.startDownload(
+                        ctx.applicationContext,
+                        def.id,
+                        app.appScope,
+                    )
+                }) {
+                    Text(
+                        if (
+                            modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.FAILED ||
+                            modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.CANCELLED
+                        ) "重试" else "下载"
+                    )
+                }
             }
         }
         HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
