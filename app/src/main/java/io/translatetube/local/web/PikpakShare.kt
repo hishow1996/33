@@ -32,6 +32,8 @@ internal object PikpakShare {
     private const val PACKAGE_NAME = "com.pikcloud.pikpak"
     private const val USER_AGENT = "ANDROID-com.pikcloud.pikpak/1.21.0"
     private const val CLIENT_VERSION_CODE = "10083"
+    /** captcha_token 缓存有效期（毫秒）；过期后重新 init。 */
+    private const val CAPTCHA_TTL_MS = 5 * 60 * 1000L
 
     /** 安卓客户端 captcha_sign 的 9 轮 md5 盐（客户端逆向固定值）。 */
     private val CAPTCHA_SALTS = listOf(
@@ -150,12 +152,14 @@ internal object PikpakShare {
     /**
      * BFS 递归枚举分享目录树（rootParentId="" 为整棵树；传文件夹 id 则展开该子树）。
      * 游客态直连：本地计算 captcha_sign 换取 captcha_token 后 GET /drive/v1/share/detail。
+     * skipParents：已列出过的目录 id（增量枚举时跳过，省 API 调用）。
      */
     fun enumerateAll(
         shareId: String,
         rootParentId: String = "",
         passcodeToken: String = "",
         deviceUuid: String = "",
+        skipParents: Set<String> = emptySet(),
         maxFolders: Int = 120,
         maxEntries: Int = 900,
     ): PikpakEnumeration {
@@ -174,6 +178,9 @@ internal object PikpakShare {
         while (queue.isNotEmpty() && visited.size < maxFolders && entries.size < maxEntries) {
             val parent = queue.removeFirst()
             if (!visited.add(parent)) continue
+            // 已完整枚举过的子树直接跳过（调用方只应传入主动 BFS 过的目录，
+            // hook 抓过的单层目录不在此列，避免漏掉其子文件夹）
+            if (parent != rootParentId && parent in skipParents) continue
             var pageToken = ""
             var pages = 0
             while (pages < 20 && entries.size < maxEntries) {
@@ -273,12 +280,12 @@ internal object PikpakShare {
             entries.filter { it.parentId == parent && it.isFolder && it.id !in visited }
                 .forEach { queue.addLast(it.id) }
         }
-        // 无直链的视频条目补取 file_info（限量，防拖慢清单）
+        // 无直链的视频条目补取 file_info（限量，防拖慢清单；只补视频，图片/文档不浪费配额）
         if (lastError == null && fileInfoQuota > 0) {
             val detailCaptcha = captchaToken(deviceId, "GET:$DRIVE_BASE/drive/v1/share/file_info")
             if (detailCaptcha != null) {
                 val updated = entries.map { entry ->
-                    if (!entry.isFolder && entry.downloadUrl.isBlank() && fileInfoQuota > 0) {
+                    if (entry.isVideo && entry.downloadUrl.isBlank() && fileInfoQuota > 0) {
                         fileInfoQuota--
                         fetchFileInfo(shareId, entry.id, passcodeToken, deviceId, detailCaptcha)?.let { fetched ->
                             PikpakEntry(entry.id, entry.name, entry.parentId, entry.isFolder,
@@ -301,6 +308,62 @@ internal object PikpakShare {
     /** 最近一次主动枚举拿到的 pass_code_token（无输入码时 detail 可能下发）。 */
     @Volatile
     internal var capturedPasscodeToken: String = ""
+
+    /** captcha_token 内存缓存（action → token/过期时刻），5 分钟内复用省 init 请求。 */
+    private val captchaCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+    /** 本地计算 captcha_sign（9 轮 md5 链）→ /v1/shield/captcha/init 换 captcha_token。 */
+    private fun captchaToken(deviceId: String, action: String): String? {
+        val cached = captchaCache[action]
+        if (cached != null && System.currentTimeMillis() < cached.second) {
+            // 缓存的 token 绑定同一 deviceId；持久化设备 ID 稳定，直接复用
+            if (cachedDeviceId == deviceId) return cached.first
+        }
+        val timestamp = System.currentTimeMillis().toString()
+        var sign = CLIENT_ID + CLIENT_VERSION + PACKAGE_NAME + deviceId + timestamp
+        for (salt in CAPTCHA_SALTS) {
+            sign = md5Hex(sign + salt)
+        }
+        val body = JSONObject().apply {
+            put("action", action)
+            put("captcha_token", "")
+            put("client_id", CLIENT_ID)
+            put("device_id", deviceId)
+            put("meta", JSONObject().apply {
+                put("captcha_sign", "1.$sign")
+                put("user_id", "")
+                put("package_name", PACKAGE_NAME)
+                put("client_version", CLIENT_VERSION)
+                put("timestamp", timestamp)
+            })
+            put("redirect_uri", "https://api.mypikpak.com/v1/auth/callback")
+        }
+        val url = "$USER_BASE/v1/shield/captcha/init".toHttpUrl().newBuilder()
+            .addQueryParameter("client_id", CLIENT_ID)
+            .build()
+        val request = Request.Builder().url(url)
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .header("User-Agent", USER_AGENT)
+            .header("X-Device-Id", deviceId)
+            .header("X-Peer-Id", deviceId)
+            .build()
+        val token = runCatching {
+            client.newCall(request).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+                json.optString("captcha_token").takeIf { it.isNotBlank() }
+            }
+        }.getOrNull()
+        if (token != null) {
+            cachedDeviceId = deviceId
+            captchaCache[action] = token to (System.currentTimeMillis() + CAPTCHA_TTL_MS)
+        }
+        return token
+    }
+
+    /** 缓存 token 对应的设备 ID（设备变了缓存作废）。 */
+    @Volatile
+    private var cachedDeviceId: String = ""
 
     /** 单文件直链补取：GET /drive/v1/share/file_info?share_id=&file_id=&pass_code_token=。 */
     private fun fetchFileInfo(
@@ -332,45 +395,6 @@ internal object PikpakShare {
                 val text = resp.body?.string().orEmpty()
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
                 parseFile(json, "")
-            }
-        }.getOrNull()
-    }
-
-    /** 本地计算 captcha_sign（9 轮 md5 链）→ /v1/shield/captcha/init 换 captcha_token。 */
-    private fun captchaToken(deviceId: String, action: String): String? {
-        val timestamp = System.currentTimeMillis().toString()
-        var sign = CLIENT_ID + CLIENT_VERSION + PACKAGE_NAME + deviceId + timestamp
-        for (salt in CAPTCHA_SALTS) {
-            sign = md5Hex(sign + salt)
-        }
-        val body = JSONObject().apply {
-            put("action", action)
-            put("captcha_token", "")
-            put("client_id", CLIENT_ID)
-            put("device_id", deviceId)
-            put("meta", JSONObject().apply {
-                put("captcha_sign", "1.$sign")
-                put("user_id", "")
-                put("package_name", PACKAGE_NAME)
-                put("client_version", CLIENT_VERSION)
-                put("timestamp", timestamp)
-            })
-            put("redirect_uri", "https://api.mypikpak.com/v1/auth/callback")
-        }
-        val url = "$USER_BASE/v1/shield/captcha/init".toHttpUrl().newBuilder()
-            .addQueryParameter("client_id", CLIENT_ID)
-            .build()
-        val request = Request.Builder().url(url)
-            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .header("User-Agent", USER_AGENT)
-            .header("X-Device-Id", deviceId)
-            .header("X-Peer-Id", deviceId)
-            .build()
-        return runCatching {
-            client.newCall(request).execute().use { resp ->
-                val text = resp.body?.string().orEmpty()
-                val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
-                json.optString("captcha_token").takeIf { it.isNotBlank() }
             }
         }.getOrNull()
     }

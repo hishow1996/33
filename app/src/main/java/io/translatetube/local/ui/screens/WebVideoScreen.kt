@@ -121,6 +121,9 @@ fun WebVideoScreen(
     var pikpakCapturedHeaders by remember(initialUrl) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var pikpakEntries by remember(initialUrl) { mutableStateOf<List<PikpakEntry>>(emptyList()) }
     var pikpakListedParents by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    // 主动 BFS 完整枚举过的目录（与 hook 单层列出的 listedParents 区分：
+    // 只有完整枚举过的子树才可在「展开全部」时跳过，避免漏掉 hook 目录的子文件夹）
+    var pikpakEnumeratedParents by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     var pikpakNeedsPasscode by remember(initialUrl) { mutableStateOf(false) }
     var pikpakBusy by remember(initialUrl) { mutableStateOf(false) }
     var pikpakNotice by remember(initialUrl) { mutableStateOf<String?>(null) }
@@ -315,6 +318,7 @@ fun WebVideoScreen(
         pikpakCapturedHeaders = emptyMap()
         pikpakEntries = emptyList()
         pikpakListedParents = emptySet()
+        pikpakEnumeratedParents = emptySet()
         pikpakNeedsPasscode = false
         pikpakBusy = false
         pikpakNotice = null
@@ -324,11 +328,18 @@ fun WebVideoScreen(
         status = "正在打开网页并检测 HTML5 视频…"
     }
 
-    // PikPak 清单条目合并：按 (parentId,id) 去重，视频条目自动并入候选列表（标题=文件名）
+    // PikPak 清单条目合并：按文件 id 去重（hook 与主动枚举两来源的 parentId 可能不一致，
+    // 同一文件保留信息更全的一条：有直链优先、有真实父目录优先），
+    // 视频条目自动并入候选列表（标题=文件名），并把 API 刚下发的直链直接标记已验证
+    // （跳过对 CDN 的批量 HEAD 校验，PikPak 清单可能上百条，逐条验证既慢又易触发限流）。
     fun mergePikpakEntries(incoming: List<PikpakEntry>) {
         val merged = (incoming + pikpakEntries)
-            .groupBy { "${it.parentId}/${it.id}" }
-            .map { it.value.first() }
+            .groupBy { it.id }
+            .map { (_, group) ->
+                group.maxWithOrNull(
+                    compareBy({ it.downloadUrl.isNotBlank() }, { it.parentId.isNotBlank() })
+                ) ?: group.first()
+            }
             .take(900)
         pikpakEntries = merged
         val videoCandidates = merged
@@ -345,6 +356,7 @@ fun WebVideoScreen(
         if (videoCandidates.isNotEmpty()) {
             candidatesState.value =
                 WebVideoProbePolicy.mergeCandidates(candidatesState.value, videoCandidates)
+            verifiedUrls = verifiedUrls + videoCandidates.map { it.url }
         }
     }
 
@@ -362,12 +374,16 @@ fun WebVideoScreen(
         pikpakNotice = "正在读取 PikPak 分享清单…"
         val deviceUuid = PikpakShare.deviceIdentifier(appCtx)
         val passcodeToken = pikpakPasscodeToken.ifBlank { PikpakShare.capturedPasscodeToken }
+        // 增量枚举：完整枚举过的子树跳过（点具体文件夹时强制重读该子树）
+        val skipParents = if (rootParentId.isBlank()) pikpakEnumeratedParents
+        else pikpakEnumeratedParents - rootParentId
         pikpakScope.launch(Dispatchers.IO) {
             val result = PikpakShare.enumerateAll(
                 shareId = shareId,
                 rootParentId = rootParentId,
                 passcodeToken = passcodeToken,
                 deviceUuid = deviceUuid,
+                skipParents = skipParents,
             )
             mainHandler.post {
                 if (!screenActive.get()) return@post
@@ -378,6 +394,7 @@ fun WebVideoScreen(
                 if (result.needsPasscode) pikpakNeedsPasscode = true
                 if (result.entries.isNotEmpty()) {
                     pikpakListedParents = pikpakListedParents + result.visitedParents
+                    pikpakEnumeratedParents = pikpakEnumeratedParents + result.visitedParents
                     mergePikpakEntries(result.entries)
                 }
                 pikpakNotice = when {
@@ -385,6 +402,8 @@ fun WebVideoScreen(
                         "清单已更新：共 ${pikpakEntries.count { it.isVideo }} 个视频、" +
                             "${pikpakEntries.count { it.isFolder }} 个文件夹。点下方候选或文件夹继续。"
                     result.entries.isNotEmpty() -> "部分读取成功：${result.error}"
+                    result.visitedParents.isNotEmpty() && result.error == null ->
+                        "此前已读取过这些目录，无新增内容。"
                     else -> result.error ?: "未读取到文件，可在网页里点开文件夹后自动读取。"
                 }
             }
@@ -791,6 +810,7 @@ fun WebVideoScreen(
             // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
             if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
                 val pikpakFolders = pikpakEntries.filter { it.isFolder }
+                    .sortedBy { it.name.lowercase() }
                 val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
                 Text("PikPak 分享清单", style = MaterialTheme.typography.titleMedium)
                 if (pikpakEntries.isEmpty()) {
@@ -801,7 +821,7 @@ fun WebVideoScreen(
                     )
                 } else {
                     Text(
-                        "共 ${pikpakVideos.size} 个视频、${pikpakFolders.size} 个文件夹。点视频进入候选列表即可转写翻译配音。",
+                        "共 ${pikpakVideos.size} 个视频、${pikpakFolders.size} 个文件夹。视频已加入下方候选列表，点候选卡片即可转写翻译配音。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1082,6 +1102,15 @@ private val NET_HOOK_SCRIPT = """
                   rows.push(pikpakRow(f));
                 }
                 out.files = rows;
+              } else if (data.data && data.data.length && data.data[0] && data.data[0].id) {
+                // share/list 端点的响应是 {data:[...]} 而非 {files:[...]}
+                var rows2 = [];
+                for (var j = 0; j < data.data.length && j < 300; j++) {
+                  var f2 = data.data[j];
+                  if (!f2 || !f2.id) continue;
+                  rows2.push(pikpakRow(f2));
+                }
+                out.files = rows2;
               }
             }
           } catch (e3) {}
