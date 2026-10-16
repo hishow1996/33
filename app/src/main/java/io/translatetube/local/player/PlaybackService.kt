@@ -2509,6 +2509,22 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
         for (batchIndices in pendingIndices.chunked(batchSize)) {
             awaitProcessingResumed(key)
+            // The playback layer calls the engine once per small batch, so carry the previous
+            // completed cues here; otherwise engine-local context resets at every boundary.
+            val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
+                updatedLines.take(firstIndex)
+                    .filter { line ->
+                        line.text.isNotBlank() &&
+                            !needsSubtitleTranslation(line, srcLang) &&
+                            !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
+                    }
+                    .takeLast(3)
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { previous ->
+                        previous.map { it.text } to
+                            previous.map { SubtitleParsers.cleanTranslatedText(it.zh).orEmpty() }
+                    }
+            }
             // A model may return fewer rows than requested, or put UI/status text in a translation
             // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
             var unresolvedIndices = batchIndices
@@ -2518,7 +2534,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val batch = unresolvedIndices.map { plain[it] }
                 val batchTranslations = try {
-                    engine!!.translate(batch, src, tgt)
+                    engine!!.translateWithContext(batch, src, tgt, previousContext)
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     android.util.Log.w(

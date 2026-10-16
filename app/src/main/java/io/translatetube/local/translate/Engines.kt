@@ -37,7 +37,7 @@ private const val CONTEXT_LINES = 3
  * 组装带上一批上下文的用户提示词。上下文仅供模型保持译名/指代连贯，
  * 明确要求不要翻译或输出这些行；无上下文时返回 null 由调用方退回纯编号列表。
  */
-private fun buildContextUserPrompt(
+internal fun buildContextUserPrompt(
     context: Pair<List<String>, List<String>>?,
     numbered: String,
 ): String? {
@@ -351,11 +351,17 @@ class OpenAiCompatEngine(
         return (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.sorted()
     }
 
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        // 分批：每批 30 行，避免长输出截断/超时。
-        // 批间携带上一批的原文/译文尾部作为上下文，保证人名术语与指代全篇一致。
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
+        translateWithContext(lines, srcLang, tgtLang, null)
+
+    override suspend fun translateWithContext(
+        lines: List<String>,
+        srcLang: String,
+        tgtLang: String,
+        initialContext: Pair<List<String>, List<String>>?,
+    ): List<String> {
         val out = mutableListOf<String>()
-        var context: Pair<List<String>, List<String>>? = null
+        var context = initialContext
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
@@ -460,10 +466,17 @@ class GeminiEngine(
         return out.sorted()
     }
 
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        // 分批：每批 30 行；批间携带上批尾部上下文保证译名一致。
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
+        translateWithContext(lines, srcLang, tgtLang, null)
+
+    override suspend fun translateWithContext(
+        lines: List<String>,
+        srcLang: String,
+        tgtLang: String,
+        initialContext: Pair<List<String>, List<String>>?,
+    ): List<String> {
         val out = mutableListOf<String>()
-        var context: Pair<List<String>, List<String>>? = null
+        var context = initialContext
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))

@@ -23,6 +23,14 @@ interface TranslationEngine {
 
     /** 批量翻译；失败抛异常（上层重试/降级） */
     suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String>
+
+    /** Optional continuity context from already-translated cues immediately before this batch. */
+    suspend fun translateWithContext(
+        lines: List<String>,
+        srcLang: String,
+        tgtLang: String,
+        context: Pair<List<String>, List<String>>?,
+    ): List<String> = translate(lines, srcLang, tgtLang)
 }
 
 object LangMap {
