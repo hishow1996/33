@@ -739,16 +739,30 @@ private fun PiperModelSection() {
                 Text("${def.langLabel} · ${def.voiceLabel} · 约 ${def.sizeMB}MB", color = OnBg, style = MaterialTheme.typography.bodyMedium)
                 when {
                     busyId == def.id -> {
-                        LinearProgressIndicator(
-                            progress = { progress },
-                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
-                            color = BrandBright,
-                        )
-                        Text(
-                            "${(progress * 100f).toInt().coerceIn(0, 100)}% · $piperStage",
-                            color = SubText,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                        val installing = piperStage.startsWith("正在解压") ||
+                            piperStage.startsWith("模型文件校验")
+                        if (installing) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                                color = BrandBright,
+                            )
+                            Text(
+                                piperStage,
+                                color = SubText,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                                color = BrandBright,
+                            )
+                            Text(
+                                "${(progress * 100f).toInt().coerceIn(0, 100)}% · $piperStage",
+                                color = SubText,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                     isInstalled -> Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelSmall)
                     else -> Text("未下载", color = SubText, style = MaterialTheme.typography.labelSmall)

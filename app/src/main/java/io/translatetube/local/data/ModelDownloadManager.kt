@@ -425,6 +425,28 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     ) {
         state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = if (kind == ModelKind.TTS) 140 else 198)
         val pkg = File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp")
+        val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
+        val requiredStorageBytes = when (kind) {
+            ModelKind.TTS -> ModelStoragePreflightPolicy.requiredBytes(
+                archiveBytes = 147_031_220L,
+                extractedBytes = 207L * ModelStoragePreflightPolicy.MIB,
+            )
+            ModelKind.ASR -> ModelStoragePreflightPolicy.requiredBytes(
+                archiveBytes = 207_557_382L,
+                extractedBytes = 160L * ModelStoragePreflightPolicy.MIB,
+            )
+        }
+        val usableSpace = ModelStoragePreflightPolicy.minimumKnownUsableSpace(
+            ctx.cacheDir.usableSpace,
+            parentDir.usableSpace,
+        )
+        if (!ModelStoragePreflightPolicy.hasEnoughSpace(usableSpace, requiredStorageBytes)) {
+            state.value = ModelState(
+                status = ModelStatus.FAILED,
+                error = "可用存储空间不足：下载和安装该模型预计至少需要 ${ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间，请释放空间后重试。",
+            )
+            return
+        }
         var lastError: String? = null
         for ((sourceIndex, url) in urls.withIndex()) {
             awaitDownloadsResumed()

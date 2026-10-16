@@ -277,6 +277,25 @@ object PiperModels {
             return@withContext
         }
 
+        onStage("正在检查模型下载和安装所需空间…")
+        val requiredStorageBytes = io.translatetube.local.data.ModelStoragePreflightPolicy.requiredBytes(
+            archiveBytes = def.sizeMB.toLong() * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB,
+            extractedBytes = def.sizeMB.toLong() * 2L * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB,
+        )
+        val usableSpace = io.translatetube.local.data.ModelStoragePreflightPolicy.minimumKnownUsableSpace(
+            ctx.cacheDir.usableSpace,
+            root.usableSpace,
+        )
+        if (!io.translatetube.local.data.ModelStoragePreflightPolicy.hasEnoughSpace(
+                usableSpace,
+                requiredStorageBytes,
+            )
+        ) {
+            throw java.io.IOException(
+                "存储空间不足：下载和安装该 Piper 模型预计至少需要 ${io.translatetube.local.data.ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间。"
+            )
+        }
+
         try {
             // Restore before any network work. A failed retry must not strand the last usable
             // model in .backup merely because the download source is temporarily unavailable.
