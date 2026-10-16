@@ -72,4 +72,54 @@ class DubbingStartPositionPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun rejectsNegativeOrEmptySubtitleIntervalsEvenWithoutPlayerSnapshot() {
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 0,
+                lineStartMs = -100L,
+                lineEndMs = 500L,
+                requestedPositionMs = 0L,
+                latestCursor = DubbingTimelineCursor(),
+            ),
+        )
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 0,
+                lineStartMs = 400L,
+                lineEndMs = 400L,
+                requestedPositionMs = 400L,
+                latestCursor = DubbingTimelineCursor(),
+            ),
+        )
+    }
+
+    @Test
+    fun missingRequestedPositionDefaultsToTheCueStartBeforeFirstSnapshot() {
+        assertEquals(
+            400L,
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 4,
+                lineStartMs = 400L,
+                lineEndMs = 900L,
+                requestedPositionMs = null,
+                latestCursor = DubbingTimelineCursor(),
+            ),
+        )
+    }
+
+    @Test
+    fun rejectsSnapshotExactlyAtCueEnd() {
+        assertNull(
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 4,
+                lineStartMs = 400L,
+                lineEndMs = 900L,
+                requestedPositionMs = 430L,
+                latestCursor = DubbingTimelineCursor(lineIndex = 4, positionMs = 900L),
+            ),
+        )
+    }
+
 }
