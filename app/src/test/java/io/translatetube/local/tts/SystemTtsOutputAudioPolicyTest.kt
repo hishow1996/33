@@ -65,10 +65,11 @@ class SystemTtsOutputAudioPolicyTest {
 
     @Test
     fun trimsLeadingAndTrailingSilenceAfterRateNormalization() {
-        val sourceSamples = FloatArray(5_000).apply {
-            for (index in 2_000 until 3_000) this[index] = 0.25f
+        // 48 kHz input normalizes to 5,000 samples at 16 kHz before trimming.
+        val sourceSamples = FloatArray(15_000).apply {
+            for (index in 6_000 until 9_000) this[index] = 0.25f
         }
-        val result = SystemTtsOutputAudioPolicy.prepareForPlayback(TtsAudio(sourceSamples, 16_000))
+        val result = SystemTtsOutputAudioPolicy.prepareForPlayback(TtsAudio(sourceSamples, 48_000))
 
         // 25 ms of padding on each side remains; long leading/trailing silence is removed.
         assertEquals(16_000, result.sampleRate)
