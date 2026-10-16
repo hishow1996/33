@@ -1825,7 +1825,7 @@ class DubbingEngine(
         oldCacheInit?.cancel()
         oldSynthesis?.cancel()
         synchronized(mem) { mem.clear() }
-        readinessProgress.clear(lines.size, ::publishReadinessProgress)
+        resetReadinessForCurrentConfiguration()
         synchronized(pending) {
             pending.clear()
             priorityTarget = -1
@@ -1838,8 +1838,10 @@ class DubbingEngine(
 
             // Clear once more after joining: a validator already between two instructions may
             // have published progress immediately before observing cancellation.
-            readinessProgress.clear(lines.size, ::publishReadinessProgress)
+            resetReadinessForCurrentConfiguration()
             synchronized(mem) { mem.clear() }
+            synthesisErrorReported.set(false)
+            firstSynthesisReported.set(false)
             synchronized(pending) {
                 pending.clear()
                 lines.indices
@@ -1849,6 +1851,17 @@ class DubbingEngine(
             bumpPrepared()
             startSynthLoop()
         }
+    }
+
+    /**
+     * Reset the whole cue ledger when a cache configuration changes. Non-playable rows are
+     * terminally ready-without-audio, so they cannot stall the contiguous progress prefix.
+     */
+    private fun resetReadinessForCurrentConfiguration() {
+        readinessProgress.clear(lines.size, ::publishReadinessProgress)
+        lines.indices
+            .filterNot { DubbingTimeline.isPlayableCue(lines[it]) }
+            .forEach { markCuePrepared(it, hasAudio = false) }
     }
 
     /** Update the active voice volume immediately when the user toggles original audio. */
