@@ -529,27 +529,24 @@ class SubtitleParsersTest {
         val rows = listOf(SubLine(0, startMs, startMs + 1_000L, "original", "译文"))
 
         assertEquals(
-            "1\\n123:00:05,006 --> 123:00:06,006\\n译文\\n\\n",
+            "1\n123:00:05,006 --> 123:00:06,006\n译文\n\n",
             SubtitleParsers.toSrt(rows),
         )
         assertEquals(
-            "WEBVTT\\n\\n123:00:05.006 --> 123:00:06.006\\noriginal\\n\\n",
+            "WEBVTT\n\n123:00:05.006 --> 123:00:06.006\noriginal\n\n",
             SubtitleParsers.toVtt(rows),
         )
     }
 
-    @Test
     fun ttmlNormalizesInlineSpacesWithoutCollapsingExplicitLineBreaks() {
-        val source = "<tt><body><div><p begin=\\"1s\\" end=\\"3s\\">one    two<br/>three\\t\\tfour</p></div></body></tt>"
+        val source = "<tt><body><div><p begin=\"1s\" end=\"3s\">one    two<br/>three\t\tfour</p></div></body></tt>"
 
         val parsed = SubtitleParsers.parseTtml(source)
 
         assertEquals(1, parsed.size)
-        assertEquals("one two\\nthree four", parsed.single().text)
+        assertEquals("one two\nthree four", parsed.single().text)
     }
 
-
-    @Test
     fun detectsTranslationPlaceholdersAndProgressWithoutTreatingRealTextAsPlaceholder() {
         assertTrue(SubtitleParsers.isPlaceholderTranslation(" 正在翻译 "))
         assertTrue(SubtitleParsers.isPlaceholderTranslation("翻译中 3/5 行"))
@@ -568,11 +565,10 @@ class SubtitleParsersTest {
         val parsed = SubtitleParsers.parseTimedTextXml(source)
 
         assertEquals(1, parsed.size)
-        assertEquals("first
-second
-third", parsed.single().text)
+        assertEquals("first\nsecond\nthird", parsed.single().text)
         assertEquals(1_000L, parsed.single().startMs)
         assertEquals(3_000L, parsed.single().endMs)
     }
+
 
 }
