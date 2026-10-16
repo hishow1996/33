@@ -409,4 +409,48 @@ class SubtitleParsersTest {
         }
     }
 
+
+    @Test
+    fun srtExportSortsCuesRenumbersThemAndSkipsInvalidWindows() {
+        val exported = SubtitleParsers.toSrt(
+            listOf(
+                SubLine(8, 2_000L, 3_500L, "Hello", "你好"),
+                SubLine(9, 4_000L, 3_000L, "invalid", "无效"),
+                SubLine(2, 0L, 1_000L, "Untranslated", "正在翻译"),
+                SubLine(3, -1L, 500L, "negative", "负数"),
+            ),
+        )
+
+        org.junit.Assert.assertTrue(exported.startsWith(
+            "1\n00:00:00,000 --> 00:00:01,000\nUntranslated\n\n" +
+                "2\n00:00:02,000 --> 00:00:03,500\n你好\n",
+        ))
+        org.junit.Assert.assertFalse(exported.contains("invalid"))
+        org.junit.Assert.assertFalse(exported.contains("negative"))
+    }
+
+    @Test
+    fun bilingualExportsPlaceChineseAboveOriginalAndRetainCueTiming() {
+        val rows = listOf(SubLine(0, 1_200L, 2_400L, "Hello there", "你好"))
+
+        assertEquals(
+            "1\n00:00:01,200 --> 00:00:02,400\n你好\nHello there\n\n",
+            SubtitleParsers.toSrt(rows, bilingual = true),
+        )
+
+        val vtt = SubtitleParsers.toBilingualVtt(rows)
+        org.junit.Assert.assertTrue(vtt.startsWith(
+            "WEBVTT\n\n00:00:01.200 --> 00:00:02.400\n你好\nHello there\n",
+        ))
+    }
+
+    @Test
+    fun bilingualExportDoesNotRepeatTextWhenTranslationMatchesSource() {
+        val rows = listOf(SubLine(0, 0L, 1_000L, "你好", "你好"))
+        assertEquals(
+            "1\n00:00:00,000 --> 00:00:01,000\n你好\n\n",
+            SubtitleParsers.toSrt(rows, bilingual = true),
+        )
+    }
+
 }
