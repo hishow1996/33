@@ -35,10 +35,21 @@ object SubtitleLanguageDetector {
      * are English or another language. Strong script detection wins. If the provider claims
      * Chinese but the content is not Chinese-dominant, use "auto" so translation is not skipped.
      */
-    fun resolveTranscriptionLanguage(providerLanguage: String?, transcript: String): String {
-        val contentLanguage = detect(transcript)
-        if (contentLanguage != "auto") return contentLanguage
+    fun resolveTranscriptionLanguage(providerLanguage: String?, transcript: String): String =
+        resolveLanguageUsingContent(providerLanguage, detect(transcript))
 
+    /**
+     * Resolve a provider hint directly from subtitle cues, avoiding a large joinToString allocation
+     * when the transcript contains thousands of timed rows.
+     */
+    fun resolveTranscriptionLanguageFromCues(
+        providerLanguage: String?,
+        cues: Iterable<String>,
+        maxCues: Int = 120,
+    ): String = resolveLanguageUsingContent(providerLanguage, detectFromCues(cues, maxCues))
+
+    private fun resolveLanguageUsingContent(providerLanguage: String?, contentLanguage: String): String {
+        if (contentLanguage != "auto") return contentLanguage
         val supplied = normalizeProviderLanguage(providerLanguage)
         return if (supplied.startsWith("zh") || supplied == "cmn" || supplied.startsWith("yue")) {
             "auto"
