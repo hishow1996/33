@@ -94,6 +94,8 @@ data class PlayerUiState(
     val waitingForTranscriptionEngine: Boolean = false,
     /** Chinese dubbing is blocked because the selected TTS engine is not ready. */
     val waitingForDubbingEngine: Boolean = false,
+    /** At least one translated cue failed synthesis/output and has fallen back to the original audio. */
+    val dubbingHasErrors: Boolean = false,
     val qualityOptions: List<String> = emptyList(),
     val selectedQuality: String = "",
     val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
@@ -467,6 +469,7 @@ class PlaybackService : MediaSessionService() {
                     waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
                     waitingForDubbingEngine = state.waitingForDubbingEngine,
                 )
+                val failureTitle = VideoProcessingFlowPolicy.readyNotificationFailureTitle(state.dubbingHasErrors)
                 when {
                     waitTitle != null -> waitTitle to state.noModelHint
                         ?.takeIf { it.isNotBlank() }
@@ -477,9 +480,13 @@ class PlaybackService : MediaSessionService() {
                             }
                         }
                     isDubbingPreparationIncomplete(state) ->
-                        (if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
-                            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
+                        (if (state.dubbingHasErrors) "配音部分失败 · 仍在准备" else if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
+                            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音" +
+                                if (state.dubbingHasErrors) "；失败字幕暂用原声" else ""
                         } else state.progress.ifBlank { "正在生成中文配音" }
+                    failureTitle != null -> failureTitle to state.noModelHint
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "部分字幕配音失败，相关片段已恢复原声。打开应用查看详情。"
                     state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
                     else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
                 }
@@ -948,6 +955,7 @@ class PlaybackService : MediaSessionService() {
                         processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
                         error = null,
                         noModelHint = null,
+                        dubbingHasErrors = false,
                             waitingForTranscriptionEngine = false,
                             waitingForDubbingEngine = false,
                     )
@@ -1100,6 +1108,7 @@ class PlaybackService : MediaSessionService() {
                         processingFlow = ProcessingFlow.IMPORTED_SUBTITLES,
                         error = null,
                         noModelHint = null,
+                        dubbingHasErrors = false,
                             waitingForTranscriptionEngine = false,
                             waitingForDubbingEngine = false,
                     )
@@ -3575,6 +3584,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     state.copy(
                         dubbingStatus = "系统 TTS 合成失败，保持当前引擎",
                         noModelHint = "系统 TTS 合成失败：$detail。应用不会自动切换到本地模型，也不会要求下载 Kokoro/Piper。请检查手机设置中的文字转语音服务、中文语音数据和可用音色；该字幕行将恢复原声。",
+                        dubbingHasErrors = true,
                     )
                 }
                 false
@@ -3600,6 +3610,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         },
                         muteOriginal = false,
                         noModelHint = message,
+                        dubbingHasErrors = true,
                     )
                 } else state
             }

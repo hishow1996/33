@@ -206,6 +206,24 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun aReadySessionWithAnyDubbingFailureIsNotReportedAsFullyCompleted() {
+        assertFalse(VideoProcessingFlowPolicy.isCompleted(Phase.READY, dubbingHasErrors = true))
+        assertFalse(
+            VideoProcessingFlowPolicy.isCompleted(
+                Phase.READY,
+                waitingForDubbingEngine = true,
+                dubbingHasErrors = true,
+            ),
+        )
+        assertTrue(VideoProcessingFlowPolicy.isCompleted(Phase.READY, dubbingHasErrors = false))
+        assertEquals(
+            "配音部分失败 · 失败字幕已恢复原声",
+            VideoProcessingFlowPolicy.readyNotificationFailureTitle(dubbingHasErrors = true),
+        )
+        assertEquals(null, VideoProcessingFlowPolicy.readyNotificationFailureTitle(dubbingHasErrors = false))
+    }
+
+    @Test
     fun readyNotificationDoesNotClaimDubbingIsCompleteWhileEnginesAreMissing() {
         assertEquals(
             "视频可播放 · 等待转写引擎",

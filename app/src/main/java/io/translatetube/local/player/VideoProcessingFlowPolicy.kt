@@ -199,9 +199,14 @@ object VideoProcessingFlowPolicy {
         phase: Phase,
         waitingForTranscriptionEngine: Boolean = false,
         waitingForDubbingEngine: Boolean = false,
+        dubbingHasErrors: Boolean = false,
     ): Boolean = phase == Phase.READY &&
         !waitingForTranscriptionEngine &&
-        !waitingForDubbingEngine
+        !waitingForDubbingEngine &&
+        !dubbingHasErrors
+
+    fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
+        if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
 
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
         if (flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION) 3 else 2

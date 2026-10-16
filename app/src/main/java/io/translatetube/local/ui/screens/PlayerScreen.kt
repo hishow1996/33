@@ -827,7 +827,12 @@ private fun VideoParsingPage(
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
     val fraction = when (state.phase) {
-        Phase.READY -> if (VideoProcessingFlowPolicy.isCompleted(state.phase, waitingForTranscriptionEngine, waitingForDubbingEngine)) 1f else null
+        Phase.READY -> if (VideoProcessingFlowPolicy.isCompleted(
+            state.phase,
+            waitingForTranscriptionEngine,
+            waitingForDubbingEngine,
+            state.dubbingHasErrors,
+        )) 1f else null
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
@@ -835,6 +840,7 @@ private fun VideoParsingPage(
     }
     val mainTitle = when {
         isCancelled -> "处理已取消"
+        state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
         waitingForDubbingEngine -> "等待配音引擎就绪"
         else -> VideoProcessingFlowPolicy.mainTitle(
             source = source,
@@ -911,6 +917,7 @@ private fun VideoParsingPage(
                     when {
                         waitingForTranscriptionEngine -> "等待转写引擎就绪"
                         waitingForDubbingEngine -> "等待配音引擎就绪"
+                        state.dubbingHasErrors -> "部分配音失败 · 请查看提示"
                         fraction != null -> "当前进度 · " + (fraction * 100).toInt() + "%"
                         else -> "当前阶段 · 正在处理中"
                     },
@@ -1796,6 +1803,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
     val title = when {
         isCancelled -> "处理已取消"
+        state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
         waitingForDubbingEngine -> "等待配音引擎就绪"
         else -> VideoProcessingFlowPolicy.mainTitle(
             source = source,
@@ -1826,6 +1834,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         state.phase,
         waitingForTranscriptionEngine,
         waitingForDubbingEngine,
+        state.dubbingHasErrors,
     )
     val stageNumber = if (completed) stageCount else stageIndex + 1
     val fraction = when (state.phase) {
@@ -1898,6 +1907,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
                     isCancelled -> "已取消"
                     waitingForTranscriptionEngine -> "等待转写"
                     waitingForDubbingEngine -> "等待配音"
+                    state.dubbingHasErrors -> "配音异常"
                     state.phase == Phase.READY && completed -> "完成"
                     state.phase == Phase.READY -> "待配音"
                     state.phase == Phase.ERROR -> "失败"
@@ -1933,6 +1943,8 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
                     "等待转写引擎就绪 · 阶段 ${stageNumber}/${stageCount}"
                 waitingForDubbingEngine ->
                     "等待配音引擎就绪 · 阶段 ${stageNumber}/${stageCount}"
+                state.dubbingHasErrors ->
+                    "部分配音失败 · 失败字幕已恢复原声 · 阶段 ${stageNumber}/${stageCount}"
                 state.phase == Phase.READY && completed -> "全部阶段已完成 · ${stageCount}/${stageCount}"
                 state.phase == Phase.READY -> "配音阶段待完成 · 阶段 ${stageNumber}/${stageCount}"
                 isCancelled -> "处理已取消 · 停在阶段 ${stageNumber}/${stageCount}"
