@@ -236,4 +236,26 @@ class DubbingTimingTest {
         assertTrue(plan.truncated)
     }
 
+
+    @Test
+    fun midCuePlaybackFadesInBrieflyWithoutMutatingCachedPcm() {
+        val cached = FloatArray(4_000) { 0.5f }
+        val plan = DubbingPlaybackPlan(
+            startSample = 100,
+            sampleCount = 1_000,
+            syncRate = 1.0f,
+            playbackRate = 1.0f,
+            truncated = false,
+        )
+
+        val playable = DubbingTiming.slice(cached, plan, sampleRate = 16_000)
+
+        assertEquals(1_000, playable.size)
+        assertEquals(0.0f, playable[0], 0.0f)
+        assertTrue(playable[64] in 0.0f..0.5f)
+        assertEquals(0.5f, playable[127], 0.0001f)
+        assertEquals(0.5f, playable[128], 0.0001f)
+        assertEquals(0.5f, cached[100], 0.0f)
+    }
+
 }
