@@ -81,4 +81,16 @@ class SpeakerAssignmentCodecTest {
             ),
         )
     }
+
+    @Test
+    fun storageIdentityIsStableButDifferentForEachTtsEngine() {
+        assertEquals(
+            SpeakerAssignmentCodec.storageIdentity("youtube:abc", "kokoro"),
+            SpeakerAssignmentCodec.storageIdentity("youtube:abc", "KOKORO"),
+        )
+        assertTrue(
+            SpeakerAssignmentCodec.storageIdentity("youtube:abc", "kokoro") !=
+                SpeakerAssignmentCodec.storageIdentity("youtube:abc", "system"),
+        )
+    }
 }

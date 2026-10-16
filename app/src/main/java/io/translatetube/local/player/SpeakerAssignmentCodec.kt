@@ -21,6 +21,12 @@ internal object SpeakerAssignmentCodec {
 
     fun lineKey(startMs: Long, endMs: Long): String = "$startMs:$endMs"
 
+    /** Keep voice assignments isolated because a tone ID has engine-specific meaning. */
+    fun storageIdentity(videoKey: String, engineId: String): String {
+        val engine = engineId.trim().lowercase().take(32).ifBlank { "kokoro" }
+        return "$videoKey|tts:$engine"
+    }
+
     fun encode(snapshot: SpeakerAssignmentSnapshot): String {
         val parts = mutableListOf(VERSION)
         snapshot.speakerVoices.toSortedMap().forEach { (speaker, voice) ->

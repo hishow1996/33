@@ -3663,7 +3663,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 if (segments.isEmpty()) throw IllegalStateException("没有识别到可区分的说话人")
-                val assignmentSnapshot = loadSpeakerAssignments(sessionKey)
+                val assignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
                 val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
                 val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
                 // sherpa-onnx cluster labels are arbitrary identifiers, not persistent person IDs.
@@ -3724,6 +3724,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         lineVoices = lineVoiceAssignments,
                     ),
                     sessionKey,
+                    selectedTts,
                 )
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
@@ -3864,7 +3865,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             "$sessionKey|zh|${getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)}"
         }
         val sourceLang = sessionState.sourceLang
-        val assignmentSnapshot = loadSpeakerAssignments(sessionKey)
+        val assignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
         val updated = oldLines.mapIndexed { i, line ->
             if (i == index) line.copy(speakerId = selectedVoice) else line
         }
@@ -3924,7 +3925,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
 
-                saveSpeakerAssignments(updatedAssignments, sessionKey)
+                saveSpeakerAssignments(updatedAssignments, sessionKey, selectedTts)
                 assignmentsSaved = true
                 updateUiForSession(sessionKey) {
                     it.copy(
@@ -4015,7 +4016,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 replacementDubbing?.let { retireDubbing(it) }
                 awaitRetiredDubbingEngines()
                 if (assignmentsSaved && videoKey == sessionKey && ui.value.key == sessionKey) {
-                    runCatching { saveSpeakerAssignments(assignmentSnapshot, sessionKey) }
+                    runCatching { saveSpeakerAssignments(assignmentSnapshot, sessionKey, selectedTts) }
                 }
                 updateUiForSession(sessionKey) {
                     it.copy(
@@ -4037,35 +4038,95 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         }
     }
 
-    private fun assignmentPrefsKey(key: String): String {
+    private fun currentTtsEngineId(): String =
+        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
+
+    private fun assignmentStorageKey(identity: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(key.toByteArray(Charsets.UTF_8))
+            .digest(identity.toByteArray(Charsets.UTF_8))
         return "video_" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
-    private fun loadSpeakerAssignments(key: String = videoKey): SpeakerAssignmentSnapshot {
+    private fun assignmentPrefsKey(
+        key: String,
+        engineId: String = currentTtsEngineId(),
+    ): String = assignmentStorageKey(SpeakerAssignmentCodec.storageIdentity(key, engineId))
+
+    /** Key used before assignments were scoped by TTS engine; read it once for migration only. */
+    private fun legacyAssignmentPrefsKey(key: String): String = assignmentStorageKey(key)
+
+    private fun migrateLegacyAssignments(
+        snapshot: SpeakerAssignmentSnapshot,
+        engineId: String,
+    ): SpeakerAssignmentSnapshot {
+        return when (engineId) {
+            "piper" -> SpeakerAssignmentSnapshot()
+            "system" -> {
+                val names = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+                    getSharedPreferences("settings", MODE_PRIVATE).getString(
+                        io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                        null,
+                    )
+                )
+                // If the current ROM catalogue is known, convert invalid old Kokoro tone IDs to
+                // the default instead of silently wrapping them to an unrelated system voice.
+                val alternativeCount = (names.size - 1).coerceAtLeast(0)
+                if (names.isEmpty()) snapshot else {
+                    fun validTone(tone: Int): Int =
+                        if (tone == -1 || tone in 0 until alternativeCount) tone else -1
+                    snapshot.copy(
+                        speakerVoices = snapshot.speakerVoices.mapValues { (_, tone) -> validTone(tone) },
+                        lineVoices = snapshot.lineVoices.mapValues { (_, tone) -> validTone(tone) },
+                        lineOverrides = snapshot.lineOverrides.mapValues { (_, tone) -> validTone(tone) },
+                    )
+                }
+            }
+            else -> snapshot
+        }
+    }
+
+    private fun loadSpeakerAssignments(
+        key: String = videoKey,
+        engineId: String = currentTtsEngineId(),
+    ): SpeakerAssignmentSnapshot {
         if (key.isBlank()) return SpeakerAssignmentSnapshot()
-        val raw = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
-            .getString(assignmentPrefsKey(key), null)
-        return SpeakerAssignmentCodec.decode(raw)
+        val prefs = getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
+        val scopedKey = assignmentPrefsKey(key, engineId)
+        val scopedRaw = prefs.getString(scopedKey, null)
+        if (scopedRaw != null) return SpeakerAssignmentCodec.decode(scopedRaw)
+
+        val legacyRaw = prefs.getString(legacyAssignmentPrefsKey(key), null)
+            ?: return SpeakerAssignmentSnapshot()
+        val migrated = migrateLegacyAssignments(SpeakerAssignmentCodec.decode(legacyRaw), engineId)
+        prefs.edit().putString(scopedKey, SpeakerAssignmentCodec.encode(migrated)).apply()
+        return migrated
     }
 
     private fun saveSpeakerAssignments(
         snapshot: SpeakerAssignmentSnapshot,
         key: String = videoKey,
+        engineId: String = currentTtsEngineId(),
     ) {
         if (key.isBlank()) return
         getSharedPreferences("speaker_assignments_v1", MODE_PRIVATE)
             .edit()
-            .putString(assignmentPrefsKey(key), SpeakerAssignmentCodec.encode(snapshot))
+            .putString(assignmentPrefsKey(key, engineId), SpeakerAssignmentCodec.encode(snapshot))
             .apply()
     }
 
     private fun applySavedLineOverrides(
         lines: List<SubLine>,
         key: String = videoKey,
-    ): List<SubLine> =
-        SpeakerAssignmentResolver.apply(lines, loadSpeakerAssignments(key))
+        engineId: String = currentTtsEngineId(),
+    ): List<SubLine> {
+        // Older subtitle-cache rows also persisted speaker IDs. Clear that engine-specific value
+        // before applying this engine's own saved timeline map, so a cache hit cannot leak tones
+        // from Kokoro into System TTS (or vice versa).
+        val neutralLines = lines.map { line ->
+            if (line.speakerId == -1) line else line.copy(speakerId = -1)
+        }
+        return SpeakerAssignmentResolver.apply(neutralLines, loadSpeakerAssignments(key, engineId))
+    }
 
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn
