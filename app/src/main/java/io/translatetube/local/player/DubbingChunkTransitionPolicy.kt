@@ -20,6 +20,29 @@ internal object DubbingChunkTransitionPolicy {
      * enough to overlap next-buffer creation, accounting for the current playback rate and any
      * samples already skipped in the buffer after a late video tick.
      */
+    /**
+     * If an OEM rejects an early marker, retry at the buffer end so long-utterance playback
+     * still has a chance to advance. Marker positions must be unique and stay within the buffer.
+     */
+    fun markerPositionCandidates(
+        chunkSampleCount: Int,
+        sampleRate: Int,
+        playbackRate: Float,
+        currentHeadPosition: Int = 0,
+        leadMs: Long = PREFETCH_LEAD_MS,
+    ): List<Int> {
+        if (chunkSampleCount <= 0) return emptyList()
+        val early = prefetchMarkerPosition(
+            chunkSampleCount = chunkSampleCount,
+            sampleRate = sampleRate,
+            playbackRate = playbackRate,
+            currentHeadPosition = currentHeadPosition,
+            leadMs = leadMs,
+        )
+        return if (early in 1 until chunkSampleCount) listOf(early, chunkSampleCount)
+        else listOf(chunkSampleCount)
+    }
+
     fun prefetchMarkerPosition(
         chunkSampleCount: Int,
         sampleRate: Int,
