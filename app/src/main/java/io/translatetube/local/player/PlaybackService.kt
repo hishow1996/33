@@ -984,8 +984,11 @@ class PlaybackService : MediaSessionService() {
                         error = null,
                         noModelHint = null,
                         dubbingHasErrors = false,
-                            waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = false,
+                        translatedLineCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
                     )
                 }
                 val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -1025,6 +1028,9 @@ class PlaybackService : MediaSessionService() {
                         progress = "已载入 " + translatedLines.size + " 条已翻译字幕，正在准备中文配音…",
                         lines = translatedLines,
                         totalLines = translatedLines.size,
+                        translatedLineCount = translatedLines.size,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
                         preparedUntil = 0,
                         preparedCount = 0,
                         sourceLang = "zh",
@@ -1150,8 +1156,11 @@ class PlaybackService : MediaSessionService() {
                         error = null,
                         noModelHint = null,
                         dubbingHasErrors = false,
-                            waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = false,
+                        translatedLineCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
                     )
                 }
                 // Subtitle files can be large. Keep file I/O and parsing off the main thread so
@@ -1203,6 +1212,9 @@ class PlaybackService : MediaSessionService() {
                         translationCacheKey = importedCacheKey,
                         lines = parsedLines,
                         totalLines = parsedLines.size,
+                        translatedLineCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
                         sourceLang = srcLang,
                     )
                 }
@@ -1265,6 +1277,9 @@ class PlaybackService : MediaSessionService() {
                     // 中文源字幕：字幕文本即中文，原声就是目标语言——
                     // 只显示中文字幕、保留原声，跳过 TTS 配音；字幕缓存与开播照常。
                     pm.originalVolume = 1f
+                    val translatedCount = translatedLines.count {
+                        SubtitleParsers.cleanTranslatedText(it.zh) != null
+                    }
                     val arr = org.json.JSONArray()
                     for (line in translatedLines) arr.put(
                         org.json.JSONObject()
@@ -1275,9 +1290,7 @@ class PlaybackService : MediaSessionService() {
                             .put("sp", line.speakerId)
                     )
                     ensureCurrentSession(sessionKey)
-                    if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
-                        translatedLines.size / 2
-                    ) {
+                    if (translatedCount > translatedLines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                             io.translatetube.local.data.SubtitleCacheEntity(
                                 importedCacheKey,
@@ -1299,6 +1312,9 @@ class PlaybackService : MediaSessionService() {
                             waitingForDubbingEngine = false,
                             lines = translatedLines,
                             totalLines = translatedLines.size,
+                            translatedLineCount = translatedCount,
+                            activeDubbingLine = -1,
+                            currentLine = -1,
                             error = null,
                         )
                     }

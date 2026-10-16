@@ -12,6 +12,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
@@ -351,7 +352,7 @@ fun PlayerScreen(
     ) { uri -> saveSubtitleExport(uri) }
 
     fun requestSubtitleExport(format: SubtitleExportFormat) {
-        val linesSnapshot = state.lines.toList()
+        val linesSnapshot = state.lines
         if (linesSnapshot.isEmpty()) {
             android.widget.Toast.makeText(ctx, "当前没有可导出的字幕", android.widget.Toast.LENGTH_SHORT).show()
             return
@@ -384,7 +385,11 @@ fun PlayerScreen(
     }
 
     fun copySubtitles() {
-        val linesSnapshot = state.lines.toList()
+        val linesSnapshot = state.lines
+        if (linesSnapshot.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "当前没有可复制的字幕", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         subtitleExportScope.launch {
             val text = withContext(Dispatchers.Default) {
                 // Keep copy and file export consistent: discard malformed time windows, sort
@@ -861,7 +866,10 @@ fun PlayerScreen(
 
     // 字幕只在当前配音行接近可视区域边缘时滚动，避免每句都重新启动滚动动画。
     // 用 rememberUpdatedState 让长生命周期协程始终读取最新播放行，不会闭包住旧 state。
-    val autoScrollTarget = rememberUpdatedState(state.currentLine to state.lines.size)
+    val effectiveScrollLine = if (
+        state.dubbingOn && state.activeDubbingLine in state.lines.indices
+    ) state.activeDubbingLine else state.currentLine
+    val autoScrollTarget = rememberUpdatedState(effectiveScrollLine to state.lines.size)
     LaunchedEffect(state.key, state.phase, subtitlesVisible) {
         // The list is intentionally absent on the parsing screen and when subtitles are hidden.
         // Do not wait for a LazyColumn viewport that is not composed.
@@ -1683,14 +1691,10 @@ private fun SubtitleList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    val dubbingPulseTransition = rememberInfiniteTransition(label = "subtitleDubbingPulse")
-    val sharedDubbingPulse by dubbingPulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.01f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(850),
-            repeatMode = RepeatMode.Reverse,
-        ),
+    val hasActiveDubbingLine = state.dubbingOn && state.activeDubbingLine in state.lines.indices
+    val sharedDubbingPulse by animateFloatAsState(
+        targetValue = if (hasActiveDubbingLine) 1.01f else 1f,
+        animationSpec = tween(180),
         label = "subtitleDubbingScale",
     )
 
@@ -1719,12 +1723,20 @@ private fun SubtitleList(
                 // advance before the first asynchronous TTS track starts, missing line zero.
                 val activeDub = i == state.activeDubbingLine && state.dubbingOn
                 val dubbingScale = if (activeDub) sharedDubbingPulse else 1f
-                val translatedText = SubtitleParsers.preferredTranslationText(line)
-                    ?.takeIf { it.isNotBlank() }
-                    // SubtitleList is shown after processing reaches READY; don't leave stale progress text.
-                    ?: "译文暂不可用"
-                val showOriginalText = activeDub && line.text.isNotBlank() &&
-                    subtitleComparisonKey(line.text) != subtitleComparisonKey(translatedText)
+                val translatedText = remember(line.text, line.zh) {
+                    SubtitleParsers.preferredTranslationText(line)
+                        ?.takeIf { it.isNotBlank() }
+                        // Never display a progress string as if it were translated speech.
+                        ?: "中文字幕暂不可用"
+                }
+                val sourceComparisonKey = remember(line.text) { subtitleComparisonKey(line.text) }
+                val translatedComparisonKey = remember(translatedText) {
+                    subtitleComparisonKey(translatedText)
+                }
+                val showOriginalText = activeDub &&
+                    translatedText != "中文字幕暂不可用" &&
+                    line.text.isNotBlank() &&
+                    sourceComparisonKey != translatedComparisonKey
 
                 Column(
                     Modifier.fillMaxWidth()
@@ -1736,7 +1748,9 @@ private fun SubtitleList(
                                 else -> Color.Transparent
                             }
                         )
-                        .clickable { svc?.seek(line.startMs) }
+                        .clickable(
+                            enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
+                        ) { svc?.seek(line.startMs) }
                         .padding(horizontal = 10.dp, vertical = if (activeDub) 6.dp else 5.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {

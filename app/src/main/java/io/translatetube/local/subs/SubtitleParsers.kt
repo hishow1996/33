@@ -35,6 +35,16 @@ object SubtitleParsers {
     private val translationChunkRegex = Regex("(?<=[。！？!?；;，,])")
     private val whitespaceRegex = Regex("\\s+")
     private val inlineWhitespaceRegex = Regex("[ \\t]+")
+    private val subtitleControlCharactersRegex = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]")
+    private val unusualSubtitleWhitespaceRegex = Regex("[\\u00A0\\u202F\\u2007\\u3000]")
+
+    /** Normalize visually equivalent Unicode spaces and discard hidden control bytes from captions. */
+    private fun normalizeSubtitleWhitespace(text: String): String = text
+        .replace(subtitleControlCharactersRegex, "")
+        .replace('\\uFEFF', ' ')
+        .replace(unusualSubtitleWhitespaceRegex, " ")
+        .replace(whitespaceRegex, " ")
+        .trim()
     private val captionComparisonTrailingPunctuation = setOf(
         '.', ',', '!', '?', '。', '，', '！', '？', '；', ';', ':', '：', '…', '、'
     )
@@ -129,9 +139,9 @@ object SubtitleParsers {
      * erase legitimate repeated words from the original caption.
      */
     fun preferredTranslationText(line: SubLine): String? {
-        val raw = line.zh?.replace('\u00a0', ' ')?.replace(whitespaceRegex, " ")?.trim()
+        val raw = line.zh?.let(::normalizeSubtitleWhitespace)
             ?.takeIf { it.isNotEmpty() } ?: return null
-        val source = line.text.trim()
+        val source = normalizeSubtitleWhitespace(line.text)
         if (source.isNotEmpty() && source == raw) return source
         return cleanTranslatedText(raw)
     }
@@ -219,8 +229,7 @@ object SubtitleParsers {
         .replace(">", "&gt;")
 
     private fun sameCaptionText(left: String, right: String): Boolean {
-        fun normalize(value: String): String = value.trim()
-            .replace(whitespaceRegex, " ")
+        fun normalize(value: String): String = normalizeSubtitleWhitespace(value)
             .trimEnd { it.isWhitespace() || it in captionComparisonTrailingPunctuation }
             .lowercase(Locale.ROOT)
         return normalize(left) == normalize(right)
@@ -412,7 +421,7 @@ object SubtitleParsers {
      */
     fun isPlaceholderTranslation(translated: String?): Boolean {
         val normalized = translated
-            ?.trim()
+            ?.let(::normalizeSubtitleWhitespace)
             ?.lowercase(Locale.ROOT)
             ?.replace(placeholderNormalizationRegex, "")
             ?: return false
@@ -427,9 +436,7 @@ object SubtitleParsers {
      */
     fun cleanTranslatedText(translated: String?): String? {
         val value = translated
-            ?.replace('\u00a0', ' ')
-            ?.replace(whitespaceRegex, " ")
-            ?.trim()
+            ?.let(::normalizeSubtitleWhitespace)
             ?.takeIf { it.isNotEmpty() }
             ?: return null
         if (isPlaceholderTranslation(value)) return null
@@ -555,11 +562,7 @@ object SubtitleParsers {
             val last = out.lastOrNull()
             // Normalize each cue once. Re-normalizing the previous cue for every next cue
             // needlessly repeated regex/string allocations on subtitles with many short rows.
-            val normalizedText = line.text
-                .replace('\u00a0', ' ')
-                .replace('\u202f', ' ')
-                .replace(whitespaceRegex, " ")
-                .trim()
+            val normalizedText = normalizeSubtitleWhitespace(line.text)
             val sameText = last != null && previousNormalizedText == normalizedText
             val gap = if (last != null) line.startMs - last.endMs else Long.MIN_VALUE
             val startDelta = if (last != null) line.startMs - last.startMs else Long.MAX_VALUE
@@ -576,8 +579,10 @@ object SubtitleParsers {
     }
 
     private fun stripTags(s: String): String =
-        SubtitleTextDecoder.decode(s.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, ""))
-            .replace(inlineWhitespaceRegex, " ").trim()
+        normalizeSubtitleWhitespace(
+            SubtitleTextDecoder.decode(s.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, ""))
+                .replace(inlineWhitespaceRegex, " ")
+        )
 
     private fun parseVttTs(value: String): Long? {
         val clean = value.trim().replace(",", ".")

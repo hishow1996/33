@@ -720,6 +720,34 @@ class SubtitleParsersTest {
     }
 
     @Test
+    fun translatedTextNormalizesUnicodeSpacesAndHiddenControlCharacters() {
+        val line = SubLine(0, 0L, 1_000L, "你好\u3000世界", "你好\u202F世\u0000界")
+        assertEquals("你好 世界", SubtitleParsers.preferredTranslationText(line))
+        assertEquals("你好 世界", SubtitleParsers.cleanTranslatedText("你好\u2007世界"))
+        assertEquals(null, SubtitleParsers.cleanTranslatedText("\uFEFF\u0000"))
+    }
+
+    @Test
+    fun exportSortingDoesNotReorderTheOriginalSubtitleList() {
+        val rows = listOf(
+            SubLine(0, 2_000L, 3_000L, "second"),
+            SubLine(1, 0L, 1_000L, "first"),
+        )
+        val originalStarts = rows.map { it.startMs }
+        assertTrue(SubtitleParsers.toSrt(rows).indexOf("first") < SubtitleParsers.toSrt(rows).indexOf("second"))
+        assertEquals(originalStarts, rows.map { it.startMs })
+    }
+
+    @Test
+    fun bilingualExportDoesNotDuplicateCaptionsWithUnicodeSpaceDifferences() {
+        val line = SubLine(0, 0L, 1_000L, "你好\u3000世界", "你好 世界")
+        assertEquals(
+            "1\n00:00:00,000 --> 00:00:01,000\n你好 世界\n\n",
+            SubtitleParsers.toSrt(listOf(line), bilingual = true),
+        )
+    }
+
+    @Test
     fun sourceEquivalentRepeatedChineseCaptionsSurviveDisplayCopyAndExports() {
         val line = SubLine(0, 0L, 1_000L, "哈哈哈哈", "哈哈哈哈")
         val rows = listOf(line)

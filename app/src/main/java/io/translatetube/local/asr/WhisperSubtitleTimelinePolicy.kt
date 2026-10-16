@@ -47,15 +47,28 @@ internal object WhisperSubtitleTimelinePolicy {
         val joinedText = tokens.filterNot(::isControlToken).joinToString("")
         if (comparableText(joinedText) != comparableText(expectedText)) return emptyList()
 
-        val validStarts = timestampsSeconds.filter { it.isFinite() && it >= 0f }
-        if (validStarts.size != timestampsSeconds.size) return emptyList()
-        if (validStarts.zipWithNext().any { (left, right) -> right + 0.02f < left }) return emptyList()
+        // Validate in one pass instead of allocating filtered timestamp/zip intermediates for
+        // up to 200,000 tokens on low-memory Android devices.
+        var previousStart = 0f
+        var minStart = Float.POSITIVE_INFINITY
+        var maxStart = Float.NEGATIVE_INFINITY
+        var hasDistinctStarts = false
+        for (index in timestampsSeconds.indices) {
+            val start = timestampsSeconds[index]
+            if (!start.isFinite() || start < 0f) return emptyList()
+            if (index > 0) {
+                if (start + 0.02f < previousStart) return emptyList()
+                if (start - previousStart > 0.01f) hasDistinctStarts = true
+            }
+            previousStart = start
+            minStart = minOf(minStart, start)
+            maxStart = maxOf(maxStart, start)
+        }
         val hasUsefulDurations = durationsSeconds.indices.any { index ->
             durationsSeconds[index].isFinite() && durationsSeconds[index] > 0.01f
         }
-        val hasDistinctStarts = validStarts.zipWithNext().any { (left, right) -> right - left > 0.01f }
         if (!hasUsefulDurations && !hasDistinctStarts) return emptyList()
-        if (validStarts.size > 1 && validStarts.maxOrNull() == validStarts.minOrNull()) return emptyList()
+        if (timestampsSeconds.size > 1 && maxStart == minStart) return emptyList()
 
         val segmentDurationMs = segmentEndMs - segmentStartMs
         // Find each token's nearest later timestamp beyond the 5 ms tolerance in linear time.
@@ -190,14 +203,15 @@ internal object WhisperSubtitleTimelinePolicy {
         }
         flushCue()
 
-        // Token-level boundaries normally meet exactly; guard against small DTW overlap drift.
-        val adjustedCues = cues.mapIndexed { index, cue ->
+        // Correct overlaps and validate bounds in the same pass.
+        val adjustedCues = ArrayList<Triple<Long, Long, String>>(cues.size)
+        for (index in cues.indices) {
+            val cue = cues[index]
             val nextStart = cues.getOrNull(index + 1)?.first
             val end = if (nextStart != null && cue.second > nextStart) nextStart else cue.second
-            Triple(cue.first, end, cue.third)
+            if (end <= cue.first) return emptyList()
+            adjustedCues += Triple(cue.first, end, cue.third)
         }
-        // Do not silently lose text if unusual timestamp ties make a cue unrepresentable.
-        if (adjustedCues.any { it.second <= it.first }) return emptyList()
         return adjustedCues
     }
 }

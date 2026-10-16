@@ -136,6 +136,20 @@ class WhisperSubtitleTimelinePolicyTest {
     }
 
     @Test
+    fun rejectsRepeatedTimestampsWhenNoUsefulDurationsExist() {
+        assertTrue(
+            WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+                tokens = listOf("one", " two"),
+                timestampsSeconds = listOf(0.5f, 0.5f),
+                durationsSeconds = listOf(0f, Float.NaN),
+                segmentStartMs = 0L,
+                segmentEndMs = 2_000L,
+                expectedText = "one two",
+            ).isEmpty()
+        )
+    }
+
+    @Test
     fun clampsHugeFiniteTokenDurationWithoutLongOverflow() {
         val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
             tokens = listOf("hello"),

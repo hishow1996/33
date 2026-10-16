@@ -89,6 +89,30 @@ class DubbingTimelineTest {
     }
 
     @Test
+    fun cueLookupWithOnlyInvalidRowsNeverReturnsAnIndex() {
+        val timeline = DubbingTimeline(
+            listOf(
+                SubLine(0, -10L, 100L, "negative"),
+                SubLine(1, 100L, 100L, "empty"),
+                SubLine(2, 300L, 200L, "reversed"),
+                SubLine(3, 400L, 500L, " "),
+            )
+        )
+        assertEquals(-1, timeline.lineAt(450L))
+        assertEquals(-1, timeline.lineAt(Long.MAX_VALUE))
+    }
+
+    @Test
+    fun singleCueUsesHalfOpenWindowAndFastOutsideBounds() {
+        val timeline = DubbingTimeline(listOf(SubLine(7, 1_000L, 2_000L, "only cue")))
+        assertEquals(-1, timeline.lineAt(999L))
+        assertEquals(7, timeline.lineAt(1_000L))
+        assertEquals(7, timeline.lineAt(1_999L))
+        assertEquals(-1, timeline.lineAt(2_000L))
+        assertEquals(-1, timeline.lineAt(Long.MAX_VALUE))
+    }
+
+    @Test
     fun nestedOverlapsFallBackToTheNewestStillActiveCue() {
         val timeline = DubbingTimeline(
             listOf(

@@ -25,18 +25,19 @@ internal class DubbingTimeline(lines: List<SubLine>) {
         require(lines.size <= MAX_INPUT_CUE_COUNT) {
             "字幕行数超过播放时间轴安全上限，已停止建立配音索引"
         }
-        // Count before allocating Cue objects and the max-end tree; invalid imported rows should
-        // not make a very large tree just to be discarded by the filter.
-        val playableCount = lines.count(::isPlayableCue)
-        require(playableCount <= MAX_PLAYABLE_CUE_COUNT) {
-            "可播放字幕数量超过安全上限，请拆分视频或字幕文件后重试"
+        // Filter and count in one pass. Abort as soon as the playable-cue budget is exceeded,
+        // before building the interval tree or allocating a second intermediate list.
+        val collected = ArrayList<Cue>(minOf(lines.size, 256))
+        for (index in lines.indices) {
+            val line = lines[index]
+            if (!isPlayableCue(line)) continue
+            require(collected.size < MAX_PLAYABLE_CUE_COUNT) {
+                "可播放字幕数量超过安全上限，请拆分视频或字幕文件后重试"
+            }
+            collected += Cue(index, line)
         }
-        lines.withIndex()
-            .asSequence()
-            .filter { (_, line) -> isPlayableCue(line) }
-            .map { (index, line) -> Cue(index, line) }
-            .sortedWith(compareBy<Cue> { it.line.startMs }.thenBy { it.originalIndex })
-            .toList()
+        collected.sortWith(compareBy<Cue> { it.line.startMs }.thenBy { it.originalIndex })
+        collected
     }
 
     private val treeLeafCount: Int = run {
@@ -60,6 +61,9 @@ internal class DubbingTimeline(lines: List<SubLine>) {
 
     fun lineAt(positionMs: Long): Int {
         if (positionMs < 0L || cues.isEmpty()) return -1
+        // Intro/outro positions are common and should not walk the interval tree.
+        if (positionMs < cues.first().line.startMs || positionMs >= maxEndTree[1]) return -1
+        if (cues.size == 1) return cues[0].originalIndex
 
         var low = 0
         var high = cues.lastIndex
