@@ -2811,6 +2811,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         size = updatedLines.size,
                         beforeIndex = firstIndex,
                         maxRows = 3,
+                        checkActive = { translationJob?.ensureActive() },
                     ) { index ->
                         val line = updatedLines[index]
                         line.text.isNotBlank() &&

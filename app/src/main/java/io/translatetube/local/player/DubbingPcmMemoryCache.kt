@@ -23,49 +23,76 @@ internal object DubbingMemoryCacheIdentityPolicy {
 /**
  * Access is synchronized by DubbingEngine at the call site. Values count only FloatArray payload
  * bytes, which dominate PCM cache memory; metadata overhead is bounded by maxEntries.
+ *
+ * This uses composition rather than exposing LinkedHashMap's inherited mutators: methods such as
+ * putAll/replaceAll on a Map subclass can bypass an overridden put() and corrupt the byte budget.
  */
 internal class DubbingPcmMemoryCache(
     private val maxBytes: Long,
     private val maxEntries: Int = 48,
-) : LinkedHashMap<Int, DubbingPcmMemoryEntry>(16, 0.75f, true) {
+) {
+    private val storage = LinkedHashMap<Int, DubbingPcmMemoryEntry>(16, 0.75f, true)
     private var retainedBytes = 0L
 
-    override fun put(key: Int, value: DubbingPcmMemoryEntry): DubbingPcmMemoryEntry? {
+    val size: Int get() = storage.size
+
+    fun isEmpty(): Boolean = storage.isEmpty()
+
+    fun containsKey(key: Int): Boolean = storage.containsKey(key)
+
+    operator fun get(key: Int): DubbingPcmMemoryEntry? = storage[key]
+
+    operator fun set(key: Int, value: DubbingPcmMemoryEntry) {
+        put(key, value)
+    }
+
+    fun put(key: Int, value: DubbingPcmMemoryEntry): DubbingPcmMemoryEntry? {
         val previous = remove(key)
         val valueBytes = value.samples.size.toLong() * java.lang.Float.BYTES
-        if (maxBytes <= 0L || maxEntries <= 0 || valueBytes > maxBytes) return previous
+        val validEntry = value.sampleRate in 8_000..192_000 &&
+            DubbingPcmValidation.isSampleCountAllowed(value.samples.size) &&
+            value.cacheIdentity.isNotBlank()
+        if (!validEntry || maxBytes <= 0L || maxEntries <= 0 || valueBytes > maxBytes) {
+            return previous
+        }
 
-        super.put(key, value)
+        storage[key] = value
         retainedBytes += valueBytes
         trimToBudget()
         return previous
     }
 
-    override fun remove(key: Int): DubbingPcmMemoryEntry? {
-        val previous = super.remove(key)
+    /** Insert via the same bounded path as individual entries; never bypass byte accounting. */
+    fun putAll(values: Map<Int, DubbingPcmMemoryEntry>) {
+        values.forEach { (key, value) -> put(key, value) }
+    }
+
+    fun remove(key: Int): DubbingPcmMemoryEntry? {
+        val previous = storage.remove(key)
         if (previous != null) {
-            retainedBytes = (retainedBytes - previous.samples.size.toLong() * java.lang.Float.BYTES)
-                .coerceAtLeast(0L)
+            retainedBytes = (retainedBytes - bytesFor(previous)).coerceAtLeast(0L)
         }
         return previous
     }
 
-    override fun clear() {
-        super.clear()
+    fun clear() {
+        storage.clear()
         retainedBytes = 0L
     }
 
     fun retainedBytes(): Long = retainedBytes
 
     private fun trimToBudget() {
-        val iterator = entries.iterator()
-        while ((retainedBytes > maxBytes || size > maxEntries) && iterator.hasNext()) {
+        val iterator = storage.entries.iterator()
+        while ((retainedBytes > maxBytes || storage.size > maxEntries) && iterator.hasNext()) {
             val entry = iterator.next()
-            retainedBytes = (retainedBytes - entry.value.samples.size.toLong() * java.lang.Float.BYTES)
-                .coerceAtLeast(0L)
+            retainedBytes = (retainedBytes - bytesFor(entry.value)).coerceAtLeast(0L)
             iterator.remove()
         }
     }
+
+    private fun bytesFor(entry: DubbingPcmMemoryEntry): Long =
+        entry.samples.size.toLong() * java.lang.Float.BYTES
 }
 
 /** Memory budgets for pre-synthesized dubbing PCM, selected by Android's app-heap class. */
@@ -76,6 +103,8 @@ internal object DubbingPcmMemoryPolicy {
         isLowRamDevice -> 4L * MIB
         memoryClassMb in 1..256 -> 8L * MIB
         memoryClassMb in 257..384 -> 16L * MIB
-        else -> 32L * MIB
+        memoryClassMb > 384 -> 32L * MIB
+        // Unknown memory-class readings should not receive the largest cache budget.
+        else -> 8L * MIB
     }
 }

@@ -40,4 +40,55 @@ class TranslationContextPolicyTest {
         assertTrue(TranslationContextPolicy.mostRecentIndicesBefore(100, 50, 0) { true }.isEmpty())
         assertTrue(TranslationContextPolicy.mostRecentIndicesBefore(0, 0) { true }.isEmpty())
     }
+
+@Test
+    fun longBackwardScanCanBeCancelledCooperatively() {
+        var checks = 0
+        val error = runCatching {
+            TranslationContextPolicy.mostRecentIndicesBefore(
+                size = 100_000,
+                beforeIndex = 100_000,
+                maxRows = 3,
+                checkActive = {
+                    checks++
+                    if (checks == 3) throw java.util.concurrent.CancellationException("cancel context scan")
+                },
+                isUsable = { false },
+            )
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(3, checks)
+    }
+
+    @Test
+    fun cancellationIsCheckedBeforeReturningFoundContextRows() {
+        var checks = 0
+        val error = runCatching {
+            TranslationContextPolicy.mostRecentIndicesBefore(
+                size = 10,
+                beforeIndex = 10,
+                maxRows = 3,
+                checkActive = {
+                    checks++
+                    if (checks == 2) throw java.util.concurrent.CancellationException("cancel context result")
+                },
+                isUsable = { true },
+            )
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+    }
+
+    @Test
+    fun oversizedOrClampedIndexDoesNotVisitRowsOutsideTheRequestedPrefix() {
+        val visited = mutableListOf<Int>()
+        val result = TranslationContextPolicy.mostRecentIndicesBefore(
+            size = 5,
+            beforeIndex = 99,
+            maxRows = 2,
+            isUsable = { visited += it; true },
+        )
+        assertEquals(listOf(3, 4), result)
+        assertEquals(listOf(4, 3), visited)
+    }
+
 }

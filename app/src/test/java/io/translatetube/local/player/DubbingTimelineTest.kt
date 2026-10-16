@@ -156,4 +156,30 @@ class DubbingTimelineTest {
         }
     }
 
+
+@Test
+    fun refusesMoreInputRowsThanTheTimelineCanSafelyScan() {
+        val invalid = SubLine(0, -1L, 0L, "invalid")
+        val rows = List(DubbingTimeline.MAX_INPUT_CUE_COUNT + 1) { invalid }
+        val error = runCatching { DubbingTimeline(rows) }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
+    fun refusesTooManyPlayableCuesBeforeAllocatingTheSegmentTree() {
+        val rows = List(DubbingTimeline.MAX_PLAYABLE_CUE_COUNT + 1) { index ->
+            SubLine(index, index.toLong() * 2L, index.toLong() * 2L + 1L, "cue $index")
+        }
+        val error = runCatching { DubbingTimeline(rows) }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+    }
+
+    @Test
+    fun invalidRowsDoNotCountTowardThePlayableCueBudget() {
+        val rows = List(2_000) { index -> SubLine(index, -1L, 0L, "") } +
+            SubLine(2_000, 0L, 100L, "only playable cue")
+        val timeline = DubbingTimeline(rows)
+        assertEquals(2_000, timeline.lineAt(50L))
+    }
+
 }

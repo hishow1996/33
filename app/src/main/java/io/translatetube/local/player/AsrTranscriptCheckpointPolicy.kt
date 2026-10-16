@@ -4,6 +4,10 @@ import java.security.MessageDigest
 
 /** Stable identity and bounds for partial Whisper transcripts tied to a PCM/VAD layout. */
 internal object AsrTranscriptCheckpointPolicy {
+    private const val MAX_CHECKPOINT_ROWS = 100_000
+    private const val MAX_PROCESSED_SEGMENTS = 100_000
+    private val signaturePattern = Regex("^[0-9a-f]{32}$")
+
     fun signature(pcmSamples: FloatArray, segments: List<Pair<Long, Long>>): String {
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update("${pcmSamples.size}|16000|${segments.size}|".toByteArray(Charsets.UTF_8))
@@ -98,6 +102,9 @@ internal object AsrTranscriptCheckpointPolicy {
         rows: List<Triple<Long, Long, String>>,
         processedSegments: List<Pair<Long, Long>>,
     ): Boolean {
+        // The recovery reader is bounded to 100k rows as well; reject hostile/corrupt metadata
+        // before allocating the duplicate-detection sets below.
+        if (rows.size > MAX_CHECKPOINT_ROWS || processedSegments.size > MAX_PROCESSED_SEGMENTS) return false
         if (processedSegments.isEmpty()) return rows.isEmpty()
         val uniqueSegments = HashSet<Pair<Long, Long>>(processedSegments.size)
         var previousSegmentStart = -1L
@@ -153,8 +160,12 @@ internal object AsrTranscriptCheckpointPolicy {
         expectedTotalSegments: Int,
         processedSegments: Int,
     ): Boolean =
-        savedSignature.isNotBlank() && savedSignature == expectedSignature &&
-            expectedTotalSegments > 0 && savedTotalSegments == expectedTotalSegments &&
+        signaturePattern.matches(savedSignature) &&
+            signaturePattern.matches(expectedSignature) &&
+            savedSignature == expectedSignature &&
+            expectedTotalSegments > 0 &&
+            expectedTotalSegments <= MAX_PROCESSED_SEGMENTS &&
+            savedTotalSegments == expectedTotalSegments &&
             processedSegments in 0..expectedTotalSegments
 }
 

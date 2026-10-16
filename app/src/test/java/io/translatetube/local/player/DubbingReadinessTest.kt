@@ -170,4 +170,33 @@ class DubbingReadinessTest {
         assertTrue("inconsistent readiness snapshots: " + errors, errors.isEmpty())
     }
 
+
+@Test
+    fun outOfRangePreparedCallbacksDoNotInflateProgress() {
+        val progress = DubbingReadinessProgress(DubbingReadiness())
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.clear(3))
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.markPrepared(-1, true, 3))
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.markPrepared(3, true, 3))
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.markPrepared(99, false, 3))
+    }
+
+    @Test
+    fun outOfRangePendingCallbackDoesNotMoveTheValidReadyPrefix() {
+        val progress = DubbingReadinessProgress(DubbingReadiness())
+        progress.clear(2)
+        progress.markPrepared(0, true, 2)
+        assertEquals(DubbingReadinessProgressSnapshot(1, 1), progress.markPending(100, 2))
+        assertEquals(DubbingReadinessProgressSnapshot(1, 1), progress.markPending(-1, 2))
+    }
+
+    @Test
+    fun staleCallbacksForThePreviousListCannotMarkNewRowsReady() {
+        val progress = DubbingReadinessProgress(DubbingReadiness())
+        progress.clear(5)
+        progress.markPrepared(4, true, 5)
+        progress.clear(2)
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.markPrepared(4, true, 2))
+        assertEquals(DubbingReadinessProgressSnapshot(0, 0), progress.refresh(2))
+    }
+
 }

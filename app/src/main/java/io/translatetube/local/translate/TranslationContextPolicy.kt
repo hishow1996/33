@@ -10,6 +10,7 @@ internal object TranslationContextPolicy {
         size: Int,
         beforeIndex: Int,
         maxRows: Int = 3,
+        checkActive: () -> Unit = {},
         isUsable: (Int) -> Boolean,
     ): List<Int> {
         if (size <= 0 || maxRows <= 0) return emptyList()
@@ -17,10 +18,13 @@ internal object TranslationContextPolicy {
         if (cursor < 0) return emptyList()
 
         val result = ArrayList<Int>(minOf(maxRows, cursor + 1))
+        var scanned = 0
         while (cursor >= 0 && result.size < maxRows) {
+            if ((scanned++ and 0xff) == 0) checkActive()
             if (isUsable(cursor)) result += cursor
             cursor--
         }
+        checkActive()
         result.reverse()
         return result
     }

@@ -68,8 +68,15 @@ internal class DubbingReadinessProgress(
         totalLines: Int,
         publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
     ): DubbingReadinessProgressSnapshot = synchronized(lock) {
-        readiness.markPrepared(index, hasAudio)
-        refreshLocked(totalLines).also(publish)
+        val limit = totalLines.coerceAtLeast(0)
+        if (index !in 0 until limit) {
+            // Late callbacks from an old/shorter subtitle list must not inflate ready progress.
+            readiness.markPending(index)
+            snapshot(limit).also(publish)
+        } else {
+            readiness.markPrepared(index, hasAudio)
+            refreshLocked(limit).also(publish)
+        }
     }
 
     fun markPending(
@@ -77,9 +84,10 @@ internal class DubbingReadinessProgress(
         totalLines: Int,
         publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
     ): DubbingReadinessProgressSnapshot = synchronized(lock) {
+        val limit = totalLines.coerceAtLeast(0)
         readiness.markPending(index)
-        if (index >= 0 && index < preparedUntil) preparedUntil = index
-        snapshot(totalLines).also(publish)
+        if (index in 0 until limit && index < preparedUntil) preparedUntil = index
+        snapshot(limit).also(publish)
     }
 
     fun refresh(

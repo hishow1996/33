@@ -221,4 +221,40 @@ class AsrTranscriptCheckpointPolicyTest {
         )
     }
 
+
+@Test
+    fun rejectsCheckpointRowsAndSegmentsAboveRecoveryBounds() {
+        val tooManyRows = List(100_001) { index -> Triple(index.toLong(), index.toLong() + 1L, "cue") }
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                tooManyRows,
+                listOf(0L to 100_001L),
+            )
+        )
+
+        val tooManySegments = List(100_001) { index -> index.toLong() * 2L to index.toLong() * 2L + 1L }
+        assertFalse(AsrTranscriptCheckpointPolicy.areRowsValid(emptyList(), tooManySegments))
+    }
+
+    @Test
+    fun resumeRequiresCanonicalGeneratedSignatureShape() {
+        val valid = "0123456789abcdef0123456789abcdef"
+        assertTrue(AsrTranscriptCheckpointPolicy.canResume(valid, valid, 2, 2, 0))
+        assertFalse(AsrTranscriptCheckpointPolicy.canResume("not-a-hash", "not-a-hash", 2, 2, 1))
+        assertFalse(AsrTranscriptCheckpointPolicy.canResume(valid.uppercase(), valid.uppercase(), 2, 2, 1))
+        assertFalse(AsrTranscriptCheckpointPolicy.canResume(valid, valid, -1, 2, 1))
+        assertFalse(AsrTranscriptCheckpointPolicy.canResume(valid, valid, 2, 2, -1))
+    }
+
+    @Test
+    fun checkpointBoundsStillPermitEmptyRowsForAnEmptyCompletedPrefix() {
+        assertTrue(AsrTranscriptCheckpointPolicy.areRowsValid(emptyList(), emptyList()))
+        assertFalse(
+            AsrTranscriptCheckpointPolicy.areRowsValid(
+                listOf(Triple(0L, 1L, "cue")),
+                emptyList(),
+            )
+        )
+    }
+
 }

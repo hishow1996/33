@@ -96,4 +96,75 @@ class DubbingPcmMemoryCacheTest {
         assertFalse(DubbingMemoryCacheIdentityPolicy.canReuse("cached.pcm", null))
         assertFalse(DubbingMemoryCacheIdentityPolicy.canReuse("", "active.pcm"))
     }
+
+@Test
+    fun rejectsInvalidSampleRatesAndEmptyBuffers() {
+        val cache = DubbingPcmMemoryCache(maxBytes = 1024L, maxEntries = 8)
+        cache[1] = entry(FloatArray(4), sampleRate = 7_999)
+        cache[2] = entry(FloatArray(4), sampleRate = 192_001)
+        cache[3] = entry(FloatArray(0))
+        assertEquals(0, cache.size)
+        assertEquals(0L, cache.retainedBytes())
+    }
+
+    @Test
+    fun rejectsBlankIdentityAndRemovesPreviouslyCachedStaleEntry() {
+        val cache = DubbingPcmMemoryCache(maxBytes = 1024L, maxEntries = 8)
+        cache[1] = entry(FloatArray(4), identity = "active.pcm")
+        cache[1] = entry(FloatArray(4), identity = "   ")
+        assertFalse(cache.containsKey(1))
+        assertEquals(0L, cache.retainedBytes())
+    }
+
+    @Test
+    fun bulkInsertUsesTheSameByteBudgetAndEvictionRules() {
+        val cache = DubbingPcmMemoryCache(maxBytes = 32L, maxEntries = 8)
+        cache.putAll(
+            linkedMapOf(
+                1 to entry(FloatArray(4), identity = "one.pcm"),
+                2 to entry(FloatArray(4), identity = "two.pcm"),
+                3 to entry(FloatArray(4), identity = "three.pcm"),
+            )
+        )
+        assertEquals(2, cache.size)
+        assertEquals(32L, cache.retainedBytes())
+        assertFalse(cache.containsKey(1))
+        assertTrue(cache.containsKey(2))
+        assertTrue(cache.containsKey(3))
+    }
+
+    @Test
+    fun invalidBudgetsDoNotRetainPcm() {
+        val noBytes = DubbingPcmMemoryCache(maxBytes = 0L, maxEntries = 8)
+        val noEntries = DubbingPcmMemoryCache(maxBytes = 1024L, maxEntries = 0)
+        noBytes[1] = entry(FloatArray(4))
+        noEntries[1] = entry(FloatArray(4))
+        assertTrue(noBytes.isEmpty())
+        assertTrue(noEntries.isEmpty())
+        assertEquals(0L, noBytes.retainedBytes())
+        assertEquals(0L, noEntries.retainedBytes())
+    }
+
+    @Test
+    fun negativeCacheBudgetIsAlsoRejected() {
+        val cache = DubbingPcmMemoryCache(maxBytes = -1L, maxEntries = 8)
+        cache[1] = entry(FloatArray(4))
+        assertFalse(cache.containsKey(1))
+        assertEquals(0L, cache.retainedBytes())
+    }
+
+    @Test
+    fun unknownMemoryClassUsesConservativeBudget() {
+        assertEquals(8L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, 0))
+        assertEquals(8L * 1024 * 1024, DubbingPcmMemoryPolicy.maxBytes(false, -1))
+    }
+
+    @Test
+    fun missingLookupDoesNotChangeBudget() {
+        val cache = DubbingPcmMemoryCache(maxBytes = 64L, maxEntries = 8)
+        cache[1] = entry(FloatArray(4))
+        assertNull(cache[2])
+        assertEquals(16L, cache.retainedBytes())
+    }
+
 }

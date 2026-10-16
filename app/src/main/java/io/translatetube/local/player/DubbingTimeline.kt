@@ -13,21 +13,38 @@ internal class DubbingTimeline(lines: List<SubLine>) {
     private data class Cue(val originalIndex: Int, val line: SubLine)
 
     companion object {
+        internal const val MAX_INPUT_CUE_COUNT = 500_000
+        internal const val MAX_PLAYABLE_CUE_COUNT = 200_000
+
         /** The playback index and synthesis queue must agree on whether a caption can ever play. */
         fun isPlayableCue(line: SubLine): Boolean =
             line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
     }
 
-    private val cues = lines.withIndex()
-        .asSequence()
-        .filter { (_, line) -> isPlayableCue(line) }
-        .map { (index, line) -> Cue(index, line) }
-        .sortedWith(compareBy<Cue> { it.line.startMs }.thenBy { it.originalIndex })
-        .toList()
+    private val cues = run {
+        require(lines.size <= MAX_INPUT_CUE_COUNT) {
+            "字幕行数超过播放时间轴安全上限，已停止建立配音索引"
+        }
+        // Count before allocating Cue objects and the max-end tree; invalid imported rows should
+        // not make a very large tree just to be discarded by the filter.
+        val playableCount = lines.count(::isPlayableCue)
+        require(playableCount <= MAX_PLAYABLE_CUE_COUNT) {
+            "可播放字幕数量超过安全上限，请拆分视频或字幕文件后重试"
+        }
+        lines.withIndex()
+            .asSequence()
+            .filter { (_, line) -> isPlayableCue(line) }
+            .map { (index, line) -> Cue(index, line) }
+            .sortedWith(compareBy<Cue> { it.line.startMs }.thenBy { it.originalIndex })
+            .toList()
+    }
 
     private val treeLeafCount: Int = run {
         var size = 1
-        while (size < cues.size) size *= 2
+        while (size < cues.size) {
+            require(size <= Int.MAX_VALUE / 2) { "字幕时间轴索引过大，无法安全分配" }
+            size *= 2
+        }
         size
     }
 
