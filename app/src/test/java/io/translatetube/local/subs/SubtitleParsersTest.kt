@@ -683,7 +683,7 @@ class SubtitleParsersTest {
         )
 
         assertEquals(
-            "你好\\nHello\\n\\n稍后\\nlater\\n\\nOK",
+            "你好\nHello\n\n稍后\nlater\n\nOK",
             SubtitleParsers.toPlainText(rows),
         )
     }
@@ -695,7 +695,7 @@ class SubtitleParsersTest {
             SubLine(1, 1_000L, 2_000L, "世界", "世界"),
         )
 
-        assertEquals("Hello\\n\\n世界", SubtitleParsers.toPlainText(rows, bilingual = false))
+        assertEquals("Hello\n\n世界", SubtitleParsers.toPlainText(rows, bilingual = false))
     }
 
 }
