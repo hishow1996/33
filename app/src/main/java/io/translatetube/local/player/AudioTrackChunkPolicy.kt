@@ -2,7 +2,7 @@ package io.translatetube.local.player
 
 /** Bounded static-buffer sizes to retry when an OEM audio service rejects a larger track. */
 internal object AudioTrackChunkPolicy {
-    const val MIN_STATIC_TRACK_SAMPLES = 2_048
+    const val MIN_STATIC_TRACK_SAMPLES = 512
 
     /** Try the requested size first, then halve until the minimum size is reached. */
     fun candidateSampleCounts(
