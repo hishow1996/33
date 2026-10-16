@@ -269,7 +269,7 @@ class SystemTts(context: Context) : TtsEngine {
             if (audio.samples.isEmpty()) {
                 throw IllegalStateException("系统 TTS 已返回，但生成的 WAV 没有可播放音频")
             }
-            val normalized = SystemTtsOutputAudioPolicy.normalize(audio)
+            val normalized = SystemTtsOutputAudioPolicy.prepareForPlayback(audio)
             android.util.Log.d(
                 "SystemTts",
                 "PCM output: input=${audio.sampleRate}Hz/${audio.samples.size} samples, " +
