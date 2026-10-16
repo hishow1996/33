@@ -1772,7 +1772,7 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 ensureCurrentSession(key)
-                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
+                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
                 // The transcript clock must use the duration of the exact PCM file sent to ASR.
                 // Provider timestamps are relative to this full recording, not to each displayed line.
                 val asrTimelineDurationMs = pcmFile.durationMs
@@ -1800,7 +1800,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 if (storedPartialAsr != null) {
                     val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
-                        if (checkpoint.optInt("version", -1) != 1) {
+                        if (checkpoint.optInt("version", -1) != 2) {
                             throw IllegalStateException("ASR 检查点版本不兼容")
                         }
                         val processed = checkpoint.optInt("processedSegments", -1)
@@ -1901,7 +1901,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 val language = engine.lastLang.takeIf { it.isNotBlank() }
                                     ?: restoredAsrLanguage
                                 val checkpointJson = org.json.JSONObject()
-                                    .put("version", 1)
+                                    .put("version", 2)
                                     .put("signature", asrSignature)
                                     .put("totalSegments", segs.size)
                                     .put("processedSegments", processed)
