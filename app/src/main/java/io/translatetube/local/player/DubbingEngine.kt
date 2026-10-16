@@ -588,8 +588,10 @@ class DubbingEngine(
                     val retryRequestedWhileActive = synchronized(pending) {
                         retryAfterActiveSynthesis.contains(idx)
                     }
-                    if (DubbingRetryQueuePolicy.shouldDeferFailureForActiveRetry(retryRequestedWhileActive)) {
-                        markCuePrepared(idx, hasAudio = false)
+                    if (DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(retryRequestedWhileActive)) {
+                        // The queued retry is real work, not terminal silence. Keeping readiness
+                        // pending prevents tick() from showing a false silent-cue/error state.
+                        markCuePending(idx)
                         bumpPrepared()
                         continue
                     }

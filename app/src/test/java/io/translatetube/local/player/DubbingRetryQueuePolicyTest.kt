@@ -37,9 +37,9 @@ class DubbingRetryQueuePolicyTest {
     }
 
     @Test
-    fun synthesisFailureIsDeferredWhenActivePlaybackAlreadyRequestedRetry() {
-        assertEquals(true, DubbingRetryQueuePolicy.shouldDeferFailureForActiveRetry(true))
-        assertEquals(false, DubbingRetryQueuePolicy.shouldDeferFailureForActiveRetry(false))
+    fun synthesisFailureKeepsCuePendingOnlyWhenActivePlaybackRequestedRetry() {
+        assertEquals(true, DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(true))
+        assertEquals(false, DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(false))
     }
 
     @Test

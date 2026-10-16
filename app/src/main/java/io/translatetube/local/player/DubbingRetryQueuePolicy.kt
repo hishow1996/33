@@ -17,7 +17,10 @@ internal object DubbingRetryQueuePolicy {
             else -> DubbingRetryQueueDecision.ENQUEUE
         }
 
-    /** A failure is terminal only when playback hasn't already requested an active-cue retry. */
-    fun shouldDeferFailureForActiveRetry(retryRequestedWhileActive: Boolean): Boolean =
+    /**
+     * If playback already requested the active cue again, its failed attempt is provisional:
+     * keep the row pending until the queued retry finishes instead of publishing a silent marker.
+     */
+    fun shouldKeepCuePendingAfterFailure(retryRequestedWhileActive: Boolean): Boolean =
         retryRequestedWhileActive
 }
