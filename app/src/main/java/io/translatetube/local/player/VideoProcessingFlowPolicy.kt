@@ -206,6 +206,20 @@ object VideoProcessingFlowPolicy {
     fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
         if (flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION) 3 else 2
 
+    /** Keep READY-state status text aligned with the engine that actually blocks completion. */
+    fun readyProgress(
+        waitingForTranscriptionEngine: Boolean,
+        waitingForDubbingEngine: Boolean,
+    ): String = when {
+        waitingForTranscriptionEngine && waitingForDubbingEngine ->
+            "视频可正常播放；字幕等待转写引擎就绪，配音等待配音引擎就绪（详见播放页提示）"
+        waitingForTranscriptionEngine ->
+            "视频可正常播放；字幕与配音等待转写引擎就绪（详见播放页提示）"
+        waitingForDubbingEngine ->
+            "视频可正常播放；中文字幕已就绪，等待配音引擎就绪（详见播放页提示）"
+        else -> ""
+    }
+
     fun mainTitle(
         source: VideoSourceKind,
         phase: Phase,

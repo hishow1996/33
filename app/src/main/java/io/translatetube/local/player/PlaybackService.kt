@@ -1772,7 +1772,7 @@ class PlaybackService : MediaSessionService() {
                     ?.absolutePath
                 if (missingLocalModel || missingCloudKey) {
                     val hint = when (asrProvider) {
-                        "local" -> "视频音频已提取并缓存（约 ${( (audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 模型管理中下载 Whisper 转写模型；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
+                        "local" -> "视频音频已提取并缓存（约 ${( (audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 转写引擎中下载 Whisper 转写模型；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
                         "elevenlabs" -> "视频音频已提取并缓存。已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
                         "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
                         else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
@@ -1784,7 +1784,7 @@ class PlaybackService : MediaSessionService() {
                             waitingForDubbingEngine = false,
                             phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
                             progress = "视频音频已提取完成；转写等待引擎就绪" +
-                                if (asrProvider == "local") "（设置 → 模型管理）" else "（设置 → 转写引擎）",
+                                if (asrProvider == "local") "（设置 → 转写引擎）" else "（设置 → 转写引擎）",
                         )
                     }
                 } else {
@@ -2482,9 +2482,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 it.copy(
                     phase = Phase.READY,
                     engineName = it.engineName.ifEmpty { "本地引擎" },
-                    progress = it.noModelHint?.let { hint ->
-                        "视频可正常播放；字幕与配音等待转写引擎就绪（详见播放页提示）"
-                    } ?: "",
+                    progress = VideoProcessingFlowPolicy.readyProgress(
+                        waitingForTranscriptionEngine = it.waitingForTranscriptionEngine,
+                        waitingForDubbingEngine = it.waitingForDubbingEngine,
+                    ),
                 )
             }
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置

@@ -206,6 +206,32 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun readyProgressNamesTheEngineThatActuallyBlocksCompletion() {
+        assertEquals(
+            "视频可正常播放；字幕与配音等待转写引擎就绪（详见播放页提示）",
+            VideoProcessingFlowPolicy.readyProgress(
+                waitingForTranscriptionEngine = true,
+                waitingForDubbingEngine = false,
+            ),
+        )
+        assertEquals(
+            "视频可正常播放；中文字幕已就绪，等待配音引擎就绪（详见播放页提示）",
+            VideoProcessingFlowPolicy.readyProgress(
+                waitingForTranscriptionEngine = false,
+                waitingForDubbingEngine = true,
+            ),
+        )
+        assertEquals(
+            "视频可正常播放；字幕等待转写引擎就绪，配音等待配音引擎就绪（详见播放页提示）",
+            VideoProcessingFlowPolicy.readyProgress(
+                waitingForTranscriptionEngine = true,
+                waitingForDubbingEngine = true,
+            ),
+        )
+        assertEquals("", VideoProcessingFlowPolicy.readyProgress(false, false))
+    }
+
+    @Test
     fun failureProgressPointsToTheLastActiveStageInsteadOfResettingToTheFirst() {
         assertEquals(
             3,
