@@ -15,6 +15,36 @@ class DubbingChunkTransitionPolicyTest {
     }
 
     @Test
+    fun pauseSeekAndReplacementGenerationsCannotCommitAQueuedChunkStart() {
+        val activeGeneration = 12
+        val staleGeneration = 11
+        assertFalse(
+            DubbingChunkTransitionPolicy.canCommit(
+                released = false,
+                currentGeneration = activeGeneration,
+                expectedGeneration = staleGeneration,
+                currentTrackIsSource = true,
+            )
+        )
+        assertFalse(
+            DubbingChunkTransitionPolicy.canCommit(
+                released = false,
+                currentGeneration = activeGeneration,
+                expectedGeneration = activeGeneration,
+                currentTrackIsSource = false,
+            )
+        )
+        assertFalse(
+            DubbingChunkTransitionPolicy.canCommit(
+                released = true,
+                currentGeneration = activeGeneration,
+                expectedGeneration = activeGeneration,
+                currentTrackIsSource = true,
+            )
+        )
+    }
+
+    @Test
     fun prefetchMarkerLeavesAPlaybackRateAdjustedLeadWindow() {
         assertEquals(
             25_600,

@@ -81,6 +81,11 @@ class DubbingEngine(
     @Volatile private var activePlaybackRate = 1.0f
     @Volatile private var activeVolume = 1.0f
     private val playbackGeneration = AtomicInteger(0)
+    /**
+     * Serializes the final generation check with AudioTrack.play(). PCM loading and track
+     * construction remain outside this lock; only the short start operation is guarded.
+     */
+    private val playbackControlLock = Any()
     @Volatile private var released = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -100,6 +105,33 @@ class DubbingEngine(
     @Volatile private var cacheInitJob: Job? = null
     private val synthStartLock = Any()
     private val cacheInitGeneration = AtomicInteger(0)
+
+    /** Pause/seek/release cannot invalidate a request between its final check and AudioTrack.play(). */
+    private fun startTrackIfCurrent(
+        target: AudioTrack,
+        expectedGeneration: Int,
+        startedLineIndex: Int? = null,
+    ): Boolean = synchronized(playbackControlLock) {
+        if (!DubbingChunkTransitionPolicy.canCommit(
+                released = released,
+                currentGeneration = playbackGeneration.get(),
+                expectedGeneration = expectedGeneration,
+                currentTrackIsSource = track === target,
+            )
+        ) {
+            false
+        } else {
+            target.play()
+            if (startedLineIndex != null) playbackStartedLine = startedLineIndex
+            true
+        }
+    }
+
+    private fun invalidatePlayback(): Int = synchronized(playbackControlLock) {
+        playbackStartedLine = -1
+        _currentLine.value = -1
+        playbackGeneration.incrementAndGet()
+    }
 
     private val _preparedUntil = MutableStateFlow(0)   // 连续前缀就绪行数，用于定位最早未就绪行
     val preparedUntil: StateFlow<Int> = _preparedUntil
@@ -1230,7 +1262,11 @@ class DubbingEngine(
                                 )
                                 track = nextTrack
                                 runCatching { sourceTrack.release() }
-                                nextTrack.play()
+                                if (!startTrackIfCurrent(nextTrack, generation)) {
+                                    throw kotlinx.coroutines.CancellationException(
+                                        "配音分段已被暂停、拖动进度或新播放任务取代"
+                                    )
+                                }
                                 // Ownership is now published through track; don't release it on
                                 // the successful path when the catch block later runs for another reason.
                                 createdNextTrack = null
@@ -1482,13 +1518,15 @@ class DubbingEngine(
         if (released) return
         val line = lines.getOrNull(idx) ?: return
         stop()
-        activeVolume = volume.coerceIn(0.0f, 1.0f)
-        playbackStartedLine = -1
+        activeVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
         // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
         // override it while cache loading / AudioTrack creation is still in progress.
         activePlayerSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
-        _currentLine.value = idx
-        val generation = playbackGeneration.incrementAndGet()
+        val generation = synchronized(playbackControlLock) {
+            playbackStartedLine = -1
+            _currentLine.value = idx
+            playbackGeneration.incrementAndGet()
+        }
         try {
             audioExec.execute {
                 var created: AudioTrack? = null
@@ -1685,10 +1723,18 @@ class DubbingEngine(
                         // instead of assuming playback starts at sample zero.
                         initialHeadPosition = (skippedSamples - chunkStart).coerceAtLeast(0),
                     )
-                    newTrack.play()
+                    if (!startTrackIfCurrent(newTrack, generation, startedLineIndex = idx)) {
+                        if (track === newTrack) track = null
+                        runCatching { newTrack.release() }
+                        created = null
+                        return@execute
+                    }
                     created = null
-                    if (!released && playbackGeneration.get() == generation) {
-                        playbackStartedLine = idx
+                    val ownsStartedTrack = synchronized(playbackControlLock) {
+                        !released && playbackGeneration.get() == generation &&
+                            track === newTrack && playbackStartedLine == idx
+                    }
+                    if (ownsStartedTrack) {
                         runCatching { onPlaybackStarted?.invoke(idx) }
                             .onFailure {
                                 android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
@@ -1726,9 +1772,7 @@ class DubbingEngine(
         // Invalidate an in-flight PCM load/track creation and clear "voice is audible" immediately.
         // PlaybackService reselects the active cue and calls playAt() when ExoPlayer resumes, so
         // retaining a static AudioTrack here only holds native buffer memory while the user pauses.
-        playbackGeneration.incrementAndGet()
-        playbackStartedLine = -1
-        _currentLine.value = -1
+        invalidatePlayback()
         val active = track ?: return
         try {
             audioExec.execute {
@@ -1751,9 +1795,10 @@ class DubbingEngine(
         }
     }
 
-    /** Resume only when a track still exists; otherwise the next video tick rebuilds the cue. */
+    /** Resume only the same still-current track generation; otherwise the next video tick rebuilds it. */
     fun resumePlayback() {
         if (released) return
+        val expectedGeneration = playbackGeneration.get()
         val active = track
         if (active == null) {
             // A track may have been in its creation path when pause occurred. Let the next
@@ -1765,7 +1810,7 @@ class DubbingEngine(
             audioExec.execute {
                 if (released || track !== active) return@execute
                 try {
-                    active.play()
+                    if (!startTrackIfCurrent(active, expectedGeneration)) return@execute
                 } catch (e: Exception) {
                     if (track === active) track = null
                     _currentLine.value = -1
@@ -1779,9 +1824,7 @@ class DubbingEngine(
     }
 
     fun stop() {
-        playbackGeneration.incrementAndGet()
-        playbackStartedLine = -1
-        _currentLine.value = -1
+        invalidatePlayback()
         val old = track
         track = null
         if (released) {
@@ -1924,7 +1967,7 @@ class DubbingEngine(
             if (released) return
             released = true
         }
-        playbackGeneration.incrementAndGet()
+        synchronized(playbackControlLock) { playbackGeneration.incrementAndGet() }
         val oldTtsInstances = ttsInstances.toList()
         ttsInstances.clear()
         tts = null
