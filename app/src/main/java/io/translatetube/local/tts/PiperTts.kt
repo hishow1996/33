@@ -224,8 +224,13 @@ object PiperModels {
     val downloadStates: StateFlow<Map<String, PiperModelDownloadState>> = _downloadStates
 
     val hasActiveDownloads: Boolean
-        get() = _downloadStates.value.values.any { it.isActive } ||
-            synchronized(downloadStateLock) { downloadJobs.values.any { it.isActive } }
+        get() = PiperTaskActivityPolicy.isActive(
+            stateActive = _downloadStates.value.values.any { it.isActive },
+            jobPendingOrRunning = synchronized(downloadStateLock) {
+                downloadJobs.values.any { !it.isCompleted && !it.isCancelled }
+            },
+            downloadCount = _activeDownloadCount.value,
+        )
 
     private val pauseLock = Any()
     @Volatile private var resumeSignal: kotlinx.coroutines.CompletableDeferred<Unit>? = null

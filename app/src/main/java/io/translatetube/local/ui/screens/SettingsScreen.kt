@@ -98,7 +98,8 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         val asrState by dlManager.asr.collectAsState()
         val playbackState by io.translatetube.local.player.PlaybackService.ui.collectAsState()
         val piperDownloadCount by io.translatetube.local.tts.PiperModels.activeDownloadCount.collectAsState()
-        val modelDownloadActive = piperDownloadCount > 0 ||
+        val piperTaskActive = io.translatetube.local.tts.PiperModels.hasActiveDownloads
+        val modelDownloadActive = piperTaskActive || piperDownloadCount > 0 ||
             ttsState.status in setOf(io.translatetube.local.data.ModelStatus.DOWNLOADING, io.translatetube.local.data.ModelStatus.EXTRACTING) ||
             asrState.status in setOf(io.translatetube.local.data.ModelStatus.DOWNLOADING, io.translatetube.local.data.ModelStatus.EXTRACTING)
         val cacheBusy = !io.translatetube.local.data.AppCacheStoragePolicy.canClear(
