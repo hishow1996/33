@@ -26,7 +26,7 @@ class VideoProcessingFlowPolicyTest {
         assertTrue(youtube[1].contains("YouTube"))
         assertEquals("获取原文字幕", youtube[2])
         assertEquals("提取视频音轨", web[1])
-        assertTrue(web[2].contains("语音转写"))
+        assertTrue(web[2].contains("转写原文"))
         assertEquals("提取本地视频音轨", local[1])
         assertTrue(local[0].contains("本地视频"))
         assertFalse(web.any { it.contains("下载或读取字幕") })
@@ -38,8 +38,8 @@ class VideoProcessingFlowPolicyTest {
         val flow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
         val steps = VideoProcessingFlowPolicy.steps(VideoSourceKind.YOUTUBE, flow)
         assertEquals(6, steps.size)
-        assertEquals("提取视频音轨", steps[2])
-        assertEquals("语音转写并生成字幕", steps[3])
+        assertEquals("提取识别音轨", steps[2])
+        assertEquals("转写原文并生成时间轴字幕", steps[3])
         assertEquals(2, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.DOWNLOADING_AUDIO))
         assertEquals(3, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.TRANSCRIBING))
         assertEquals(3, VideoProcessingFlowPolicy.transcriptionStageIndex(VideoSourceKind.YOUTUBE, flow))
@@ -48,15 +48,15 @@ class VideoProcessingFlowPolicyTest {
     @Test
     fun importedSubtitlePathsDoNotShowUnrelatedVideoSteps() {
         assertEquals(
-            listOf("读取导入字幕", "翻译字幕", "生成中文配音"),
+            listOf("读取导入字幕并检查时间轴", "将原文字幕翻译成中文", "按时间轴生成中文配音"),
             VideoProcessingFlowPolicy.steps(VideoSourceKind.YOUTUBE, ProcessingFlow.IMPORTED_SUBTITLES),
         )
         assertEquals(
-            listOf("读取已翻译字幕", "生成中文配音"),
+            listOf("读取已翻译字幕并检查时间轴", "按时间轴生成中文配音"),
             VideoProcessingFlowPolicy.steps(VideoSourceKind.LOCAL, ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES),
         )
         assertEquals(
-            "字幕配音",
+            "已翻译字幕配音",
             VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.LOCAL, ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES),
         )
         assertEquals(
@@ -76,7 +76,7 @@ class VideoProcessingFlowPolicyTest {
             VideoProcessingFlowPolicy.mainTitle(VideoSourceKind.LOCAL, Phase.PARSING))
         assertEquals("正在提取网页视频音轨",
             VideoProcessingFlowPolicy.mainTitle(VideoSourceKind.WEB, Phase.DOWNLOADING_AUDIO))
-        assertEquals("正在转写本地视频语音",
+        assertEquals("正在用本地模型转写原文并生成时间轴字幕",
             VideoProcessingFlowPolicy.mainTitle(VideoSourceKind.LOCAL, Phase.TRANSCRIBING))
         assertEquals("正在读取已翻译字幕",
             VideoProcessingFlowPolicy.mainTitle(
@@ -85,10 +85,37 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun everySpeechRecognitionFlowExplicitlyTranslatesOriginalCaptionsBeforeDubbing() {
+        val youtube = VideoProcessingFlowPolicy.steps(
+            VideoSourceKind.YOUTUBE,
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+        )
+        val web = VideoProcessingFlowPolicy.steps(VideoSourceKind.WEB, ProcessingFlow.WEB_SPEECH_RECOGNITION)
+        val local = VideoProcessingFlowPolicy.steps(VideoSourceKind.LOCAL, ProcessingFlow.LOCAL_SPEECH_RECOGNITION)
+
+        for (steps in listOf(youtube, web, local)) {
+            val transcription = steps.indexOfFirst {
+                it.contains("转写原文") || it.contains("本地模型转写原文")
+            }
+            assertTrue("transcription stage should be present: $steps", transcription >= 0)
+            assertEquals("将原文字幕翻译成中文", steps[transcription + 1])
+            assertEquals("按时间轴生成中文配音", steps[transcription + 2])
+        }
+        assertEquals(
+            "正在将原文字幕翻译成中文",
+            VideoProcessingFlowPolicy.mainTitle(
+                VideoSourceKind.LOCAL,
+                Phase.TRANSLATING,
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            ),
+        )
+    }
+
+    @Test
     fun processingPageTitleDistinguishesSourceAndFailures() {
-        assertEquals("YouTube 视频处理", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.YOUTUBE))
-        assertEquals("网页视频处理", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB))
-        assertEquals("本地视频处理", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.LOCAL))
+        assertEquals("YouTube 视频翻译配音", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.YOUTUBE))
+        assertEquals("网页视频翻译配音", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB))
+        assertEquals("本地视频翻译配音", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.LOCAL))
         assertEquals("网页视频处理失败",
             VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB, failed = true))
         assertEquals("字幕处理失败",
