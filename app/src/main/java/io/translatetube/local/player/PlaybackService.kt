@@ -2367,7 +2367,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 lines = translatedLines
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
                 ensureCurrentSession(key)
-                if (translatedLines.count { !it.zh.isNullOrEmpty() } > translatedLines.size / 2) {
+                var translatedRowCount = 0
+                for ((index, line) in translatedLines.withIndex()) {
+                    if ((index and 0xff) == 0) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    }
+                    if (!line.zh.isNullOrEmpty()) translatedRowCount++
+                }
+                if (translatedRowCount > translatedLines.size / 2) {
                     val arr = org.json.JSONArray()
                     for ((rowIndex, line) in translatedLines.withIndex()) {
                         if ((rowIndex and 0xff) == 0) {
@@ -2723,13 +2730,26 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         activeIdOverride: Long? = null,
     ): List<SubLine> {
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
-        var updatedLines: List<SubLine> = lines.toList()
+        val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        fun checkTranslationActive(index: Int) {
+            if ((index and 0xff) == 0) translationJob?.ensureActive()
+        }
+        val initialRows = ArrayList<SubLine>(lines.size)
+        for ((index, line) in lines.withIndex()) {
+            checkTranslationActive(index)
+            initialRows += line
+        }
+        var updatedLines: List<SubLine> = initialRows
         val db = AppDatabase.get(this)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val activeId = activeIdOverride ?: prefs.getLong("active_api_id", -1L)
         val profiles = db.apiProfileDao().enabled()
         val tgt = "zh"
-        val plain = lines.map { it.text }
+        val plain = ArrayList<String>(lines.size)
+        for ((index, line) in lines.withIndex()) {
+            checkTranslationActive(index)
+            plain += line.text
+        }
         var engine: TranslationEngine? = null
         var engineName = ""
 
@@ -2752,11 +2772,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             engine = MlKitEngine()
             engineName = "本地引擎（离线）"
         }
-        val pendingIndices = lines.indices.filter { index ->
-            needsSubtitleTranslation(lines[index], srcLang)
-        }
-        var completed = lines.indices.count { index ->
-            lines[index].text.isBlank() || !needsSubtitleTranslation(lines[index], srcLang)
+        val pendingIndices = ArrayList<Int>()
+        var completed = 0
+        for (index in lines.indices) {
+            checkTranslationActive(index)
+            val line = lines[index]
+            if (line.text.isBlank() || !needsSubtitleTranslation(line, srcLang)) {
+                completed++
+            } else {
+                pendingIndices += index
+            }
         }
         updateUiForSession(key) {
             it.copy(
@@ -2805,7 +2830,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val batch = unresolvedIndices.map { plain[it] }
                 val batchTranslations = try {
-                    engine!!.translateWithContext(batch, src, tgt, previousContext)
+                    engine!!.translateWithContext(batch, src, tgt, previousContext).also {
+                        translationJob?.ensureActive()
+                    }
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     android.util.Log.w(
@@ -2867,9 +2894,15 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 )
             }
 
-            updatedLines = updatedLines.mapIndexed { index, line ->
-                resolvedBatch[index]?.let { translation -> line.copy(zh = translation) } ?: line
+            val nextRows = ArrayList<SubLine>(updatedLines.size)
+            for ((rowIndex, line) in updatedLines.withIndex()) {
+                checkTranslationActive(rowIndex)
+                nextRows += resolvedBatch[rowIndex]?.let { translation ->
+                    line.copy(zh = translation)
+                } ?: line
             }
+            translationJob?.ensureActive()
+            updatedLines = nextRows
             completed += batchIndices.size
             updateUiForSession(key) {
                 it.copy(
