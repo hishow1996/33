@@ -1071,7 +1071,7 @@ class PlaybackService : MediaSessionService() {
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
                         .collect { (prefix, readyCount) ->
-                            updateUiForSession(sessionKey) {
+                            updateUiForCurrentDubbingEngine(d, sessionKey) {
                                 it.copy(preparedUntil = prefix, preparedCount = readyCount)
                             }
                         }
@@ -1343,7 +1343,7 @@ class PlaybackService : MediaSessionService() {
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
                         .collect { (prefix, readyCount) ->
-                            updateUiForSession(sessionKey) {
+                            updateUiForCurrentDubbingEngine(d, sessionKey) {
                                 it.copy(preparedUntil = prefix, preparedCount = readyCount)
                             }
                         }
@@ -2468,7 +2468,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         dubCollectJob = scope.launch {
                             kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
                                 .collect { (prefix, readyCount) ->
-                                    updateUiForSession(key) {
+                                    updateUiForCurrentDubbingEngine(d, key) {
                                         it.copy(preparedUntil = prefix, preparedCount = readyCount)
                                     }
                                 }
@@ -4074,7 +4074,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
                         .collect { (prefix, readyCount) ->
-                            updateUiForSession(sessionKey) { state ->
+                            updateUiForCurrentDubbingEngine(d, sessionKey) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(preparedUntil = prefix, preparedCount = readyCount)
                                 } else state
@@ -4277,7 +4277,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 dubCollectJob = scope.launch {
                     kotlinx.coroutines.flow.combine(engine.preparedUntil, engine.preparedCount) { prefix, readyCount -> prefix to readyCount }
                         .collect { (prefix, readyCount) ->
-                            updateUiForSession(sessionKey) { state ->
+                            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                                 state.copy(
                                     preparedUntil = prefix,
                                     preparedCount = readyCount,
