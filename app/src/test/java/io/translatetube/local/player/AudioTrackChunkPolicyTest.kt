@@ -8,14 +8,14 @@ class AudioTrackChunkPolicyTest {
     @Test
     fun largeStaticBuffersAreRetriedWithSmallerChunks() {
         assertEquals(
-            listOf(24_000, 12_000, 6_000, 3_000, 2_048),
+            listOf(24_000, 12_000, 6_000, 3_000, 1_500, 750, 512),
             AudioTrackChunkPolicy.candidateSampleCounts(24_000),
         )
     }
 
     @Test
     fun shortCuesAreNotPaddedOrSplitUnnecessarily() {
-        assertEquals(listOf(1_200), AudioTrackChunkPolicy.candidateSampleCounts(1_200))
+        assertEquals(listOf(1_200, 600, 512), AudioTrackChunkPolicy.candidateSampleCounts(1_200))
         assertEquals(listOf(4_000), AudioTrackChunkPolicy.candidateSampleCounts(4_000, 4_000))
     }
 
@@ -29,7 +29,7 @@ class AudioTrackChunkPolicyTest {
     fun errorExplainsBufferRetriesAndIncludesBoundedLastFailure() {
         val message = AudioTrackChunkPolicy.failureMessage(
             24_000,
-            listOf(24_000, 12_000, 6_000, 3_000, 2_048),
+            listOf(24_000, 12_000, 6_000, 3_000, 1_500, 750, 512),
             "legacy initialization returned false",
         )
         assertTrue(message.contains("24,000, 12,000, 6,000, 3,000, 2,048"))
