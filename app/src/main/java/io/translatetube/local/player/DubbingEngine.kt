@@ -961,7 +961,14 @@ class DubbingEngine(
                     if (callbackTrack !== sourceTrack) return
                     try {
                         audioExec.execute {
-                            if (released || playbackGeneration.get() != generation || track !== sourceTrack) return@execute
+                            if (!DubbingChunkTransitionPolicy.canCommit(
+                                    released = released,
+                                    currentGeneration = playbackGeneration.get(),
+                                    expectedGeneration = generation,
+                                    currentTrackIsSource = track === sourceTrack,
+                                )
+                            ) return@execute
+                            var createdNextTrack: AudioTrack? = null
                             try {
                                 val latestPosition = DubbingStartPositionPolicy.choose(
                                     lineIndex = lineIndex,
@@ -989,7 +996,25 @@ class DubbingEngine(
                                     return@execute
                                 }
                                 val nextEnd = nextStaticChunkEnd(nextStart, samples.size)
-                                val nextTrack = createFilledAudioTrack(samples.copyOfRange(nextStart, nextEnd), sampleRate)
+                                createdNextTrack = createFilledAudioTrack(
+                                    samples.copyOfRange(nextStart, nextEnd),
+                                    sampleRate,
+                                )
+                                // The user can pause or seek while AudioTrack construction blocks.
+                                // Revalidate ownership before publishing or starting the new track.
+                                if (!DubbingChunkTransitionPolicy.canCommit(
+                                        released = released,
+                                        currentGeneration = playbackGeneration.get(),
+                                        expectedGeneration = generation,
+                                        currentTrackIsSource = track === sourceTrack,
+                                    )
+                                ) {
+                                    runCatching { createdNextTrack?.release() }
+                                    createdNextTrack = null
+                                    return@execute
+                                }
+                                val nextTrack = createdNextTrack
+                                    ?: throw IllegalStateException("配音分段音轨创建失败")
                                 nextTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
                                 runCatching {
                                     nextTrack.setPlaybackParams(
@@ -1014,7 +1039,14 @@ class DubbingEngine(
                                 )
                                 sourceTrack.release()
                                 nextTrack.play()
+                                // Ownership is now published through track; don't release it on
+                                // the successful path when the catch block later runs for another reason.
+                                createdNextTrack = null
                             } catch (error: Exception) {
+                                val failedNextTrack = createdNextTrack
+                                if (failedNextTrack != null && track === failedNextTrack) track = null
+                                runCatching { failedNextTrack?.release() }
+                                createdNextTrack = null
                                 if (track === sourceTrack) track = null
                                 runCatching { sourceTrack.release() }
                                 // A rapid seek/pause can invalidate this marker callback while a
