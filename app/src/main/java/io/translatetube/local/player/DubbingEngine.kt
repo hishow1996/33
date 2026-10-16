@@ -938,6 +938,36 @@ class DubbingEngine(
         (startSample.toLong() + MAX_STATIC_TRACK_SAMPLES).coerceAtMost(totalSamples.toLong()).toInt()
 
     /**
+     * The marker now fires before a static buffer ends. Keep the source audible while its next
+     * chunk is built, then commit only at the old buffer boundary. Playback generation invalidation
+     * makes pause/seek/release break this wait promptly without tying up the UI thread.
+     */
+    private fun awaitStaticChunkBoundary(
+        sourceTrack: AudioTrack,
+        chunkStartSample: Int,
+        chunkEndSample: Int,
+        lineIndex: Int,
+        generation: Int,
+    ): Boolean {
+        val expectedSampleCount = (chunkEndSample - chunkStartSample).coerceAtLeast(0).toLong()
+        while (true) {
+            if (!DubbingChunkTransitionPolicy.canCommit(
+                    released = released,
+                    currentGeneration = playbackGeneration.get(),
+                    expectedGeneration = generation,
+                    currentTrackIsSource = track === sourceTrack,
+                )
+            ) return false
+
+            val playedSamples = sourceTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
+            if (playedSamples >= expectedSampleCount ||
+                sourceTrack.playState != AudioTrack.PLAYSTATE_PLAYING
+            ) return true
+            android.os.SystemClock.sleep(2L)
+        }
+    }
+
+    /**
      * Schedules the next bounded static buffer only while the same video cue still owns playback.
      * The callback is marshalled to the audio executor before touching shared AudioTrack state.
      */
@@ -953,8 +983,16 @@ class DubbingEngine(
         syncRate: Float,
         lineStartMs: Long,
         lineEndMs: Long,
+        initialHeadPosition: Int = 0,
     ) {
         if (chunkEndSample >= samples.size || chunkEndSample <= chunkStartSample) return
+        val chunkSampleCount = chunkEndSample - chunkStartSample
+        val markerPosition = DubbingChunkTransitionPolicy.prefetchMarkerPosition(
+            chunkSampleCount = chunkSampleCount,
+            sampleRate = sampleRate,
+            playbackRate = activePlaybackRate,
+            currentHeadPosition = initialHeadPosition,
+        )
         sourceTrack.setPlaybackPositionUpdateListener(
             object : AudioTrack.OnPlaybackPositionUpdateListener {
                 override fun onMarkerReached(callbackTrack: AudioTrack) {
@@ -970,6 +1008,51 @@ class DubbingEngine(
                             ) return@execute
                             var createdNextTrack: AudioTrack? = null
                             try {
+                                if (!DubbingChunkTransitionPolicy.canCommit(
+                                        released = released,
+                                        currentGeneration = playbackGeneration.get(),
+                                        expectedGeneration = generation,
+                                        currentTrackIsSource = track === sourceTrack,
+                                    )
+                                ) return@execute
+
+                                // Prepare the next static buffer during the final part of the
+                                // current one instead of waiting for an end marker and then paying
+                                // the full AudioTrack creation/write latency.
+                                var nextChunk = createStaticChunkWithFallback(
+                                    samples = samples,
+                                    startSample = chunkEndSample,
+                                    requestedEndSample = nextStaticChunkEnd(chunkEndSample, samples.size),
+                                    sampleRate = sampleRate,
+                                )
+                                createdNextTrack = nextChunk.track
+                                if (!awaitStaticChunkBoundary(
+                                        sourceTrack,
+                                        chunkStartSample,
+                                        chunkEndSample,
+                                        lineIndex,
+                                        generation,
+                                    )
+                                ) {
+                                    runCatching { createdNextTrack?.release() }
+                                    createdNextTrack = null
+                                    return@execute
+                                }
+                                if (!DubbingChunkTransitionPolicy.canCommit(
+                                        released = released,
+                                        currentGeneration = playbackGeneration.get(),
+                                        expectedGeneration = generation,
+                                        currentTrackIsSource = track === sourceTrack,
+                                    )
+                                ) {
+                                    runCatching { createdNextTrack?.release() }
+                                    createdNextTrack = null
+                                    return@execute
+                                }
+
+                                // Re-read the playhead after prefetching. The source can advance
+                                // while AudioTrack initializes, so a cue that is now further ahead
+                                // must skip stale samples instead of replaying delayed speech.
                                 val latestPosition = DubbingStartPositionPolicy.choose(
                                     lineIndex = lineIndex,
                                     lineStartMs = lineStartMs,
@@ -978,8 +1061,10 @@ class DubbingEngine(
                                     latestCursor = latestTimelineCursor,
                                 )
                                 if (latestPosition == null) {
-                                    track = null
+                                    if (track === sourceTrack) track = null
                                     runCatching { sourceTrack.release() }
+                                    runCatching { createdNextTrack?.release() }
+                                    createdNextTrack = null
                                     return@execute
                                 }
                                 val targetSkip = DubbingTiming.lateStartSkipSamples(
@@ -991,21 +1076,37 @@ class DubbingEngine(
                                 )
                                 val nextStart = maxOf(chunkEndSample, targetSkip)
                                 if (nextStart >= samples.size) {
-                                    track = null
+                                    if (track === sourceTrack) track = null
                                     runCatching { sourceTrack.release() }
+                                    runCatching { createdNextTrack?.release() }
+                                    createdNextTrack = null
                                     return@execute
                                 }
-                                val requestedNextEnd = nextStaticChunkEnd(nextStart, samples.size)
-                                val createdChunk = createStaticChunkWithFallback(
-                                    samples = samples,
-                                    startSample = nextStart,
-                                    requestedEndSample = requestedNextEnd,
-                                    sampleRate = sampleRate,
-                                )
-                                createdNextTrack = createdChunk.track
-                                val nextEnd = createdChunk.endSample
-                                // The user can pause or seek while AudioTrack construction blocks.
-                                // Revalidate ownership before publishing or starting the new track.
+
+                                var headOffset = (nextStart - nextChunk.startSample).coerceAtLeast(0)
+                                if (nextStart >= nextChunk.endSample) {
+                                    // The playhead overran the prefetched range while the track
+                                    // was being created. Rebuild from the current position, not
+                                    // from an expired chunk that would replay or immediately end.
+                                    runCatching { createdNextTrack?.release() }
+                                    createdNextTrack = null
+                                    nextChunk = createStaticChunkWithFallback(
+                                        samples = samples,
+                                        startSample = nextStart,
+                                        requestedEndSample = nextStaticChunkEnd(nextStart, samples.size),
+                                        sampleRate = sampleRate,
+                                    )
+                                    createdNextTrack = nextChunk.track
+                                    headOffset = 0
+                                } else if (headOffset > 0) {
+                                    val seekResult = nextChunk.track.setPlaybackHeadPosition(headOffset)
+                                    if (seekResult != AudioTrack.SUCCESS) {
+                                        throw IllegalStateException(
+                                            "无法跳过已过期的配音分段：AudioTrack 状态 $seekResult"
+                                        )
+                                    }
+                                }
+
                                 if (!DubbingChunkTransitionPolicy.canCommit(
                                         released = released,
                                         currentGeneration = playbackGeneration.get(),
@@ -1025,21 +1126,22 @@ class DubbingEngine(
                                         PlaybackParams().setSpeed(activePlaybackRate).setPitch(1.0f)
                                     )
                                 }.onFailure {
-                                    android.util.Log.w("DubbingEngine", "Audio playback-rate adjustment unavailable", it)
+                                    android.util.Log.w("DubbingEngine", "Could not update next chunk playback rate", it)
                                 }
                                 track = nextTrack
                                 installNextStaticChunk(
                                     sourceTrack = nextTrack,
                                     samples = samples,
                                     sampleRate = sampleRate,
-                                    chunkStartSample = nextStart,
-                                    chunkEndSample = nextEnd,
+                                    chunkStartSample = nextChunk.startSample,
+                                    chunkEndSample = nextChunk.endSample,
                                     lineIndex = lineIndex,
                                     generation = generation,
                                     preparedAtMs = preparedAtMs,
                                     syncRate = syncRate,
                                     lineStartMs = lineStartMs,
                                     lineEndMs = lineEndMs,
+                                    initialHeadPosition = headOffset,
                                 )
                                 sourceTrack.release()
                                 nextTrack.play()
@@ -1051,8 +1153,29 @@ class DubbingEngine(
                                 if (failedNextTrack != null && track === failedNextTrack) track = null
                                 runCatching { failedNextTrack?.release() }
                                 createdNextTrack = null
-                                if (track === sourceTrack) track = null
-                                runCatching { sourceTrack.release() }
+
+                                // A failed prefetch must not cut the source chunk short. Let the
+                                // already-buffered tail play out before declaring the dubbing sink
+                                // failed; cancel immediately if pause/seek replaced this generation.
+                                if (track === sourceTrack &&
+                                    !released && playbackGeneration.get() == generation
+                                ) {
+                                    val reachedBoundary = runCatching {
+                                        awaitStaticChunkBoundary(
+                                            sourceTrack,
+                                            chunkStartSample,
+                                            chunkEndSample,
+                                            lineIndex,
+                                            generation,
+                                        )
+                                    }.getOrDefault(false)
+                                    if (!reachedBoundary || released || playbackGeneration.get() != generation) {
+                                        return@execute
+                                    }
+                                    if (track === sourceTrack) track = null
+                                    runCatching { sourceTrack.release() }
+                                }
+
                                 // A rapid seek/pause can invalidate this marker callback while a
                                 // following static chunk is being constructed. It is not a real
                                 // output failure and must not trigger fallback or UI error state.
@@ -1066,8 +1189,7 @@ class DubbingEngine(
                                     reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
                                 }
                             }
-                        }
-                    } catch (_: java.util.concurrent.RejectedExecutionException) {
+RejectedExecutionException) {
                         // The cleanup barrier owns the track when the audio executor is closing.
                     }
                 }
@@ -1076,7 +1198,7 @@ class DubbingEngine(
             },
             Handler(Looper.getMainLooper()),
         )
-        sourceTrack.setNotificationMarkerPosition(chunkEndSample - chunkStartSample)
+        sourceTrack.setNotificationMarkerPosition(markerPosition)
     }
 
     private data class CreatedStaticChunk(
