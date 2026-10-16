@@ -819,7 +819,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     }
 
     private fun isModelDirectoryReady(dir: File): Boolean =
-        if (dir.name == "tts") ModelFiles.ttsDirectoryReady(dir)
+        if (ModelDirectoryKindPolicy.isTtsDirectoryName(dir.name)) ModelFiles.ttsDirectoryReady(dir)
         else ModelFiles.asrDirectoryCoreReady(dir)
 
     private fun extractTarBz2(
