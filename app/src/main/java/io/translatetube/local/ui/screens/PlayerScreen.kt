@@ -1704,7 +1704,9 @@ private fun SubtitleList(
             }
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
                 val active = i == state.currentLine
-                val activeDub = active && state.dubbingOn
+                // Follow the cue whose AudioTrack has really started. The media playhead can
+                // advance before the first asynchronous TTS track starts, missing line zero.
+                val activeDub = i == state.activeDubbingLine && state.dubbingOn
                 val dubbingScale by rememberInfiniteTransition(label = "dubbingLinePulse").animateFloat(
                     initialValue = 1f,
                     targetValue = if (activeDub) 1.01f else 1f,

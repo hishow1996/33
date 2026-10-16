@@ -74,6 +74,8 @@ data class PlayerUiState(
     val thumbUrl: String? = null,
     val durationMs: Long = 0,
     val lines: List<SubLine> = emptyList(),
+    /** Subtitle index whose AudioTrack has actually started; separate from the video playhead highlight. */
+    val activeDubbingLine: Int = -1,
     val currentLine: Int = -1,
     val preparedUntil: Int = 0,
     val preparedCount: Int = 0,
@@ -333,7 +335,7 @@ class PlaybackService : MediaSessionService() {
             // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
             dubbing?.stop()
             pm.originalVolume = 1f
-            ui.update { it.copy(isPlaying = false, currentLine = -1) }
+            ui.update { it.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1) }
         }
             pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
 
@@ -350,6 +352,10 @@ class PlaybackService : MediaSessionService() {
                         if (::pm.isInitialized) tick(pm.position())
                     } else {
                         dubbing?.pausePlayback()
+                        ui.update { state ->
+                            if (state.activeDubbingLine == -1) state
+                            else state.copy(activeDubbingLine = -1)
+                        }
                     }
                 }
 
@@ -3736,9 +3742,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 )
             }
         }
-        engine.onPlaybackStarted = {
+        engine.onPlaybackStarted = { index ->
+            // Highlight the actual spoken cue, not just the video-time subtitle. AudioTrack
+            // startup is asynchronous, so the first cue can otherwise miss its visual emphasis.
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
-                state.copy(dubbingStatus = "${engine.currentTtsName} 正在播放中文配音")
+                state.copy(
+                    dubbingStatus = "${engine.currentTtsName} 正在播放中文配音",
+                    activeDubbingLine = index,
+                )
             }
         }
 
@@ -3918,6 +3929,18 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
 
         // Keep the displayed duration synchronized with ExoPlayer in case the extractor metadata
         // omitted or misreported the duration. This also prevents a permanent 00:00:00 total time.
+        val activeDubbingLine = d?.currentLineIdx()?.takeIf { index ->
+            latestState.dubbingOn &&
+                ::pm.isInitialized &&
+                pm.player.isPlaying &&
+                dubbing === d &&
+                d.hasStartedPlaybackFor(index)
+        } ?: -1
+        ui.update { state ->
+            if (state.activeDubbingLine == activeDubbingLine) state
+            else state.copy(activeDubbingLine = activeDubbingLine)
+        }
+
         val actualDuration = if (::pm.isInitialized) pm.duration() else 0L
         if (actualDuration > 0L && ui.value.durationMs != actualDuration) {
             ui.update { it.copy(durationMs = actualDuration) }
@@ -4569,7 +4592,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             dubbing?.stop()
             // Turning dubbing off must leave a usable audio path. Otherwise a remembered
             // "mute original" setting can silence both the source video and the stopped dub.
-            ui.update { it.copy(dubbingOn = false, muteOriginal = false) }
+            ui.update {
+                it.copy(dubbingOn = false, muteOriginal = false, activeDubbingLine = -1)
+            }
             pm.originalVolume = 1f
         } else {
             ui.update {
