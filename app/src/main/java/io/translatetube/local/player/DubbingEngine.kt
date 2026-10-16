@@ -179,10 +179,17 @@ class DubbingEngine(
                     for (i in this@DubbingEngine.lines.indices) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         if (released || generation != cacheInitGeneration.get()) return@launch
+                        val cue = this@DubbingEngine.lines[i]
+                        if (!DubbingTimeline.isPlayableCue(cue)) {
+                            // Invalid timing or blank source text can never be selected by lineAt().
+                            // Mark it as source-audio fallback without reading or synthesizing PCM.
+                            readiness.markPrepared(i, hasAudio = false)
+                            continue
+                        }
                         val file = cacheFile(i)
                         val cacheInspection = inspectCache(file, ::checkCacheInitActive)
                         val cacheHasAudio = cacheInspection.hasAudio
-                        val blankTranslation = this@DubbingEngine.lines[i].zh.isNullOrBlank()
+                        val blankTranslation = cue.zh.isNullOrBlank()
                         when {
                             blankTranslation && cacheHasAudio == false ->
                                 readiness.markPrepared(i, hasAudio = false)
@@ -230,8 +237,12 @@ class DubbingEngine(
                         // Cache I/O failure must not permanently strand the dubbing queue.
                         pending.clear()
                         this@DubbingEngine.lines.indices
+                            .filter { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
                             .filterNot { readiness.isReady(it) }
                             .forEach { pending.offerLast(it) }
+                        this@DubbingEngine.lines.indices
+                            .filterNot { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
+                            .forEach { readiness.markPrepared(it, hasAudio = false) }
                         bumpPrepared()
                         startSynthLoop()
                     }
@@ -276,6 +287,12 @@ class DubbingEngine(
                 // into the new engine's cache namespace.
                 if (fallbackRequested.get()) break
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
+                val line = lines.getOrNull(idx) ?: continue
+                if (!DubbingTimeline.isPlayableCue(line)) {
+                    readiness.markPrepared(idx, hasAudio = false)
+                    bumpPrepared()
+                    continue
+                }
                 val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 fun checkSynthesisActive() {
                     if (released || workerJob?.isActive == false) {
@@ -319,7 +336,6 @@ class DubbingEngine(
                     bumpPrepared()
                     continue
                 }
-                val line = lines.getOrNull(idx) ?: continue
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
