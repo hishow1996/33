@@ -29,7 +29,7 @@ object VideoProcessingFlowPolicy {
 
     fun pageTitle(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO, failed: Boolean = false): String {
         if (flow == ProcessingFlow.IMPORTED_SUBTITLES || flow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES) {
-            return if (failed) "字幕处理失败" else if (flow == ProcessingFlow.IMPORTED_SUBTITLES) "字幕导入与翻译" else "字幕配音"
+            return if (failed) "字幕处理失败" else if (flow == ProcessingFlow.IMPORTED_SUBTITLES) "字幕翻译配音" else "已翻译字幕配音"
         }
         val label = when (source) {
             VideoSourceKind.YOUTUBE -> "YouTube 视频"
@@ -37,7 +37,7 @@ object VideoProcessingFlowPolicy {
             VideoSourceKind.LOCAL -> "本地视频"
             VideoSourceKind.UNKNOWN -> "视频"
         }
-        return if (failed) "${label}处理失败" else "${label}处理"
+        return if (failed) "${label}处理失败" else "${label}翻译配音"
     }
 
     fun steps(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO): List<String> = when (flow) {
@@ -45,47 +45,47 @@ object VideoProcessingFlowPolicy {
             "获取视频信息",
             "解析 YouTube 视频资源",
             "提取视频音轨",
-            "语音转写并生成字幕",
-            "翻译字幕",
-            "生成中文配音",
+            "转写原文并生成时间轴字幕",
+            "将原文字幕翻译成中文",
+            "按时间轴生成中文配音",
         )
         ProcessingFlow.IMPORTED_SUBTITLES -> listOf(
-            "读取导入字幕",
-            "翻译字幕",
-            "生成中文配音",
+            "读取导入字幕并检查时间轴",
+            "将原文字幕翻译成中文",
+            "按时间轴生成中文配音",
         )
         ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES -> listOf(
-            "读取已翻译字幕",
-            "生成中文配音",
+            "读取已翻译字幕并检查时间轴",
+            "按时间轴生成中文配音",
         )
         else -> when (source) {
             VideoSourceKind.YOUTUBE -> listOf(
                 "获取视频信息",
                 "解析 YouTube 视频资源",
-                "获取原文字幕",
-                "翻译字幕",
-                "生成中文配音",
+                "读取可用原文字幕",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
             VideoSourceKind.WEB -> listOf(
                 "识别网页视频",
                 "提取视频音轨",
-                "语音转写并生成字幕",
-                "翻译字幕",
-                "生成中文配音",
+                "转写原文并生成时间轴字幕",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
             VideoSourceKind.LOCAL -> listOf(
                 "读取本地视频",
                 "提取本地视频音轨",
-                "语音转写并生成字幕",
-                "翻译字幕",
-                "生成中文配音",
+                "转写原文并生成时间轴字幕",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
             VideoSourceKind.UNKNOWN -> listOf(
                 "获取视频信息",
                 "准备视频资源",
                 "获取或生成字幕",
-                "翻译字幕",
-                "生成中文配音",
+                "将原文字幕翻译成中文",
+                "按时间轴生成中文配音",
             )
         }
     }
@@ -148,7 +148,7 @@ object VideoProcessingFlowPolicy {
             }
         }
         return when (phase) {
-            Phase.IDLE -> "准备处理视频"
+            Phase.IDLE -> "准备翻译视频并生成配音"
             Phase.PARSING -> when (source) {
                 VideoSourceKind.YOUTUBE -> "正在解析 YouTube 视频"
                 VideoSourceKind.WEB -> "正在识别网页视频"
@@ -162,14 +162,14 @@ object VideoProcessingFlowPolicy {
                 VideoSourceKind.UNKNOWN -> "正在提取视频音轨"
             }
             Phase.TRANSCRIBING -> when (source) {
-                VideoSourceKind.YOUTUBE -> "正在识别语音并生成字幕"
-                VideoSourceKind.WEB -> "正在转写网页视频语音"
-                VideoSourceKind.LOCAL -> "正在转写本地视频语音"
-                VideoSourceKind.UNKNOWN -> "正在识别语音并生成字幕"
+                VideoSourceKind.YOUTUBE -> "正在转写原文并生成时间轴字幕"
+                VideoSourceKind.WEB -> "正在转写网页视频原文并生成时间轴字幕"
+                VideoSourceKind.LOCAL -> "正在用本地模型转写原文并生成时间轴字幕"
+                VideoSourceKind.UNKNOWN -> "正在转写原文并生成时间轴字幕"
             }
-            Phase.TRANSLATING -> "正在翻译字幕"
-            Phase.SYNTHESIZING -> "正在生成中文配音"
-            Phase.READY -> "处理已完成"
+            Phase.TRANSLATING -> "按批次把原文字幕翻译成中文，保留每条字幕的起止时间"
+            Phase.SYNTHESIZING -> "根据字幕时间轴逐句准备中文配音"
+            Phase.READY -> "视频、字幕与配音已准备完成"
             Phase.ERROR -> "视频处理失败"
         }
     }
@@ -190,10 +190,10 @@ object VideoProcessingFlowPolicy {
         return when (phase) {
             Phase.IDLE -> "等待开始处理"
             Phase.PARSING -> when (source) {
-                VideoSourceKind.YOUTUBE -> "正在获取视频信息并检查字幕来源"
-                VideoSourceKind.WEB -> "正在确认网页视频资源，准备提取音轨"
-                VideoSourceKind.LOCAL -> "正在检查本地视频文件和音轨"
-                VideoSourceKind.UNKNOWN -> "正在检查视频信息和可用资源"
+                VideoSourceKind.YOUTUBE -> "优先查找原文字幕；找不到时会转向音轨转写"
+                VideoSourceKind.WEB -> "正在确认网页视频资源，准备提取音轨并转写原文"
+                VideoSourceKind.LOCAL -> "正在检查本地视频信息，准备提取音轨并转写原文"
+                VideoSourceKind.UNKNOWN -> "正在检查视频信息和可用字幕/音轨"
             }
             Phase.DOWNLOADING_AUDIO -> when (source) {
                 VideoSourceKind.YOUTUBE -> "当前需要语音转写，正在准备识别所需音轨"
@@ -202,13 +202,13 @@ object VideoProcessingFlowPolicy {
                 VideoSourceKind.UNKNOWN -> "正在准备语音识别所需音轨"
             }
             Phase.TRANSCRIBING -> when (source) {
-                VideoSourceKind.YOUTUBE -> "正在把语音转换为带时间轴的原文字幕"
-                VideoSourceKind.WEB -> "正在把网页视频音轨转写为带时间轴的原文字幕"
-                VideoSourceKind.LOCAL -> "正在把本地视频音轨转写为带时间轴的原文字幕"
-                VideoSourceKind.UNKNOWN -> "正在生成带时间轴的原文字幕"
+                VideoSourceKind.YOUTUBE -> "识别结果会保留时间戳，随后翻译成中文"
+                VideoSourceKind.WEB -> "正在把网页视频音轨转写成带时间轴的原文字幕，下一步翻译成中文"
+                VideoSourceKind.LOCAL -> "正在把本地视频音轨转写成带时间轴的原文字幕，下一步翻译成中文"
+                VideoSourceKind.UNKNOWN -> "正在生成带时间轴的原文字幕，下一步翻译成中文"
             }
-            Phase.TRANSLATING -> "正在将原文字幕翻译成中文"
-            Phase.SYNTHESIZING -> "正在按字幕时间轴生成中文配音"
+            Phase.TRANSLATING -> "按批次把原文字幕翻译成中文，保留每条字幕的起止时间"
+            Phase.SYNTHESIZING -> "根据字幕时间轴逐句准备中文配音"
             Phase.READY -> "视频、字幕和配音已准备完成"
             Phase.ERROR -> error?.takeIf { it.isNotBlank() } ?: "处理失败，请重试或导入字幕文件"
         }
