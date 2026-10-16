@@ -21,6 +21,7 @@ internal data class DubbingPlaybackPlan(
 internal object DubbingTiming {
     const val MAX_SYNC_RATE = 2.0f
     private const val MAX_OUTPUT_RATE = 4.0f
+    private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L
 
@@ -108,8 +109,19 @@ internal object DubbingTiming {
         // of duplicating up to 32 MB on the heap before AudioTrack copies it to native memory.
         if (plan.startSample == 0 && end == samples.size && !plan.truncated) return samples
         val result = samples.copyOfRange(plan.startSample, end)
+        // Starting from a mid-cue sample (late TTS or a seek) can begin at non-zero amplitude.
+        // A very short fade-in prevents a click without delaying the cue's timeline start.
+        if (plan.startSample > 0 && sampleRate > 0) {
+            val fadeSamples = min(sampleRate * FADE_IN_MS / 1_000, result.size / 2)
+            if (fadeSamples > 1) {
+                for (i in 0 until fadeSamples) {
+                    val gain = i.toDouble() / (fadeSamples - 1).toDouble()
+                    result[i] = (result[i] * gain).toFloat()
+                }
+            }
+        }
         if (plan.truncated && sampleRate > 0) {
-            val fadeSamples = min(sampleRate * FADE_OUT_MS / 1000, result.size / 2)
+            val fadeSamples = min(sampleRate * FADE_OUT_MS / 1_000, result.size / 2)
             if (fadeSamples > 1) {
                 val fadeStart = result.size - fadeSamples
                 for (i in 0 until fadeSamples) {
