@@ -93,8 +93,7 @@ class DubbingEngine(
     // Completes only after every queued AudioTrack operation and the final track cleanup have drained.
     private val audioCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val readiness = DubbingReadiness()
-    // Serialize ready/pending mutations with contiguous-prefix progress publication.
-    private val readinessProgressLock = Any()
+    private val readinessProgress = DubbingReadinessProgress(readiness)
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
     @Volatile private var synthJob: Job? = null
@@ -138,11 +137,7 @@ class DubbingEngine(
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
             _totalLines.value = this.lines.size
-            synchronized(readinessProgressLock) {
-                _preparedUntil.value = 0
-                _preparedCount.value = 0
-                readiness.clear()
-            }
+            readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
             pending.clear()
             priorityTarget = -1
             latestTimelineCursor = DubbingTimelineCursor()
@@ -607,34 +602,21 @@ class DubbingEngine(
         }
     }
 
+    private fun publishReadinessProgress(snapshot: DubbingReadinessProgressSnapshot) {
+        _preparedCount.value = snapshot.preparedCount
+        _preparedUntil.value = snapshot.preparedUntil
+    }
+
     private fun markCuePrepared(idx: Int, hasAudio: Boolean) {
-        synchronized(readinessProgressLock) {
-            readiness.markPrepared(idx, hasAudio)
-            updateReadinessProgressLocked()
-        }
+        readinessProgress.markPrepared(idx, hasAudio, lines.size, ::publishReadinessProgress)
     }
 
     private fun markCuePending(idx: Int) {
-        synchronized(readinessProgressLock) {
-            readiness.markPending(idx)
-            _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
-            // A newly invalidated row breaks the contiguous prefix even when later rows are ready.
-            if (idx >= 0 && idx < _preparedUntil.value) _preparedUntil.value = idx
-        }
+        readinessProgress.markPending(idx, lines.size, ::publishReadinessProgress)
     }
 
     private fun bumpPrepared() {
-        synchronized(readinessProgressLock) {
-            updateReadinessProgressLocked()
-        }
-    }
-
-    /** Caller holds readinessProgressLock so readiness and its published counters stay coherent. */
-    private fun updateReadinessProgressLocked() {
-        _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
-        var n = _preparedUntil.value
-        while (n < lines.size && readiness.isReady(n)) n++
-        _preparedUntil.value = n
+        readinessProgress.refresh(lines.size, ::publishReadinessProgress)
     }
 
     /**
