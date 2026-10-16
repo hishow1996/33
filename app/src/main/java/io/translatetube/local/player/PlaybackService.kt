@@ -3711,7 +3711,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             preferredKokoroVoice = preferredVoice,
                         )
                     val keyForLine = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
-                    val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..53) {
+                    val voice = assignmentSnapshot.lineOverrides[keyForLine] ?: if (speaker in 0..999) {
                         speakerVoiceAssignments.getOrPut(speaker) { suggestedVoice }
                     } else {
                         suggestedVoice
