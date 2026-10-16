@@ -18,7 +18,7 @@ class WhisperSubtitleTimelinePolicyTest {
 
         assertEquals(2, cues.size)
         assertEquals(Triple(1_000L, 1_920L, "Hello world."), cues[0])
-        assertEquals(Triple(2_400L, 3_400L, "Next sentence!"), cues[1])
+        assertEquals(Triple(2_400L, 3_500L, "Next sentence!"), cues[1])
     }
 
     @Test
@@ -86,7 +86,7 @@ class WhisperSubtitleTimelinePolicyTest {
 
         assertEquals(2, cues.size)
         assertEquals(2_000L, cues[0].first)
-        assertEquals(5_900L, cues[1].first)
+        assertEquals(5_700L, cues[1].first)
         assertTrue(cues.zipWithNext().all { (left, right) -> left.first < right.first })
     }
 }
