@@ -1,9 +1,7 @@
 package io.translatetube.local.yt
 
-/** Shared limits for yt-dlp audio output and the app's retry-audio cache. */
+/** Validate that yt-dlp produced a non-empty media file; audio size is not capped here. */
 internal object YtDlpAudioPolicy {
-    const val MAX_AUDIO_BYTES = 160L * 1024L * 1024L
-
     // The command's output template always includes an extension. An allowlist prevents an
     // unexpected sidecar (subtitle, thumbnail, JSON, or fragment file) being renamed to .bin.
     private val MEDIA_EXTENSIONS = setOf(
@@ -21,5 +19,5 @@ internal object YtDlpAudioPolicy {
     }
 
     fun isValidDownload(isFile: Boolean, sizeBytes: Long): Boolean =
-        isFile && sizeBytes in 1L..MAX_AUDIO_BYTES
+        isFile && sizeBytes > 0L
 }

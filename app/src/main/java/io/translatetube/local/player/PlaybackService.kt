@@ -3307,7 +3307,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     if (size < 0) break
                     if (!AsrAudioCachePolicy.canAppendBytes(extractedSampleBytes, size.toLong())) {
                         throw IllegalStateException(
-                            "提取出的网页音轨超过 160 MB 缓存上限，已停止处理以保护手机存储。"
+                            "提取出的网页音轨大小超过文件系统可表示的范围，已停止处理。"
                         )
                     }
                     info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
@@ -3332,7 +3332,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             muxer = null
             if (!AsrAudioCachePolicy.isCompleteDownload(-1L, work.length())) {
                 throw IllegalStateException(
-                    "提取出的音轨为空或超过 160 MB 缓存上限；已停止处理以保护手机存储。"
+                    "提取出的音轨为空，无法继续处理。"
                 )
             }
             // Flush the completed muxer output before publishing it as the reusable cache file.
@@ -3597,7 +3597,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         return null
     }
 
-    /** Keep retry audio bounded in size; never evict the file currently being reused/downloaded. */
+    /** Keep cached audio through its TTL; never evict files currently being reused/downloaded. */
     private fun releaseActiveAsrAudio(path: String?) {
         if (path.isNullOrBlank()) return
         activeAsrAudioPaths.release(path)
@@ -3621,10 +3621,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             activeAsrAudioPaths.deleteIfUnleased(destinationPath) { file.delete() }
         }
         val files = allFiles.filter { it.isFile && it.name.endsWith(".bin") }
-        var totalBytes = 0L
-
-        // Enforce TTL even when the folder is below its size budget; otherwise old videos
-        // could leave stale cache files on disk indefinitely.
+        // Enforce TTL without imposing a total cache byte budget.
         files.forEach { file ->
             val isKept = keep != null && file.absolutePath == keep.absolutePath
             val age = now - file.lastModified()
@@ -3633,22 +3630,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             if (shouldExpire) {
                 // The lease registry holds its monitor through deletion. A simultaneous reader
                 // either acquires first (and protects the file) or waits until deletion finishes.
-                if (!activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }) {
-                    totalBytes += file.length()
-                }
-            } else {
-                // Active files still count toward the budget, but must not be deleted mid-decode.
-                totalBytes += file.length()
-            }
-        }
-
-        val budget = AsrAudioCachePolicy.CACHE_BUDGET_BYTES
-        for (file in files.sortedBy { it.lastModified() }) {
-            if (totalBytes <= budget) break
-            if (keep != null && file.absolutePath == keep.absolutePath) continue
-            val size = file.length()
-            if (activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }) {
-                totalBytes = (totalBytes - size).coerceAtLeast(0L)
+                activeAsrAudioPaths.deleteIfUnleased(file.absolutePath) { file.delete() }
             }
         }
     }
@@ -3667,7 +3649,6 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         // Always write to a sibling temporary file. A process killed mid-download must never
         // leave a partial payload under the final .bin name where a later cache scan can reuse it.
         val writeTarget = File(target.parentFile, target.name + ".part")
-        val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
         var lastError: Exception? = null
 
         for (attempt in 1..3) {
@@ -3691,9 +3672,6 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
                         }
                         val total = body.contentLength()
-                        if (total > maxBytes) {
-                            throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
-                        }
                         body.byteStream().use { ins ->
                             var got = 0L
                             val payloadPrefix = ByteArray(512)
@@ -3718,10 +3696,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                             )
                                         }
                                     }
-                                    got += n
-                                    if (got > maxBytes) {
-                                        throw IllegalStateException("音频文件超过 160 MB 限制，已停止下载以保护设备存储")
+                                    if (got > Long.MAX_VALUE - n.toLong()) {
+                                        throw IllegalStateException("音频大小超过当前文件格式可表示的范围。")
                                     }
+                                    got += n.toLong()
                                     out.write(buf, 0, n)
                                     if (total > 0) {
                                         val progress = "下载音频 %.0f%%".format(

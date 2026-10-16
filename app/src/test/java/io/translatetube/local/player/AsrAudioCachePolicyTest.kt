@@ -25,20 +25,18 @@ class AsrAudioCachePolicyTest {
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_023L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(1_024L, 1_025L))
         assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, 0L))
-        assertFalse(AsrAudioCachePolicy.isCompleteDownload(-1L, AsrAudioCachePolicy.MAX_AUDIO_BYTES + 1))
+        assertTrue(AsrAudioCachePolicy.isCompleteDownload(-1L, 200L * 1024L * 1024L))
     }
 
     @Test
-    fun guardsAudioWritesAtTheCacheLimitWithoutLongOverflow() {
-        val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
+    fun allowsLargeAudioWritesButProtectsLongCountersFromOverflow() {
+        val largeSize = 200L * 1024L * 1024L
         assertTrue(AsrAudioCachePolicy.canAppendBytes(0L, 1L))
-        assertTrue(AsrAudioCachePolicy.canAppendBytes(maxBytes - 1L, 1L))
-        assertTrue(AsrAudioCachePolicy.canAppendBytes(maxBytes, 0L))
-        assertFalse(AsrAudioCachePolicy.canAppendBytes(maxBytes, 1L))
-        assertFalse(AsrAudioCachePolicy.canAppendBytes(maxBytes - 1L, 2L))
+        assertTrue(AsrAudioCachePolicy.canAppendBytes(largeSize, 1L))
+        assertTrue(AsrAudioCachePolicy.canAppendBytes(0L, Long.MAX_VALUE))
         assertFalse(AsrAudioCachePolicy.canAppendBytes(-1L, 1L))
         assertFalse(AsrAudioCachePolicy.canAppendBytes(0L, -1L))
-        assertFalse(AsrAudioCachePolicy.canAppendBytes(maxBytes, Long.MAX_VALUE))
+        assertFalse(AsrAudioCachePolicy.canAppendBytes(largeSize, Long.MAX_VALUE))
     }
 
     @Test
@@ -59,11 +57,11 @@ class AsrAudioCachePolicyTest {
     }
 
     @Test
-    fun rejectsMissingEmptyOversizedExpiredAndFutureDatedFiles() {
+    fun reusesLargeFilesButRejectsMissingEmptyExpiredAndFutureDatedFiles() {
         val now = 10_000_000_000L
         assertFalse(AsrAudioCachePolicy.canReuse(false, 100L, now - 1, now))
         assertFalse(AsrAudioCachePolicy.canReuse(true, 0L, now - 1, now))
-        assertFalse(AsrAudioCachePolicy.canReuse(true, AsrAudioCachePolicy.MAX_AUDIO_BYTES + 1, now - 1, now))
+        assertTrue(AsrAudioCachePolicy.canReuse(true, 200L * 1024L * 1024L, now - 1, now))
         assertFalse(AsrAudioCachePolicy.canReuse(true, 100L, now - AsrAudioCachePolicy.TTL_MS - 1, now))
         assertFalse(AsrAudioCachePolicy.canReuse(true, 100L, now + 1, now))
     }

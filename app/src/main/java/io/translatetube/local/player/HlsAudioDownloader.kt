@@ -13,7 +13,7 @@ import java.net.URI
 import java.security.MessageDigest
 
 /**
- * Downloads a finite, unencrypted HLS VOD rendition into a bounded cache for MediaExtractor/Whisper.
+ * Downloads a finite, unencrypted HLS VOD rendition into a disk cache for MediaExtractor/Whisper.
  * Complete segment files survive a failed/cancelled attempt and are reused on retry. This class
  * deliberately does not decrypt encrypted playlists or bypass DRM.
  */
@@ -21,10 +21,8 @@ internal object HlsAudioDownloader {
     private const val MAX_PLAYLIST_BYTES = 2L * 1024L * 1024L
     private const val MAX_SEGMENTS = 10_000
     private const val MAX_MASTER_DEPTH = 4
-    private const val MAX_BYTES = 160L * 1024L * 1024L
-
-    /** Counts only up to budget + 1, so corrupted cache folders cannot overflow byte totals. */
-    internal fun boundedCacheByteTotal(sizes: Iterable<Long>, budget: Long = MAX_BYTES): Long {
+    /** Sums byte counts safely without introducing an application-level media-size limit. */
+    internal fun boundedCacheByteTotal(sizes: Iterable<Long>, budget: Long = Long.MAX_VALUE): Long {
         val safeBudget = budget.coerceAtLeast(0L)
         val overBudget = if (safeBudget == Long.MAX_VALUE) Long.MAX_VALUE else safeBudget + 1L
         var total = 0L
@@ -264,7 +262,6 @@ internal object HlsAudioDownloader {
                     File(cacheDirectory, index.toString().padStart(5, '0') + ".seg")
                 }
                 val reusableSegments = BooleanArray(sources.size)
-                var cachedBytes = 0L
                 segmentFiles.forEachIndexed { index, segmentFile ->
                     val age = System.currentTimeMillis() - segmentFile.lastModified()
                     val expectedRangeLength = sources[index].byteRangeLength
@@ -278,25 +275,14 @@ internal object HlsAudioDownloader {
                         age in 0L..AsrAudioCachePolicy.TTL_MS &&
                         hasValidLength
                     reusableSegments[index] = reusable
-                    if (reusable) {
-                        cachedBytes += segmentFile.length()
-                    } else {
+                    if (!reusable) {
                         segmentFile.delete()
                         File(segmentFile.parentFile, segmentFile.name + ".part").delete()
                         File(segmentFile.parentFile, segmentFile.name + ".installing").delete()
                     }
                 }
 
-                // The total must include valid segments at later indexes too, otherwise a missing
-                // early segment could grow the cache beyond its budget before those files are seen.
-                if (cachedBytes > MAX_BYTES) {
-                    segmentFiles.forEach { it.delete() }
-                    reusableSegments.fill(false)
-                    cachedBytes = 0L
-                }
-
                 val cachedSegments = mutableListOf<File>()
-                var totalCachedBytes = cachedBytes
                 sources.forEachIndexed { index, source ->
                     awaitResume()
                     ownerJob?.ensureActive()
@@ -314,18 +300,13 @@ internal object HlsAudioDownloader {
                             destination = segmentFile,
                             headers = mediaHeaders,
                             rootOrigin = rootOrigin,
-                            cachedBytes = totalCachedBytes,
                             ownerJob = ownerJob,
                             awaitResume = awaitResume,
                             userAgent = userAgent,
                             onRetry = { attempt ->
                                 onProgress("网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）")
                             },
-                        ).also { totalCachedBytes += it.length() }
-                    }
-                    if (totalCachedBytes > MAX_BYTES) {
-                        segmentCacheDirectory?.deleteRecursively()
-                        throw IllegalStateException("网页音轨缓存总量超过 160 MB 限制，已清理旧分段以保护手机存储。")
+                        )
                     }
                     cachedSegments += segment
                     segmentFile.parentFile?.setLastModified(System.currentTimeMillis())
@@ -334,7 +315,6 @@ internal object HlsAudioDownloader {
                 }
 
                 // Merge on disk, not in memory: this is suitable for older phones with limited RAM.
-                var mergedBytes = 0L
                 FileOutputStream(assemblyPart, false).buffered().use { output ->
                     cachedSegments.forEachIndexed { index, segment ->
                         awaitResume()
@@ -347,10 +327,6 @@ internal object HlsAudioDownloader {
                                 awaitResume()
                                 val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                                 if (count < 0) break
-                                mergedBytes += count
-                                if (mergedBytes > MAX_BYTES) {
-                                    throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
-                                }
                                 output.write(buffer, 0, count)
                             }
                         }
@@ -361,7 +337,7 @@ internal object HlsAudioDownloader {
                 // Persist merged bytes before the completed cache is published under its final name.
                 java.io.RandomAccessFile(assemblyPart, "rw").use { it.fd.sync() }
                 if (!AsrAudioCachePolicy.isCompleteDownload(-1L, assemblyPart.length())) {
-                    throw IllegalStateException("HLS 音频缓存为空或超过 160 MB 限制。")
+                    throw IllegalStateException("HLS 音频缓存为空，无法继续处理。")
                 }
                 // assemblyPart is complete and resides beside destination. Replace the old
                 // regular file with a same-directory rename so a failed install cannot erase a
@@ -412,12 +388,13 @@ internal object HlsAudioDownloader {
         }
     }
 
-    /** Keep incomplete/cancelled HLS retries short-lived and bounded across all video tasks. */
+    /** Remove expired segment directories, but never evict audio by byte count. */
     private fun pruneSegmentCaches(parent: File, keep: File) {
         val now = System.currentTimeMillis()
         val directories = parent.listFiles()
             ?.filter { it.isDirectory && it.name.endsWith(".segments") }
             .orEmpty()
+
         fun lastActivity(directory: File): Long {
             var latest = directory.lastModified()
             directory.walkTopDown().filter { it.isFile }.forEach { file ->
@@ -425,28 +402,11 @@ internal object HlsAudioDownloader {
             }
             return latest
         }
-        fun size(directory: File): Long = boundedCacheByteTotal(
-            directory.walkTopDown().filter { it.isFile }.map { it.length() }.asIterable(),
-        )
 
         directories.filter { it.absolutePath != keep.absolutePath }.forEach { directory ->
             val activity = lastActivity(directory)
             if (activity <= 0L || now < activity || now - activity > AsrAudioCachePolicy.TTL_MS) {
                 directory.deleteRecursively()
-            }
-        }
-        val surviving = parent.listFiles()
-            ?.filter { it.isDirectory && it.name.endsWith(".segments") }
-            .orEmpty()
-        var totalBytes = boundedCacheByteTotal(surviving.asSequence().map { directory -> size(directory) }.asIterable())
-        for (directory in surviving.sortedBy { item -> lastActivity(item) }) {
-            if (totalBytes <= MAX_BYTES) break
-            if (directory.absolutePath == keep.absolutePath) continue
-            if (directory.deleteRecursively()) {
-                // Recompute rather than subtracting an individually capped directory size; once a
-                // total crosses the budget, an exact aggregate is intentionally no longer retained.
-                val remaining = surviving.filter { it.exists() }
-                totalBytes = boundedCacheByteTotal(remaining.asSequence().map { size(it) }.asIterable())
             }
         }
     }
@@ -458,7 +418,6 @@ internal object HlsAudioDownloader {
         destination: File,
         headers: Map<String, String>,
         rootOrigin: String,
-        cachedBytes: Long,
         ownerJob: Job?,
         awaitResume: suspend () -> Unit,
         onRetry: (attemptNumber: Int) -> Unit,
@@ -474,11 +433,6 @@ internal object HlsAudioDownloader {
             null
         } else {
             throw IllegalArgumentException("HLS 字节范围无效。")
-        }
-        if (byteRangeLength != null &&
-            (byteRangeLength > MAX_BYTES || cachedBytes > MAX_BYTES - byteRangeLength)
-        ) {
-            throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
         }
         val segmentHeaders = if (byteRangeEnd != null) {
             headers + ("Range" to "bytes=${byteRangeStart}-${byteRangeEnd}")
@@ -512,9 +466,6 @@ internal object HlsAudioDownloader {
                     if (byteRangeLength != null && expectedBytes >= 0L && expectedBytes != byteRangeLength) {
                         throw IllegalStateException("HLS BYTERANGE 响应长度与清单声明不一致。")
                     }
-                    if (expectedBytes > MAX_BYTES || cachedBytes + expectedBytes.coerceAtLeast(0L) > MAX_BYTES) {
-                        throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
-                    }
                     var actualBytes = 0L
                     val payloadPrefix = ByteArray(512)
                     var payloadPrefixSize = 0
@@ -536,10 +487,10 @@ internal object HlsAudioDownloader {
                                         )
                                     }
                                 }
-                                actualBytes += count
-                                if (cachedBytes + actualBytes > MAX_BYTES) {
-                                    throw IllegalStateException("网页音轨超过 160 MB 缓存上限，已停止以保护手机存储。")
+                                if (actualBytes > Long.MAX_VALUE - count.toLong()) {
+                                    throw IllegalStateException("HLS 音轨大小超过当前文件格式可表示的范围。")
                                 }
+                                actualBytes += count.toLong()
                                 output.write(buffer, 0, count)
                             }
                             output.flush()

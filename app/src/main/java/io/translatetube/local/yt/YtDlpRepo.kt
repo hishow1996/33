@@ -417,7 +417,6 @@ object YtDlpRepo {
                 addOption("--no-playlist")
                 addOption("--socket-timeout", "20")
                 addOption("--retries", "3")
-                addOption("--max-filesize", "160M")
                 addOption("-N", "4")
                 addOption("--newline")
                 addOption("-o", outputTemplate)
@@ -445,13 +444,7 @@ object YtDlpRepo {
                 ?: throw IllegalStateException("yt-dlp 没有生成唯一的完整音频文件")
             val downloadedBytes = downloaded.length()
             if (!YtDlpAudioPolicy.isValidDownload(downloaded.isFile, downloadedBytes)) {
-                val reason = when {
-                    downloadedBytes <= 0L -> "yt-dlp 音频下载结果为空"
-                    downloadedBytes > YtDlpAudioPolicy.MAX_AUDIO_BYTES ->
-                        "yt-dlp 音频超过 160 MB 限制，正在回落至受限的流式下载"
-                    else -> "yt-dlp 音频下载结果异常"
-                }
-                throw IllegalStateException(reason)
+                throw IllegalStateException("yt-dlp 音频下载结果为空或无效")
             }
             currentCoroutineContext().ensureActive()
             if (!downloaded.renameTo(dest)) {

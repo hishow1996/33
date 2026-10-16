@@ -39,25 +39,11 @@ class YtDlpAudioPolicyTest {
     }
 
     @Test
-    fun rejectsEmptyMissingAndOversizedOutputs() {
+    fun rejectsEmptyAndMissingOutputsButAcceptsLargeAudio() {
         assertFalse(YtDlpAudioPolicy.isValidDownload(false, 1L))
         assertFalse(YtDlpAudioPolicy.isValidDownload(true, 0L))
         assertFalse(YtDlpAudioPolicy.isValidDownload(true, -1L))
-        assertFalse(
-            YtDlpAudioPolicy.isValidDownload(
-                true,
-                YtDlpAudioPolicy.MAX_AUDIO_BYTES + 1L,
-            )
-        )
-    }
-
-    @Test
-    fun acceptsAudioAtConfiguredLimit() {
-        assertTrue(
-            YtDlpAudioPolicy.isValidDownload(
-                true,
-                YtDlpAudioPolicy.MAX_AUDIO_BYTES,
-            )
-        )
+        assertTrue(YtDlpAudioPolicy.isValidDownload(true, 200L * 1024L * 1024L))
+        assertTrue(YtDlpAudioPolicy.isValidDownload(true, Long.MAX_VALUE))
     }
 }
