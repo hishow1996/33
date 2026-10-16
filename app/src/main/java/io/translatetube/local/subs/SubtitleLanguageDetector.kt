@@ -110,9 +110,10 @@ object SubtitleLanguageDetector {
         val sample = StringBuilder()
         var cueCount = 0
         for (cue in cues) {
-            if (cueCount >= maxCues || sample.length >= 12_000) break
-            cueCount++
+            if (sample.length >= 12_000) break
             if (cue.isBlank()) continue
+            if (cueCount >= maxCues) break
+            cueCount++
             if (sample.isNotEmpty()) sample.append(' ')
             val remaining = 12_000 - sample.length
             if (remaining <= 0) break

@@ -27,15 +27,31 @@ internal object SubtitleCacheValidationPolicy {
         if (sourceLines.isEmpty() || sourceLines.size != cachedRows.size ||
             sourceLines.size > MAX_CACHED_CUE_COUNT
         ) return null
-        if (!hasValidTimeline(cachedRows.map { Triple(it.startMs, it.endMs, it.sourceText) })) return null
-        if (!hasRecoverableTranslationRows(cachedRows.map { it.translatedText })) return null
-        if (sourceLines.indices.any { index ->
-            val source = sourceLines[index]
+
+        // Validate in one pass instead of materializing separate full-size timeline and translation
+        // lists. Large subtitle caches can contain hundreds of thousands of rows on mobile devices.
+        var previousStart = -1L
+        var hasRecoverableTranslation = false
+        val uniqueRows = HashSet<Triple<Long, Long, String>>(cachedRows.size)
+        for (index in cachedRows.indices) {
             val cached = cachedRows[index]
-            source.startMs != cached.startMs ||
+            val source = sourceLines[index]
+            if (
+                cached.startMs < 0L ||
+                cached.endMs <= cached.startMs ||
+                cached.sourceText.isBlank() ||
+                cached.startMs < previousStart ||
+                !uniqueRows.add(Triple(cached.startMs, cached.endMs, cached.sourceText)) ||
+                source.startMs != cached.startMs ||
                 source.endMs != cached.endMs ||
                 source.text != cached.sourceText
-        }) return null
+            ) return null
+            previousStart = cached.startMs
+            if (!SubtitleParsers.cleanTranslatedText(cached.translatedText).isNullOrBlank()) {
+                hasRecoverableTranslation = true
+            }
+        }
+        if (!hasRecoverableTranslation) return null
 
         return sourceLines.mapIndexed { index, source ->
             source.copy(zh = SubtitleParsers.cleanTranslatedText(cachedRows[index].translatedText))

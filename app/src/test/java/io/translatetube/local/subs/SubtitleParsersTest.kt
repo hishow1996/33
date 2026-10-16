@@ -701,6 +701,25 @@ class SubtitleParsersTest {
 
 
     @Test
+    fun repeatedLeadingBomMarkersDoNotBreakAutomaticFormatDetection() {
+        val source = "\uFEFF\uFEFFWEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhello\n"
+        val parsed = SubtitleParsers.parseAuto(source)
+        assertEquals(1, parsed.size)
+        assertEquals("hello", parsed.single().text)
+    }
+
+    @Test
+    fun adjacentDuplicateCuesMergeWhenOneUsesNonBreakingSpaces() {
+        val nbsp = '\u00a0'
+        val source = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello${nbsp}there\n\n" +
+            "00:00:01.000 --> 00:00:02.000\nhello there\n"
+        val parsed = SubtitleParsers.parseVtt(source)
+        assertEquals(1, parsed.size)
+        assertEquals(0L, parsed.single().startMs)
+        assertEquals(2_000L, parsed.single().endMs)
+    }
+
+    @Test
     fun sourceEquivalentRepeatedChineseCaptionsSurviveDisplayCopyAndExports() {
         val line = SubLine(0, 0L, 1_000L, "哈哈哈哈", "哈哈哈哈")
         val rows = listOf(line)

@@ -93,6 +93,12 @@ class SubtitleLanguageDetectorTest {
 
 
     @Test
+    fun blankCuesDoNotConsumeTheLanguageDetectionSampleBudget() {
+        val cues = List(120) { "   " } + listOf("こんにちは、今日もありがとうございます。")
+        assertEquals("ja", SubtitleLanguageDetector.detectFromCues(cues))
+    }
+
+    @Test
     fun resolvesProviderHintsDirectlyFromBoundedTimedCueSamples() {
         val japaneseCues = listOf("OK", "2026", "名前") +
             List(12) { "こんにちは、今日は天気について話します。" }

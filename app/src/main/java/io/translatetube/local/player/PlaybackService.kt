@@ -74,6 +74,8 @@ data class PlayerUiState(
     val thumbUrl: String? = null,
     val durationMs: Long = 0,
     val lines: List<SubLine> = emptyList(),
+    /** Number of rows resolved for the active subtitle-translation pass; avoids rescanning the full list for progress. */
+    val translatedLineCount: Int = 0,
     /** Subtitle index whose AudioTrack has actually started; separate from the video playhead highlight. */
     val activeDubbingLine: Int = -1,
     val currentLine: Int = -1,
@@ -466,7 +468,7 @@ class PlaybackService : MediaSessionService() {
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
             Phase.TRANSCRIBING -> "正在转写原文字幕" to state.progress.ifBlank { "正在生成与视频时间轴对齐的原文字幕" }
             Phase.TRANSLATING -> "正在将原文字幕翻译成中文" to state.progress.ifBlank {
-                if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
+                if (state.totalLines > 0) "已翻译 ${state.translatedLineCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
             }
             Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
@@ -513,7 +515,7 @@ class PlaybackService : MediaSessionService() {
                 ?: percentFromProgress(state.progress)
             Phase.TRANSLATING -> ratioPercentFromProgress(state.progress)
                 ?: if (state.totalLines > 0) {
-                    (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } * 100f / state.totalLines).toInt().coerceIn(0, 100)
+                    (state.translatedLineCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
                 } else null
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
                 (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
@@ -2738,6 +2740,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
     ): List<SubLine> {
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        updateUiForSession(key) { state ->
+            if (state.key == key && state.translatedLineCount != 0) {
+                state.copy(translatedLineCount = 0)
+            } else state
+        }
         fun checkTranslationActive(index: Int) {
             if ((index and 0xff) == 0) translationJob?.ensureActive()
         }
@@ -2796,6 +2803,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 sourceLang = srcLang,
                 lines = updatedLines,
                 totalLines = updatedLines.size,
+                translatedLineCount = completed.coerceAtMost(updatedLines.size),
                 progress = "翻译成中文 ${completed}/${updatedLines.size} 行",
             )
         }
@@ -2916,6 +2924,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 it.copy(
                     lines = updatedLines,
                     totalLines = updatedLines.size,
+                    translatedLineCount = completed.coerceAtMost(updatedLines.size),
                     sourceLang = srcLang,
                     progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )

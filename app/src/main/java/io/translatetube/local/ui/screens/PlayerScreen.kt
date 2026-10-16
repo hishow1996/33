@@ -1683,6 +1683,17 @@ private fun SubtitleList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
+    val dubbingPulseTransition = rememberInfiniteTransition(label = "subtitleDubbingPulse")
+    val sharedDubbingPulse by dubbingPulseTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.01f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(850),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "subtitleDubbingScale",
+    )
+
     Column(
         modifier.fillMaxSize()
             .clip(RoundedCornerShape(24.dp))
@@ -1707,12 +1718,7 @@ private fun SubtitleList(
                 // Follow the cue whose AudioTrack has really started. The media playhead can
                 // advance before the first asynchronous TTS track starts, missing line zero.
                 val activeDub = i == state.activeDubbingLine && state.dubbingOn
-                val dubbingScale by rememberInfiniteTransition(label = "dubbingLinePulse").animateFloat(
-                    initialValue = 1f,
-                    targetValue = if (activeDub) 1.01f else 1f,
-                    animationSpec = infiniteRepeatable(animation = tween(850), repeatMode = RepeatMode.Reverse),
-                    label = "dubbingLineScale",
-                )
+                val dubbingScale = if (activeDub) sharedDubbingPulse else 1f
                 val translatedText = SubtitleParsers.preferredTranslationText(line)
                     ?.takeIf { it.isNotBlank() }
                     // SubtitleList is shown after processing reaches READY; don't leave stale progress text.
@@ -1773,8 +1779,10 @@ private fun SubtitleList(
 }
 
 
+private val subtitleComparisonPattern = Regex("[\\p{P}\\p{S}\\s]")
+
 private fun subtitleComparisonKey(text: String): String =
-    text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
+    text.trim().lowercase(java.util.Locale.ROOT).replace(subtitleComparisonPattern, "")
 
 @Composable
 private fun ProcessingProgressCard(state: PlayerUiState) {
@@ -1828,7 +1836,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)
         Phase.TRANSLATING -> progressRatio(state.progress)
             ?: if (state.totalLines > 0) {
-                (state.lines.count { SubtitleParsers.preferredTranslationText(it) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
+                (state.translatedLineCount.coerceIn(0, state.totalLines).toFloat() / state.totalLines).coerceIn(0f, 1f)
             } else null
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)

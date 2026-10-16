@@ -14,6 +14,14 @@ data class SubLine(
 
 object SubtitleParsers {
 
+    private const val MAX_SUBTITLE_CUE_COUNT = 500_000
+
+    private fun ensureCueCapacity(currentSize: Int) {
+        require(currentSize < MAX_SUBTITLE_CUE_COUNT) {
+            "字幕条数超过安全上限（${MAX_SUBTITLE_CUE_COUNT}），已停止处理以保护设备内存"
+        }
+    }
+
     // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
     private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}(?=\s|$)""")
     private val ttmlCueRegex = Regex(
@@ -66,6 +74,7 @@ object SubtitleParsers {
         fun flush() {
             val txt = buf.toString().trim()
             if (pendingStart >= 0 && pendingEnd > pendingStart && txt.isNotEmpty()) {
+                ensureCueCapacity(out.size)
                 out += SubLine(idx++, pendingStart, pendingEnd, txt)
             }
             buf.clear(); pendingStart = -1; pendingEnd = -1
@@ -261,7 +270,10 @@ object SubtitleParsers {
                 rawText.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, "")
             )
             val text = decodedText.trim()
-            if (text.isNotEmpty()) out += SubLine(out.size, timing.first, timing.second, text)
+            if (text.isNotEmpty()) {
+                ensureCueCapacity(out.size)
+                out += SubLine(out.size, timing.first, timing.second, text)
+            }
         }
         return normalizeTimeline(out, checkActive)
     }
@@ -326,7 +338,10 @@ object SubtitleParsers {
             val body = match.groupValues[2].replace(ttmlLineBreakRegex, "\n")
             val text = SubtitleTextDecoder.decode(body.replace(htmlTagRegex, ""))
                 .replace('\u00a0', ' ').replace(inlineWhitespaceRegex, " ").trim()
-            if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
+            if (text.isNotEmpty()) {
+                ensureCueCapacity(out.size)
+                out += SubLine(out.size, start, end, text)
+            }
         }
         return normalizeTimeline(out, checkActive)
     }
@@ -377,7 +392,7 @@ object SubtitleParsers {
      */
     internal fun parseAutoCancellable(src: String, checkActive: () -> Unit): List<SubLine> {
         checkActive()
-        val t = src.removePrefix("\uFEFF").trimStart()
+        val t = src.trimStart('\uFEFF').trimStart()
         val parsed = when {
             t.startsWith("WEBVTT") || t.contains("-->") -> parseVtt(t, checkActive)
             t.startsWith("<transcript", ignoreCase = true) -> parseTimedTextXml(t, checkActive)
@@ -495,7 +510,10 @@ object SubtitleParsers {
                     .replace(assLinebreakRegex, "\n")
                     .replace(assHardSpaceRegex, " ")
             ).trim()
-            if (text.isNotEmpty()) out += SubLine(out.size, startMs, endMs, text)
+            if (text.isNotEmpty()) {
+                ensureCueCapacity(out.size)
+                out += SubLine(out.size, startMs, endMs, text)
+            }
         }
         return normalizeTimeline(out, checkActive)
     }
@@ -506,11 +524,17 @@ object SubtitleParsers {
         checkActive: () -> Unit = {},
     ): List<SubLine> {
         checkActive()
-        val sorted = lines.sortedWith(
-            compareBy<SubLine> { it.startMs }
-                .thenBy { it.endMs }
-                .thenBy { it.index },
-        )
+        require(lines.size <= MAX_SUBTITLE_CUE_COUNT) {
+            "字幕条数超过安全上限（${MAX_SUBTITLE_CUE_COUNT}），已停止处理以保护设备内存"
+        }
+        val cueOrder = compareBy<SubLine> { it.startMs }
+            .thenBy { it.endMs }
+            .thenBy { it.index }
+        var comparisons = 0
+        val sorted = lines.sortedWith { left, right ->
+            if ((comparisons++ and 0x3ff) == 0) checkActive()
+            cueOrder.compare(left, right)
+        }
         checkActive()
         val merged = mergeDuplicate(sorted, checkActive)
         return merged.mapIndexed { index, line ->
@@ -524,14 +548,18 @@ object SubtitleParsers {
         checkActive: () -> Unit = {},
     ): List<SubLine> {
         // YouTube 自动字幕常见同一句重复多时间片：相同文本且首尾相接 → 合并
-        val out = mutableListOf<SubLine>()
+        val out = ArrayList<SubLine>(lines.size)
         var previousNormalizedText: String? = null
         for ((index, line) in lines.withIndex()) {
             if ((index and 0x3ff) == 0) checkActive()
             val last = out.lastOrNull()
             // Normalize each cue once. Re-normalizing the previous cue for every next cue
             // needlessly repeated regex/string allocations on subtitles with many short rows.
-            val normalizedText = line.text.replace(whitespaceRegex, " ").trim()
+            val normalizedText = line.text
+                .replace('\u00a0', ' ')
+                .replace('\u202f', ' ')
+                .replace(whitespaceRegex, " ")
+                .trim()
             val sameText = last != null && previousNormalizedText == normalizedText
             val gap = if (last != null) line.startMs - last.endMs else Long.MIN_VALUE
             val startDelta = if (last != null) line.startMs - last.startMs else Long.MAX_VALUE
