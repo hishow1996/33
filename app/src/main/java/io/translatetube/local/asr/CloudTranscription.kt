@@ -359,7 +359,7 @@ object CloudTranscription {
         }
 
         checkActive()
-        onProgress("$"+"providerName 云端已返回结果，正在整理词级时间戳…")
+        onProgress("$providerName 云端已返回结果，正在整理词级时间戳…")
         val root = try {
             JSONObject(responseText)
         } catch (error: Exception) {
