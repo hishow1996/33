@@ -470,11 +470,6 @@ fun PlayerScreen(
                                 color = OnBg,
                                 style = MaterialTheme.typography.titleSmall,
                             )
-                            Text(
-                                "字幕、人物与音频",
-                                color = SubText,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
                         }
                         Divider(
                             modifier = Modifier.padding(horizontal = 12.dp),
@@ -484,7 +479,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Headphones,
                             title = if (state.audioOnly) "恢复视频画面" else "仅听模式",
-                            description = if (state.audioOnly) "仅播放音频，点按恢复画面" else "隐藏画面，继续播放声音",
                             selected = state.audioOnly,
                             onClick = {
                                 advancedMenuExpanded = false
@@ -494,12 +488,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = if (isSpeakerBusy) "正在识别人物…" else "识别并区分人物",
-                            description = when {
-                                selectedTtsEngine == "piper" -> "Piper 当前为单人音色；切换 Kokoro 或支持多音色的系统 TTS 后可用"
-                                isSpeakerBusy -> "正在分析字幕中的说话人"
-                                state.lines.isEmpty() -> "生成或导入字幕后可使用"
-                                else -> "自动区分说话人，便于对照和配音"
-                            },
                             enabled = state.lines.isNotEmpty() && !isSpeakerBusy && voiceSelectionEnabled,
                             onClick = {
                                 advancedMenuExpanded = false
@@ -509,12 +497,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Face,
                             title = "人物默认音色",
-                            description = when {
-                                !voiceSelectionEnabled -> "当前配音引擎没有可选择的多种中文音色"
-                                state.lines.isEmpty() -> "生成或导入字幕后可设置"
-                                state.currentLine !in state.lines.indices -> "播放到字幕后可为当前人物设置音色"
-                                else -> "设置当前句音色，或应用到同一人物的全部字幕"
-                            },
                             enabled = voiceSelectionEnabled && !isSpeakerBusy &&
                                 state.currentLine in state.lines.indices,
                             onClick = {
@@ -536,7 +518,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Subtitles,
                             title = "导入字幕文件",
-                            description = "载入本地字幕",
                             onClick = {
                                 advancedMenuExpanded = false
                                 subPicker.launch(arrayOf("*/*"))
@@ -545,7 +526,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Subtitles,
                             title = "上传已翻译字幕并配音",
-                            description = "保留时间轴，跳过自动翻译",
                             onClick = {
                                 advancedMenuExpanded = false
                                 translatedSubPicker.launch(arrayOf("*/*"))
@@ -554,11 +534,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Subtitles,
                             title = "下载原字幕文件",
-                            description = if (state.availableSubtitleTracks.isEmpty()) {
-                                "当前没有可下载的字幕轨"
-                            } else {
-                                "从 " + state.availableSubtitleTracks.size + " 个字幕轨中选择并保存"
-                            },
                             enabled = state.availableSubtitleTracks.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
@@ -568,7 +543,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.ContentCopy,
                             title = "复制双语字幕",
-                            description = if (state.lines.isEmpty()) "生成或导入字幕后可复制" else "复制原文与中文译文",
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
@@ -578,7 +552,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Subtitles,
                             title = "导出中文字幕（SRT）",
-                            description = "保留时间轴，可保存或再次导入",
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
@@ -588,7 +561,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Subtitles,
                             title = "导出双语字幕（VTT）",
-                            description = "中文在上、原文在下，并保留时间轴",
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
@@ -598,7 +570,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Subtitles,
                             title = "导出双语字幕（SRT）",
-                            description = "兼容常见字幕编辑器，中文在上、原文在下",
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
@@ -613,7 +584,6 @@ fun PlayerScreen(
                         PlaybackMenuItem(
                             icon = Icons.Filled.Settings,
                             title = "翻译与配音设置",
-                            description = "配置翻译引擎、声音和配音",
                             onClick = {
                                 advancedMenuExpanded = false
                                 onGoSettings()
@@ -1533,7 +1503,6 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
 private fun PlaybackMenuItem(
     icon: ImageVector,
     title: String,
-    description: String,
     enabled: Boolean = true,
     selected: Boolean = false,
     onClick: () -> Unit,
@@ -1541,24 +1510,15 @@ private fun PlaybackMenuItem(
     DropdownMenuItem(
         modifier = Modifier.fillMaxWidth(),
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = title,
-                    color = if (enabled) OnBg else SubText,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = description,
-                    color = if (enabled) SubText else SubText.copy(alpha = 0.65f),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                text = title,
+                color = if (enabled) OnBg else SubText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         },
         leadingIcon = {
             Box(
@@ -1592,7 +1552,7 @@ private fun PlaybackMenuItem(
         },
         enabled = enabled,
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp),
     )
 }
 
