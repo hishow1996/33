@@ -689,18 +689,12 @@ private fun VideoParsingPage(
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
 ) {
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
-    val steps = VideoProcessingFlowPolicy.steps(source)
-    val currentStage = run {
-        val stage = when (state.phase) {
-            Phase.IDLE, Phase.PARSING, Phase.ERROR -> 0
-            Phase.DOWNLOADING_AUDIO -> 1
-            Phase.TRANSCRIBING -> 2
-            Phase.TRANSLATING -> 3
-            Phase.SYNTHESIZING -> 4
-            Phase.READY -> 5
-        }
-        // 转写引擎未就绪（模型/Key 缺失）：最多点亮到转写阶段，不能把翻译/配音显示为完成。
-        if (state.noModelHint != null) minOf(stage, 2) else stage
+    val flow = state.processingFlow
+    val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    val currentStage = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase).let { stage ->
+        // 转写引擎未就绪（模型/Key 缺失）：只点亮到转写阶段，不把翻译/配音伪装成完成。
+        if (state.noModelHint != null) minOf(stage, VideoProcessingFlowPolicy.transcriptionStageIndex(source, flow))
+        else stage
     }
     val fraction = when (state.phase) {
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
@@ -710,6 +704,7 @@ private fun VideoParsingPage(
     }
     val mainTitle = VideoProcessingFlowPolicy.mainTitle(
         source = source,
+        flow = flow,
         phase = state.phase,
         isPaused = state.isProcessingPaused,
         waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR,
@@ -718,7 +713,7 @@ private fun VideoParsingPage(
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
         state.progress.isNotBlank() -> state.progress
-        else -> VideoProcessingFlowPolicy.defaultDetail(source, state.phase, state.error)
+        else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
 
     Column(
@@ -741,7 +736,7 @@ private fun VideoParsingPage(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                VideoProcessingFlowPolicy.pageTitle(source, failed = state.phase == Phase.ERROR),
+                VideoProcessingFlowPolicy.pageTitle(source, flow, failed = state.phase == Phase.ERROR),
                 color = OnBg,
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),

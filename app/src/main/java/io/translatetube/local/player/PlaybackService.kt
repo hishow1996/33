@@ -95,6 +95,7 @@ data class PlayerUiState(
     val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
     val subtitleTrackStatus: String = "",
     val isProcessingPaused: Boolean = false,
+    val processingFlow: ProcessingFlow = ProcessingFlow.AUTO,
 )
 
 private data class YouTubeQualitySource(
@@ -700,6 +701,13 @@ class PlaybackService : MediaSessionService() {
         val configuredTtsName = ttsDisplayName(configuredTts)
         ui.value = PlayerUiState(
             phase = if (resumeState != null) Phase.TRANSLATING else Phase.PARSING,
+            processingFlow = when {
+                !importedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
+                videoId != null -> ProcessingFlow.AUTO
+                remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
+                localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
+                else -> ProcessingFlow.AUTO
+            },
             isProcessingPaused = false,
             key = key,
             progress = if (resumeState != null) "恢复已获取的字幕，继续未完成的翻译…" else "解析中…",
@@ -891,6 +899,15 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
             try {
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在读取已翻译字幕文件…",
+                        processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                        error = null,
+                        noModelHint = null,
+                    )
+                }
                 val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val text = withContext(Dispatchers.IO) {
                     val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -1034,6 +1051,7 @@ class PlaybackService : MediaSessionService() {
                     it.copy(
                         phase = Phase.PARSING,
                         progress = "正在读取字幕文件…",
+                        processingFlow = ProcessingFlow.IMPORTED_SUBTITLES,
                         error = null,
                         noModelHint = null,
                     )
@@ -1588,6 +1606,17 @@ class PlaybackService : MediaSessionService() {
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
+            val resolvedProcessingFlow = when {
+                !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
+                videoId != null && resumeState == null && lines == null && cached == null &&
+                    sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                videoId != null -> ProcessingFlow.YOUTUBE_SUBTITLES
+                remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
+                localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
+                else -> ProcessingFlow.AUTO
+            }
+            updateUiForSession(key) { it.copy(processingFlow = resolvedProcessingFlow) }
+
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
                 (videoId != null || localUri != null || remoteMediaUrl != null)) {
                 if (restoredSourceLines != null) {
