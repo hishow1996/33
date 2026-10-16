@@ -8,6 +8,7 @@ internal data class ImportedSubtitleText(
 
 internal object ImportedSubtitlePolicy {
     private val chinesePattern = Regex("[\\u4e00-\\u9fff]")
+    private val japaneseKanaPattern = Regex("[\\u3040-\\u30ff\\u31f0-\\u31ff]")
 
     fun splitBilingualCue(rawText: String): ImportedSubtitleText {
         val parts = rawText.lines().map { it.trim() }.filter { it.isNotBlank() }
@@ -16,7 +17,9 @@ internal object ImportedSubtitlePolicy {
             return ImportedSubtitleText(fallback, fallback)
         }
 
-        val matchingChineseRow = parts.indexOfLast { chinesePattern.containsMatchIn(it) }
+        val matchingChineseRow = parts.indexOfLast {
+            chinesePattern.containsMatchIn(it) && !japaneseKanaPattern.containsMatchIn(it)
+        }
         val translationIndex = if (matchingChineseRow >= 0) matchingChineseRow else parts.lastIndex
         val translation = parts[translationIndex]
         // Remove only the selected translation row; filter-by-value would also drop an identical
