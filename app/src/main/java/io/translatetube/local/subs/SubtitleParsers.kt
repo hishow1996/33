@@ -35,6 +35,10 @@ object SubtitleParsers {
     private val assDialogueHeaderRegex = Regex("""(?im)^\s*Dialogue\s*:""")
     private val assOverrideRegex = Regex("""\{[^}]*\}""")
     private val assLinebreakRegex = Regex("""\\N|\\n""")
+    private val assHardSpaceRegex = Regex("""\\h""")
+    private val defaultAssFormat = listOf(
+        "layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"
+    )
     private val htmlTagRegex = Regex("<[^>]+>")
 
 
@@ -391,28 +395,52 @@ object SubtitleParsers {
         return cleaned.trim().takeIf { it.isNotEmpty() }
     }
 
-    /** ASS/SSA（Dialogue: 0:00:01.00,0:00:04.00,...） */
+    /** ASS/SSA parser honors the Events Format declaration while preserving commas in Text. */
     fun parseAss(src: String): List<SubLine> = parseAss(src) {}
 
     internal fun parseAss(src: String, checkActive: () -> Unit): List<SubLine> {
         val out = mutableListOf<SubLine>()
+        var formatFields = defaultAssFormat
         for ((lineIndex, raw) in src.lineSequence().withIndex()) {
             if ((lineIndex and 0xff) == 0) checkActive()
             // Exporters are inconsistent about indentation and keyword casing.
-            val dialogue = raw.trimStart()
-            if (!dialogue.startsWith("Dialogue:", ignoreCase = true)) continue
-            val body = dialogue.substringAfter(':').trim()
-            val p = body.split(",").toMutableList()
-            if (p.size < 10) continue
+            val entry = raw.trimStart()
+            if (entry.startsWith("Format:", ignoreCase = true)) {
+                val candidate = entry.substringAfter(':')
+                    .split(',')
+                    .map { it.trim().lowercase(Locale.ROOT) }
+                // ASS/SSA requires Text to be the final event field; keeping that rule lets us
+                // preserve every comma that belongs to the subtitle body.
+                if (candidate.isNotEmpty() && candidate.lastOrNull() == "text" &&
+                    candidate.count { it == "start" } == 1 &&
+                    candidate.count { it == "end" } == 1 &&
+                    candidate.distinct().size == candidate.size
+                ) {
+                    formatFields = candidate
+                }
+                continue
+            }
+            if (!entry.startsWith("Dialogue:", ignoreCase = true)) continue
+            val body = entry.substringAfter(':').trim()
+            val p = body.split(',', ignoreCase = false, limit = formatFields.size)
+            if (p.size != formatFields.size) continue
+
+            val startIndex = formatFields.indexOf("start")
+            val endIndex = formatFields.indexOf("end")
+            val textIndex = formatFields.indexOf("text")
+            if (startIndex < 0 || endIndex < 0 || textIndex != formatFields.lastIndex) continue
             val times = runCatching {
-                parseAssTs(p[1].trim()) to parseAssTs(p[2].trim())
+                parseAssTs(p[startIndex].trim()) to parseAssTs(p[endIndex].trim())
             }.getOrNull() ?: continue
-            val (start, end) = times
-            if (start < 0L || end <= start) continue
+            val (startMs, endMs) = times
+            if (startMs < 0L || endMs <= startMs) continue
+
             val text = SubtitleTextDecoder.decode(
-                p.drop(9).joinToString(",").replace(assOverrideRegex, "").replace(assLinebreakRegex, "\n")
+                p[textIndex].replace(assOverrideRegex, "")
+                    .replace(assLinebreakRegex, "\n")
+                    .replace(assHardSpaceRegex, " ")
             ).trim()
-            if (text.isNotEmpty()) out += SubLine(out.size, start, end, text)
+            if (text.isNotEmpty()) out += SubLine(out.size, startMs, endMs, text)
         }
         return normalizeTimeline(out, checkActive)
     }
