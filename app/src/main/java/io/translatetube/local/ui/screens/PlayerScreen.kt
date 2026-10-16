@@ -1611,8 +1611,7 @@ private fun SubtitleList(
                     animationSpec = infiniteRepeatable(animation = tween(850), repeatMode = RepeatMode.Reverse),
                     label = "dubbingLineScale",
                 )
-                val translatedText = line.zh
-                    ?.let { SubtitleParsers.cleanTranslatedText(it) }
+                val translatedText = SubtitleParsers.preferredTranslationText(line)
                     ?.takeIf { it.isNotBlank() }
                     // SubtitleList is shown after processing reaches READY; don't leave stale progress text.
                     ?: "译文暂不可用"
@@ -1784,7 +1783,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)
         Phase.TRANSLATING -> progressRatio(state.progress)
             ?: if (state.totalLines > 0) {
-                (state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
+                (state.lines.count { SubtitleParsers.preferredTranslationText(it) != null }.toFloat() / state.totalLines).coerceIn(0f, 1f)
             } else null
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
