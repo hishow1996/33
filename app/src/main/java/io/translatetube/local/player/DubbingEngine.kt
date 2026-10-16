@@ -93,6 +93,8 @@ class DubbingEngine(
     // Completes only after every queued AudioTrack operation and the final track cleanup have drained.
     private val audioCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val readiness = DubbingReadiness()
+    // Serialize ready/pending mutations with contiguous-prefix progress publication.
+    private val readinessProgressLock = Any()
     private val pending = LinkedBlockingDeque<Int>()
     @Volatile private var priorityTarget = -1
     @Volatile private var synthJob: Job? = null
@@ -136,9 +138,11 @@ class DubbingEngine(
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
             _totalLines.value = this.lines.size
-            _preparedUntil.value = 0
-            _preparedCount.value = 0
-            readiness.clear()
+            synchronized(readinessProgressLock) {
+                _preparedUntil.value = 0
+                _preparedCount.value = 0
+                readiness.clear()
+            }
             pending.clear()
             priorityTarget = -1
             latestTimelineCursor = DubbingTimelineCursor()
@@ -185,7 +189,7 @@ class DubbingEngine(
                             // Remove this engine's now-unusable cache and avoid PCM inspection/TTS.
                             val invalidCache = cacheFile(i)
                             deleteCacheIfUnchanged(invalidCache, DubbingCacheFileStamp.capture(invalidCache))
-                            readiness.markPrepared(i, hasAudio = false)
+                            markCuePrepared(i, hasAudio = false)
                             continue
                         }
                         val file = cacheFile(i)
@@ -194,14 +198,14 @@ class DubbingEngine(
                         val blankTranslation = cue.zh.isNullOrBlank()
                         when {
                             blankTranslation && cacheHasAudio == false ->
-                                readiness.markPrepared(i, hasAudio = false)
+                                markCuePrepared(i, hasAudio = false)
                             blankTranslation && cacheHasAudio == true -> {
                                 // A blank translation must never reuse a non-empty cache entry.
                                 deleteCacheIfUnchanged(file, cacheInspection.stamp)
                                 pending.offerLast(i)
                             }
                             !blankTranslation && cacheHasAudio == true ->
-                                readiness.markPrepared(i, hasAudio = true)
+                                markCuePrepared(i, hasAudio = true)
                             !blankTranslation && cacheHasAudio == false -> {
                                 // Empty PCM from a failed old run isn't a successful cache hit.
                                 deleteCacheIfUnchanged(file, cacheInspection.stamp)
@@ -244,7 +248,7 @@ class DubbingEngine(
                             .forEach { pending.offerLast(it) }
                         this@DubbingEngine.lines.indices
                             .filterNot { DubbingTimeline.isPlayableCue(this@DubbingEngine.lines[it]) }
-                            .forEach { readiness.markPrepared(it, hasAudio = false) }
+                            .forEach { markCuePrepared(it, hasAudio = false) }
                         bumpPrepared()
                         startSynthLoop()
                     }
@@ -291,7 +295,7 @@ class DubbingEngine(
                 val idx = synchronized(pending) { pending.pollFirst() } ?: break
                 val line = lines.getOrNull(idx) ?: continue
                 if (!DubbingTimeline.isPlayableCue(line)) {
-                    readiness.markPrepared(idx, hasAudio = false)
+                    markCuePrepared(idx, hasAudio = false)
                     bumpPrepared()
                     continue
                 }
@@ -309,7 +313,7 @@ class DubbingEngine(
                 if (cachedAudioState != null) {
                     // A cache file is usable only after its header and exact payload length are
                     // validated. Preserve empty failure markers separately from corrupt entries.
-                    readiness.markPrepared(idx, hasAudio = cachedAudioState)
+                    markCuePrepared(idx, hasAudio = cachedAudioState)
                     if (!released && cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
                             val audioFromMemory = synchronized(mem) { mem[idx] }
@@ -355,7 +359,7 @@ class DubbingEngine(
                             e,
                         )
                     }
-                    readiness.markPrepared(idx, hasAudio = false)
+                    markCuePrepared(idx, hasAudio = false)
                     bumpPrepared()
                     continue
                 }
@@ -494,11 +498,11 @@ class DubbingEngine(
                         reportSynthesisError(
                             "第 ${idx + 1} 句已合成，但缓存写入失败，且该句音频超出可用内存缓存容量，无法安全播放。请释放存储空间后重试。"
                         )
-                        readiness.markPrepared(idx, hasAudio = false)
+                        markCuePrepared(idx, hasAudio = false)
                         bumpPrepared()
                         continue
                     }
-                    readiness.markPrepared(idx, hasAudio = true)
+                    markCuePrepared(idx, hasAudio = true)
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
                             onFirstSynthesisReady?.invoke(idx, boundedSamples.size, readyAudio.sampleRate)
@@ -518,14 +522,14 @@ class DubbingEngine(
                     if (requestTtsFallback(idx, detail)) {
                         // The asynchronous service callback will install the fallback and requeue
                         // this cue. Stop before synthesizing another line with the failed engine.
-                        readiness.markPrepared(idx, hasAudio = false)
+                        markCuePrepared(idx, hasAudio = false)
                         bumpPrepared()
                         continue
                     }
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：$detail")
                     // Do not persist a zero-sample marker for a failed synthesis. A transient
                     // service/voice failure should be retried in a future session, not cached as silence.
-                    readiness.markPrepared(idx, hasAudio = false)
+                    markCuePrepared(idx, hasAudio = false)
                     bumpPrepared()
                 }
             }
@@ -587,7 +591,7 @@ class DubbingEngine(
         // already-failed System TTS and could make the whole subtitle queue appear stuck.
         fallbackRequested.set(true)
         if (failedIndex in lines.indices) {
-            readiness.markPrepared(failedIndex, hasAudio = false)
+            markCuePrepared(failedIndex, hasAudio = false)
             bumpPrepared()
         }
         reportSynthesisError("系统 TTS 配音失败，自动切换备用引擎也未成功：$detail")
@@ -603,17 +607,30 @@ class DubbingEngine(
         }
     }
 
+    private fun markCuePrepared(idx: Int, hasAudio: Boolean) {
+        synchronized(readinessProgressLock) {
+            readiness.markPrepared(idx, hasAudio)
+            updateReadinessProgressLocked()
+        }
+    }
+
     private fun markCuePending(idx: Int) {
-        readiness.markPending(idx)
-        _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
-        // If a previously ready cue becomes invalid, progress must no longer claim that its
-        // contiguous prefix is complete. Later ready cues remain available independently.
-        if (idx >= 0 && idx < _preparedUntil.value) _preparedUntil.value = idx
+        synchronized(readinessProgressLock) {
+            readiness.markPending(idx)
+            _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
+            // A newly invalidated row breaks the contiguous prefix even when later rows are ready.
+            if (idx >= 0 && idx < _preparedUntil.value) _preparedUntil.value = idx
+        }
     }
 
     private fun bumpPrepared() {
-        // Keep both the contiguous prefix and the actual ready-cue count. The latter is used for
-        // progress after a seek prioritizes a later subtitle before an earlier gap is filled.
+        synchronized(readinessProgressLock) {
+            updateReadinessProgressLocked()
+        }
+    }
+
+    /** Caller holds readinessProgressLock so readiness and its published counters stay coherent. */
+    private fun updateReadinessProgressLocked() {
         _preparedCount.value = readiness.readyCount().coerceIn(0, lines.size)
         var n = _preparedUntil.value
         while (n < lines.size && readiness.isReady(n)) n++
@@ -908,10 +925,10 @@ class DubbingEngine(
                     throw java.io.IOException("PCM 缓存包含静音音频")
                 }
                 if (n == 0) {
-                    readiness.markPrepared(idx, hasAudio = false)
+                    markCuePrepared(idx, hasAudio = false)
                 } else {
                     synchronized(mem) { mem[idx] = samples to sr }
-                    readiness.markPrepared(idx, hasAudio = true)
+                    markCuePrepared(idx, hasAudio = true)
                 }
                 touchCacheFile(f, cacheStamp)
                 samples to sr
@@ -1208,7 +1225,7 @@ class DubbingEngine(
                                 ) return@execute
                                 android.util.Log.w("DubbingEngine", "Unable to advance long dubbing cue", error)
                                 val detail = error.message ?: error.javaClass.simpleName
-                                readiness.markPrepared(lineIndex, hasAudio = false)
+                                markCuePrepared(lineIndex, hasAudio = false)
                                 if (!requestTtsFallback(lineIndex, detail)) {
                                     reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
                                 }
@@ -1642,7 +1659,7 @@ class DubbingEngine(
                     ) return@execute
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
                     // The service sees this marker and restores original video audio.
-                    readiness.markPrepared(idx, hasAudio = false)
+                    markCuePrepared(idx, hasAudio = false)
                     val detail = e.message ?: e.javaClass.simpleName
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
                     if (!requestTtsFallback(idx, detail)) {
