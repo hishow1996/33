@@ -1017,6 +1017,12 @@ class DubbingEngine(
                             } catch (error: Exception) {
                                 if (track === sourceTrack) track = null
                                 runCatching { sourceTrack.release() }
+                                // A rapid seek/pause can invalidate this marker callback while a
+                                // following static chunk is being constructed. It is not a real
+                                // output failure and must not trigger fallback or UI error state.
+                                if (released || playbackGeneration.get() != generation ||
+                                    error is kotlinx.coroutines.CancellationException
+                                ) return@execute
                                 android.util.Log.w("DubbingEngine", "Unable to advance long dubbing cue", error)
                                 val detail = error.message ?: error.javaClass.simpleName
                                 readiness.markPrepared(lineIndex, hasAudio = false)
@@ -1173,7 +1179,11 @@ class DubbingEngine(
                     // Android 9/OEM AudioTrack implementations can reject common TTS rates such
                     // as 22.05/24 kHz in static mode. Normalize speech output to 16 kHz mono PCM
                     // before constructing a track; lower 8 kHz engines remain at their native rate.
-                    val outputPcm = DubbingOutputPcmPolicy.normalize(loaded.first, loaded.second)
+                    val outputPcm = DubbingOutputPcmPolicy.normalize(loaded.first, loaded.second) {
+                        if (released || playbackGeneration.get() != generation) {
+                            throw kotlinx.coroutines.CancellationException("配音输出准备已过期")
+                        }
+                    }
                     val samples = outputPcm.samples
                     val sr = outputPcm.sampleRate
                     if (samples.isEmpty() || released || playbackGeneration.get() != generation) return@execute
@@ -1343,9 +1353,15 @@ class DubbingEngine(
                     // reference before releasing it so volume/speed updates never target a dead track.
                     if (created != null && track === created) track = null
                     try { created?.release() } catch (_: Exception) {}
+                    // A seek or pause may retire this asynchronous request while normalization or
+                    // AudioTrack initialization is in progress. Never turn its stale exception
+                    // into a false TTS failure/fallback for the newly active cue.
+                    if (released || playbackGeneration.get() != generation ||
+                        e is kotlinx.coroutines.CancellationException
+                    ) return@execute
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
                     // The service sees this marker and restores original video audio.
-                    if (playbackGeneration.get() == generation) readiness.markPrepared(idx, hasAudio = false)
+                    readiness.markPrepared(idx, hasAudio = false)
                     val detail = e.message ?: e.javaClass.simpleName
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
                     if (!requestTtsFallback(idx, detail)) {

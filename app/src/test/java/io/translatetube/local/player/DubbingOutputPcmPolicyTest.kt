@@ -61,4 +61,34 @@ class DubbingOutputPcmPolicyTest {
         assertEquals(0.4f, normalized.samples.single(), 0.0001f)
     }
 
+    @Test
+    fun normalizationCanBeCancelledWhileScanningLargeLowRatePcm() {
+        val input = FloatArray(24_000) { 0.25f }
+        var checks = 0
+        val error = runCatching {
+            DubbingOutputPcmPolicy.normalize(input, 8_000) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("playback superseded")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(2, checks)
+    }
+
+    @Test
+    fun normalizationCanBeCancelledWhileDownSamplingHighRatePcm() {
+        val input = FloatArray(24_000) { 0.25f }
+        var checks = 0
+        val error = runCatching {
+            DubbingOutputPcmPolicy.normalize(input, 48_000) {
+                checks++
+                if (checks == 2) throw java.util.concurrent.CancellationException("playback superseded")
+            }
+        }.exceptionOrNull()
+
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertEquals(2, checks)
+    }
+
 }

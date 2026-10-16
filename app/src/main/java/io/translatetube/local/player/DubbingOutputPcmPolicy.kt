@@ -18,7 +18,12 @@ internal object DubbingOutputPcmPolicy {
     private const val MIN_SUPPORTED_RATE = 8_000
     private const val MAX_SUPPORTED_RATE = 192_000
 
-    fun normalize(samples: FloatArray, sampleRate: Int): DubbingOutputPcm {
+    fun normalize(
+        samples: FloatArray,
+        sampleRate: Int,
+        checkActive: () -> Unit = {},
+    ): DubbingOutputPcm {
+        checkActive()
         require(sampleRate in MIN_SUPPORTED_RATE..MAX_SUPPORTED_RATE) {
             "不支持的配音采样率：${sampleRate} Hz"
         }
@@ -29,7 +34,9 @@ internal object DubbingOutputPcmPolicy {
             // values, so sanitizing here also makes output consistent on devices that support
             // the float track.
             var needsSanitizing = false
-            for (sample in samples) {
+            for (index in samples.indices) {
+                if ((index and 0x1fff) == 0) checkActive()
+                val sample = samples[index]
                 if (!sample.isFinite() || sample < -1.0f || sample > 1.0f) {
                     needsSanitizing = true
                     break
@@ -37,6 +44,7 @@ internal object DubbingOutputPcmPolicy {
             }
             if (!needsSanitizing) return DubbingOutputPcm(samples, sampleRate)
             val sanitized = FloatArray(samples.size) { index ->
+                if ((index and 0x1fff) == 0) checkActive()
                 val sample = samples[index]
                 if (sample.isFinite()) sample.coerceIn(-1.0f, 1.0f) else 0.0f
             }
@@ -55,6 +63,7 @@ internal object DubbingOutputPcmPolicy {
         val output = FloatArray(outputCount)
         val scale = sampleRate.toDouble() / PREFERRED_SAMPLE_RATE
         for (index in output.indices) {
+            if ((index and 0x1fff) == 0) checkActive()
             val sourcePosition = index * scale
             val left = floor(sourcePosition).toInt().coerceIn(0, samples.lastIndex)
             val right = (left + 1).coerceAtMost(samples.lastIndex)
@@ -62,6 +71,7 @@ internal object DubbingOutputPcmPolicy {
             val interpolated = samples[left] * (1f - fraction) + samples[right] * fraction
             output[index] = if (interpolated.isFinite()) interpolated.coerceIn(-1f, 1f) else 0f
         }
+        checkActive()
         return DubbingOutputPcm(output, PREFERRED_SAMPLE_RATE)
     }
 }
