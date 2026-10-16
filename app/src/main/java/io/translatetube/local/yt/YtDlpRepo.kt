@@ -70,8 +70,8 @@ object YtDlpRepo {
     val updateState: StateFlow<UpdateState> = _updateState
 
     private val checkHttp = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -126,12 +126,24 @@ object YtDlpRepo {
         try {
             // 手动点击“检查更新”时也要先初始化本机运行时；否则 YoutubeDL.version()
             // 在尚未 init 的冷启动进程中会失败，造成“已获取最新版但无法读取本机版本”。
-            if (force) ensureReady(appCtx)
+            if (force) {
+                try {
+                    ensureReady(appCtx)
+                } catch (initError: kotlinx.coroutines.CancellationException) {
+                    throw initError
+                } catch (initError: Exception) {
+                    _updateState.value = _updateState.value.copy(
+                        checking = false,
+                        error = "本机 yt-dlp 运行时初始化失败（${initError.message ?: "存储或解包异常"}），请确认手机存储空间充足后重试",
+                    )
+                    return@withContext
+                }
+            }
             val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
             val latestKnown = fetchLatestReleaseTag() ?: run {
                 _updateState.value = _updateState.value.copy(
                     checking = false,
-                    error = "无法获取上游最新版：GitHub 版本接口、发布页和 PyPI 均未返回有效版本号，请检查网络或代理设置后重试",
+                    error = "无法获取上游最新版：已尝试阿里云/腾讯镜像与 GitHub、PyPI 官方源，均未返回有效版本号，请检查网络后重试",
                 )
                 return@withContext
             }
@@ -184,6 +196,32 @@ object YtDlpRepo {
      * 显式设置 User-Agent：GitHub REST API 对缺少该请求头的客户端可能拒绝请求。
      */
     private fun fetchLatestReleaseTag(): String? {
+        // 国内网络（GitHub/PyPI 官方源常不可达）优先走阿里云镜像（同步及时、手机直连快），
+        // 腾讯镜像作为第二备选；两者与 PyPI 官方 JSON 结构一致。
+        fetchVersionText(
+            url = "https://mirrors.aliyun.com/pypi/web/pypi/yt-dlp/json",
+            accept = "application/json",
+            maxBytes = MAX_PYPI_METADATA_BYTES,
+            source = "Aliyun PyPI 镜像",
+        )?.let { json ->
+            val version = runCatching {
+                JSONObject(json).optJSONObject("info")?.optString("version")
+                    ?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+            }.getOrNull()
+            if (version != null) return version
+        }
+        fetchVersionText(
+            url = "https://mirrors.cloud.tencent.com/pypi/yt-dlp/json",
+            accept = "application/json",
+            maxBytes = MAX_PYPI_METADATA_BYTES,
+            source = "Tencent PyPI 镜像",
+        )?.let { json ->
+            val version = runCatching {
+                JSONObject(json).optJSONObject("info")?.optString("version")
+                    ?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+            }.getOrNull()
+            if (version != null) return version
+        }
         fetchVersionText(
             url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
             accept = "application/vnd.github+json",
@@ -423,8 +461,9 @@ object YtDlpRepo {
      * 下载量约 30MB，由用户显式触发。返回用户可读的结果文案。
      */
     suspend fun updateRules(ctx: Context): String = withContext(Dispatchers.IO) {
-        ensureReady(ctx)
         val appCtx = ctx.applicationContext
+        try {
+        ensureReady(ctx)
         val message = when (YoutubeDL.updateYoutubeDL(appCtx, YoutubeDL.UpdateChannel.STABLE)) {
             YoutubeDL.UpdateStatus.DONE -> "yt-dlp 解析规则已更新到最新版，可重试解析"
             YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp 解析规则已是最新版；失败可能是站点限制或网络问题"
@@ -444,6 +483,12 @@ object YtDlpRepo {
             lastCheckMs = _updateState.value.lastCheckMs,
         )
         message
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 更新包托管在 GitHub Releases：国内网络直连可能不可达，失败时如实说明。
+            "yt-dlp 更新失败：下载源（GitHub）当前不可达或网络中断，可稍后重试；若持续失败请检查网络后从 Wi-Fi 环境操作。"
+        }
     }
 
     /** 解析结果：可直接交给播放器的媒体地址 + 必要的请求头。 */
