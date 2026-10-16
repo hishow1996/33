@@ -3294,14 +3294,21 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             extractor.selectTrack(chosen)
             val buffer = java.nio.ByteBuffer.allocateDirect(2 * 1024 * 1024)
             val info = android.media.MediaCodec.BufferInfo()
+            var extractedSampleBytes = 0L
             withContext(Dispatchers.IO) {
                 while (true) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     awaitResume()
                     val size = extractor.readSampleData(buffer, 0)
                     if (size < 0) break
+                    if (!AsrAudioCachePolicy.canAppendBytes(extractedSampleBytes, size.toLong())) {
+                        throw IllegalStateException(
+                            "提取出的网页音轨超过 160 MB 缓存上限，已停止处理以保护手机存储。"
+                        )
+                    }
                     info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
                     muxer.writeSampleData(muxerTrack, buffer, info)
+                    extractedSampleBytes += size.toLong()
                     if (size > 0 && mediaDurationUs > 0L) {
                         val nextPercent = io.translatetube.local.asr.MediaTimelineProgressPolicy.nextPercent(
                             positionUs = info.presentationTimeUs,
@@ -3319,7 +3326,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             muxer.stop()
             muxer.release()
             muxer = null
-            if (work.length() <= 0L) throw IllegalStateException("流式提取没有产出音频数据")
+            if (!AsrAudioCachePolicy.isCompleteDownload(-1L, work.length())) {
+                throw IllegalStateException(
+                    "提取出的音轨为空或超过 160 MB 缓存上限；已停止处理以保护手机存储。"
+                )
+            }
             if (!work.renameTo(destination)) {
                 work.copyTo(destination, overwrite = true)
                 work.delete()

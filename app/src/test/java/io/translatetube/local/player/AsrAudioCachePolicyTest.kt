@@ -29,6 +29,19 @@ class AsrAudioCachePolicyTest {
     }
 
     @Test
+    fun guardsAudioWritesAtTheCacheLimitWithoutLongOverflow() {
+        val maxBytes = AsrAudioCachePolicy.MAX_AUDIO_BYTES
+        assertTrue(AsrAudioCachePolicy.canAppendBytes(0L, 1L))
+        assertTrue(AsrAudioCachePolicy.canAppendBytes(maxBytes - 1L, 1L))
+        assertTrue(AsrAudioCachePolicy.canAppendBytes(maxBytes, 0L))
+        assertFalse(AsrAudioCachePolicy.canAppendBytes(maxBytes, 1L))
+        assertFalse(AsrAudioCachePolicy.canAppendBytes(maxBytes - 1L, 2L))
+        assertFalse(AsrAudioCachePolicy.canAppendBytes(-1L, 1L))
+        assertFalse(AsrAudioCachePolicy.canAppendBytes(0L, -1L))
+        assertFalse(AsrAudioCachePolicy.canAppendBytes(maxBytes, Long.MAX_VALUE))
+    }
+
+    @Test
     fun onlyPrunesPartialsOlderThanGracePeriodWithSaneTimestamps() {
         val now = 10_000_000_000L
         assertTrue(

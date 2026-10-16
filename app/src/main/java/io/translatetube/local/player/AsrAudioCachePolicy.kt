@@ -18,6 +18,12 @@ internal object AsrAudioCachePolicy {
         return nowMs - lastModifiedMs <= TTL_MS
     }
 
+    /** Checks a future write before addition so untrusted sample sizes cannot overflow Long. */
+    fun canAppendBytes(currentBytes: Long, appendBytes: Long): Boolean =
+        currentBytes in 0L..MAX_AUDIO_BYTES &&
+            appendBytes >= 0L &&
+            appendBytes <= MAX_AUDIO_BYTES - currentBytes
+
     /** Only -1 means unknown to OkHttp; other negative lengths are invalid metadata. */
     fun isCompleteDownload(expectedBytes: Long, actualBytes: Long): Boolean =
         actualBytes in 1L..MAX_AUDIO_BYTES &&
