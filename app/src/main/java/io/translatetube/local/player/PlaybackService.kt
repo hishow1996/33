@@ -1621,12 +1621,24 @@ class PlaybackService : MediaSessionService() {
                 val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
                 if (missingLocalModel || missingCloudKey) {
                     val hint = when (asrProvider) {
-                        "local" -> "该视频无字幕。请在设置 → 模型管理中下载本地 Whisper 转写模型。"
-                        "elevenlabs" -> "已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎中填写 API Key。"
-                        "cartesia" -> "已选择 Cartesia 云端转写，请先在设置 → 转写引擎中填写 API Key。"
-                        else -> "已选择 Kawa 云端转写，请先在设置 → 转写引擎中填写 API Key。"
+                        "local" -> "该视频无字幕。请在设置 → 模型管理中下载本地 Whisper 转写模型；安装后重新打开本视频，将自动转写并生成翻译配音。"
+                        "elevenlabs" -> "已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎中填写 API Key；填写后重新打开本视频自动转写。"
+                        "cartesia" -> "已选择 Cartesia 云端转写，请先在设置 → 转写引擎中填写 API Key；填写后重新打开本视频自动转写。"
+                        else -> "已选择 Kawa 云端转写，请先在设置 → 转写引擎中填写 API Key；填写后重新打开本视频自动转写。"
                     }
-                    updateUiForSession(key) { it.copy(noModelHint = hint) }
+                    // 诚实的进度状态：转写引擎未就绪时步骤条停在「下载或读取字幕」一步，
+                    // 不显示虚假的「翻译/配音完成」。视频播放不受影响。
+                    updateUiForSession(key) {
+                        it.copy(
+                            noModelHint = hint,
+                            phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
+                            progress = if (asrProvider == "local") {
+                                "该视频无字幕：等待本地转写模型安装（设置 → 模型管理）"
+                            } else {
+                                "该视频无字幕：等待云端转写 API Key 配置（设置 → 转写引擎）"
+                            },
+                        )
+                    }
                 } else {
                 // ---- 2b. 无字幕 → 本地转写 ----
                 awaitProcessingResumed(key)
@@ -2300,7 +2312,15 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             ensureCurrentSession(key)
             saveHistory(meta)
             ensureCurrentSession(key)
-            updateUiForSession(key) { it.copy(phase = Phase.READY, engineName = it.engineName.ifEmpty { "本地引擎" }) }
+            updateUiForSession(key) {
+                it.copy(
+                    phase = Phase.READY,
+                    engineName = it.engineName.ifEmpty { "本地引擎" },
+                    progress = it.noModelHint?.let { hint ->
+                        "视频可正常播放；字幕与配音等待转写引擎就绪（详见播放页提示）"
+                    } ?: "",
+                )
+            }
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
             val resumeSec = try {
                 db.videoDao().byKey(key)?.watchedSec ?: 0L

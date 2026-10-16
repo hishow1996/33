@@ -687,13 +687,18 @@ private fun VideoParsingPage(
     onImportTranslatedSubtitles: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
 ) {
-    val currentStage = when (state.phase) {
-        Phase.IDLE, Phase.PARSING, Phase.ERROR -> 0
-        Phase.DOWNLOADING_AUDIO -> 1
-        Phase.TRANSCRIBING -> 2
-        Phase.TRANSLATING -> 3
-        Phase.SYNTHESIZING -> 4
-        Phase.READY -> 5
+    val currentStage = run {
+        val stage = when (state.phase) {
+            Phase.IDLE, Phase.PARSING, Phase.ERROR -> 0
+            Phase.DOWNLOADING_AUDIO -> 1
+            Phase.TRANSCRIBING -> 2
+            Phase.TRANSLATING -> 3
+            Phase.SYNTHESIZING -> 4
+            Phase.READY -> 5
+        }
+        // 转写引擎未就绪（模型/Key 缺失）：步骤条最多走到「下载或读取字幕」，
+        // 翻译/配音步骤不点亮，避免「一秒全完成」的假进度。
+        if (state.noModelHint != null) minOf(stage, 2) else stage
     }
     val steps = listOf("获取视频信息", "解析视频资源", "下载或读取字幕", "翻译字幕", "生成配音")
     val fraction = when (state.phase) {
@@ -703,6 +708,7 @@ private fun VideoParsingPage(
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
     val mainTitle = when {
+        state.noModelHint != null && state.phase != Phase.ERROR -> "等待转写引擎就绪"
         state.isProcessingPaused -> "处理已暂停"
         state.phase == Phase.ERROR -> "视频处理失败"
         state.phase == Phase.PARSING -> "正在处理视频"
@@ -712,7 +718,9 @@ private fun VideoParsingPage(
         state.phase == Phase.SYNTHESIZING -> "正在生成配音"
         else -> "正在准备视频"
     }
-    val detail = if (state.isProcessingPaused) "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复下载或解析" } else state.progress.ifBlank {
+    val detail = if (state.noModelHint != null && state.phase != Phase.ERROR) {
+        state.noModelHint ?: state.progress
+    } else if (state.isProcessingPaused) "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复下载或解析" } else state.progress.ifBlank {
         when (state.phase) {
             Phase.ERROR -> state.error ?: "处理失败，请重试或导入字幕文件"
             Phase.PARSING -> "正在获取视频信息和可用字幕"
