@@ -211,6 +211,20 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
+    init {
+        // StateFlow starts from NOT_DOWNLOADED, but models survive process restarts. Reconcile
+        // persisted status against the same file checks used by the playback engines so the
+        // settings page and foreground notification agree before another task is started.
+        _tts.value = ModelState(
+            status = ModelAvailabilityPolicy.initialStatus(runCatching { ModelFiles.ttsReady(ctx) }.getOrDefault(false)),
+            progress = if (runCatching { ModelFiles.ttsReady(ctx) }.getOrDefault(false)) 100 else 0,
+        )
+        _asr.value = ModelState(
+            status = ModelAvailabilityPolicy.initialStatus(runCatching { ModelFiles.asrReady(ctx) }.getOrDefault(false)),
+            progress = if (runCatching { ModelFiles.asrReady(ctx) }.getOrDefault(false)) 100 else 0,
+        )
+    }
+
     /**
      * OkHttp's synchronous execute/read calls can block a worker even after its coroutine is
      * cancelled. Attach to the Job's cancelling transition so cancellation closes the socket
