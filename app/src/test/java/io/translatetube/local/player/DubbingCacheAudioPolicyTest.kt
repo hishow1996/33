@@ -21,8 +21,8 @@ class DubbingCacheAudioPolicyTest {
     @Test
     fun cacheAudioMustMatchWhetherTheCueHasTranslatedText() {
         assertEquals(true, DubbingCacheAudioPolicy.isCompatibleWithTranslation(true, "你好"))
-        assertEquals(false, DubbingCacheAudioPolicy.isCompatibleWithTranslation(false, "   "))
-        assertEquals(false, DubbingCacheAudioPolicy.isCompatibleWithTranslation(false, null))
+        assertEquals(true, DubbingCacheAudioPolicy.isCompatibleWithTranslation(false, "   "))
+        assertEquals(true, DubbingCacheAudioPolicy.isCompatibleWithTranslation(false, null))
         assertEquals(false, DubbingCacheAudioPolicy.isCompatibleWithTranslation(true, ""))
         assertEquals(false, DubbingCacheAudioPolicy.isCompatibleWithTranslation(true, null))
     }
