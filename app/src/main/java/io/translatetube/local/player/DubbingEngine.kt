@@ -995,11 +995,15 @@ class DubbingEngine(
                                     runCatching { sourceTrack.release() }
                                     return@execute
                                 }
-                                val nextEnd = nextStaticChunkEnd(nextStart, samples.size)
-                                createdNextTrack = createFilledAudioTrack(
-                                    samples.copyOfRange(nextStart, nextEnd),
-                                    sampleRate,
+                                val requestedNextEnd = nextStaticChunkEnd(nextStart, samples.size)
+                                val createdChunk = createStaticChunkWithFallback(
+                                    samples = samples,
+                                    startSample = nextStart,
+                                    requestedEndSample = requestedNextEnd,
+                                    sampleRate = sampleRate,
                                 )
+                                createdNextTrack = createdChunk.track
+                                val nextEnd = createdChunk.endSample
                                 // The user can pause or seek while AudioTrack construction blocks.
                                 // Revalidate ownership before publishing or starting the new track.
                                 if (!DubbingChunkTransitionPolicy.canCommit(
@@ -1073,6 +1077,61 @@ class DubbingEngine(
             Handler(Looper.getMainLooper()),
         )
         sourceTrack.setNotificationMarkerPosition(chunkEndSample - chunkStartSample)
+    }
+
+    private data class CreatedStaticChunk(
+        val track: AudioTrack,
+        val startSample: Int,
+        val endSample: Int,
+    )
+
+    /**
+     * If this device rejects a large static buffer in every PCM encoding, retry shorter chunks.
+     * The actual end is returned because marker callbacks must match samples installed in the track.
+     */
+    private fun createStaticChunkWithFallback(
+        samples: FloatArray,
+        startSample: Int,
+        requestedEndSample: Int,
+        sampleRate: Int,
+    ): CreatedStaticChunk {
+        require(startSample >= 0 && requestedEndSample > startSample &&
+            requestedEndSample <= samples.size
+        ) { "配音静态缓冲区范围无效" }
+        val requestedCount = requestedEndSample - startSample
+        val candidates = AudioTrackChunkPolicy.candidateSampleCounts(requestedCount)
+        var lastError: Exception? = null
+        for (count in candidates) {
+            val endSample = startSample + count
+            try {
+                val createdTrack = createFilledAudioTrack(
+                    samples.copyOfRange(startSample, endSample),
+                    sampleRate,
+                )
+                if (count != requestedCount) {
+                    android.util.Log.w(
+                        "DubbingEngine",
+                        "AudioTrack accepted reduced static buffer: requested=$requestedCount, actual=$count",
+                    )
+                }
+                return CreatedStaticChunk(createdTrack, startSample, endSample)
+            } catch (error: Exception) {
+                if (lastError == null) {
+                    lastError = error
+                } else {
+                    lastError.addSuppressed(error)
+                }
+                android.util.Log.w(
+                    "DubbingEngine",
+                    "Static AudioTrack failed for $count samples at ${sampleRate}Hz; trying smaller buffer",
+                    error,
+                )
+            }
+        }
+        throw IllegalStateException(
+            AudioTrackChunkPolicy.failureMessage(sampleRate, candidates, lastError?.message),
+            lastError,
+        )
     }
 
     private fun createFilledAudioTrack(samples: FloatArray, sampleRate: Int): AudioTrack {
@@ -1244,8 +1303,15 @@ class DubbingEngine(
                     }
 
                     var chunkStart = 0
-                    var chunkEnd = nextStaticChunkEnd(chunkStart, playbackSamples.size)
-                    var newTrack = createFilledAudioTrack(playbackSamples.copyOfRange(chunkStart, chunkEnd), sr)
+                    val requestedFirstEnd = nextStaticChunkEnd(chunkStart, playbackSamples.size)
+                    val firstChunk = createStaticChunkWithFallback(
+                        samples = playbackSamples,
+                        startSample = chunkStart,
+                        requestedEndSample = requestedFirstEnd,
+                        sampleRate = sr,
+                    )
+                    var chunkEnd = firstChunk.endSample
+                    var newTrack = firstChunk.track
                     created = newTrack
                     if (released || playbackGeneration.get() != generation) {
                         newTrack.release()
@@ -1262,12 +1328,16 @@ class DubbingEngine(
                         val oldTrack = newTrack
                         try { oldTrack.pause(); oldTrack.flush(); oldTrack.release() } catch (_: Exception) {}
                         chunkStart = startSample.coerceIn(0, playbackSamples.size)
-                        chunkEnd = nextStaticChunkEnd(chunkStart, playbackSamples.size)
-                        if (chunkEnd <= chunkStart) throw IllegalStateException("配音分段长度无效")
-                        newTrack = createFilledAudioTrack(
-                            playbackSamples.copyOfRange(chunkStart, chunkEnd),
-                            sr,
+                        val requestedEnd = nextStaticChunkEnd(chunkStart, playbackSamples.size)
+                        if (requestedEnd <= chunkStart) throw IllegalStateException("配音分段长度无效")
+                        val createdChunk = createStaticChunkWithFallback(
+                            samples = playbackSamples,
+                            startSample = chunkStart,
+                            requestedEndSample = requestedEnd,
+                            sampleRate = sr,
                         )
+                        newTrack = createdChunk.track
+                        chunkEnd = createdChunk.endSample
                         created = newTrack
                         if (track === oldTrack) track = newTrack
                         newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
