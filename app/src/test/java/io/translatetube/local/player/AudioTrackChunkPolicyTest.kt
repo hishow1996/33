@@ -32,7 +32,7 @@ class AudioTrackChunkPolicyTest {
             listOf(24_000, 12_000, 6_000, 3_000, 1_500, 750, 512),
             "legacy initialization returned false",
         )
-        assertTrue(message.contains("24,000, 12,000, 6,000, 3,000, 2,048"))
+        assertTrue(message.contains("24,000, 12,000, 6,000, 3,000, 1,500, 750, 512"))
         assertTrue(message.contains("24000Hz"))
         assertTrue(message.contains("legacy initialization"))
     }
