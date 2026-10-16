@@ -690,6 +690,8 @@ private fun PiperModelSection() {
     val scope = rememberCoroutineScope()
     var busyId by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf(0f) }
+    var piperStage by remember { mutableStateOf("准备下载…") }
+    var piperDownloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         if (prefs.getString("piper_model", null) != selected) {
@@ -742,27 +744,40 @@ private fun PiperModelSection() {
                             modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
                             color = BrandBright,
                         )
+                        Text(
+                            "${(progress * 100f).toInt().coerceIn(0, 100)}% · $piperStage",
+                            color = SubText,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                     isInstalled -> Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelSmall)
                     else -> Text("未下载", color = SubText, style = MaterialTheme.typography.labelSmall)
                 }
             }
-            if (!isInstalled && busyId == null) {
+            if (busyId == def.id) {
+                TextButton(onClick = { piperDownloadJob?.cancel() }) { Text("取消") }
+            } else if (!isInstalled && busyId == null) {
                 TextButton(onClick = {
                     busyId = def.id
                     progress = 0f
+                    piperStage = "正在启动下载…"
                     error = null
-                    scope.launch {
+                    piperDownloadJob = scope.launch {
                         try {
                             io.translatetube.local.tts.PiperModels.download(
                                 ctx.applicationContext,
                                 def.id,
                                 onProgress = { p -> progress = (p / 100f).coerceIn(0f, 1f) },
+                                onStage = { stage -> piperStage = stage },
                             )
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            error = "${def.langLabel}下载已取消"
+                            throw cancelled
                         } catch (e: Exception) {
                             error = "${def.langLabel}下载失败：${e.message ?: "未知错误"}"
                         } finally {
                             busyId = null
+                            piperDownloadJob = null
                         }
                     }
                 }) { Text("下载") }

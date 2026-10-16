@@ -125,6 +125,8 @@ data class PiperModelDef(
     val sizeMB: Int,
     /** The current translation pipeline speaks Chinese, so only these models are compatible. */
     val supportsChineseOutput: Boolean = false,
+    /** SHA-256 published by the upstream GitHub release API; null only when upstream omits it. */
+    val archiveSha256: String? = null,
 )
 
 /** Piper 模型清单、安装状态与下载解压管理。 */
@@ -133,25 +135,29 @@ object PiperModels {
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 
     val catalog: List<PiperModelDef> = listOf(
-        PiperModelDef("en_us_amy_low", "英语(美)", "Amy 女声", "vits-piper-en_US-amy-low.tar.bz2", 64),
-        PiperModelDef("en_us_lessac_medium", "英语(美)", "Lessac 女声·高清", "vits-piper-en_US-lessac-medium.tar.bz2", 121),
-        PiperModelDef("en_gb_alba_medium", "英语(英)", "Alba 女声", "vits-piper-en_GB-alba-medium.tar.bz2", 122),
-        PiperModelDef("fr_siwis_low", "法语", "Siwis 女声", "vits-piper-fr_FR-siwis-low.tar.bz2", 63),
-        PiperModelDef("de_thorsten_low", "德语", "Thorsten 男声", "vits-piper-de_DE-thorsten-low.tar.bz2", 63),
-        PiperModelDef("es_mls_10246_low", "西班牙语", "MLS 女声", "vits-piper-es_ES-mls_10246-low.tar.bz2", 63),
-        PiperModelDef("ru_irina_medium", "俄语", "Irina 女声", "vits-piper-ru_RU-irina-medium.tar.bz2", 122),
-        PiperModelDef("it_riccardo_xlow", "意大利语", "Riccardo 男声", "vits-piper-it_IT-riccardo-x_low.tar.bz2", 28),
-        PiperModelDef("pt_edresson_low", "葡萄牙语(巴西)", "Edresson 男声", "vits-piper-pt_BR-edresson-low.tar.bz2", 63),
-        PiperModelDef("pl_darkman_medium", "波兰语", "Darkman 男声", "vits-piper-pl_PL-darkman-medium.tar.bz2", 122),
-        PiperModelDef("uk_ukrainian_tts", "乌克兰语", "Ukrainian-TTS 女声", "vits-uk_UA-ukrainian_tts-medium.tar.bz2", 120),
-        PiperModelDef("fa_amir_medium", "波斯语", "Amir 男声", "vits-piper-fa_IR-amir-medium.tar.bz2", 122),
+        PiperModelDef("en_us_amy_low", "英语(美)", "Amy 女声", "vits-piper-en_US-amy-low.tar.bz2", 64, archiveSha256 = "c70f5284a09a7fd4ed203b39b2ff51cac1432b422b852eb647b481dade3cf639"),
+        PiperModelDef("en_us_lessac_medium", "英语(美)", "Lessac 女声·高清", "vits-piper-en_US-lessac-medium.tar.bz2", 64, archiveSha256 = "9e3febfacf0abf4270172d2958bcec246032b7e88efc2720840cc80c93de334e"),
+        PiperModelDef("en_gb_alba_medium", "英语(英)", "Alba 女声", "vits-piper-en_GB-alba-medium.tar.bz2", 64, archiveSha256 = "fcd45962906933eec4431d3688f7d74aaac8713c87c6717f91fd3b23463aa1a1"),
+        PiperModelDef("fr_siwis_low", "法语", "Siwis 女声", "vits-piper-fr_FR-siwis-low.tar.bz2", 26, archiveSha256 = "3d69170c160c8375c4123901a72a3845222b39456d39ab74f5bbd7310952b5af"),
+        PiperModelDef("de_thorsten_low", "德语", "Thorsten 男声", "vits-piper-de_DE-thorsten-low.tar.bz2", 64, archiveSha256 = "41fab35910fdcec4696b031951d8fd6c262e594cf77b35e1068fadbeb5a091a6"),
+        PiperModelDef("es_mls_10246_low", "西班牙语", "DaveFX 音色", "vits-piper-es_ES-davefx-medium.tar.bz2", 64, archiveSha256 = "a3f6beb54a9cb893279f72978a22f807a4d9fc9c7848157b524d5cc7b7f58b22"),
+        PiperModelDef("ru_irina_medium", "俄语", "Irina 女声", "vits-piper-ru_RU-irina-medium.tar.bz2", 64, archiveSha256 = "1fc0f54e5e084fe287c07909f2f6e0ba6d857864cf800e3ab80286a4e8233008"),
+        PiperModelDef("it_riccardo_xlow", "意大利语", "Riccardo 男声", "vits-piper-it_IT-riccardo-x_low.tar.bz2", 26, archiveSha256 = "8ad0791558ae2b3e96054fc5756ae3ae2f6457fb1765bc01f43bbab85e0a7021"),
+        PiperModelDef("pt_edresson_low", "葡萄牙语(巴西)", "Edresson 男声", "vits-piper-pt_BR-edresson-low.tar.bz2", 64, archiveSha256 = "670569e755cc48cda0a2f6a3ccba0698815566297069961edcd5f7daaf3d47a5"),
+        PiperModelDef("pl_darkman_medium", "波兰语", "Darkman 男声", "vits-piper-pl_PL-darkman-medium.tar.bz2", 64, archiveSha256 = "444727aa46eb6db645a2bc88fe73868e4bd7596b7f56ca39fad5ef53c41210d4"),
+        PiperModelDef("uk_ukrainian_tts", "乌克兰语", "Ukrainian-TTS 女声", "vits-piper-uk_UA-ukrainian_tts-medium.tar.bz2", 77, archiveSha256 = "92be6ff21ebb1cbcc0c71121a6437db8d060cee5785287aaa6a19a2548f59c03"),
+        PiperModelDef("fa_amir_medium", "波斯语", "Amir 男声", "vits-piper-fa_IR-amir-medium.tar.bz2", 64, archiveSha256 = "46af65c1cdd86ec300db3998f2bf31a68d9e38da930c0655c1ff6f610e84f864"),
         PiperModelDef(
             "zh_cn_chaowen_medium", "中文", "超文女声",
-            "vits-piper-zh_CN-chaowen-medium.tar.bz2", 64, supportsChineseOutput = true,
+            "vits-piper-zh_CN-chaowen-medium.tar.bz2", 58,
+            supportsChineseOutput = true,
+            archiveSha256 = "1b69bdcf10bb6331c7f8a7591940febeb175c6bb86caa3802d96531f8e4ad211",
         ),
         PiperModelDef(
             "zh_cn_xiao_ya_medium", "中文", "晓雅女声",
-            "vits-piper-zh_CN-xiao_ya-medium.tar.bz2", 64, supportsChineseOutput = true,
+            "vits-piper-zh_CN-xiao_ya-medium.tar.bz2", 58,
+            supportsChineseOutput = true,
+            archiveSha256 = "9396a3dffbb95b037acaa18094500f58d0db9a7c4f2689554e2539717cf0db65",
         ),
     )
 
@@ -216,8 +222,14 @@ object PiperModels {
         id: String,
         onProgress: (Int) -> Unit,
         checkActive: () -> Unit = {},
+        onStage: (String) -> Unit = {},
     ) {
         val def = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
+        val callingJob = currentCoroutineContext()[Job]
+        val guardedCheck = {
+            checkActive()
+            callingJob?.ensureActive()
+        }
         synchronized(activeDownloadLock) {
             activeDownloadRequests++
             _activeDownloadCount.value = activeDownloadRequests
@@ -226,7 +238,8 @@ object PiperModels {
             // Archive and extraction paths are deterministic. Serialize installs to avoid
             // concurrent callers truncating the same download or deleting each other's staging dir.
             installMutex.withLock {
-                download(ctx, def, onProgress, checkActive)
+                guardedCheck()
+                download(ctx, def, onProgress, onStage, guardedCheck)
             }
         } finally {
             synchronized(activeDownloadLock) {
@@ -240,6 +253,7 @@ object PiperModels {
         ctx: Context,
         def: PiperModelDef,
         onProgress: (Int) -> Unit,
+        onStage: (String) -> Unit,
         checkActive: () -> Unit,
     ): Unit = withContext(Dispatchers.IO) {
         checkActive()
@@ -301,54 +315,30 @@ object PiperModels {
                 throw java.io.IOException("无法清理上次未完成的 Piper 下载文件")
             }
 
-            val request = Request.Builder().url("$BASE/${def.archive}").build()
-            val ownerJob = currentCoroutineContext()[Job]
-            executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
-                if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
-                    throw java.io.IOException("Piper 模型下载需要完整 HTTP 200 响应，收到 HTTP ${response.code}")
-                }
-                val body = response.body ?: throw java.io.IOException("模型下载失败：空响应")
-                val total = body.contentLength()
-                if (!HttpDownloadResponsePolicy.isValidExpectedLength(total, MAX_ARCHIVE_BYTES)) {
-                    throw java.io.IOException("Piper 模型压缩包响应声明的大小无效或超过 256 MB 安全上限")
-                }
-                var done = 0L
-                body.byteStream().use { input ->
-                    FileOutputStream(archive).use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            checkActive()
-                            ownerJob?.ensureActive()
-                            val n = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
-                            if (n < 0) break
-                            if (!PiperModelFilePolicy.isWithinLimit(done, n.toLong(), MAX_ARCHIVE_BYTES)) {
-                                throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
-                            }
-                            done += n
-                            output.write(buffer, 0, n)
-                            if (total > 0L) {
-                                onProgress(((done * 100L) / total).toInt().coerceIn(0, 99))
-                            }
-                        }
-                        output.fd.sync()
-                    }
-                }
-                if (!HttpDownloadResponsePolicy.isCompletePayload(total, done, MAX_ARCHIVE_BYTES)) {
-                    throw java.io.IOException("Piper 模型下载不完整或大小异常：预期 ${total} 字节，实际 ${done} 字节")
-                }
-            }
+            downloadArchiveWithFallback(
+                archive = archive,
+                definition = def,
+                onProgress = onProgress,
+                onStage = onStage,
+                checkActive = checkActive,
+            )
 
             checkActive()
             if (staging.exists() && !staging.deleteRecursively()) {
                 throw java.io.IOException("无法清理上次未完成的 Piper 解压目录")
             }
             if (!staging.mkdirs()) throw java.io.IOException("无法创建 Piper 临时解压目录")
+            onProgress(70)
+            onStage("正在解压并校验 Piper 模型…")
 
-            extractArchive(archive, staging, checkActive)
+            extractArchive(archive, staging, checkActive) { extractedBytes ->
+                onStage("正在解压并安装模型（已处理 ${extractedBytes / (1024L * 1024L)} MB）…")
+            }
             if (!complete(staging, def)) {
                 throw java.io.IOException("Piper 模型包不完整：ONNX（至少 1 MB）、tokens.txt 及所需语言资源均须完整")
             }
             checkActive()
+            onStage("模型文件校验通过，正在安装…")
 
             val hadDestination = dest.exists()
             if (hadDestination && !dest.renameTo(backup)) {
@@ -365,6 +355,7 @@ object PiperModels {
             }
             if (backup.exists()) runCatching { backup.deleteRecursively() }
             onProgress(100)
+            onStage("Piper 模型已就绪")
             refreshInstalled(ctx)
         } catch (error: Exception) {
             // Never delete the published model on a failed download or extraction. Only staging is disposable.
@@ -375,16 +366,107 @@ object PiperModels {
         }
     }
 
+    /**
+     * Try the official release first, then mirrors. Each source uses a disposable archive file;
+     * HTTP, length, or checksum failures remove partial bytes before the next attempt.
+     */
+    private suspend fun downloadArchiveWithFallback(
+        archive: File,
+        definition: PiperModelDef,
+        onProgress: (Int) -> Unit,
+        onStage: (String) -> Unit,
+        checkActive: () -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        val urls = PiperDownloadSourcePolicy.urls("$BASE/${definition.archive}")
+        if (urls.isEmpty()) throw java.io.IOException("Piper 模型下载地址为空")
+        var lastError: Exception? = null
+        for ((sourceIndex, url) in urls.withIndex()) {
+            checkActive()
+            onProgress(0)
+            onStage(
+                if (sourceIndex == 0) "正在连接 Piper 官方模型源…"
+                else "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
+            )
+            runCatching { if (archive.exists()) archive.delete() }
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "Mozilla/5.0")
+                    .build()
+                val ownerJob = currentCoroutineContext()[Job]
+                val digest = definition.archiveSha256?.let {
+                    java.security.MessageDigest.getInstance("SHA-256")
+                }
+                executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
+                    if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
+                        throw java.io.IOException("Piper 模型下载需要完整 HTTP 200 响应，收到 HTTP ${response.code}")
+                    }
+                    val body = response.body ?: throw java.io.IOException("模型下载失败：空响应")
+                    val total = body.contentLength()
+                    if (!HttpDownloadResponsePolicy.isValidExpectedLength(total, MAX_ARCHIVE_BYTES)) {
+                        throw java.io.IOException("Piper 模型压缩包响应声明的大小无效或超过 256 MB 安全上限")
+                    }
+                    var done = 0L
+                    body.byteStream().use { input ->
+                        FileOutputStream(archive).use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                checkActive()
+                                ownerJob?.ensureActive()
+                                val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
+                                if (count < 0) break
+                                if (!PiperModelFilePolicy.isWithinLimit(done, count.toLong(), MAX_ARCHIVE_BYTES)) {
+                                    throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
+                                }
+                                done += count
+                                output.write(buffer, 0, count)
+                                digest?.update(buffer, 0, count)
+                                if (total > 0L) {
+                                    onProgress(((done * 70L) / total).toInt().coerceIn(0, 69))
+                                }
+                            }
+                            output.flush()
+                            output.fd.sync()
+                        }
+                    }
+                    if (!HttpDownloadResponsePolicy.isCompletePayload(total, done, MAX_ARCHIVE_BYTES)) {
+                        throw java.io.IOException("Piper 模型下载不完整或大小异常：预期 ${total} 字节，实际 ${done} 字节")
+                    }
+                }
+                checkActive()
+                val actualDigest = digest?.digest()?.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                if (!PiperDownloadSourcePolicy.checksumMatches(definition.archiveSha256, actualDigest)) {
+                    throw java.io.IOException("Piper 模型压缩包 SHA-256 校验失败")
+                }
+                onProgress(70)
+                onStage("模型包下载完成并通过校验，准备解压…")
+                return@withContext
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                lastError = error
+                runCatching { archive.delete() }
+            }
+        }
+        throw java.io.IOException(
+            "Piper 模型全部下载源均失败：${lastError?.message ?: "网络异常"}",
+            lastError,
+        )
+    }
+
     private fun extractArchive(
         archive: File,
         destination: File,
         checkActive: () -> Unit,
+        onProgress: (Long) -> Unit = {},
     ) {
         if (!destination.isDirectory) throw java.io.IOException("Piper 临时解压目录不存在")
         val rootPath = destination.canonicalFile.path + File.separator
         val buffer = ByteArray(64 * 1024)
         var archiveRootName: String? = null
         var extractedBytes = 0L
+        val progressStepBytes = 8L * 1024L * 1024L
+        var nextProgressBytes = progressStepBytes
 
         TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(archive))).use { tar ->
             while (true) {
@@ -451,6 +533,10 @@ object PiperModels {
                         out.write(buffer, 0, count)
                         written += count
                         extractedBytes += count
+                        if (extractedBytes >= nextProgressBytes) {
+                            onProgress(extractedBytes)
+                            nextProgressBytes = (extractedBytes / progressStepBytes + 1L) * progressStepBytes
+                        }
                     }
                     out.fd.sync()
                 }
