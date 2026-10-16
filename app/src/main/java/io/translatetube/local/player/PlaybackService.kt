@@ -484,9 +484,10 @@ class PlaybackService : MediaSessionService() {
                             "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音" +
                                 if (state.dubbingHasErrors) "；失败字幕暂用原声" else ""
                         } else state.progress.ifBlank { "正在生成中文配音" }
-                    failureTitle != null -> failureTitle to state.noModelHint
-                        ?.takeIf { it.isNotBlank() }
-                        ?: "部分字幕配音失败，相关片段已恢复原声。打开应用查看详情。"
+                    failureTitle != null -> failureTitle to (
+                        state.noModelHint?.takeIf { it.isNotBlank() }
+                            ?: "部分字幕配音失败，相关片段已恢复原声。打开应用查看详情。"
+                    )
                     state.isPlaying -> "正在播放" to state.title.ifBlank { "视频正在播放" }
                     else -> "配音已准备完成" to state.title.ifBlank { "返回应用即可查看字幕与配音" }
                 }
