@@ -288,6 +288,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
     fun download(kind: ModelKind) {
         if (!claimDownloadStart(kind)) return
+        // A new task joins an already-paused model session instead of secretly resuming work.
+        if (io.translatetube.local.tts.PiperModels.hasActiveDownloads &&
+            io.translatetube.local.tts.PiperModels.isPaused
+        ) {
+            setDownloadsPaused(true)
+        }
         try {
             when (kind) {
                 ModelKind.TTS -> {
@@ -380,18 +386,26 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             isActiveModelState(_tts.value) || isActiveModelState(_asr.value)
         val piperActive = io.translatetube.local.tts.PiperModels.hasActiveDownloads
         if (!managedActive && !piperActive) return
-        if (managedActive) {
-            synchronized(pauseLock) {
-                val current = resumeSignal
-                if (current == null) {
-                    resumeSignal = kotlinx.coroutines.CompletableDeferred()
-                } else {
-                    current.complete(Unit)
-                    resumeSignal = null
-                }
+        val shouldPause = ModelPauseCoordinationPolicy.shouldPauseAfterToggle(
+            managedActive = managedActive,
+            managedPaused = isPaused,
+            piperActive = piperActive,
+            piperPaused = io.translatetube.local.tts.PiperModels.isPaused,
+        )
+        if (managedActive) setDownloadsPaused(shouldPause)
+        if (piperActive) io.translatetube.local.tts.PiperModels.setPaused(shouldPause)
+    }
+
+    private fun setDownloadsPaused(paused: Boolean) {
+        synchronized(pauseLock) {
+            val current = resumeSignal
+            if (paused) {
+                if (current == null) resumeSignal = kotlinx.coroutines.CompletableDeferred()
+            } else {
+                current?.complete(Unit)
+                resumeSignal = null
             }
         }
-        if (piperActive) io.translatetube.local.tts.PiperModels.togglePauseAll()
     }
 
     /** Cancel every active model task and release pause waiters before cancelling the jobs. */

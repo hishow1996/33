@@ -771,6 +771,9 @@ private fun PiperModelSection() {
             } else if (!isInstalled) {
                 TextButton(onClick = {
                     val app = ctx.applicationContext as io.translatetube.local.TranslateTubeApp
+                    if (app.modelDownload.isPaused) {
+                        io.translatetube.local.tts.PiperModels.setPaused(true)
+                    }
                     io.translatetube.local.tts.PiperModels.startDownload(
                         ctx.applicationContext,
                         def.id,

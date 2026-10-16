@@ -370,12 +370,13 @@ object PiperModels {
         resumeDownloads()
     }
 
-    fun togglePauseAll() {
+    fun setPaused(paused: Boolean) {
         synchronized(pauseLock) {
             val current = resumeSignal
-            if (current == null) resumeSignal = kotlinx.coroutines.CompletableDeferred()
-            else {
-                current.complete(Unit)
+            if (paused) {
+                if (current == null) resumeSignal = kotlinx.coroutines.CompletableDeferred()
+            } else {
+                current?.complete(Unit)
                 resumeSignal = null
             }
         }

@@ -159,12 +159,12 @@ class ModelDownloadForegroundService : Service() {
                     )
                     else -> baseContent
                 }
-                val paused = when {
-                    piperActive && managedActive -> manager.isPaused && io.translatetube.local.tts.PiperModels.isPaused
-                    managedActive -> manager.isPaused
-                    piperActive -> io.translatetube.local.tts.PiperModels.isPaused
-                    else -> false
-                }
+                val paused = ModelPauseCoordinationPolicy.allActiveTasksPaused(
+                    managedActive = managedActive,
+                    managedPaused = manager.isPaused,
+                    piperActive = piperActive,
+                    piperPaused = io.translatetube.local.tts.PiperModels.isPaused,
+                )
                 val notification = buildNotification(
                     title = if (paused) "已暂停 · ${content.title}" else content.title,
                     text = if (paused) "已暂停 · ${content.detail}" else content.detail,
