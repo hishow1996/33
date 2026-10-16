@@ -167,8 +167,8 @@ object VideoProcessingFlowPolicy {
                 VideoSourceKind.LOCAL -> "正在用本地模型转写原文并生成时间轴字幕"
                 VideoSourceKind.UNKNOWN -> "正在转写原文并生成时间轴字幕"
             }
-            Phase.TRANSLATING -> "按批次把原文字幕翻译成中文，保留每条字幕的起止时间"
-            Phase.SYNTHESIZING -> "根据字幕时间轴逐句准备中文配音"
+            Phase.TRANSLATING -> "正在将原文字幕翻译成中文"
+            Phase.SYNTHESIZING -> "正在按字幕时间轴生成中文配音"
             Phase.READY -> "视频、字幕与配音已准备完成"
             Phase.ERROR -> "视频处理失败"
         }
