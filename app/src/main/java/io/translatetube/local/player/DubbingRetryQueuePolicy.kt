@@ -4,6 +4,7 @@ package io.translatetube.local.player
 internal enum class DubbingRetryQueueDecision {
     IGNORE,
     DEFER_UNTIL_ACTIVE_CUE_FINISHES,
+    ENSURE_WORKER,
     ENQUEUE,
 }
 
@@ -12,7 +13,7 @@ internal object DubbingRetryQueuePolicy {
         when {
             index < 0 -> DubbingRetryQueueDecision.IGNORE
             index == activeIndex -> DubbingRetryQueueDecision.DEFER_UNTIL_ACTIVE_CUE_FINISHES
-            alreadyQueued -> DubbingRetryQueueDecision.IGNORE
+            alreadyQueued -> DubbingRetryQueueDecision.ENSURE_WORKER
             else -> DubbingRetryQueueDecision.ENQUEUE
         }
 }

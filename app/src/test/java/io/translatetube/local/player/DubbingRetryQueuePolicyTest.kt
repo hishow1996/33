@@ -13,9 +13,9 @@ class DubbingRetryQueuePolicyTest {
     }
 
     @Test
-    fun cacheMissDoesNotDuplicateAnAlreadyQueuedCue() {
+    fun queuedCueDoesNotDuplicateWorkButStillRequestsWorkerRecovery() {
         assertEquals(
-            DubbingRetryQueueDecision.IGNORE,
+            DubbingRetryQueueDecision.ENSURE_WORKER,
             DubbingRetryQueuePolicy.decide(index = 5, activeIndex = -1, alreadyQueued = true),
         )
     }

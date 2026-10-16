@@ -593,7 +593,9 @@ class DubbingEngine(
                     // If playAt() observed this cue before its PCM publication, defer the retry
                     // until the active synthesis finishes. Queue only one retry when it failed to
                     // produce a cache, instead of synthesizing the same cue concurrently.
-                    val translatedCue = lines.getOrNull(idx)?.zh?.isNotBlank() == true
+                    val translatedCue = lines.getOrNull(idx)?.let {
+                        DubbingTimeline.isPlayableCue(it) && !it.zh.isNullOrBlank()
+                    } == true
                     val cacheExists = translatedCue && !released &&
                         runCatching { cacheFile(idx).isFile }.getOrDefault(false)
                     synchronized(pending) {
@@ -909,6 +911,7 @@ class DubbingEngine(
      */
     private fun queueSynthesisRetry(idx: Int) {
         if (released || idx !in lines.indices) return
+        var ensureExistingQueueWorker = false
         val shouldScheduleWorker = synchronized(pending) {
             when (
                 DubbingRetryQueuePolicy.decide(
@@ -922,11 +925,21 @@ class DubbingEngine(
                     retryAfterActiveSynthesis.add(idx)
                     false
                 }
+                DubbingRetryQueueDecision.ENSURE_WORKER -> {
+                    ensureExistingQueueWorker = true
+                    false
+                }
                 DubbingRetryQueueDecision.ENQUEUE -> {
                     pending.offerFirst(idx)
                     true
                 }
             }
+        }
+        if (ensureExistingQueueWorker) {
+            // The cue is already queued, but the worker may have exited just before this request.
+            // startSynthLoop() is idempotent while a worker remains active.
+            startSynthLoop()
+            return
         }
         if (!shouldScheduleWorker) return
         val workerAtSchedule = synthJob
