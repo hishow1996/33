@@ -1768,11 +1768,25 @@ class PlaybackService : MediaSessionService() {
                             AudioExtract.decodeTo16kMonoFile(
                                 this@PlaybackService, null, audioFile,
                                 checkActive = { pcmOwnerJob?.ensureActive() },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(key) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = "解码音频 ${percent}%")
+                                        } else state
+                                    }
+                                },
                             )
                         } else {
                             AudioExtract.decodeTo16kMonoFile(
                                 this@PlaybackService, audioFile as Uri, null,
                                 checkActive = { pcmOwnerJob?.ensureActive() },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(key) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = "解码音频 ${percent}%")
+                                        } else state
+                                    }
+                                },
                             )
                         }
                         decodedPcmHolder.set(decoded)
@@ -2937,6 +2951,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         mediaUrl: String,
         destination: File,
         headers: Map<String, String>,
+        awaitResume: suspend () -> Unit = {},
+        onProgressPercent: (Int) -> Unit = {},
     ): File {
         val work = File(destination.parentFile, destination.name + ".part")
         val extractor = android.media.MediaExtractor()
@@ -2966,6 +2982,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             }
             if (chosen < 0) throw IllegalStateException("该视频流中没有可提取的音频轨")
             val trackFormat = extractor.getTrackFormat(chosen)
+            val mediaDurationUs = runCatching {
+                if (trackFormat.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                    trackFormat.getLong(android.media.MediaFormat.KEY_DURATION)
+                } else 0L
+            }.getOrDefault(0L).coerceAtLeast(0L)
+            var lastProgressPercent = -1
             val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
             val outputFormat = when {
                 trackMime.contains("vorbis") || trackMime.contains("opus") ->
@@ -2981,10 +3003,22 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             withContext(Dispatchers.IO) {
                 while (true) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    awaitResume()
                     val size = extractor.readSampleData(buffer, 0)
                     if (size < 0) break
                     info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
                     muxer.writeSampleData(muxerTrack, buffer, info)
+                    if (size > 0 && mediaDurationUs > 0L) {
+                        val nextPercent = io.translatetube.local.asr.MediaTimelineProgressPolicy.nextPercent(
+                            positionUs = info.presentationTimeUs,
+                            durationUs = mediaDurationUs,
+                            previousPercent = lastProgressPercent,
+                        )
+                        if (nextPercent != null) {
+                            lastProgressPercent = nextPercent
+                            onProgressPercent(nextPercent)
+                        }
+                    }
                     extractor.advance()
                 }
             }
@@ -2996,6 +3030,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 work.copyTo(destination, overwrite = true)
                 work.delete()
             }
+            onProgressPercent(100)
             return destination
         } catch (t: Throwable) {
             runCatching { muxer?.release() }
@@ -3093,7 +3128,19 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         // 直链视频优先「流式抽轨」：系统 MediaExtractor 直接读取带请求头的
                         // http 源，边拉边把音频轨写进 m4a/webm，不把整个视频下载到本地。
                         try {
-                            extractAudioTrackStreaming(mediaUrl, destination, headers)
+                            extractAudioTrackStreaming(
+                                mediaUrl,
+                                destination,
+                                headers,
+                                awaitResume = { awaitProcessingResumed(sessionKey) },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(sessionKey) { state ->
+                                        if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
+                                            state.copy(progress = "网页视频音轨提取 ${percent}%")
+                                        } else state
+                                    }
+                                },
+                            )
                         } catch (streamingError: Exception) {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             if (streamingError is kotlinx.coroutines.CancellationException) throw streamingError

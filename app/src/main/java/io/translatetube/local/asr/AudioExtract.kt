@@ -141,6 +141,7 @@ object AudioExtract {
         file: File?,
         maxDurationMs: Long = Long.MAX_VALUE,
         checkActive: () -> Unit = {},
+        onProgressPercent: (Int) -> Unit = {},
     ): PcmFile {
         PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
         val destination = File.createTempFile("translate-pcm-", ".s16le", ctx.cacheDir)
@@ -165,6 +166,12 @@ object AudioExtract {
             }
             if (trackIdx < 0) throw IllegalStateException("未找到音频轨")
             val format = declaredFormat ?: throw IllegalStateException("未找到音频轨格式")
+            val mediaDurationUs = runCatching {
+                if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    format.getLong(MediaFormat.KEY_DURATION)
+                } else 0L
+            }.getOrDefault(0L).coerceAtLeast(0L)
+            var lastProgressPercent = -1
             extractor.selectTrack(trackIdx)
             val mime = format.getString(MediaFormat.KEY_MIME)
                 ?: throw IllegalStateException("无法读取音频编码格式")
@@ -358,6 +365,17 @@ object AudioExtract {
                         val reachedEnd = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 ||
                             decodedSourceSamples >= maxSourceSamples
                         codec.releaseOutputBuffer(outBufferIndex, false)
+                        if (info.size > 0 && mediaDurationUs > 0L) {
+                            val nextPercent = MediaTimelineProgressPolicy.nextPercent(
+                                positionUs = info.presentationTimeUs,
+                                durationUs = mediaDurationUs,
+                                previousPercent = lastProgressPercent,
+                            )
+                            if (nextPercent != null) {
+                                lastProgressPercent = nextPercent
+                                onProgressPercent(nextPercent)
+                            }
+                        }
                         if (reachedEnd) sawOutputEos = true
                     } else if (outBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         // On Android 9 some audio decoders report their actual PCM output here.
@@ -420,6 +438,7 @@ object AudioExtract {
             }
 
             if (outputSamples <= 0L) throw IllegalStateException("音频轨没有可解码的 PCM 数据")
+            onProgressPercent(100)
             success = true
             return PcmFile(destination, outputSamples, 16_000)
         } finally {

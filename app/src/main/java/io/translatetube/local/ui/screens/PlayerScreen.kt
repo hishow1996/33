@@ -1774,10 +1774,12 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         state.progress.isNotBlank() -> state.progress
         else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
-    val stageIndex = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase)
-        .coerceIn(0, (steps.size - 1).coerceAtLeast(0))
     val stageCount = steps.size.coerceAtLeast(1)
+    val rawStageIndex = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase)
+    val stageIndex = rawStageIndex.coerceIn(0, (stageCount - 1).coerceAtLeast(0))
+    val stageNumber = if (state.phase == Phase.READY) stageCount else stageIndex + 1
     val fraction = when (state.phase) {
+        Phase.READY -> 1f
         Phase.PARSING -> null
         Phase.DOWNLOADING_AUDIO -> progressPercent(state.progress)
         Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)
@@ -1842,7 +1844,12 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
                 Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
             }
             Text(
-                pct?.let { "${(it * 100).toInt()}%" } ?: "处理中",
+                when {
+                    state.phase == Phase.READY -> "完成"
+                    state.phase == Phase.ERROR -> "失败"
+                    pct != null -> "${(pct * 100).toInt()}%"
+                    else -> "处理中"
+                },
                 color = BrandBright,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
@@ -1867,8 +1874,12 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            if (pct != null) "阶段 ${stageIndex + 1}/${stageCount} · 实际进度 ${(pct * 100).toInt()}%"
-            else "阶段 ${stageIndex + 1}/${stageCount} · 当前阶段暂无精确百分比",
+            when {
+                state.phase == Phase.READY -> "全部阶段已完成 · ${stageCount}/${stageCount}"
+                state.phase == Phase.ERROR -> "处理失败 · 失败信息见上方提示"
+                pct != null -> "阶段 ${stageNumber}/${stageCount} · 实际进度 ${(pct * 100).toInt()}%"
+                else -> "阶段 ${stageNumber}/${stageCount} · 当前阶段暂无精确百分比"
+            },
             color = SubText,
             style = MaterialTheme.typography.labelSmall,
         )
