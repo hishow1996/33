@@ -12,11 +12,15 @@ import io.translatetube.local.subs.SubLine
 internal class DubbingTimeline(lines: List<SubLine>) {
     private data class Cue(val originalIndex: Int, val line: SubLine)
 
+    companion object {
+        /** The playback index and synthesis queue must agree on whether a caption can ever play. */
+        fun isPlayableCue(line: SubLine): Boolean =
+            line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
+    }
+
     private val cues = lines.withIndex()
         .asSequence()
-        .filter { (_, line) ->
-            line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
-        }
+        .filter { (_, line) -> isPlayableCue(line) }
         .map { (index, line) -> Cue(index, line) }
         .sortedWith(compareBy<Cue> { it.line.startMs }.thenBy { it.originalIndex })
         .toList()
