@@ -7,7 +7,7 @@ package io.translatetube.local.tts
  */
 internal object SystemTtsOutputAudioPolicy {
     const val TARGET_SAMPLE_RATE = 16_000
-    const val CACHE_SIGNATURE = "system-tts-resample-16k-v2"
+    const val CACHE_SIGNATURE = "system-tts-resample-16k-v3-edge-trim"
     const val MAX_RESAMPLED_SAMPLES = 4_000_000
 
     fun targetSampleCount(
@@ -44,5 +44,19 @@ internal object SystemTtsOutputAudioPolicy {
         }
         TtsPcmSanitizer.sanitizeInPlace(output)
         return TtsAudio(output, targetSampleRate)
+    }
+
+    /**
+     * Make system-TTS output follow the same edge-silence policy as local neural voices.
+     * Trimming after rate conversion keeps the 25 ms safety margin stable across source rates.
+     */
+    fun prepareForPlayback(
+        audio: TtsAudio,
+        targetSampleRate: Int = TARGET_SAMPLE_RATE,
+    ): TtsAudio {
+        val normalized = normalize(audio, targetSampleRate)
+        if (normalized.samples.isEmpty()) return normalized
+        val trimmed = TtsEdgeSilenceTrimmer.trim(normalized.samples, normalized.sampleRate)
+        return if (trimmed === normalized.samples) normalized else normalized.copy(samples = trimmed)
     }
 }
