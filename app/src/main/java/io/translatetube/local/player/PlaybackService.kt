@@ -441,9 +441,9 @@ class PlaybackService : MediaSessionService() {
         val (title, detail) = when (state.phase) {
             Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
-            Phase.TRANSCRIBING -> "正在识别语音" to state.progress.ifBlank { "正在生成字幕时间轴" }
-            Phase.TRANSLATING -> "正在翻译字幕" to state.progress.ifBlank {
-                if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译"
+            Phase.TRANSCRIBING -> "正在转写原文字幕" to state.progress.ifBlank { "正在生成与视频时间轴对齐的原文字幕" }
+            Phase.TRANSLATING -> "正在将原文字幕翻译成中文" to state.progress.ifBlank {
+                if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
             }
             Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
@@ -2123,7 +2123,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         translatedLines.take(120).joinToString(" ") { it.text },
                     )
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                    updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
+                    updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
                     translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId)
                 } else if (translatedLines.isNotEmpty()) {
                     // Source captions are not translator output: preserve repeated words and text that
@@ -2523,7 +2523,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 sourceLang = srcLang,
                 lines = updatedLines,
                 totalLines = updatedLines.size,
-                progress = "翻译中 ${completed}/${updatedLines.size} 行",
+                progress = "翻译成中文 ${completed}/${updatedLines.size} 行",
             )
         }
 
@@ -2610,7 +2610,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     lines = updatedLines,
                     totalLines = updatedLines.size,
                     sourceLang = srcLang,
-                    progress = "翻译中 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                    progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )
             }
             // Persist a checkpoint only after this batch is complete and every row has a valid translation.
