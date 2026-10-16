@@ -383,22 +383,9 @@ fun PlayerScreen(
         val linesSnapshot = state.lines.toList()
         subtitleExportScope.launch {
             val text = withContext(Dispatchers.Default) {
-                val sb = StringBuilder()
-                for (line in linesSnapshot) {
-                    val source = line.text.trim()
-                    val zh = line.zh?.let { SubtitleParsers.cleanTranslatedText(it) }.orEmpty()
-                    if (source.isBlank() && zh.isBlank()) continue
-                    // Never discard an original row when translation failed. Match the player's
-                    // Chinese-first layout and avoid showing the same caption twice.
-                    if (zh.isBlank() || source.isBlank() ||
-                        subtitleComparisonKey(zh) == subtitleComparisonKey(source)
-                    ) {
-                        sb.append(zh.ifBlank { source }).append('\n').append('\n')
-                    } else {
-                        sb.append(zh).append('\n').append(source).append('\n').append('\n')
-                    }
-                }
-                sb.toString().trim()
+                // Keep copy and file export consistent: discard malformed time windows, sort
+                // chronologically, and emit Chinese first with a distinct source row underneath.
+                SubtitleParsers.toPlainText(linesSnapshot, bilingual = true)
             }
             if (text.isNotEmpty()) {
                 val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
