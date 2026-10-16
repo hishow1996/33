@@ -9,6 +9,8 @@ on:
     paths:
       - app/src/main/java/io/translatetube/local/ui/screens/WebVideoScreen.kt
       - app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
+      - app/src/test/java/io/translatetube/local/player/VideoProcessingFlowPolicyTest.kt
+      - app/src/main/java/io/translatetube/local/player/VideoProcessingFlowPolicy.kt
       - app/src/main/java/io/translatetube/local/player/PlaybackService.kt
       - app/src/main/java/io/translatetube/local/player/DubbingEngine.kt
       - app/src/test/java/io/translatetube/local/player/DubbingOutputPcmPolicyTest.kt
