@@ -12,8 +12,11 @@ internal object SubtitleCacheValidationPolicy {
     fun hasValidTimeline(rows: List<Triple<Long, Long, String>>): Boolean {
         if (rows.isEmpty()) return false
         var previousStart = -1L
+        val uniqueRows = HashSet<Triple<Long, Long, String>>(rows.size)
         for ((startMs, endMs, text) in rows) {
-            if (startMs < 0L || endMs <= startMs || text.isBlank() || startMs < previousStart) {
+            if (startMs < 0L || endMs <= startMs || text.isBlank() || startMs < previousStart ||
+                !uniqueRows.add(Triple(startMs, endMs, text))
+            ) {
                 return false
             }
             previousStart = startMs

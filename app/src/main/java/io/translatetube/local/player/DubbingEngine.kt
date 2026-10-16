@@ -1358,36 +1358,38 @@ class DubbingEngine(
         }
     }
 
-    /** Pause the live voice track without blocking the player/UI thread. */
+    /** Stop voice output promptly on pause; resume will rebuild the cue at the current video time. */
     fun pausePlayback() {
         if (released) return
-        // Invalidate a line that is still loading/being created so it cannot start after pause.
+        // Invalidate an in-flight PCM load/track creation and clear "voice is audible" immediately.
+        // PlaybackService reselects the active cue and calls playAt() when ExoPlayer resumes, so
+        // retaining a static AudioTrack here only holds native buffer memory while the user pauses.
         playbackGeneration.incrementAndGet()
-        val active = track
-        if (active == null) {
-            _currentLine.value = -1
-            return
-        }
+        playbackStartedLine = -1
+        _currentLine.value = -1
+        val active = track ?: return
         try {
             audioExec.execute {
                 // stop(), seek, or release may have superseded this request while it was queued.
+                // In that case the owning cleanup task remains responsible for the old track.
                 if (released || track !== active) return@execute
+                track = null
                 try {
                     active.pause()
+                    active.flush()
+                    active.release()
                 } catch (e: Exception) {
-                    if (track === active) track = null
-                    _currentLine.value = -1
-                    try { active.release() } catch (_: Exception) {}
-                    android.util.Log.w("DubbingEngine", "Unable to pause voice track", e)
+                    runCatching { active.release() }
+                    android.util.Log.w("DubbingEngine", "Unable to release voice track after pause", e)
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
-            // release() owns the final AudioTrack cleanup when the executor is shutting down.
+            // release() owns final AudioTrack cleanup when the executor is shutting down.
             _currentLine.value = -1
         }
     }
 
-    /** Resume a paused track on the same serialized executor as creation, writes, and release. */
+    /** Resume only when a track still exists; otherwise the next video tick rebuilds the cue. */
     fun resumePlayback() {
         if (released) return
         val active = track

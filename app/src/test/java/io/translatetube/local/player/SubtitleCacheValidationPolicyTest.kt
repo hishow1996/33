@@ -61,4 +61,24 @@ class SubtitleCacheValidationPolicyTest {
             )
         )
     }
+    @Test
+    fun rejectsExactDuplicateCachedCuesButAllowsDifferentTextAtSameTime() {
+        assertFalse(
+            SubtitleCacheValidationPolicy.hasValidTimeline(
+                listOf(
+                    Triple(0L, 1_000L, "duplicate"),
+                    Triple(0L, 1_000L, "duplicate"),
+                )
+            )
+        )
+        assertTrue(
+            SubtitleCacheValidationPolicy.hasValidTimeline(
+                listOf(
+                    Triple(0L, 1_000L, "speaker one"),
+                    Triple(0L, 1_000L, "speaker two"),
+                )
+            )
+        )
+    }
+
 }
