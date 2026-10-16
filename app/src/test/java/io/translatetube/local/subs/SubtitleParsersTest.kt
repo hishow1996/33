@@ -671,4 +671,31 @@ class SubtitleParsersTest {
         assertEquals(2_000L, parsed.single().endMs)
     }
 
+
+    @Test
+    fun plainTextCopySortsChronologicallyAndSkipsMalformedWindows() {
+        val rows = listOf(
+            SubLine(0, 2_000L, 3_000L, "later", "稍后"),
+            SubLine(1, -100L, 500L, "invalid start", "错误"),
+            SubLine(2, 0L, 1_000L, "Hello", "你好"),
+            SubLine(3, 1_000L, 1_000L, "empty window", "空窗"),
+            SubLine(4, 3_000L, 4_000L, "OK!", "OK"),
+        )
+
+        assertEquals(
+            "你好\\nHello\\n\\n稍后\\nlater\\n\\nOK",
+            SubtitleParsers.toPlainText(rows),
+        )
+    }
+
+    @Test
+    fun plainTextCopyCanEmitChineseOnlyAndFallsBackFromPlaceholderTranslation() {
+        val rows = listOf(
+            SubLine(0, 0L, 1_000L, "Hello", "译文暂不可用"),
+            SubLine(1, 1_000L, 2_000L, "世界", "世界"),
+        )
+
+        assertEquals("Hello\\n\\n世界", SubtitleParsers.toPlainText(rows, bilingual = false))
+    }
+
 }
