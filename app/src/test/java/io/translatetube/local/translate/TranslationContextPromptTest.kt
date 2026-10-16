@@ -11,9 +11,9 @@ class TranslationContextPromptTest {
             listOf("We will meet Sam tomorrow.", "Use the Orion name.") to
                 listOf("我们明天和萨姆见面。", "使用“猎户座”这个名称。"),
             "0|Please continue.",
-        )
+        ) ?: throw AssertionError("Expected a prompt with prior context")
 
-        assertTrue(prompt!!.contains("Previous cues for continuity"))
+        assertTrue(prompt.contains("Previous cues for continuity"))
         assertTrue(prompt.contains("context only — do not translate or output these"))
         assertTrue(prompt.contains("We will meet Sam tomorrow. => 我们明天和萨姆见面。"))
         assertTrue(prompt.contains("Use the Orion name. => 使用“猎户座”这个名称。"))
