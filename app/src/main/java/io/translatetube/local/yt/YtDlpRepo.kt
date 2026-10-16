@@ -143,7 +143,8 @@ object YtDlpRepo {
             val latestKnown = fetchLatestReleaseTag() ?: run {
                 _updateState.value = _updateState.value.copy(
                     checking = false,
-                    error = "无法获取上游最新版：已尝试阿里云/腾讯镜像与 GitHub、PyPI 官方源，均未返回有效版本号，请检查网络后重试",
+                    error = "无法获取上游最新版（" + (lastProbeDetail
+                        ?: "所有版本源均未响应，请检查网络或代理是否覆盖本应用") + "）",
                 )
                 return@withContext
             }
@@ -196,6 +197,7 @@ object YtDlpRepo {
      * 显式设置 User-Agent：GitHub REST API 对缺少该请求头的客户端可能拒绝请求。
      */
     private fun fetchLatestReleaseTag(): String? {
+        lastProbeDetail = null
         // 国内网络（GitHub/PyPI 官方源常不可达）优先走阿里云镜像（同步及时、手机直连快），
         // 腾讯镜像作为第二备选；两者与 PyPI 官方 JSON 结构一致。
         fetchVersionText(
@@ -273,6 +275,7 @@ object YtDlpRepo {
             if (version != null) return version
         }
         Log.w(TAG, "Unable to fetch yt-dlp stable version from all sources")
+        recordProbe("汇总", "全部版本源失败")
         return null
     }
 
@@ -317,6 +320,7 @@ object YtDlpRepo {
         }
     } catch (error: Exception) {
         Log.w(TAG, "$source version lookup failed", error)
+        recordProbe(source, error.javaClass.simpleName + ": " + (error.message?.take(60) ?: "网络错误"))
         null
     }
 
