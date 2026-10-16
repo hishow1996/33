@@ -139,14 +139,13 @@ internal object WhisperSubtitleTimelinePolicy {
         flushCue()
 
         // Token-level boundaries normally meet exactly; guard against small DTW overlap drift.
-        return cues.mapIndexedNotNull { index, cue ->
+        val adjustedCues = cues.mapIndexed { index, cue ->
             val nextStart = cues.getOrNull(index + 1)?.first
-            val end = if (nextStart != null && cue.second > nextStart) {
-                nextStart
-            } else {
-                cue.second
-            }
-            if (end <= cue.first) null else Triple(cue.first, end, cue.third)
+            val end = if (nextStart != null && cue.second > nextStart) nextStart else cue.second
+            Triple(cue.first, end, cue.third)
         }
+        // Do not silently lose text if unusual timestamp ties make a cue unrepresentable.
+        if (adjustedCues.any { it.second <= it.first }) return emptyList()
+        return adjustedCues
     }
 }
