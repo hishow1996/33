@@ -78,6 +78,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 
+private enum class SubtitleExportFormat { CHINESE_SRT, BILINGUAL_SRT, BILINGUAL_VTT }
+
 @Composable
 fun PlayerScreen(
     videoId: String?,
@@ -337,55 +339,75 @@ fun PlayerScreen(
     val subtitleSrtSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/x-subrip"),
     ) { uri -> saveSubtitleExport(uri) }
+    val subtitleBilingualSrtSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/x-subrip"),
+    ) { uri -> saveSubtitleExport(uri) }
     val subtitleBilingualVttSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/vtt"),
     ) { uri -> saveSubtitleExport(uri) }
 
-    fun requestSubtitleExport(bilingual: Boolean) {
-        if (state.lines.isEmpty()) {
+    fun requestSubtitleExport(format: SubtitleExportFormat) {
+        val linesSnapshot = state.lines.toList()
+        if (linesSnapshot.isEmpty()) {
             android.widget.Toast.makeText(ctx, "当前没有可导出的字幕", android.widget.Toast.LENGTH_SHORT).show()
             return
-        }
-        pendingSubtitleExportContent = if (bilingual) {
-            SubtitleParsers.toBilingualVtt(state.lines)
-        } else {
-            SubtitleParsers.toSrt(state.lines)
         }
         val base = state.title.ifBlank { "subtitles" }
             .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
             .take(48)
             .ifBlank { "subtitles" }
-        if (bilingual) {
-            subtitleBilingualVttSaver.launch(base + "_bilingual.vtt")
-        } else {
-            subtitleSrtSaver.launch(base + "_zh.srt")
+        subtitleExportScope.launch {
+            // Large subtitle files can contain tens of thousands of cues. Build export text off
+            // the UI thread so scrolling and playback controls remain responsive.
+            val content = withContext(Dispatchers.Default) {
+                when (format) {
+                    SubtitleExportFormat.CHINESE_SRT -> SubtitleParsers.toSrt(linesSnapshot)
+                    SubtitleExportFormat.BILINGUAL_SRT -> SubtitleParsers.toSrt(linesSnapshot, bilingual = true)
+                    SubtitleExportFormat.BILINGUAL_VTT -> SubtitleParsers.toBilingualVtt(linesSnapshot)
+                }
+            }
+            if (content.isBlank()) {
+                android.widget.Toast.makeText(ctx, "没有有效字幕可导出", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            pendingSubtitleExportContent = content
+            when (format) {
+                SubtitleExportFormat.CHINESE_SRT -> subtitleSrtSaver.launch(base + "_zh.srt")
+                SubtitleExportFormat.BILINGUAL_SRT -> subtitleBilingualSrtSaver.launch(base + "_bilingual.srt")
+                SubtitleExportFormat.BILINGUAL_VTT -> subtitleBilingualVttSaver.launch(base + "_bilingual.vtt")
+            }
         }
     }
 
     fun copySubtitles() {
-        val sb = StringBuilder()
-        for (line in state.lines) {
-            val source = line.text.trim()
-            val zh = line.zh?.let { SubtitleParsers.cleanTranslatedText(it) }.orEmpty()
-            if (source.isBlank() && zh.isBlank()) continue
-            // Never discard an original row when translation failed. Match the player's
-            // Chinese-first layout and avoid showing the same caption twice.
-            if (zh.isBlank() || source.isBlank() ||
-                subtitleComparisonKey(zh) == subtitleComparisonKey(source)
-            ) {
-                sb.append(zh.ifBlank { source }).append('\n').append('\n')
-            } else {
-                sb.append(zh).append('\n').append(source).append('\n').append('\n')
+        val linesSnapshot = state.lines.toList()
+        subtitleExportScope.launch {
+            val text = withContext(Dispatchers.Default) {
+                val sb = StringBuilder()
+                for (line in linesSnapshot) {
+                    val source = line.text.trim()
+                    val zh = line.zh?.let { SubtitleParsers.cleanTranslatedText(it) }.orEmpty()
+                    if (source.isBlank() && zh.isBlank()) continue
+                    // Never discard an original row when translation failed. Match the player's
+                    // Chinese-first layout and avoid showing the same caption twice.
+                    if (zh.isBlank() || source.isBlank() ||
+                        subtitleComparisonKey(zh) == subtitleComparisonKey(source)
+                    ) {
+                        sb.append(zh.ifBlank { source }).append('\n').append('\n')
+                    } else {
+                        sb.append(zh).append('\n').append(source).append('\n').append('\n')
+                    }
+                }
+                sb.toString().trim()
+            }
+            if (text.isNotEmpty()) {
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("subtitles", text))
+                android.widget.Toast.makeText(ctx, "字幕已复制", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
-        val text = sb.toString().trim()
-        if (text.isNotEmpty()) {
-            val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                as android.content.ClipboardManager
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("subtitles", text))
-        }
     }
-
 
     Box(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
@@ -547,7 +569,7 @@ fun PlayerScreen(
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
-                                requestSubtitleExport(bilingual = false)
+                                requestSubtitleExport(SubtitleExportFormat.CHINESE_SRT)
                             },
                         )
                         PlaybackMenuItem(
@@ -557,7 +579,17 @@ fun PlayerScreen(
                             enabled = state.lines.isNotEmpty(),
                             onClick = {
                                 advancedMenuExpanded = false
-                                requestSubtitleExport(bilingual = true)
+                                requestSubtitleExport(SubtitleExportFormat.BILINGUAL_VTT)
+                            },
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Subtitles,
+                            title = "导出双语字幕（SRT）",
+                            description = "兼容常见字幕编辑器，中文在上、原文在下",
+                            enabled = state.lines.isNotEmpty(),
+                            onClick = {
+                                advancedMenuExpanded = false
+                                requestSubtitleExport(SubtitleExportFormat.BILINGUAL_SRT)
                             },
                         )
                         Divider(
