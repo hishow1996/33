@@ -90,24 +90,48 @@ internal object AsrTranscriptCheckpointPolicy {
      * are stored. Validate exact segment bounds, ordering and uniqueness in linear time so a
      * malformed cache cannot inject duplicate captions or make recovery quadratic on long tracks.
      */
+    /**
+     * Checkpoint rows may now contain multiple token-aligned captions for each processed VAD
+     * segment. Every caption must remain inside a completed segment and the rows must be ordered.
+     */
     fun areRowsValid(
         rows: List<Triple<Long, Long, String>>,
         processedSegments: List<Pair<Long, Long>>,
     ): Boolean {
-        if (rows.size > processedSegments.size) return false
-        val segmentIndexes = HashMap<Pair<Long, Long>, Int>(processedSegments.size)
-        for ((index, bounds) in processedSegments.withIndex()) {
-            // Ambiguous bounds make a checkpoint impossible to validate unambiguously.
-            if (segmentIndexes.put(bounds, index) != null) return false
+        if (processedSegments.isEmpty()) return rows.isEmpty()
+        val uniqueSegments = HashSet<Pair<Long, Long>>(processedSegments.size)
+        for ((start, end) in processedSegments) {
+            if (end <= start || !uniqueSegments.add(start to end)) return false
         }
+
+        var segmentCursor = 0
         var previousSegmentIndex = -1
+        var previousStart = -1L
+        var previousEnd = -1L
+        val seenBounds = HashSet<Pair<Long, Long>>()
         for ((start, end, text) in rows) {
             if (start < 0L || end <= start || text.isBlank()) return false
-            val segmentIndex = segmentIndexes[start to end] ?: return false
-            // Start timestamps alone do not order segments when boundaries share a start time.
-            // Require the exact VAD segment order; this also rejects duplicates in one pass.
-            if (segmentIndex <= previousSegmentIndex) return false
-            previousSegmentIndex = segmentIndex
+
+            // Rows are chronological, so advance through VAD segments once rather than rescanning
+            // all completed segments for every fine-grained caption on long videos.
+            while (segmentCursor < processedSegments.size &&
+                end > processedSegments[segmentCursor].second
+            ) {
+                segmentCursor++
+            }
+            if (segmentCursor >= processedSegments.size) return false
+            val (segmentStart, segmentEnd) = processedSegments[segmentCursor]
+            if (start < segmentStart || end > segmentEnd) return false
+            if (segmentCursor < previousSegmentIndex) return false
+            if (segmentCursor == previousSegmentIndex &&
+                (start < previousStart || (start == previousStart && end < previousEnd))
+            ) return false
+            // Identical intervals can accidentally duplicate a caption during resume.
+            if (!seenBounds.add(start to end)) return false
+
+            previousSegmentIndex = segmentCursor
+            previousStart = start
+            previousEnd = end
         }
         return true
     }

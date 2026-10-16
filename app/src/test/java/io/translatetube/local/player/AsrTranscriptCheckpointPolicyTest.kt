@@ -44,36 +44,35 @@ class AsrTranscriptCheckpointPolicyTest {
     }
 
     @Test
-    fun restoredRowsMustBelongToCompletedSegmentsAndBeUnique() {
+    fun restoredRowsMayContainSeveralTimedCaptionsInsideOneCompletedSegment() {
         val completed = listOf(0L to 1_000L, 1_500L to 2_500L, 3_000L to 4_000L)
         assertTrue(
             AsrTranscriptCheckpointPolicy.areRowsValid(
-                listOf(Triple(0L, 1_000L, "hello"), Triple(3_000L, 4_000L, "world")),
-                completed,
+                listOf(
+                    Triple(0L, 250L, "first"),
+                    Triple(250L, 600L, "second"),
+                    Triple(600L, 1_000L, "third"),
+                    Triple(1_500L, 2_100L, "next segment"),
+                ),
+                completed.take(2),
             )
         )
         assertFalse(
             AsrTranscriptCheckpointPolicy.areRowsValid(
-                listOf(Triple(0L, 1_000L, "hello"), Triple(0L, 1_000L, "duplicate")),
-                completed,
+                listOf(Triple(0L, 250L, "first"), Triple(0L, 250L, "duplicate interval")),
+                completed.take(1),
             )
         )
         assertFalse(
             AsrTranscriptCheckpointPolicy.areRowsValid(
-                listOf(Triple(0L, 1_000L, "hello"), Triple(2_000L, 2_500L, "wrong segment")),
-                completed,
+                listOf(Triple(0L, 250L, "valid"), Triple(1_200L, 1_400L, "outside VAD")),
+                completed.take(1),
             )
         )
         assertFalse(
             AsrTranscriptCheckpointPolicy.areRowsValid(
-                listOf(Triple(3_000L, 4_000L, "later"), Triple(0L, 1_000L, "out of order")),
-                completed,
-            )
-        )
-        assertFalse(
-            AsrTranscriptCheckpointPolicy.areRowsValid(
-                listOf(Triple(0L, 1_000L, "  ")),
-                completed,
+                listOf(Triple(500L, 800L, "later"), Triple(100L, 250L, "out of order")),
+                completed.take(1),
             )
         )
     }

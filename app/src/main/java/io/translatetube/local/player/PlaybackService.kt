@@ -441,11 +441,11 @@ class PlaybackService : MediaSessionService() {
         val (title, detail) = when (state.phase) {
             Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
-            Phase.TRANSCRIBING -> "正在识别语音" to state.progress.ifBlank { "正在生成字幕时间轴" }
-            Phase.TRANSLATING -> "正在翻译字幕" to state.progress.ifBlank {
-                if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译"
+            Phase.TRANSCRIBING -> "正在转写原文字幕" to state.progress.ifBlank { "正在生成与视频时间轴对齐的原文字幕" }
+            Phase.TRANSLATING -> "正在将原文字幕翻译成中文" to state.progress.ifBlank {
+                if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
             }
-            Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
+            Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> when {
@@ -1474,17 +1474,34 @@ class PlaybackService : MediaSessionService() {
                 MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
             } ?: key
             val providerFingerprint = translationProviderFingerprint(selectedTranslationId)
-            val translationCacheKey = TranslationCacheIdentity.forProvider(
+            val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
+                .getString("asr_provider", "local") ?: "local"
+            val asrProvider = storedAsrProvider.takeIf {
+                it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
+            } ?: "local"
+            val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
                 activeId = selectedTranslationId,
                 importedLines = sourceImportedLines,
                 previousKey = resumeState?.translationCacheKey,
                 providerFingerprint = providerFingerprint,
             )
+            // Local Whisper now stores word-timed cues instead of one wide cue per VAD segment.
+            // Invalidate old translated rows for local/web sources as translations also persist timestamps.
+            val translationCacheKey = if (
+                asrProvider == "local" &&
+                sourceImportedLines.isNullOrEmpty() &&
+                (localUri != null || remoteMediaUrl != null)
+            ) "$baseTranslationCacheKey|local-asr-timeline-v2" else baseTranslationCacheKey
             updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                videoId != null -> "$key|source|youtube"
+                // YouTube's key also held previous ASR fallback results; bump it so old coarse captions
+                // are not mistaken for native subtitle tracks after this timeline upgrade.
+                videoId != null -> "$key|source|youtube-v2"
+                remoteMediaUrl != null && asrProvider == "local" ->
+                    "$cacheKeyBase|source|remote-asr-local-timed-v2"
                 remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
+                localUri != null && asrProvider == "local" -> "$key|source|local-asr-timed-v2"
                 else -> "$key|source|local-asr-v1"
             }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
@@ -1533,7 +1550,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 )
                 // A valid caption track supersedes any interrupted ASR transcript for this video.
-                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v1")
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
                 return fetchedLines to lang
             }
 
@@ -1563,7 +1580,7 @@ class PlaybackService : MediaSessionService() {
             if (sourceCached != null && restoredSourceLines != null) {
                 // The completed source cache is authoritative if a crash happened between its
                 // write and deletion of the partial-ASR checkpoint.
-                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v1")
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
             }
             if (sourceCached != null && restoredSourceLines == null) {
                 android.util.Log.w(
@@ -1650,11 +1667,6 @@ class PlaybackService : MediaSessionService() {
             updateUiForSession(key) { it.copy(processingFlow = resolvedProcessingFlow) }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
-                val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("asr_provider", "local") ?: "local"
-                val asrProvider = storedAsrProvider.takeIf {
-                    it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
-                } ?: "local"
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
                 val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
@@ -1772,7 +1784,7 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 ensureCurrentSession(key)
-                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v1"
+                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
                 // The transcript clock must use the duration of the exact PCM file sent to ASR.
                 // Provider timestamps are relative to this full recording, not to each displayed line.
                 val asrTimelineDurationMs = pcmFile.durationMs
@@ -1800,7 +1812,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 if (storedPartialAsr != null) {
                     val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
-                        if (checkpoint.optInt("version", -1) != 1) {
+                        if (checkpoint.optInt("version", -1) != 2) {
                             throw IllegalStateException("ASR 检查点版本不兼容")
                         }
                         val processed = checkpoint.optInt("processedSegments", -1)
@@ -1818,8 +1830,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         }
                         val savedRows = checkpoint.optJSONArray("rows")
                             ?: throw IllegalStateException("ASR 检查点缺少字幕列表")
-                        if (savedRows.length() > processed) {
-                            throw IllegalStateException("ASR 检查点字幕数量超出已完成分段")
+                        // Token-aligned Whisper output can produce several captions per VAD segment.
+                        // Keep a generous cap against corrupt cache payloads without assuming 1 row/segment.
+                        val maxCheckpointRows = minOf(processed.toLong() * 64L, 100_000L).toInt()
+                        if (savedRows.length() > maxCheckpointRows) {
+                            throw IllegalStateException("ASR 检查点字幕数量异常")
                         }
                         val restoredRows = (0 until savedRows.length()).map { index ->
                             if ((index and 0xff) == 0) pcmOwnerJob?.ensureActive()
@@ -1901,7 +1916,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                                 val language = engine.lastLang.takeIf { it.isNotBlank() }
                                     ?: restoredAsrLanguage
                                 val checkpointJson = org.json.JSONObject()
-                                    .put("version", 1)
+                                    .put("version", 2)
                                     .put("signature", asrSignature)
                                     .put("totalSegments", segs.size)
                                     .put("processedSegments", processed)
@@ -2108,7 +2123,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         translatedLines.take(120).joinToString(" ") { it.text },
                     )
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                    updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
+                    updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
                     translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId)
                 } else if (translatedLines.isNotEmpty()) {
                     // Source captions are not translator output: preserve repeated words and text that
@@ -2508,7 +2523,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 sourceLang = srcLang,
                 lines = updatedLines,
                 totalLines = updatedLines.size,
-                progress = "翻译中 ${completed}/${updatedLines.size} 行",
+                progress = "翻译成中文 ${completed}/${updatedLines.size} 行",
             )
         }
 
@@ -2595,7 +2610,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     lines = updatedLines,
                     totalLines = updatedLines.size,
                     sourceLang = srcLang,
-                    progress = "翻译中 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                    progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )
             }
             // Persist a checkpoint only after this batch is complete and every row has a valid translation.

@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizerResult
 
 /** Whisper base 多语言本地转写（sherpa-onnx） */
 class WhisperEngine(ctx: Context) : AutoCloseable {
@@ -23,6 +24,8 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
                 whisper = OfflineWhisperModelConfig(
                     encoder = "${m}base-encoder.int8.onnx",
                     decoder = "${m}base-decoder.int8.onnx",
+                    // DTW token alignment exposes word/subword timing where the model supports attention outputs.
+                    enableTokenTimestamps = true,
                 ),
                 tokens = "${m}base-tokens.txt",
                 numThreads = 2,
@@ -36,22 +39,24 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
     }
 
     /** 一次转写整段 PCM（16k mono float），自动检测语言 */
-    @Synchronized
-    fun transcribe(pcm: FloatArray): String {
+    private fun decodeResult(pcm: FloatArray): OfflineRecognizerResult {
         check(!closed) { "Whisper 识别器已关闭" }
         require(pcm.isNotEmpty()) { "没有可供 Whisper 转写的音频样本" }
         val stream = recognizer.createStream()
         try {
             stream.acceptWaveform(pcm, sampleRate = 16000)
             recognizer.decode(stream)
-            val result = recognizer.getResult(stream)
-            result.lang?.takeIf { it.isNotBlank() }?.let { lastLang = it }
-            return result.text
+            return recognizer.getResult(stream).also { result ->
+                result.lang?.takeIf { it.isNotBlank() }?.let { lastLang = it }
+            }
         } finally {
             // sherpa streams own native memory; always release even when decode/result throws.
             runCatching { stream.release() }
         }
     }
+
+    @Synchronized
+    fun transcribe(pcm: FloatArray): String = decodeResult(pcm).text
 
     /** 长音频分段转写：30s 窗口 + 1s 重叠，返回带时间轴文本 */
     @Synchronized
@@ -109,9 +114,21 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
             val s0 = (startMs * sr / 1000L).toInt()
             val s1 = (endMs * sr / 1000L).toInt()
             if (s1 > s0) {
-                val text = transcribe(pcm.copyOfRange(s0, s1)).trim()
+                val result = decodeResult(pcm.copyOfRange(s0, s1))
+                val text = result.text.trim()
                 checkActive()
-                if (text.isNotEmpty()) out += Triple(startMs, endMs, text)
+                if (text.isNotEmpty()) {
+                    val timedRows = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+                        tokens = result.tokens.toList(),
+                        timestampsSeconds = result.timestamps.toList(),
+                        durationsSeconds = result.durations.toList(),
+                        segmentStartMs = startMs,
+                        segmentEndMs = endMs,
+                        expectedText = text,
+                    )
+                    if (timedRows.isNotEmpty()) out.addAll(timedRows)
+                    else out += Triple(startMs, endMs, text)
+                }
             }
             onProgress(i + 1, segs.size)
         }
@@ -145,9 +162,21 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
                 val sampleCount = endSample - startSample
                 require(sampleCount <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
                 val samples = pcmFile.readFloatSamples(startSample, sampleCount.toInt(), checkActive)
-                val text = transcribe(samples).trim()
+                val result = decodeResult(samples)
+                val text = result.text.trim()
                 checkActive()
-                if (text.isNotEmpty()) out += Triple(safeStartMs, safeEndMs, text)
+                if (text.isNotEmpty()) {
+                    val timedRows = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+                        tokens = result.tokens.toList(),
+                        timestampsSeconds = result.timestamps.toList(),
+                        durationsSeconds = result.durations.toList(),
+                        segmentStartMs = safeStartMs,
+                        segmentEndMs = safeEndMs,
+                        expectedText = text,
+                    )
+                    if (timedRows.isNotEmpty()) out.addAll(timedRows)
+                    else out += Triple(safeStartMs, safeEndMs, text)
+                }
             }
             onProgress(index + 1, segs.size)
         }

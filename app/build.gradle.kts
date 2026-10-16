@@ -339,6 +339,8 @@ dependencies {
     // Backport newer Java library APIs used by NewPipeExtractor to Android 7–12.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
+    // Provide a real org.json implementation for JVM unit tests; Android SDK stubs return empty values.
+    testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     // 本地 aar：sherpa-onnx（TTS Kokoro + ASR Whisper 推理引擎）
