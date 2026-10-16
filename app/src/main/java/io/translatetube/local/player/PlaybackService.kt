@@ -2512,18 +2512,21 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             // The playback layer calls the engine once per small batch, so carry the previous
             // completed cues here; otherwise engine-local context resets at every boundary.
             val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
-                updatedLines.take(firstIndex)
-                    .filter { line ->
+                val contextIndices = io.translatetube.local.translate.TranslationContextPolicy
+                    .mostRecentIndicesBefore(
+                        size = updatedLines.size,
+                        beforeIndex = firstIndex,
+                        maxRows = 3,
+                    ) { index ->
+                        val line = updatedLines[index]
                         line.text.isNotBlank() &&
                             !needsSubtitleTranslation(line, srcLang) &&
                             !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
                     }
-                    .takeLast(3)
-                    .takeIf { it.isNotEmpty() }
-                    ?.let { previous ->
-                        previous.map { it.text } to
-                            previous.map { SubtitleParsers.cleanTranslatedText(it.zh).orEmpty() }
-                    }
+                contextIndices.takeIf { it.isNotEmpty() }?.let { indices ->
+                    indices.map { updatedLines[it].text } to
+                        indices.map { SubtitleParsers.cleanTranslatedText(updatedLines[it].zh).orEmpty() }
+                }
             }
             // A model may return fewer rows than requested, or put UI/status text in a translation
             // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
