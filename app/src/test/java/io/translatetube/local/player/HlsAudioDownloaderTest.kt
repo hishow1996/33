@@ -484,4 +484,54 @@ class HlsAudioDownloaderTest {
         assertEquals(Long.MAX_VALUE, HlsAudioDownloader.boundedCacheByteTotal(listOf(Long.MAX_VALUE, 1L), Long.MAX_VALUE))
     }
 
+    @Test
+    fun skipsVideoVariantWhoseReferencedAudioGroupIsMissing() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=120000,AUDIO="missing"
+            video/low.m3u8
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="main",NAME="Main",DEFAULT=YES,URI="audio/main.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=400000,AUDIO="main"
+            video/medium.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://cdn.example/path/audio/main.m3u8",
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master),
+        )
+    }
+
+    @Test
+    fun rejectsMasterWhenEveryVariantReferencesAnUnavailableAudioGroup() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=120000,AUDIO="missing-a"
+            video/low.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=400000,AUDIO="missing-b"
+            video/medium.m3u8
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("音轨组"))
+    }
+
+    @Test
+    fun usesVariantUrlWhenReferencedAudioGroupIsMuxedWithoutUri() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="muxed",NAME="Main",DEFAULT=YES
+            #EXT-X-STREAM-INF:BANDWIDTH=120000,AUDIO="muxed"
+            video/low.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://cdn.example/path/video/low.m3u8",
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master),
+        )
+    }
+
 }
