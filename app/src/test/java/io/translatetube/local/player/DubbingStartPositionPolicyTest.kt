@@ -122,4 +122,72 @@ class DubbingStartPositionPolicyTest {
         )
     }
 
+
+
+/** Regression tests for the single-map readiness state used by the 100 ms playback ticker. */
+class DubbingReadinessStateTest {
+    @Test
+    fun readyAudioAndSilentFallbackHaveDistinctStates() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(1, hasAudio = true)
+        readiness.markPrepared(2, hasAudio = false)
+
+        assertTrue(readiness.isReady(1))
+        assertTrue(readiness.isPrepared(1))
+        assertFalse(readiness.isSilent(1))
+        assertTrue(readiness.isReady(2))
+        assertFalse(readiness.isPrepared(2))
+        assertTrue(readiness.isSilent(2))
+        assertEquals(2, readiness.readyCount())
+    }
+
+    @Test
+    fun pendingTransitionRemovesOldAudioAndSilentMarkers() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(1, hasAudio = true)
+        readiness.markPending(1)
+        assertFalse(readiness.isReady(1))
+        assertFalse(readiness.isPrepared(1))
+        assertFalse(readiness.isSilent(1))
+
+        readiness.markPrepared(2, hasAudio = false)
+        readiness.markPending(2)
+        assertFalse(readiness.isReady(2))
+    }
+
+    @Test
+    fun markingOneCuePendingDoesNotChangeOtherCueState() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(3, hasAudio = true)
+        readiness.markPrepared(4, hasAudio = false)
+        readiness.markPending(3)
+
+        assertFalse(readiness.isReady(3))
+        assertTrue(readiness.isSilent(4))
+        assertEquals(1, readiness.readyCount())
+    }
+
+    @Test
+    fun clearRemovesAllAudioAndSilentMarkers() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(0, hasAudio = true)
+        readiness.markPrepared(1, hasAudio = false)
+        readiness.clear()
+
+        assertEquals(0, readiness.readyCount())
+        assertFalse(readiness.isReady(0))
+        assertFalse(readiness.isSilent(1))
+    }
+
+    @Test
+    fun negativeIndicesDoNotEnterReadinessMap() {
+        val readiness = DubbingReadiness()
+        readiness.markPrepared(-1, hasAudio = true)
+        readiness.markPending(-2)
+
+        assertEquals(0, readiness.readyCount())
+        assertFalse(readiness.isReady(-1))
+    }
+}
+
 }
