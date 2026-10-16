@@ -376,23 +376,28 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
     /** Toggle pause/resume for all active model downloads from the foreground notification. */
     fun togglePauseAll() {
-        val active = ttsJob?.isActive == true || asrJob?.isActive == true ||
+        val managedActive = ttsJob?.isActive == true || asrJob?.isActive == true ||
             isActiveModelState(_tts.value) || isActiveModelState(_asr.value)
-        if (!active) return
-        synchronized(pauseLock) {
-            val current = resumeSignal
-            if (current == null) {
-                resumeSignal = kotlinx.coroutines.CompletableDeferred()
-            } else {
-                current.complete(Unit)
-                resumeSignal = null
+        val piperActive = io.translatetube.local.tts.PiperModels.hasActiveDownloads
+        if (!managedActive && !piperActive) return
+        if (managedActive) {
+            synchronized(pauseLock) {
+                val current = resumeSignal
+                if (current == null) {
+                    resumeSignal = kotlinx.coroutines.CompletableDeferred()
+                } else {
+                    current.complete(Unit)
+                    resumeSignal = null
+                }
             }
         }
+        if (piperActive) io.translatetube.local.tts.PiperModels.togglePauseAll()
     }
 
-    /** Cancel all active model tasks and release any paused coroutine before cancelling jobs. */
+    /** Cancel every active model task and release pause waiters before cancelling the jobs. */
     fun cancelAll() {
         resumeDownloads()
+        io.translatetube.local.tts.PiperModels.cancelAllDownloads()
         if (ttsJob?.isActive == true || isActiveModelState(_tts.value)) cancel(ModelKind.TTS)
         if (asrJob?.isActive == true || isActiveModelState(_asr.value)) cancel(ModelKind.ASR)
     }
