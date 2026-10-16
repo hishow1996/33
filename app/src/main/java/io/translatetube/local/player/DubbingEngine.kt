@@ -100,6 +100,10 @@ class DubbingEngine(
     private val readiness = DubbingReadiness()
     private val readinessProgress = DubbingReadinessProgress(readiness)
     private val pending = LinkedBlockingDeque<Int>()
+    /** Cue currently inside the single synthesis worker, protected by the pending-queue lock. */
+    @Volatile private var activeSynthesisIndex = -1
+    /** Cache misses observed while the same cue is synthesizing are reconsidered when it exits. */
+    private val retryAfterActiveSynthesis = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     @Volatile private var priorityTarget = -1
     @Volatile private var synthJob: Job? = null
     @Volatile private var cacheInitJob: Job? = null
@@ -319,7 +323,12 @@ class DubbingEngine(
                 // it to unwind before swapping engines, preventing old TTS PCM from being written
                 // into the new engine's cache namespace.
                 if (fallbackRequested.get()) break
-                val idx = synchronized(pending) { pending.pollFirst() } ?: break
+                val idx = synchronized(pending) {
+                    val next = pending.pollFirst()
+                    if (next != null) activeSynthesisIndex = next
+                    next
+                } ?: break
+                try {
                 val line = lines.getOrNull(idx) ?: continue
                 if (!DubbingTimeline.isPlayableCue(line)) {
                     markCuePrepared(idx, hasAudio = false)
@@ -579,6 +588,28 @@ class DubbingEngine(
                     // service/voice failure should be retried in a future session, not cached as silence.
                     markCuePrepared(idx, hasAudio = false)
                     bumpPrepared()
+                }
+                } finally {
+                    // If playAt() observed this cue before its PCM publication, defer the retry
+                    // until the active synthesis finishes. Queue only one retry when it failed to
+                    // produce a cache, instead of synthesizing the same cue concurrently.
+                    val translatedCue = lines.getOrNull(idx)?.zh?.isNotBlank() == true
+                    val cacheExists = translatedCue && !released &&
+                        runCatching { cacheFile(idx).isFile }.getOrDefault(false)
+                    synchronized(pending) {
+                        if (activeSynthesisIndex == idx) activeSynthesisIndex = -1
+                        val retryWasRequested = retryAfterActiveSynthesis.remove(idx)
+                        if (
+                            retryWasRequested &&
+                            translatedCue &&
+                            !cacheExists &&
+                            !released &&
+                            !fallbackRequested.get() &&
+                            !pending.contains(idx)
+                        ) {
+                            pending.offerFirst(idx)
+                        }
+                    }
                 }
             }
 
@@ -878,9 +909,26 @@ class DubbingEngine(
      */
     private fun queueSynthesisRetry(idx: Int) {
         if (released || idx !in lines.indices) return
-        synchronized(pending) {
-            if (!pending.contains(idx)) pending.offerFirst(idx)
+        val shouldScheduleWorker = synchronized(pending) {
+            when (
+                DubbingRetryQueuePolicy.decide(
+                    index = idx,
+                    activeIndex = activeSynthesisIndex,
+                    alreadyQueued = pending.contains(idx),
+                )
+            ) {
+                DubbingRetryQueueDecision.IGNORE -> false
+                DubbingRetryQueueDecision.DEFER_UNTIL_ACTIVE_CUE_FINISHES -> {
+                    retryAfterActiveSynthesis.add(idx)
+                    false
+                }
+                DubbingRetryQueueDecision.ENQUEUE -> {
+                    pending.offerFirst(idx)
+                    true
+                }
+            }
         }
+        if (!shouldScheduleWorker) return
         val workerAtSchedule = synthJob
         scope.launch {
             workerAtSchedule?.join()
