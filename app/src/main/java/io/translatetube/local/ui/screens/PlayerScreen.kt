@@ -67,7 +67,10 @@ import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.yt.SubtitleTrackOption
 import io.translatetube.local.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -109,6 +112,8 @@ fun PlayerScreen(
     var advancedMenuExpanded by remember { mutableStateOf(false) }
     var showSubtitleDownloadDialog by remember { mutableStateOf(false) }
     var pendingSubtitleTrack by remember { mutableStateOf<SubtitleTrackOption?>(null) }
+    var pendingSubtitleExportContent by remember { mutableStateOf<String?>(null) }
+    val subtitleExportScope = rememberCoroutineScope()
     val isSpeakerBusy = state.progress.contains("人物识别") ||
         state.progress.contains("人物说话") ||
         state.progress.contains("分离")
@@ -304,17 +309,71 @@ fun PlayerScreen(
         subtitleFileSaver.launch(base + "_" + lang + ".vtt")
     }
 
+    fun saveSubtitleExport(uri: android.net.Uri?) {
+        val content = pendingSubtitleExportContent
+        pendingSubtitleExportContent = null
+        if (uri == null || content.isNullOrBlank()) return
+        subtitleExportScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    val output = ctx.contentResolver.openOutputStream(uri, "wt")
+                        ?: throw java.io.IOException("无法打开导出文件")
+                    OutputStreamWriter(output, Charsets.UTF_8).use { writer ->
+                        writer.write(content)
+                    }
+                }.exceptionOrNull()
+            }
+            val message = if (error == null) {
+                "字幕已导出"
+            } else {
+                "字幕导出失败：" + (error.message ?: error.javaClass.simpleName)
+            }
+            android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val subtitleSrtSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/x-subrip"),
+    ) { uri -> saveSubtitleExport(uri) }
+    val subtitleBilingualVttSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/vtt"),
+    ) { uri -> saveSubtitleExport(uri) }
+
+    fun requestSubtitleExport(bilingual: Boolean) {
+        if (state.lines.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "当前没有可导出的字幕", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingSubtitleExportContent = if (bilingual) {
+            SubtitleParsers.toBilingualVtt(state.lines)
+        } else {
+            SubtitleParsers.toSrt(state.lines)
+        }
+        val base = state.title.ifBlank { "subtitles" }
+            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
+            .take(48)
+            .ifBlank { "subtitles" }
+        if (bilingual) {
+            subtitleBilingualVttSaver.launch(base + "_bilingual.vtt")
+        } else {
+            subtitleSrtSaver.launch(base + "_zh.srt")
+        }
+    }
+
     fun copySubtitles() {
         val sb = StringBuilder()
         for (line in state.lines) {
-            val zh = line.zh ?: ""
-            if (zh.isNotBlank()) {
-                // 中文源视频译文与原文相同：只导出一行，避免重复
-                if (subtitleComparisonKey(zh) == subtitleComparisonKey(line.text)) {
-                    sb.append(line.text).append('\n').append('\n')
-                } else {
-                    sb.append(line.text).append('\n').append(zh).append('\n').append('\n')
-                }
+            val source = line.text.trim()
+            val zh = line.zh?.let { SubtitleParsers.cleanTranslatedText(it) }.orEmpty()
+            if (source.isBlank() && zh.isBlank()) continue
+            // Never discard an original row when translation failed. Match the player's
+            // Chinese-first layout and avoid showing the same caption twice.
+            if (zh.isBlank() || source.isBlank() ||
+                subtitleComparisonKey(zh) == subtitleComparisonKey(source)
+            ) {
+                sb.append(zh.ifBlank { source }).append('\n').append('\n')
+            } else {
+                sb.append(zh).append('\n').append(source).append('\n').append('\n')
             }
         }
         val text = sb.toString().trim()
@@ -324,6 +383,7 @@ fun PlayerScreen(
             cm.setPrimaryClip(android.content.ClipData.newPlainText("subtitles", text))
         }
     }
+
 
     Box(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
@@ -476,6 +536,26 @@ fun PlayerScreen(
                             onClick = {
                                 advancedMenuExpanded = false
                                 copySubtitles()
+                            },
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Subtitles,
+                            title = "导出中文字幕（SRT）",
+                            description = "保留时间轴，可保存或再次导入",
+                            enabled = state.lines.isNotEmpty(),
+                            onClick = {
+                                advancedMenuExpanded = false
+                                requestSubtitleExport(bilingual = false)
+                            },
+                        )
+                        PlaybackMenuItem(
+                            icon = Icons.Filled.Subtitles,
+                            title = "导出双语字幕（VTT）",
+                            description = "中文在上、原文在下，并保留时间轴",
+                            enabled = state.lines.isNotEmpty(),
+                            onClick = {
+                                advancedMenuExpanded = false
+                                requestSubtitleExport(bilingual = true)
                             },
                         )
                         Divider(
