@@ -13,7 +13,7 @@ internal object TranscriptTimelinePolicy {
     ): List<Triple<Long, Long, String>> {
         if (cues.isEmpty()) return emptyList()
         val duration = audioDurationMs.takeIf { it > 0L }
-        return cues.asSequence()
+        val chronological = cues.asSequence()
             .mapNotNull { (rawStart, rawEnd, rawText) ->
                 val text = rawText.trim()
                 if (text.isBlank() || rawStart < 0L || rawEnd <= rawStart) {
@@ -31,5 +31,23 @@ internal object TranscriptTimelinePolicy {
             .sortedWith(compareBy<Triple<Long, Long, String>> { it.first }.thenBy { it.second })
             .distinct()
             .toList()
+
+        if (chronological.size < 2) return chronological
+
+        // This transcript drives a single dubbing track. Provider word timings may cross at
+        // phrase boundaries, so cap an earlier cue at the next strictly later cue's start.
+        // Walk backwards to keep this O(n) after sorting, even for long ASR results; equal-start
+        // rows are preserved rather than arbitrarily discarding recognized words.
+        val normalizedReversed = ArrayList<Triple<Long, Long, String>>(chronological.size)
+        var nextLaterStart: Long? = null
+        for (cue in chronological.asReversed()) {
+            val cap = nextLaterStart
+            val end = if (cap != null && cap > cue.first && cue.second > cap) cap else cue.second
+            if (end > cue.first) normalizedReversed += Triple(cue.first, end, cue.third)
+            if (nextLaterStart == null || cue.first < nextLaterStart) {
+                nextLaterStart = cue.first
+            }
+        }
+        return normalizedReversed.asReversed()
     }
 }

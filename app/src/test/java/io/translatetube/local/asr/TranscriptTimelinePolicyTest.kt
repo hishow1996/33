@@ -60,6 +60,49 @@ class TranscriptTimelinePolicyTest {
     }
 
     @Test
+    fun clipsOverlappingTranscriptCuesAtTheNextLaterCueStart() {
+        val normalized = TranscriptTimelinePolicy.normalize(
+            listOf(
+                Triple(100L, 1_000L, "first phrase"),
+                Triple(500L, 800L, "second phrase"),
+                Triple(900L, 1_200L, "third phrase"),
+            ),
+            audioDurationMs = 2_000L,
+        )
+
+        assertEquals(
+            listOf(
+                Triple(100L, 500L, "first phrase"),
+                Triple(500L, 800L, "second phrase"),
+                Triple(900L, 1_200L, "third phrase"),
+            ),
+            normalized,
+        )
+        assertTrue(normalized.zipWithNext().all { (left, right) -> left.second <= right.first })
+    }
+
+    @Test
+    fun clipsToNextDistinctStartAndKeepsSameStartCaptions() {
+        val normalized = TranscriptTimelinePolicy.normalize(
+            listOf(
+                Triple(100L, 900L, "first"),
+                Triple(100L, 700L, "same-start alternate"),
+                Triple(500L, 800L, "next"),
+            ),
+            audioDurationMs = 1_000L,
+        )
+
+        assertEquals(
+            listOf(
+                Triple(100L, 500L, "first"),
+                Triple(100L, 500L, "same-start alternate"),
+                Triple(500L, 800L, "next"),
+            ),
+            normalized,
+        )
+    }
+
+    @Test
     fun leavesTimesIntactWhenAudioDurationIsUnavailable() {
         val cues = listOf(Triple(2_000L, 3_000L, "second"), Triple(0L, 1_000L, "first"))
         assertEquals(
