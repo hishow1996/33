@@ -773,14 +773,20 @@ class DubbingEngine(
         }
         val file = cacheFile(idx)
         val inspection = inspectCache(file, checkActive)
+        val translatedText = lines.getOrNull(idx)?.zh
         val reusable = DubbingCacheAudioPolicy.reusableState(
             inspection.hasAudio,
-            lines.getOrNull(idx)?.zh,
+            translatedText,
         )
-        if (inspection.hasAudio == false && reusable == null) {
-            // Older builds persisted failed TTS synthesis as an empty marker. If this cue has
-            // translated text, invalidate that marker so a later session can retry the selected engine.
+        val cachedAudio = inspection.hasAudio
+        if (
+            cachedAudio != null &&
+            !DubbingCacheAudioPolicy.isCompatibleWithTranslation(cachedAudio, translatedText)
+        ) {
+            // A file may be replaced after attach() inspected it. Recheck the audio/text contract
+            // on every cache hit so stale silence or stale speech cannot become permanently ready.
             deleteCacheIfUnchanged(file, inspection.stamp)
+            return null
         }
         return reusable
     }
