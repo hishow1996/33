@@ -7,10 +7,12 @@ import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import io.translatetube.local.yt.executeCancellableHttpCall
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -129,6 +131,26 @@ data class PiperModelDef(
     val archiveSha256: String? = null,
 )
 
+enum class PiperModelDownloadStatus {
+    NOT_DOWNLOADED,
+    DOWNLOADING,
+    EXTRACTING,
+    READY,
+    FAILED,
+    CANCELLED,
+}
+
+data class PiperModelDownloadState(
+    val status: PiperModelDownloadStatus = PiperModelDownloadStatus.NOT_DOWNLOADED,
+    val progress: Int = 0,
+    val stageMessage: String? = null,
+    val error: String? = null,
+) {
+    val isActive: Boolean
+        get() = status == PiperModelDownloadStatus.DOWNLOADING ||
+            status == PiperModelDownloadStatus.EXTRACTING
+}
+
 /** Piper 模型清单、安装状态与下载解压管理。 */
 object PiperModels {
     private const val BASE =
@@ -196,6 +218,19 @@ object PiperModels {
     private val _installed = MutableStateFlow<Set<String>>(emptySet())
     val installed: StateFlow<Set<String>> = _installed
 
+    private val downloadStateLock = Any()
+    private val downloadJobs = mutableMapOf<String, Job>()
+    private val _downloadStates = MutableStateFlow<Map<String, PiperModelDownloadState>>(emptyMap())
+    val downloadStates: StateFlow<Map<String, PiperModelDownloadState>> = _downloadStates
+
+    val hasActiveDownloads: Boolean
+        get() = _downloadStates.value.values.any { it.isActive } ||
+            synchronized(downloadStateLock) { downloadJobs.values.any { it.isActive } }
+
+    private val pauseLock = Any()
+    @Volatile private var resumeSignal: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    val isPaused: Boolean get() = synchronized(pauseLock) { resumeSignal != null }
+
     // Counts queued and active downloads so cache cleanup cannot delete an archive in use.
     private val installMutex = Mutex()
     private val activeDownloadLock = Any()
@@ -203,8 +238,214 @@ object PiperModels {
     private val _activeDownloadCount = MutableStateFlow(0)
     val activeDownloadCount: StateFlow<Int> = _activeDownloadCount
 
+    private fun updateDownloadState(id: String, transform: (PiperModelDownloadState) -> PiperModelDownloadState) {
+        synchronized(downloadStateLock) {
+            val current = _downloadStates.value[id] ?: PiperModelDownloadState()
+            _downloadStates.value = _downloadStates.value + (id to transform(current))
+        }
+    }
+
+    private fun publishProgress(id: String, progress: Int) {
+        updateDownloadState(id) { current ->
+            if (current.status == PiperModelDownloadStatus.READY) current
+            else current.copy(progress = progress.coerceIn(0, 99), error = null)
+        }
+    }
+
+    private fun publishStage(id: String, stage: String) {
+        val status = when {
+            stage.startsWith("正在解压") || stage.startsWith("模型文件校验") ->
+                PiperModelDownloadStatus.EXTRACTING
+            stage == "Piper 模型已就绪" -> PiperModelDownloadStatus.READY
+            else -> PiperModelDownloadStatus.DOWNLOADING
+        }
+        updateDownloadState(id) { current ->
+            current.copy(
+                status = status,
+                progress = if (status == PiperModelDownloadStatus.READY) 100 else current.progress,
+                stageMessage = stage,
+                error = null,
+            )
+        }
+    }
+
+    fun startDownload(ctx: Context, id: String, scope: CoroutineScope): Boolean {
+        val definition = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
+        if (modelReady(ctx, id)) {
+            refreshInstalled(ctx)
+            updateDownloadState(id) {
+                PiperModelDownloadState(
+                    status = PiperModelDownloadStatus.READY,
+                    progress = 100,
+                    stageMessage = "Piper 模型已就绪",
+                )
+            }
+            return false
+        }
+
+        val job = synchronized(downloadStateLock) {
+            if (downloadJobs[id]?.isActive == true) return false
+            _downloadStates.value = _downloadStates.value + (
+                id to PiperModelDownloadState(
+                    status = PiperModelDownloadStatus.DOWNLOADING,
+                    progress = 0,
+                    stageMessage = "正在准备下载…",
+                )
+            )
+            scope.launch(context = Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                val ownerJob = currentCoroutineContext()[Job]
+                try {
+                    download(
+                        ctx = ctx.applicationContext,
+                        id = definition.id,
+                        onProgress = { progress -> publishProgress(definition.id, progress) },
+                        checkActive = { ownerJob?.ensureActive() },
+                        onStage = { stage -> publishStage(definition.id, stage) },
+                    )
+                    refreshInstalled(ctx)
+                    updateDownloadState(definition.id) {
+                        PiperModelDownloadState(
+                            status = PiperModelDownloadStatus.READY,
+                            progress = 100,
+                            stageMessage = "Piper 模型已就绪",
+                        )
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    updateDownloadState(definition.id) {
+                        it.copy(
+                            status = PiperModelDownloadStatus.CANCELLED,
+                            stageMessage = "下载已取消",
+                            error = "下载已取消",
+                        )
+                    }
+                    throw cancelled
+                } catch (error: Exception) {
+                    updateDownloadState(definition.id) {
+                        it.copy(
+                            status = PiperModelDownloadStatus.FAILED,
+                            stageMessage = null,
+                            error = error.message ?: "模型下载失败",
+                        )
+                    }
+                } finally {
+                    synchronized(downloadStateLock) {
+                        if (downloadJobs[definition.id] === ownerJob) {
+                            downloadJobs.remove(definition.id)
+                        }
+                    }
+                    refreshInstalled(ctx)
+                }
+            }.also { downloadJobs[id] = it }
+        }
+
+        // Keep the model task alive across settings navigation and app backgrounding.
+        runCatching {
+            val intent = android.content.Intent(
+                ctx.applicationContext,
+                io.translatetube.local.data.ModelDownloadForegroundService::class.java,
+            )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                ctx.applicationContext.startForegroundService(intent)
+            } else {
+                ctx.applicationContext.startService(intent)
+            }
+        }.onFailure {
+            android.util.Log.w("PiperModels", "无法启动模型下载前台服务：${it.message}")
+        }
+        job.start()
+        return true
+    }
+
+    fun cancelDownload(id: String) {
+        val job = synchronized(downloadStateLock) { downloadJobs[id] }
+        if (job == null) return
+        updateDownloadState(id) {
+            it.copy(
+                status = PiperModelDownloadStatus.CANCELLED,
+                stageMessage = "正在取消…",
+                error = "下载已取消",
+            )
+        }
+        job.cancel(kotlinx.coroutines.CancellationException("用户取消 Piper 模型下载"))
+    }
+
+    fun cancelAllDownloads() {
+        val ids = synchronized(downloadStateLock) { downloadJobs.keys.toList() }
+        ids.forEach(::cancelDownload)
+        resumeDownloads()
+    }
+
+    fun togglePauseAll() {
+        synchronized(pauseLock) {
+            val current = resumeSignal
+            if (current == null) resumeSignal = kotlinx.coroutines.CompletableDeferred()
+            else {
+                current.complete(Unit)
+                resumeSignal = null
+            }
+        }
+    }
+
+    private fun resumeDownloads() {
+        synchronized(pauseLock) {
+            resumeSignal?.complete(Unit)
+            resumeSignal = null
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    private fun awaitDownloadsResumedBlocking(job: Job?) {
+        while (true) {
+            job?.ensureActive()
+            val signal = synchronized(pauseLock) { resumeSignal } ?: return
+            val waiter = java.util.concurrent.CountDownLatch(1)
+            val resumeHandle = signal.invokeOnCompletion { waiter.countDown() }
+            val cancelHandle = job?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is java.util.concurrent.CancellationException) waiter.countDown()
+            }
+            try {
+                if (job?.isActive != false && !signal.isCompleted) {
+                    try {
+                        waiter.await()
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw kotlinx.coroutines.CancellationException("Piper 模型等待已中断").also {
+                            it.initCause(interrupted)
+                        }
+                    }
+                }
+            } finally {
+                resumeHandle.dispose()
+                cancelHandle?.dispose()
+            }
+        }
+    }
+
     fun refreshInstalled(ctx: Context) {
-        _installed.value = installedIds(ctx)
+        val installedIds = installedIds(ctx)
+        _installed.value = installedIds
+        synchronized(downloadStateLock) {
+            var states = _downloadStates.value
+            for (definition in catalog) {
+                if (downloadJobs[definition.id]?.isActive == true) continue
+                val old = states[definition.id]
+                states = when {
+                    definition.id in installedIds ->
+                        states + (definition.id to PiperModelDownloadState(
+                            status = PiperModelDownloadStatus.READY,
+                            progress = 100,
+                            stageMessage = "Piper 模型已就绪",
+                        ))
+                    old?.status == PiperModelDownloadStatus.READY ->
+                        states + (definition.id to PiperModelDownloadState())
+                    else -> states
+                }
+            }
+            _downloadStates.value = states
+        }
     }
 
     private val http = OkHttpClient.Builder()
@@ -227,6 +468,7 @@ object PiperModels {
         val def = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
         val callingJob = currentCoroutineContext()[Job]
         val guardedCheck = {
+            awaitDownloadsResumedBlocking(callingJob)
             checkActive()
             callingJob?.ensureActive()
         }
