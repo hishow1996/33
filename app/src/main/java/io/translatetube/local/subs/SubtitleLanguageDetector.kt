@@ -27,6 +27,64 @@ object SubtitleLanguageDetector {
         Regex("[đĐơƠưƯăĂ]"),
     )
 
+
+    /**
+     * Reconcile a transcription provider's language hint with the recognized transcript.
+     *
+     * Some APIs echo a requested language (for example, "zh") even when the recognized words
+     * are English or another language. Strong script detection wins. If the provider claims
+     * Chinese but the content is not Chinese-dominant, use "auto" so translation is not skipped.
+     */
+    fun resolveTranscriptionLanguage(providerLanguage: String?, transcript: String): String {
+        val contentLanguage = detect(transcript)
+        if (contentLanguage != "auto") return contentLanguage
+
+        val supplied = normalizeProviderLanguage(providerLanguage)
+        return if (supplied.startsWith("zh") || supplied == "cmn" || supplied.startsWith("yue")) {
+            "auto"
+        } else {
+            supplied
+        }
+    }
+
+    private fun normalizeProviderLanguage(value: String?): String {
+        val normalized = value.orEmpty().trim().replace('_', '-').lowercase(java.util.Locale.ROOT)
+        if (normalized.isEmpty() || normalized in setOf("auto", "und", "unknown", "undefined")) return "auto"
+        return when (normalized) {
+            "chinese", "mandarin", "simplified chinese", "traditional chinese", "cmn", "zho", "chi" -> "zh"
+            "cantonese", "yue" -> "yue"
+            "english", "eng" -> "en"
+            "japanese", "jpn" -> "ja"
+            "korean", "kor" -> "ko"
+            "spanish", "spa" -> "es"
+            "french", "fra", "fre" -> "fr"
+            "german", "deu", "ger" -> "de"
+            "portuguese", "por" -> "pt"
+            "russian", "rus" -> "ru"
+            "arabic", "ara" -> "ar"
+            "hindi", "hin" -> "hi"
+            "thai", "tha" -> "th"
+            "vietnamese", "vie" -> "vi"
+            "indonesian", "ind" -> "id"
+            "dutch", "nld", "dut" -> "nl"
+            "polish", "pol" -> "pl"
+            "turkish", "tur" -> "tr"
+            "swedish", "swe" -> "sv"
+            "danish", "dan" -> "da"
+            "finnish", "fin" -> "fi"
+            "norwegian", "nor" -> "no"
+            "greek", "ell", "gre" -> "el"
+            "hebrew", "heb" -> "he"
+            "hungarian", "hun" -> "hu"
+            "czech", "ces", "cze" -> "cs"
+            "romanian", "ron", "rum" -> "ro"
+            "ukrainian", "ukr" -> "uk"
+            "bengali", "ben" -> "bn"
+            "malay", "msa", "may" -> "ms"
+            else -> normalized.substringBefore('-').takeIf { it.length == 2 || it == "yue" } ?: "auto"
+        }
+    }
+
     fun detect(text: String): String {
         val sample = text.take(12_000)
         if (sample.isBlank()) return "auto"

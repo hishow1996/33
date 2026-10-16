@@ -44,4 +44,36 @@ class SubtitleLanguageDetectorTest {
         )
         assertEquals("zh", SubtitleLanguageDetector.detect("你好，欢迎观看今天的视频。"))
     }
+
+    @Test
+    fun aFalseChineseProviderHintMustNotSuppressForeignSubtitleTranslation() {
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage(
+                "zh",
+                "Hello, welcome to this video. Today we are going to talk about the weather.",
+            ),
+        )
+        assertEquals(
+            "ja",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage("zh", "こんにちは、今日の動画へようこそ。"),
+        )
+    }
+
+    @Test
+    fun transcriptScriptCanCorrectAnIncorrectProviderLanguageHint() {
+        assertEquals(
+            "zh",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage("en", "你好，欢迎观看今天的视频。"),
+        )
+        assertEquals(
+            "en",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage("eng", "Hello, welcome to this video."),
+        )
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.resolveTranscriptionLanguage("zh-CN", "Bonjour, bienvenue dans cette vidéo."),
+        )
+    }
+
 }

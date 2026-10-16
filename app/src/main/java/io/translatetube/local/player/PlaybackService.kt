@@ -1306,6 +1306,20 @@ class PlaybackService : MediaSessionService() {
         return normalized.startsWith("zh") || normalized == "cmn" || normalized.startsWith("yue")
     }
 
+    /**
+     * Treat a non-Chinese cue whose cached "translation" exactly mirrors its source as unfinished.
+     * This repairs older caches where source text was mistakenly saved to the Chinese field.
+     */
+    private fun needsSubtitleTranslation(line: SubLine, srcLang: String): Boolean {
+        if (line.text.isBlank()) return false
+        val translated = SubtitleParsers.cleanTranslatedText(line.zh)
+        if (translated.isNullOrBlank()) return true
+        if (isChineseLanguage(srcLang)) return false
+        fun normalize(value: String): String =
+            value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
+        return normalize(line.text) == normalize(translated)
+    }
+
     /** Reject corrupt timelines and progress/status placeholders before restoring translated rows. */
     private fun isUsableTranslationCache(linesJson: String): Boolean = try {
         val rows = org.json.JSONArray(linesJson)
@@ -1939,8 +1953,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key) { it.copy(progress = "云端转写完成，正在整理字幕…") }
-                            val language = result.language.takeIf { it.isNotBlank() }
-                                ?: detectLangFromText(result.cues.joinToString(" ") { it.third })
+                            val transcriptText = result.cues.take(120).joinToString(" ") { it.third }
+                            // Provider language hints can reflect the requested setting rather than
+                            // the language actually spoken. Resolve against the recognized words so
+                            // a false "zh" hint cannot bypass Chinese translation.
+                            val language = io.translatetube.local.subs.SubtitleLanguageDetector
+                                .resolveTranscriptionLanguage(result.language, transcriptText)
                             result.cues to language
                         }
                     } finally {
@@ -1981,7 +1999,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                     )
                 }
                 lines = transcribedLines
-                srcLang = detectedAsrLang.takeIf { it.isNotBlank() } ?: "en"
+                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .resolveTranscriptionLanguage(
+                        detectedAsrLang,
+                        transcribedLines.take(120).joinToString(" ") { it.text },
+                    )
 
                 // Keep the completed ASR transcript as an independent checkpoint. The bounded
                 // source-audio cache is retained for retries and later speaker diarization, while
@@ -2047,13 +2069,20 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 srcLang = cached.srcLang.takeIf { it.isNotBlank() }
                     ?: restoredSourceLang
                     ?: detectLangFromText(restored.take(12).joinToString(" ") { it.text })
+                // Re-check cached language against the original transcript too. Older releases
+                // may have persisted a provider's incorrect "zh" hint for non-Chinese speech.
+                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .resolveTranscriptionLanguage(
+                        srcLang,
+                        restored.take(120).joinToString(" ") { it.text },
+                    )
                 lines = if (isChineseLanguage(srcLang)) {
                     SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(restored)
                 } else {
                     restored
                 }
                 if (!isChineseLanguage(srcLang) && restored.any { line ->
-                    line.text.isNotBlank() && SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
+                    needsSubtitleTranslation(line, srcLang)
                 }) {
                     updateUiForSession(key) {
                         it.copy(
@@ -2067,6 +2096,13 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
+                // Validate the selected/source-cache language against the actual transcript before
+                // deciding that translation can be skipped.
+                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .resolveTranscriptionLanguage(
+                        srcLang,
+                        translatedLines.take(120).joinToString(" ") { it.text },
+                    )
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "字幕已读取，准备翻译（${translatedLines.size} 行）…") }
                     translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId)
@@ -2457,10 +2493,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             engineName = "本地引擎（离线）"
         }
         val pendingIndices = lines.indices.filter { index ->
-            lines[index].text.isNotBlank() && SubtitleParsers.cleanTranslatedText(lines[index].zh).isNullOrBlank()
+            needsSubtitleTranslation(lines[index], srcLang)
         }
         var completed = lines.indices.count { index ->
-            lines[index].text.isBlank() || !SubtitleParsers.cleanTranslatedText(lines[index].zh).isNullOrBlank()
+            lines[index].text.isBlank() || !needsSubtitleTranslation(lines[index], srcLang)
         }
         updateUiForSession(key) {
             it.copy(
