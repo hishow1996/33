@@ -311,12 +311,12 @@ class DubbingEngine(
                     markCuePrepared(idx, hasAudio = cachedAudioState)
                     if (!released && cachedAudioState && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
-                            val audioFromMemory = synchronized(mem) { mem[idx] }
+                            val audioFromMemory = memoryAudio(idx)
                             if (audioFromMemory != null) {
                                 onFirstSynthesisReady?.invoke(
                                     idx,
-                                    audioFromMemory.first.size,
-                                    audioFromMemory.second,
+                                    audioFromMemory.samples.size,
+                                    audioFromMemory.sampleRate,
                                 )
                             } else {
                                 java.io.DataInputStream(
@@ -340,11 +340,18 @@ class DubbingEngine(
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
+                    val markerSpeed = speed
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     // An empty translation is intentionally silent. Persisting its empty marker is
                     // only an optimization; a full cache must not terminate the whole TTS queue.
                     try {
-                        writeCache(idx, 16000, FloatArray(0), checkActive = ::checkSynthesisActive)
+                        writeCache(
+                            idx,
+                            16000,
+                            FloatArray(0),
+                            cacheSpeed = markerSpeed,
+                            checkActive = ::checkSynthesisActive,
+                        )
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -359,11 +366,14 @@ class DubbingEngine(
                     continue
                 }
                 try {
+                    // One cue must use one synthesis-rate snapshot for its primary attempt,
+                    // adaptive retry and cache identity even if Settings changes mid-request.
+                    val synthesisSpeed = speed
                     var audio: io.translatetube.local.tts.TtsAudio? = null
                     var lastFailure: Exception? = null
                     for (attempt in 0..1) {
                         try {
-                            val generated = tts!!.synth(text, speed, line.speakerId)
+                            val generated = tts!!.synth(text, synthesisSpeed, line.speakerId)
                             // TTS providers perform blocking work; observe cancellation as soon
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -410,7 +420,7 @@ class DubbingEngine(
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
                     val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
                     val fasterSpeed = DubbingSynthesisPolicy.recommendedSpeed(
-                        baseSpeed = speed,
+                        baseSpeed = synthesisSpeed,
                         sampleCount = firstAudio.samples.size,
                         sampleRate = firstAudio.sampleRate,
                         cueDurationMs = cueDurationMs,
@@ -418,7 +428,7 @@ class DubbingEngine(
                     // Prefer regenerating a long sentence with the same selected engine at a
                     // higher but bounded speech rate before trimming it to the video time window.
                     // If adaptive synthesis fails or the provider ignores speed, keep the first audio.
-                    val readyAudio = if (fasterSpeed > speed + 0.05f) {
+                    val readyAudio = if (fasterSpeed > synthesisSpeed + 0.05f) {
                         try {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val faster = tts!!.synth(text, fasterSpeed, line.speakerId)
@@ -470,8 +480,15 @@ class DubbingEngine(
                         readyAudio.samples
                     }
                     var cachePersisted = false
+                    var persistedCacheIdentity: String? = null
                     try {
-                        writeCache(idx, readyAudio.sampleRate, boundedSamples, checkActive = ::checkSynthesisActive)
+                        persistedCacheIdentity = writeCache(
+                            idx,
+                            readyAudio.sampleRate,
+                            boundedSamples,
+                            cacheSpeed = synthesisSpeed,
+                            checkActive = ::checkSynthesisActive,
+                        )
                         cachePersisted = true
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         throw cancelled
@@ -486,7 +503,11 @@ class DubbingEngine(
                         )
                     }
                     val retainedInMemory = synchronized(mem) {
-                        mem[idx] = boundedSamples to readyAudio.sampleRate
+                        mem[idx] = DubbingPcmMemoryEntry(
+                            samples = boundedSamples,
+                            sampleRate = readyAudio.sampleRate,
+                            cacheIdentity = persistedCacheIdentity ?: cacheFile(idx, synthesisSpeed).name,
+                        )
                         mem.containsKey(idx)
                     }
                     if (!cachePersisted && !retainedInMemory) {
@@ -576,9 +597,10 @@ class DubbingEngine(
             runCatching { previous.close() }
             ttsInstances.remove(previous)
         }
-        synchronized(mem) { mem.remove(failedIndex) }
-        markCuePending(failedIndex)
-        queueSynthesisRetry(failedIndex)
+        // The memory LRU is keyed by subtitle index for fast lookup, but its entries are
+        // identity-bound. Clear all of it on an engine switch and rebuild readiness for the
+        // new engine so rows synthesized by the previous engine are not reported ready.
+        restartSynthesisForCurrentConfiguration()
     }
 
     fun failTtsFallback(failedIndex: Int, detail: String) {
@@ -665,7 +687,7 @@ class DubbingEngine(
         }
     }
 
-    private fun cacheFile(idx: Int): File {
+    private fun cacheFile(idx: Int, cacheSpeed: Float = speed): File {
         val line = lines.getOrNull(idx)
         val cueDurationMs = ((line?.endMs ?: 0L) - (line?.startMs ?: 0L)).coerceAtLeast(0L)
         return File(
@@ -675,10 +697,36 @@ class DubbingEngine(
                 speakerId = line?.speakerId ?: -1,
                 engineKey = tts?.cacheKey ?: tts?.name ?: "unknown",
                 text = line?.zh ?: "",
-                speed = speed,
+                speed = cacheSpeed,
                 cueDurationMs = cueDurationMs,
             ),
         )
+    }
+
+    /** Read only PCM synthesized for the currently active TTS/text/speaker/speed identity. */
+    private fun memoryAudio(idx: Int): DubbingPcmMemoryEntry? {
+        val activeIdentity = cacheFile(idx).name
+        return synchronized(mem) {
+            val entry = mem[idx] ?: return@synchronized null
+            if (DubbingMemoryCacheIdentityPolicy.canReuse(entry.cacheIdentity, activeIdentity)) {
+                entry
+            } else {
+                // Remove the stale index before it can occupy memory or mask a disk-cache miss.
+                mem.remove(idx)
+                null
+            }
+        }
+    }
+
+    private fun rememberMemoryAudio(
+        idx: Int,
+        samples: FloatArray,
+        sampleRate: Int,
+        cacheIdentity: String,
+    ) {
+        synchronized(mem) {
+            mem[idx] = DubbingPcmMemoryEntry(samples, sampleRate, cacheIdentity)
+        }
     }
     private fun validCache(file: File): Boolean = file.isFile && file.length() >= 8L
 
@@ -767,7 +815,7 @@ class DubbingEngine(
         idx: Int,
         checkActive: () -> Unit = {},
     ): Boolean? {
-        if (synchronized(mem) { mem.containsKey(idx) }) {
+        if (memoryAudio(idx) != null) {
             checkActive()
             return true
         }
@@ -813,9 +861,10 @@ class DubbingEngine(
         idx: Int,
         sampleRate: Int,
         samples: FloatArray,
+        cacheSpeed: Float = speed,
         checkActive: () -> Unit = {},
-    ) {
-        val target = cacheFile(idx)
+    ): String {
+        val target = cacheFile(idx, cacheSpeed)
         val temp = File(cacheDir, DubbingCacheIdentity.tempFileName(target.name, cacheWriterId))
         temp.delete()
         try {
@@ -855,6 +904,7 @@ class DubbingEngine(
             runCatching { temp.delete() }
             throw error
         }
+        return target.name
     }
 
     /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。 */
@@ -864,14 +914,14 @@ class DubbingEngine(
     ): Pair<FloatArray, Int>? {
         if (!isCurrent()) return null
         val f = cacheFile(idx)
-        val memoryAudio = synchronized(mem) { mem[idx] }
-        if (memoryAudio != null) {
+        val inMemory = memoryAudio(idx)
+        if (inMemory != null) {
             if (!isCurrent()) return null
             // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
             // mtime aligned when playback hits memory so frequently reused PCM isn't evicted as
             // if it had not been used since the original synthesis.
             touchCacheFile(f)
-            return memoryAudio
+            return inMemory.samples to inMemory.sampleRate
         }
         val cacheStamp = DubbingCacheFileStamp.capture(f)
         if (!validCache(f)) {
@@ -925,7 +975,7 @@ class DubbingEngine(
                 if (!hasAudio) {
                     markCuePrepared(idx, hasAudio = false)
                 } else {
-                    synchronized(mem) { mem[idx] = samples to sr }
+                    rememberMemoryAudio(idx, samples, sr, f.name)
                     markCuePrepared(idx, hasAudio = true)
                 }
                 touchCacheFile(f, cacheStamp)
@@ -1754,7 +1804,52 @@ class DubbingEngine(
 
     fun line(idx: Int): SubLine? = lines.getOrNull(idx)
     fun allLines(): List<SubLine> = lines
-    fun setSpeed(s: Float) { speed = s.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f }
+
+    /**
+     * Changing synthesis speed changes the PCM cache identity. Cancel any in-flight synthesis,
+     * invalidate readiness from the previous configuration, then rebuild the queue after the
+     * blocking provider call has unwound. Existing matching disk-cache rows are still reusable.
+     */
+    fun setSpeed(s: Float) {
+        val next = s.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        if (next == speed || released) return
+        speed = next
+        restartSynthesisForCurrentConfiguration()
+    }
+
+    private fun restartSynthesisForCurrentConfiguration() {
+        if (released) return
+        val generation = cacheInitGeneration.incrementAndGet()
+        val oldCacheInit = cacheInitJob
+        val oldSynthesis = synchronized(synthStartLock) { synthJob }
+        oldCacheInit?.cancel()
+        oldSynthesis?.cancel()
+        synchronized(mem) { mem.clear() }
+        readinessProgress.clear(lines.size, ::publishReadinessProgress)
+        synchronized(pending) {
+            pending.clear()
+            priorityTarget = -1
+        }
+
+        scope.launch {
+            oldCacheInit?.join()
+            oldSynthesis?.join()
+            if (released || generation != cacheInitGeneration.get()) return@launch
+
+            // Clear once more after joining: a validator already between two instructions may
+            // have published progress immediately before observing cancellation.
+            readinessProgress.clear(lines.size, ::publishReadinessProgress)
+            synchronized(mem) { mem.clear() }
+            synchronized(pending) {
+                pending.clear()
+                lines.indices
+                    .filter { DubbingTimeline.isPlayableCue(lines[it]) }
+                    .forEach { pending.offerLast(it) }
+            }
+            bumpPrepared()
+            startSynthLoop()
+        }
+    }
 
     /** Update the active voice volume immediately when the user toggles original audio. */
     fun updateVolume(volume: Float) {
