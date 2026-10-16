@@ -67,4 +67,30 @@ class DubbingChunkTransitionPolicyTest {
         )
     }
 
+
+    @Test
+    fun markerCandidatesFallBackToBufferEndWhenEarlyMarkerIsUnsupported() {
+        assertEquals(
+            listOf(25_600, 32_000),
+            DubbingChunkTransitionPolicy.markerPositionCandidates(
+                chunkSampleCount = 32_000,
+                sampleRate = 16_000,
+                playbackRate = 1.0f,
+            ),
+        )
+        assertEquals(
+            listOf(2_000),
+            DubbingChunkTransitionPolicy.markerPositionCandidates(
+                chunkSampleCount = 2_000,
+                sampleRate = 16_000,
+                playbackRate = 1.0f,
+                currentHeadPosition = 1_999,
+            ),
+        )
+        assertEquals(
+            emptyList<Int>(),
+            DubbingChunkTransitionPolicy.markerPositionCandidates(0, 16_000, 1.0f),
+        )
+    }
+
 }
