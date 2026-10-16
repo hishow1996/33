@@ -1818,8 +1818,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         }
                         val savedRows = checkpoint.optJSONArray("rows")
                             ?: throw IllegalStateException("ASR 检查点缺少字幕列表")
-                        if (savedRows.length() > processed) {
-                            throw IllegalStateException("ASR 检查点字幕数量超出已完成分段")
+                        // Token-aligned Whisper output can produce several captions per VAD segment.
+                        // Keep a generous cap against corrupt cache payloads without assuming 1 row/segment.
+                        val maxCheckpointRows = minOf(processed.toLong() * 64L, 100_000L).toInt()
+                        if (savedRows.length() > maxCheckpointRows) {
+                            throw IllegalStateException("ASR 检查点字幕数量异常")
                         }
                         val restoredRows = (0 until savedRows.length()).map { index ->
                             if ((index and 0xff) == 0) pcmOwnerJob?.ensureActive()
