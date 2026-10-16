@@ -66,6 +66,7 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
     fun transcribeSegmented(
         pcm: FloatArray,
         onProgress: (doneSec: Long, totalSec: Long) -> Unit = { _, _ -> },
+        checkActive: () -> Unit = {},
     ): List<Pair<Long, String>> {
         check(!closed) { "Whisper 识别器已关闭" }
         val sr = 16000
@@ -75,13 +76,16 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         var start = 0
         val totalSec = WhisperProgressPolicy.secondsCeiling(pcm.size, sr)
         while (start < pcm.size) {
-            val end = (start + window).coerceAtMost(pcm.size)
+            checkActive()
+            // Promote to Long before adding so near-maximum arrays cannot wrap end negative.
+            val end = minOf(start.toLong() + window.toLong(), pcm.size.toLong()).toInt()
             val seg = pcm.copyOfRange(start, end)
             val text = transcribe(seg).trim()
+            checkActive()
             if (text.isNotEmpty()) out += (start / sr).toLong() to text
             onProgress(WhisperProgressPolicy.secondsCeiling(end, sr), totalSec)
             if (end >= pcm.size) break
-            start += hop
+            start = (start.toLong() + hop.toLong()).toInt()
         }
         return out
     }
