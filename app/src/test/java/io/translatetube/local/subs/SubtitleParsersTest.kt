@@ -651,4 +651,24 @@ class SubtitleParsersTest {
         assertEquals(listOf("A < 3 and B > 2", "timed word"), parsed.map { it.text })
     }
 
+
+    @Test
+    fun rejectsTrailingGarbageAfterWebVttEndTimestampButAllowsCueSettings() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:01.000suffix
+            malformed cue
+
+            00:00:01.000 --> 00:00:02.000 align:start
+            valid cue
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("valid cue"), parsed.map { it.text })
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(2_000L, parsed.single().endMs)
+    }
+
 }
