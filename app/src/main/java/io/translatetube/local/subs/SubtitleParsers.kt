@@ -31,6 +31,10 @@ object SubtitleParsers {
         '.', ',', '!', '?', '。', '，', '！', '？', '；', ';', ':', '：', '…', '、'
     )
     private val placeholderNormalizationRegex = Regex("[\\s…。.！!·:：]+")
+    private val placeholderTranslations = setOf(
+        "正在翻译", "正在翻译中", "翻译中", "译文暂不可用", "暂无译文",
+        "translating", "translationinprogress", "loadingtranslation",
+    )
     private val punctuationSymbolsWhitespaceRegex = Regex("[\\p{P}\\p{S}\\s]")
     private val chineseCharRegex = Regex("[\\u4E00-\\u9FFF]")
     private val assDialogueHeaderRegex = Regex("""(?im)^\s*Dialogue\s*:""")
@@ -354,10 +358,7 @@ object SubtitleParsers {
             ?.lowercase(Locale.ROOT)
             ?.replace(placeholderNormalizationRegex, "")
             ?: return false
-        if (normalized in setOf(
-                "正在翻译", "正在翻译中", "翻译中", "译文暂不可用", "暂无译文",
-                "translating", "translationinprogress", "loadingtranslation",
-            )) return true
+        if (normalized in placeholderTranslations) return true
         return translationProgressRegex.matches(normalized)
     }
 
