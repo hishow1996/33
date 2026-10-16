@@ -93,7 +93,7 @@ class TtsEdgeSilenceTrimmerTest {
         val error = runCatching {
             TtsEdgeSilenceTrimmer.trim(samples, rate) {
                 checks++
-                if (checks == 5) throw java.util.concurrent.CancellationException("copy cancelled")
+                if (checks == 7) throw java.util.concurrent.CancellationException("copy cancelled")
             }
         }.exceptionOrNull()
         assertTrue(error is java.util.concurrent.CancellationException)

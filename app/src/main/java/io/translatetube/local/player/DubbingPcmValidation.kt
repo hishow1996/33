@@ -23,8 +23,9 @@ internal object DubbingPcmValidation {
         requestedCount: Int,
         checkActive: () -> Unit = {},
     ): FloatArray {
-        require(requestedCount in 0..samples.size) { "PCM 截取长度超出原音频范围" }
+        require(requestedCount >= 0) { "PCM 截取长度不能为负数" }
         require(requestedCount <= MAX_SAMPLE_COUNT) { "PCM 截取长度超过内存安全上限" }
+        require(requestedCount <= samples.size) { "PCM 截取长度超出原音频范围" }
         checkActive()
         val result = FloatArray(requestedCount)
         var offset = 0

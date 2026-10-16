@@ -73,7 +73,7 @@ class DubbingPcmValidationTest {
         assertTrue(runCatching { DubbingPcmValidation.copyPrefix(floatArrayOf(1f), 2) }
             .exceptionOrNull() is IllegalArgumentException)
         assertTrue(runCatching {
-            DubbingPcmValidation.copyPrefix(FloatArray(DubbingPcmValidation.MAX_SAMPLE_COUNT + 1), DubbingPcmValidation.MAX_SAMPLE_COUNT + 1)
+            DubbingPcmValidation.copyPrefix(floatArrayOf(1f), DubbingPcmValidation.MAX_SAMPLE_COUNT + 1)
         }.exceptionOrNull() is IllegalArgumentException)
     }
 

@@ -164,20 +164,22 @@ class DubbingEngine(
     @Volatile private var playbackStartedLine = -1
 
     fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
-        require(lines.size <= DubbingTimeline.MAX_INPUT_CUE_COUNT) {
-            "字幕行数超过配音安全上限，无法初始化配音"
-        }
-        // Build and validate the next immutable timeline before publishing any field. A bad
-        // imported timeline must not leave the currently attached engine half-reconfigured.
-        val preparedLines = lines.map { line ->
-            line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage))
-        }
-        val preparedTimeline = try {
-            DubbingTimeline(preparedLines)
+        // Validate every incoming resource and timeline before publishing state. Even an over-limit
+        // import must release the TTS instance it handed to this engine.
+        val preparedState = try {
+            require(lines.size <= DubbingTimeline.MAX_INPUT_CUE_COUNT) {
+                "字幕行数超过配音安全上限，无法初始化配音"
+            }
+            val normalized = lines.map { line ->
+                line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage))
+            }
+            normalized to DubbingTimeline(normalized)
         } catch (error: Exception) {
             runCatching { tts.close() }
             throw error
         }
+        val preparedLines = preparedState.first
+        val preparedTimeline = preparedState.second
         var ttsPublished = false
         try {
             // Publish the TTS instance, subtitle list and cache-init Job atomically with release().
