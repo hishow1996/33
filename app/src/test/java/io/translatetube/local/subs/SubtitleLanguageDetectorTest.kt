@@ -91,4 +91,24 @@ class SubtitleLanguageDetectorTest {
         assertEquals("ja", SubtitleLanguageDetector.detectFromCues(cues))
     }
 
+
+    @Test
+    fun resolvesProviderHintsDirectlyFromBoundedTimedCueSamples() {
+        val japaneseCues = listOf("OK", "2026", "名前") +
+            List(12) { "こんにちは、今日は天気について話します。" }
+        assertEquals(
+            "ja",
+            SubtitleLanguageDetector.resolveTranscriptionLanguageFromCues("zh", japaneseCues),
+        )
+        val foreignCues = listOf("Hello world", "Welcome back", "Nice to see you")
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.resolveTranscriptionLanguageFromCues("zh-CN", foreignCues),
+        )
+        assertEquals(
+            "auto",
+            SubtitleLanguageDetector.resolveTranscriptionLanguageFromCues("en", foreignCues, maxCues = 0),
+        )
+    }
+
 }
