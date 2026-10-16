@@ -23,7 +23,7 @@ class SpeakerAssignmentCodecTest {
         assertEquals(SpeakerAssignmentSnapshot(), SpeakerAssignmentCodec.decode(null))
         assertEquals(SpeakerAssignmentSnapshot(), SpeakerAssignmentCodec.decode("old-format|s:1=8"))
         val decoded = SpeakerAssignmentCodec.decode(
-            "speaker-map-v2|s:999=2|s:2=99|v:100:0=2|m:0:100=-2|x:4=3|s:3=12"
+            "speaker-map-v2|s:1000=2|s:2=99|v:100:0=2|m:0:100=-2|x:4=3|s:3=12"
         )
         assertEquals(mapOf(3 to 12), decoded.speakerVoices)
         assertTrue(decoded.lineVoices.isEmpty())
@@ -91,6 +91,15 @@ class SpeakerAssignmentCodecTest {
         assertEquals(mapOf(0 to -1, 1 to 14), decoded.speakerVoices)
         assertEquals(mapOf("1000:2000" to 14), decoded.lineVoices)
         assertEquals(emptyMap<String, Int>(), decoded.lineSpeakers)
+    }
+
+    @Test
+    fun stablePersonToneMapSupportsCanonicalPersonIdsBeyondVoiceCount() {
+        val snapshot = SpeakerAssignmentSnapshot(
+            speakerVoices = mapOf(73 to 22, 999 to 31),
+            lineSpeakers = mapOf("0:100" to 73, "100:200" to 999),
+        )
+        assertEquals(snapshot, SpeakerAssignmentCodec.decode(SpeakerAssignmentCodec.encode(snapshot)))
     }
 
     @Test

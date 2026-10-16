@@ -3855,7 +3855,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         val oldLines = sessionState.lines
         if (index !in oldLines.indices) return
         val selectedVoice = speakerId.coerceIn(-1, 53)
-        if (oldLines[index].speakerId == selectedVoice) return
+        // Applying the same tone to every cue of a person is still a meaningful action even
+        // when the currently selected cue already has that tone.
+        if (oldLines[index].speakerId == selectedVoice && !applyToPerson) return
 
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
             .getString("tts_engine", "kokoro") ?: "kokoro"

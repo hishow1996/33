@@ -33,7 +33,7 @@ internal object SpeakerAssignmentCodec {
     fun encode(snapshot: SpeakerAssignmentSnapshot): String {
         val parts = mutableListOf(VERSION)
         snapshot.speakerVoices.toSortedMap().forEach { (speaker, voice) ->
-            if (speaker in 0..53 && voice in -1..53) parts += "s:$speaker=$voice"
+            if (speaker in 0..999 && voice in -1..53) parts += "s:$speaker=$voice"
         }
         boundedLineEntries(snapshot.lineVoices).forEach { (key, voice) ->
             parts += "v:$key=$voice"
@@ -80,7 +80,7 @@ internal object SpeakerAssignmentCodec {
             val key = left.substringAfter(':', "")
             when (kind) {
                 "s" -> if (!legacySpeakerIds && value in -1..53) {
-                    key.toIntOrNull()?.takeIf { it in 0..53 }?.let { speakers[it] = value }
+                    key.toIntOrNull()?.takeIf { it in 0..999 }?.let { speakers[it] = value }
                 }
                 "v" -> if (value in -1..53 && isValidLineKey(key)) lines[key] = value
                 "m" -> if (value in -1..53 && isValidLineKey(key)) overrides[key] = value
