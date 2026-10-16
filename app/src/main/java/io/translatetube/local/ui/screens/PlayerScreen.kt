@@ -859,7 +859,8 @@ private fun VideoParsingPage(
                                 done -> "完成"
                                 active -> if (fraction != null) ((fraction * 100).toInt().toString() + "%") else "进行中"
                                 state.phase == Phase.ERROR && index == 0 -> "检查失败"
-                                else -> ""
+                                state.phase == Phase.ERROR -> "未执行"
+                                else -> "待处理"
                             },
                             color = when {
                                 done -> Color(0xFF21945A)
