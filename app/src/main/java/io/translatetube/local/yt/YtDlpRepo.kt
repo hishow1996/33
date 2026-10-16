@@ -70,8 +70,11 @@ object YtDlpRepo {
     val updateState: StateFlow<UpdateState> = _updateState
 
     private val checkHttp = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS)
+        .callTimeout(16, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     /**
@@ -85,10 +88,11 @@ object YtDlpRepo {
         val appCtx = ctx.applicationContext
         val prefs = appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE)
         if (!force && !prefs.getBoolean("used", false)) return@withContext
+
         val last = prefs.getLong("last_check_ms", 0L)
         val slot = updateSlotKey(System.currentTimeMillis())
         if (!force) {
-            // 深夜（0~4 点）不检查；同一时段已检查过则只回填持久化结论
+            // 深夜（0~4 点）不自动检查；同一时段只回填上次成功结果。
             if (slot == null) return@withContext
             if (slot == prefs.getString("last_check_slot", null)) {
                 _updateState.value = _updateState.value.copy(
@@ -96,72 +100,79 @@ object YtDlpRepo {
                     latest = prefs.getString("latest_version", null),
                     hasUpdate = prefs.getBoolean("has_update", false),
                     lastCheckMs = last,
+                    checking = false,
+                    error = null,
                 )
                 return@withContext
             }
         }
-        if (!force) {
-            // 自动路径先尝试读本地版本（不用先解包运行时：仅当本进程已 init）
-            if (!inited) {
-                val persistedCurrent = prefs.getString("current_version", null)
-                val latestKnown = fetchLatestReleaseTag() ?: return@withContext
-                val hasUpdate = persistedCurrent != null && persistedCurrent != latestKnown
-                prefs.edit()
-                    .putLong("last_check_ms", System.currentTimeMillis())
-                    .putString("last_check_slot", slot)
-                    .putString("latest_version", latestKnown)
-                    .putBoolean("has_update", hasUpdate)
-                    .apply()
-                _updateState.value = UpdateState(
-                    current = persistedCurrent,
-                    latest = latestKnown,
-                    hasUpdate = hasUpdate,
-                    lastCheckMs = System.currentTimeMillis(),
-                )
-                return@withContext
-            }
-        }
-        // 强制路径 / 本进程已 init：以运行时真实版本为准
+
         _updateState.value = _updateState.value.copy(checking = true, error = null)
         try {
-            // 手动点击“检查更新”时也要先初始化本机运行时；否则 YoutubeDL.version()
-            // 在尚未 init 的冷启动进程中会失败，造成“已获取最新版但无法读取本机版本”。
-            if (force) {
+            // 本机版本和上游版本是两个独立问题：不能因为首次解包/运行时初始化失败，
+            // 就跳过网络版本检测。优先读内存或持久化版本，最后才尝试初始化运行时。
+            var currentVersion = if (inited) {
+                runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+            } else null
+            currentVersion = currentVersion?.takeIf { it.isNotBlank() }
+                ?: prefs.getString("current_version", null)?.takeIf { it.isNotBlank() }
+
+            val latestKnown = fetchLatestReleaseTag()
+            if (latestKnown == null) {
+                val diagnostic = lastProbeDetail
+                    ?: "所有版本源均未响应；请确认网络可访问版本源后重试"
+                _updateState.value = _updateState.value.copy(
+                    current = currentVersion,
+                    latest = prefs.getString("latest_version", null),
+                    checking = false,
+                    error = "无法获取 yt-dlp 上游稳定版：$diagnostic",
+                )
+                return@withContext
+            }
+
+            var localVersionError: String? = null
+            if (currentVersion == null && force) {
                 try {
                     ensureReady(appCtx)
+                    currentVersion = runCatching { YoutubeDL.version(appCtx) }
+                        .getOrNull()?.takeIf { it.isNotBlank() }
                 } catch (initError: kotlinx.coroutines.CancellationException) {
                     throw initError
                 } catch (initError: Exception) {
-                    _updateState.value = _updateState.value.copy(
-                        checking = false,
-                        error = "本机 yt-dlp 运行时初始化失败（${initError.message ?: "存储或解包异常"}），请确认手机存储空间充足后重试",
-                    )
-                    return@withContext
+                    localVersionError =
+                        "已获取上游最新版，但读取本机版本失败：${initError.message ?: "运行时初始化失败"}"
+                    Log.w(TAG, "Latest yt-dlp version fetched, but local runtime version is unavailable", initError)
                 }
             }
-            val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
-            val latestKnown = fetchLatestReleaseTag() ?: run {
-                _updateState.value = _updateState.value.copy(
-                    checking = false,
-                    error = "无法获取上游最新版（" + (lastProbeDetail
-                        ?: "所有版本源均未响应，请检查网络或代理是否覆盖本应用") + "）",
-                )
-                return@withContext
-            }
+
             val hasUpdate = currentVersion != null && currentVersion != latestKnown
+            val checkedAt = System.currentTimeMillis()
             prefs.edit()
-                .putLong("last_check_ms", System.currentTimeMillis())
+                .putLong("last_check_ms", checkedAt)
                 .putString("last_check_slot", slot)
-                .putString("current_version", currentVersion)
                 .putString("latest_version", latestKnown)
                 .putBoolean("has_update", hasUpdate)
                 .apply()
+            if (currentVersion != null) {
+                prefs.edit().putString("current_version", currentVersion).apply()
+            }
             _updateState.value = UpdateState(
                 current = currentVersion,
                 latest = latestKnown,
                 hasUpdate = hasUpdate,
-                lastCheckMs = System.currentTimeMillis(),
+                lastCheckMs = checkedAt,
                 checking = false,
+                error = localVersionError,
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(TAG, "yt-dlp update check failed", error)
+            val detail = error.message?.takeIf { it.isNotBlank() }
+                ?: error.javaClass.simpleName
+            _updateState.value = _updateState.value.copy(
+                checking = false,
+                error = "版本检查异常：$detail",
             )
         } finally {
             _updateState.value = _updateState.value.copy(checking = false)
@@ -198,82 +209,73 @@ object YtDlpRepo {
      */
     private fun fetchLatestReleaseTag(): String? {
         lastProbeDetail = null
-        // 国内网络（GitHub/PyPI 官方源常不可达）优先走阿里云镜像（同步及时、手机直连快），
-        // 腾讯镜像作为第二备选；两者与 PyPI 官方 JSON 结构一致。
-        fetchVersionText(
+
+        fun pypiMirror(url: String, source: String): String? {
+            val json = fetchVersionText(
+                url = url,
+                accept = "application/json",
+                maxBytes = MAX_PYPI_METADATA_BYTES,
+                source = source,
+            ) ?: return null
+            val version = YtDlpVersionPolicy.latestStableFromPypiJson(json)
+            if (version == null) {
+                recordProbe(source, "响应不是有效的 PyPI 稳定版元数据")
+                return null
+            }
+            return version
+        }
+
+        // 各地网络可达性不同，依次尝试常见 PyPI 镜像、GitHub API 和官网重定向。
+        // 必须选择 stable 版本，避免把 PyPI 上的 dev 预发布误报成 STABLE 更新。
+        pypiMirror(
             url = "https://mirrors.aliyun.com/pypi/web/pypi/yt-dlp/json",
-            accept = "application/json",
-            maxBytes = MAX_PYPI_METADATA_BYTES,
             source = "Aliyun PyPI 镜像",
-        )?.let { json ->
-            val version = runCatching {
-                JSONObject(json).optJSONObject("info")?.optString("version")
-                    ?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
-            }.getOrNull()
-            if (version != null) return version
-        }
-        fetchVersionText(
-            url = "https://mirrors.cloud.tencent.com/pypi/yt-dlp/json",
-            accept = "application/json",
-            maxBytes = MAX_PYPI_METADATA_BYTES,
-            source = "Tencent PyPI 镜像",
-        )?.let { json ->
-            val version = runCatching {
-                JSONObject(json).optJSONObject("info")?.optString("version")
-                    ?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
-            }.getOrNull()
-            if (version != null) return version
-        }
+        )?.let { return it }
+
+        pypiMirror(
+            url = "https://pypi.tuna.tsinghua.edu.cn/pypi/yt-dlp/json",
+            source = "Tsinghua PyPI 镜像",
+        )?.let { return it }
+
         fetchVersionText(
             url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
             accept = "application/vnd.github+json",
             maxBytes = MAX_RELEASE_METADATA_BYTES,
             source = "GitHub API",
         )?.let { json ->
-            val tag = runCatching {
-                JSONObject(json).optString("tag_name").trim().takeIf { it.isNotEmpty() }
-            }.getOrNull()
+            val tag = YtDlpVersionPolicy.stableGitHubTag(json)
             if (tag != null) return tag
+            recordProbe("GitHub API", "响应中没有可识别的稳定版 tag")
         }
 
-        // 不下载整个发布页，只检查 HTTP 重定向最终指向的 /releases/tag/<version>。
+        // 不下载整个发布页；从 /releases/latest 的最终重定向地址读取稳定版 tag。
         runCatching {
             val request = Request.Builder()
                 .url("https://github.com/yt-dlp/yt-dlp/releases/latest")
                 .header("User-Agent", "TranslateTube-Android")
                 .header("Accept", "text/html")
+                .header("Cache-Control", "no-cache")
                 .build()
             checkHttp.newCall(request).execute().use { response ->
                 if (response.code != 200) {
-                    Log.w(TAG, "GitHub release page returned HTTP ${response.code}")
+                    recordProbe("GitHub 发布页", "HTTP ${response.code}")
                     return@use null
                 }
-                val marker = "/releases/tag/"
-                val path = response.request.url.encodedPath
-                val encodedTag = path.substringAfter(marker, "").substringBefore('/')
-                if (encodedTag.isBlank() || path == response.request.url.encodedPath && !path.contains(marker)) {
-                    null
-                } else {
-                    java.net.URLDecoder.decode(encodedTag, "UTF-8")
-                        .takeIf { it.isNotBlank() && it != "latest" }
-                }
+                val tag = YtDlpVersionPolicy.stableTagFromReleasePath(response.request.url.encodedPath)
+                if (tag == null) recordProbe("GitHub 发布页", "重定向地址不包含稳定版版本号")
+                tag
             }
-        }.onFailure { Log.w(TAG, "GitHub release-page version lookup failed", it) }
-            .getOrNull()?.let { return it }
+        }.onFailure {
+            Log.w(TAG, "GitHub release-page version lookup failed", it)
+            recordProbe("GitHub 发布页", it.javaClass.simpleName + ": " + (it.message?.take(60) ?: "网络错误"))
+        }.getOrNull()?.let { return it }
 
-        // PyPI 和官方 GitHub 稳定版通常使用同一发布版本号；作为 API / 网页被拦截时的兜底。
-        fetchVersionText(
+        // 官方 PyPI JSON 是最后兜底；解析 releases 列表中的稳定版，过滤 .dev / rc / a / b。
+        pypiMirror(
             url = "https://pypi.org/pypi/yt-dlp/json",
-            accept = "application/json",
-            maxBytes = MAX_PYPI_METADATA_BYTES,
-            source = "PyPI",
-        )?.let { json ->
-            val version = runCatching {
-                JSONObject(json).optJSONObject("info")?.optString("version")
-                    ?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
-            }.getOrNull()
-            if (version != null) return version
-        }
+            source = "PyPI 官方源",
+        )?.let { return it }
+
         Log.w(TAG, "Unable to fetch yt-dlp stable version from all sources")
         recordProbe("汇总", "全部版本源失败")
         return null
@@ -297,6 +299,8 @@ object YtDlpRepo {
             .url(url)
             .header("User-Agent", "TranslateTube-Android")
             .header("Accept", accept)
+            .header("Cache-Control", "no-cache")
+            .header("X-GitHub-Api-Version", "2022-11-28")
             .build()
         checkHttp.newCall(request).execute().use { response ->
             if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
@@ -318,6 +322,8 @@ object YtDlpRepo {
             )
             String(bytes, Charsets.UTF_8)
         }
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
     } catch (error: Exception) {
         Log.w(TAG, "$source version lookup failed", error)
         recordProbe(source, error.javaClass.simpleName + ": " + (error.message?.take(60) ?: "网络错误"))

@@ -787,7 +787,8 @@ private fun YtDlpUpdateSection() {
         Column(Modifier.weight(1f)) {
             Text("解析规则版本", color = OnBg, style = MaterialTheme.typography.bodyMedium)
             val desc = when {
-                state.checking -> "正在读取本机 yt-dlp 版本并检查上游最新版…"
+                state.checking -> "正在检查上游稳定版并读取本机版本…"
+                state.error != null && state.latest == null -> "版本检测失败，查看下方原因后可重试"
                 state.current == null && state.latest != null ->
                     "已获取最新版本 ${state.latest}，暂时无法读取本机版本"
                 state.current == null -> "尚未读取到本机 yt-dlp 版本，点击“检查更新”重试"
@@ -804,7 +805,20 @@ private fun YtDlpUpdateSection() {
                 )
             }
             message?.let {
-                Text(it, color = BrandBright, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    it,
+                    color = if (it.startsWith("检查失败") || it.startsWith("更新失败")) DangerRed else BrandBright,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (message == null) {
+                state.error?.let {
+                    Text(
+                        "最近一次检测提示：$it",
+                        color = DangerRed,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
         if (state.hasUpdate) {
