@@ -36,18 +36,26 @@ internal object TranscriptTimelinePolicy {
 
         // This transcript drives a single dubbing track. Provider word timings may cross at
         // phrase boundaries, so cap an earlier cue at the next strictly later cue's start.
-        // Walk backwards to keep this O(n) after sorting, even for long ASR results; equal-start
-        // rows are preserved rather than arbitrarily discarding recognized words.
-        val normalizedReversed = ArrayList<Triple<Long, Long, String>>(chronological.size)
+        // Process equal-start cues as a group, allowing every row in that group to use the same
+        // next-distinct timestamp without changing the original order or dropping recognized text.
+        val normalized = arrayOfNulls<Triple<Long, Long, String>>(chronological.size)
+        var groupEnd = chronological.lastIndex
         var nextLaterStart: Long? = null
-        for (cue in chronological.asReversed()) {
-            val cap = nextLaterStart
-            val end = if (cap != null && cap > cue.first && cue.second > cap) cap else cue.second
-            if (end > cue.first) normalizedReversed += Triple(cue.first, end, cue.third)
-            if (nextLaterStart == null || cue.first < nextLaterStart) {
-                nextLaterStart = cue.first
+        while (groupEnd >= 0) {
+            val groupStart = chronological[groupEnd].first
+            var groupFirst = groupEnd
+            while (groupFirst > 0 && chronological[groupFirst - 1].first == groupStart) {
+                groupFirst--
             }
+            for (index in groupFirst..groupEnd) {
+                val cue = chronological[index]
+                val cap = nextLaterStart
+                val end = if (cap != null && cue.second > cap) minOf(cue.second, cap) else cue.second
+                if (end > cue.first) normalized[index] = Triple(cue.first, end, cue.third)
+            }
+            nextLaterStart = groupStart
+            groupEnd = groupFirst - 1
         }
-        return normalizedReversed.asReversed()
+        return normalized.filterNotNull()
     }
 }
