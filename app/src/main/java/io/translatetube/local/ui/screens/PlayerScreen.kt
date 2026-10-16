@@ -61,6 +61,7 @@ import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
+import io.translatetube.local.player.VideoProcessingFlowPolicy
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.subs.SubtitleParsers
@@ -687,6 +688,8 @@ private fun VideoParsingPage(
     onImportTranslatedSubtitles: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
 ) {
+    val source = VideoProcessingFlowPolicy.sourceKind(state.key)
+    val steps = VideoProcessingFlowPolicy.steps(source)
     val currentStage = run {
         val stage = when (state.phase) {
             Phase.IDLE, Phase.PARSING, Phase.ERROR -> 0
@@ -696,40 +699,26 @@ private fun VideoParsingPage(
             Phase.SYNTHESIZING -> 4
             Phase.READY -> 5
         }
-        // 转写引擎未就绪（模型/Key 缺失）：步骤条最多走到「下载或读取字幕」，
-        // 翻译/配音步骤不点亮，避免「一秒全完成」的假进度。
+        // 转写引擎未就绪（模型/Key 缺失）：最多点亮到转写阶段，不能把翻译/配音显示为完成。
         if (state.noModelHint != null) minOf(stage, 2) else stage
     }
-    val steps = listOf("获取视频信息", "解析视频资源", "下载或读取字幕", "翻译字幕", "生成配音")
     val fraction = when (state.phase) {
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedUntil.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
-    val mainTitle = when {
-        state.noModelHint != null && state.phase != Phase.ERROR -> "等待转写引擎就绪"
-        state.isProcessingPaused -> "处理已暂停"
-        state.phase == Phase.ERROR -> "视频处理失败"
-        state.phase == Phase.PARSING -> "正在处理视频"
-        state.phase == Phase.DOWNLOADING_AUDIO -> "正在准备视频资源"
-        state.phase == Phase.TRANSCRIBING -> "正在获取或识别字幕"
-        state.phase == Phase.TRANSLATING -> "正在翻译字幕"
-        state.phase == Phase.SYNTHESIZING -> "正在生成配音"
-        else -> "正在准备视频"
-    }
-    val detail = if (state.noModelHint != null && state.phase != Phase.ERROR) {
-        state.noModelHint ?: state.progress
-    } else if (state.isProcessingPaused) "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复下载或解析" } else state.progress.ifBlank {
-        when (state.phase) {
-            Phase.ERROR -> state.error ?: "处理失败，请重试或导入字幕文件"
-            Phase.PARSING -> "正在获取视频信息和可用字幕"
-            Phase.DOWNLOADING_AUDIO -> "正在解析视频资源并准备音轨"
-            Phase.TRANSCRIBING -> "正在读取字幕或识别语音"
-            Phase.TRANSLATING -> "正在将字幕翻译成中文"
-            Phase.SYNTHESIZING -> "正在准备中文配音"
-            else -> "正在检查视频链接"
-        }
+    val mainTitle = VideoProcessingFlowPolicy.mainTitle(
+        source = source,
+        phase = state.phase,
+        isPaused = state.isProcessingPaused,
+        waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR,
+    )
+    val detail = when {
+        state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
+        state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
+        state.progress.isNotBlank() -> state.progress
+        else -> VideoProcessingFlowPolicy.defaultDetail(source, state.phase, state.error)
     }
 
     Column(
@@ -752,7 +741,7 @@ private fun VideoParsingPage(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                if (state.phase == Phase.ERROR) "视频解析失败" else "视频解析",
+                VideoProcessingFlowPolicy.pageTitle(source, failed = state.phase == Phase.ERROR),
                 color = OnBg,
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
