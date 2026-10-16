@@ -633,4 +633,22 @@ class SubtitleParsersTest {
         assertEquals("Use <b>literal</b> & quotes", SubtitleParsers.parseVtt(exported).single().text)
     }
 
+
+    @Test
+    fun preservesAngleBracketComparisonsAndStripsWebVttTimestampTags() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:02.000
+            A < 3 and B > 2
+
+            00:00:02.000 --> 00:00:04.000
+            <00:00:02.500>timed word
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(listOf("A < 3 and B > 2", "timed word"), parsed.map { it.text })
+    }
+
 }
