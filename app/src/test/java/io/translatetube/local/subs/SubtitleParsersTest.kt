@@ -476,4 +476,50 @@ class SubtitleParsersTest {
         )
     }
 
+
+    @Test
+    fun assParserHonorsCustomEventFormatAndPreservesCommasInText() {
+        val source = """
+            [Events]
+            Format: Layer, End, Start, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:04.00,0:00:01.00,Default,Speaker,0,0,0,,Hello, world, with commas
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAss(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(4_000L, parsed.single().endMs)
+        assertEquals("Hello, world, with commas", parsed.single().text)
+    }
+
+    @Test
+    fun assParserConvertsHardSpacesAndPreservesExplicitLineBreaks() {
+        val source = """
+            [Events]
+            Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,one\\htwo\\Nthree
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAss(source)
+
+        assertEquals("one two\nthree", parsed.single().text)
+    }
+
+    @Test
+    fun malformedAssFormatFallsBackToTheStandardEventLayout() {
+        val source = """
+            [Events]
+            Format: Layer, End, Text, Start
+            Dialogue: 0,0:00:04.00,unusable format,0:00:01.00
+            Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,standard fallback
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAss(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("standard fallback", parsed.single().text)
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(2_000L, parsed.single().endMs)
+    }
+
 }
