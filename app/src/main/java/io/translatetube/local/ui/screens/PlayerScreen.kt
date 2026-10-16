@@ -920,6 +920,7 @@ private fun VideoParsingPage(
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    var parsingMenuExpanded by remember { mutableStateOf(false) }
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
     val waitingForTranscriptionEngine = state.waitingForTranscriptionEngine && state.phase != Phase.ERROR
     val waitingForDubbingEngine = state.waitingForDubbingEngine && state.phase != Phase.ERROR
@@ -988,7 +989,84 @@ private fun VideoParsingPage(
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
             )
-            Text("•••", color = SubText, style = MaterialTheme.typography.titleMedium)
+            Box {
+                IconButton(
+                    onClick = { parsingMenuExpanded = true },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "解析处理菜单",
+                        tint = SubText,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = parsingMenuExpanded,
+                    onDismissRequest = { parsingMenuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("导入字幕并自动翻译") },
+                        onClick = {
+                            parsingMenuExpanded = false
+                            onImportSubtitles()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("上传已翻译字幕并直接配音") },
+                        onClick = {
+                            parsingMenuExpanded = false
+                            onImportTranslatedSubtitles()
+                        },
+                    )
+                    if (state.availableSubtitleTracks.isNotEmpty()) {
+                        HorizontalDivider()
+                        state.availableSubtitleTracks.forEach { track ->
+                            DropdownMenuItem(
+                                text = { Text("下载原字幕 · ${track.languageTag}") },
+                                onClick = {
+                                    parsingMenuExpanded = false
+                                    onDownloadSubtitle(track)
+                                },
+                            )
+                        }
+                    }
+                    if (state.phase in setOf(
+                            Phase.PARSING,
+                            Phase.DOWNLOADING_AUDIO,
+                            Phase.TRANSCRIBING,
+                            Phase.TRANSLATING,
+                            Phase.SYNTHESIZING,
+                        )
+                    ) {
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(if (state.isProcessingPaused) "继续处理" else "暂停处理") },
+                            onClick = {
+                                parsingMenuExpanded = false
+                                onTogglePause()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("取消处理") },
+                            onClick = {
+                                parsingMenuExpanded = false
+                                onCancel()
+                            },
+                        )
+                    }
+                    if (state.phase == Phase.ERROR) {
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("重试当前处理") },
+                            onClick = {
+                                parsingMenuExpanded = false
+                                onRetry()
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         Surface(
