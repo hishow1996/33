@@ -190,4 +190,19 @@ class DubbingReadinessStateTest {
     }
 }
 
+
+    @Test
+    fun acceptsCursorExactlyAtCueStartIncludingMediaTimeZero() {
+        assertEquals(
+            0L,
+            DubbingStartPositionPolicy.choose(
+                lineIndex = 2,
+                lineStartMs = 0L,
+                lineEndMs = 1_000L,
+                requestedPositionMs = 500L,
+                latestCursor = DubbingTimelineCursor(lineIndex = 2, positionMs = 0L),
+            ),
+        )
+    }
+
 }
