@@ -17,6 +17,9 @@ class CloudTranscriptionTest {
         assertEquals(null, CloudTranscription.cartesiaLanguageCode("auto"))
         assertEquals(null, CloudTranscription.cartesiaLanguageCode(" AUTO "))
         assertEquals(null, CloudTranscription.cartesiaLanguageCode("  "))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("auto-US"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("und-Latn"))
+        assertEquals(null, CloudTranscription.cartesiaLanguageCode("unknown"))
     }
 
     @Test
@@ -89,6 +92,9 @@ class CloudTranscriptionTest {
         assertEquals(null, CloudTranscription.kawaLanguageCode("auto"))
         assertEquals(null, CloudTranscription.kawaLanguageCode("AUTO"))
         assertEquals(null, CloudTranscription.kawaLanguageCode(" "))
+        assertEquals(null, CloudTranscription.kawaLanguageCode("auto-US"))
+        assertEquals(null, CloudTranscription.kawaLanguageCode("und-Latn"))
+        assertEquals(null, CloudTranscription.kawaLanguageCode("unknown"))
     }
     @Test
     fun boundedProviderResponseReaderAcceptsWithinLimitAndRejectsOversizedBodies() {
@@ -206,6 +212,7 @@ class CloudTranscriptionTest {
 
             assertTrue(wav.isFile)
             assertEquals(pcm.length() + 44L, wav.length())
+            CloudTranscription.validatePcm16MonoWav(wav)
             assertTrue(progress.isNotEmpty())
             assertEquals(100, progress.last())
             assertTrue(progress.dropLast(1).all { it in 0..99 })
@@ -213,6 +220,47 @@ class CloudTranscriptionTest {
         } finally {
             directory.deleteRecursively()
         }
+    }
+
+    @Test
+    fun cloudWavValidatorRejectsCorruptHeaderAndDeclaredLengthMismatch() {
+        val directory = createTempDir(prefix = "cloud-wav-validate")
+        try {
+            val pcm = File(directory, "source.pcm").apply { writeBytes(ByteArray(320) { it.toByte() }) }
+            val wav = File(directory, "output.wav")
+            CloudTranscription.writeWavFile(AudioExtract.PcmFile(pcm, sampleCount = 160L), wav)
+            CloudTranscription.validatePcm16MonoWav(wav)
+
+            val original = wav.readBytes()
+            val invalidMagic = original.clone().also { it[0] = 'X'.code.toByte() }
+            wav.writeBytes(invalidMagic)
+            assertTrue(runCatching {
+                CloudTranscription.validatePcm16MonoWav(wav)
+            }.exceptionOrNull() is IOException)
+
+            val invalidSize = original.clone().also {
+                it[40] = (it[40].toInt() + 2).toByte()
+            }
+            wav.writeBytes(invalidSize)
+            assertTrue(runCatching {
+                CloudTranscription.validatePcm16MonoWav(wav)
+            }.exceptionOrNull() is IOException)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun groupWordsStopsWhenCancellationIsRequestedForLargeProviderResponses() {
+        val words = List(2_000) { index ->
+            CloudTranscription.TimedWord("word$index", index * 10L, index * 10L + 5L)
+        }
+        val error = runCatching {
+            CloudTranscription.groupWords(words, durationMs = 30_000L) {
+                throw java.util.concurrent.CancellationException("cancelled")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
     }
 
     @Test
