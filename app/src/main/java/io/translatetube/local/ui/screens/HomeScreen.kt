@@ -40,6 +40,7 @@ import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
