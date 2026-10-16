@@ -1620,6 +1620,15 @@ private fun SubtitleList(
                                     expanded = voicePickerExpanded,
                                     onDismissRequest = { voicePickerExpanded = false },
                                 ) {
+                                    DropdownMenuItem(
+                                        text = { Text("将当前音色应用到此人物的全部字幕") },
+                                        enabled = line.speakerId in -1..53,
+                                        onClick = {
+                                            voicePickerExpanded = false
+                                            svc?.setLineSpeaker(i, line.speakerId, applyToPerson = true)
+                                        },
+                                    )
+                                    HorizontalDivider()
                                     voiceOptions.forEach { (voiceId, voiceName) ->
                                         DropdownMenuItem(
                                             text = { Text(if (line.speakerId == voiceId) "$voiceName（当前）" else voiceName) },

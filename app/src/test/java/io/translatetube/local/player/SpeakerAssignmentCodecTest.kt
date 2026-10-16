@@ -12,6 +12,7 @@ class SpeakerAssignmentCodecTest {
             speakerVoices = mapOf(0 to -1, 2 to 14, 7 to 42),
             lineVoices = mapOf("0:1600" to -1, "1600:3400" to 42),
             lineOverrides = mapOf("1600:3400" to 13),
+            lineSpeakers = mapOf("0:1600" to 0, "1600:3400" to 3),
         )
 
         assertEquals(expected, SpeakerAssignmentCodec.decode(SpeakerAssignmentCodec.encode(expected)))
@@ -38,7 +39,7 @@ class SpeakerAssignmentCodecTest {
         assertTrue(decoded.speakerVoices.isEmpty())
         assertEquals(mapOf("1000:2000" to 12), decoded.lineVoices)
         assertEquals(mapOf("2000:3000" to 21), decoded.lineOverrides)
-        assertEquals("speaker-map-v2", SpeakerAssignmentCodec.encode(decoded).substringBefore('|'))
+        assertEquals("speaker-map-v3", SpeakerAssignmentCodec.encode(decoded).substringBefore('|'))
     }
 
     @Test
@@ -80,6 +81,24 @@ class SpeakerAssignmentCodecTest {
                 "speaker-map-v2|" + (0..21_000).joinToString("|") { "x" },
             ),
         )
+    }
+
+    @Test
+    fun v2MigrationRetainsStableCueVoiceChoicesButHasNoPersonTimeline() {
+        val decoded = SpeakerAssignmentCodec.decode(
+            "speaker-map-v2|s:0=-1|s:1=14|v:1000:2000=14|m:2000:3000=21"
+        )
+        assertEquals(mapOf(0 to -1, 1 to 14), decoded.speakerVoices)
+        assertEquals(mapOf("1000:2000" to 14), decoded.lineVoices)
+        assertEquals(emptyMap<String, Int>(), decoded.lineSpeakers)
+    }
+
+    @Test
+    fun personTimelineKeepsOnlyValidCanonicalIds() {
+        val decoded = SpeakerAssignmentCodec.decode(
+            "speaker-map-v3|p:0:100=0|p:100:200=7|p:200:300=1000|p:bad=1"
+        )
+        assertEquals(mapOf("0:100" to 0, "100:200" to 7), decoded.lineSpeakers)
     }
 
     @Test

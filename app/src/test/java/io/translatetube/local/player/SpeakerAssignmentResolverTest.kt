@@ -41,4 +41,42 @@ class SpeakerAssignmentResolverTest {
         )
         assertEquals(11, result.single().speakerId)
     }
+
+    @Test
+    fun lineKeysForPersonOnlyIncludesCuesWithThatCanonicalIdentity() {
+        val lines = listOf(
+            SubLine(0, 0, 1_000, "a"),
+            SubLine(1, 1_000, 2_000, "b"),
+            SubLine(2, 2_000, 3_000, "c"),
+        )
+        val assignments = SpeakerAssignmentSnapshot(
+            lineSpeakers = mapOf("0:1000" to 1, "1000:2000" to 2, "2000:3000" to 1),
+        )
+        assertEquals(
+            setOf("0:1000", "2000:3000"),
+            SpeakerAssignmentResolver.lineKeysForPerson(lines, assignments, 1),
+        )
+    }
+
+    @Test
+    fun applyToneToPersonOverridesPerLineChoicesAndPersistsPersonDefault() {
+        val initial = SpeakerAssignmentSnapshot(
+            speakerVoices = mapOf(1 to 7, 2 to 9),
+            lineVoices = mapOf("0:1000" to 7, "1000:2000" to 9, "2000:3000" to 7),
+            lineOverrides = mapOf("0:1000" to 12, "1000:2000" to 14),
+            lineSpeakers = mapOf("0:1000" to 1, "1000:2000" to 2, "2000:3000" to 1),
+        )
+        val result = SpeakerAssignmentResolver.applyToneToPerson(
+            initial,
+            personId = 1,
+            voiceId = 21,
+            lineKeys = setOf("0:1000", "2000:3000"),
+        )
+        assertEquals(21, result.speakerVoices[1])
+        assertEquals(21, result.lineVoices["0:1000"])
+        assertEquals(21, result.lineVoices["2000:3000"])
+        assertEquals(false, result.lineOverrides.containsKey("0:1000"))
+        assertEquals(14, result.lineOverrides["1000:2000"])
+        assertEquals(2, result.lineSpeakers["1000:2000"])
+    }
 }

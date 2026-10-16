@@ -3666,6 +3666,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 val assignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
                 val speakerVoiceAssignments = assignmentSnapshot.speakerVoices.toMutableMap()
                 val lineVoiceAssignments = assignmentSnapshot.lineVoices.toMutableMap()
+                val linePersonAssignments = assignmentSnapshot.lineSpeakers.toMutableMap()
                 // sherpa-onnx cluster labels are arbitrary identifiers, not persistent person IDs.
                 // Normalize them by first appearance so a fresh diarization run cannot swap voices
                 // merely because the model numbered the same people differently.
@@ -3716,12 +3717,18 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         suggestedVoice
                     }
                     lineVoiceAssignments[keyForLine] = voice
+                    if (speaker >= 0) {
+                        linePersonAssignments[keyForLine] = speaker
+                    } else {
+                        linePersonAssignments.remove(keyForLine)
+                    }
                     line.copy(speakerId = voice)
                 }
                 saveSpeakerAssignments(
                     assignmentSnapshot.copy(
                         speakerVoices = speakerVoiceAssignments,
                         lineVoices = lineVoiceAssignments,
+                        lineSpeakers = linePersonAssignments,
                     ),
                     sessionKey,
                     selectedTts,
@@ -3841,7 +3848,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         }
     }
 
-    fun setLineSpeaker(index: Int, speakerId: Int) {
+    fun setLineSpeaker(index: Int, speakerId: Int, applyToPerson: Boolean = false) {
         val sessionState = ui.value
         val sessionKey = sessionState.key
         if (sessionKey.isBlank() || videoKey != sessionKey) return
@@ -3866,13 +3873,35 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         }
         val sourceLang = sessionState.sourceLang
         val assignmentSnapshot = loadSpeakerAssignments(sessionKey, selectedTts)
-        val updated = oldLines.mapIndexed { i, line ->
-            if (i == index) line.copy(speakerId = selectedVoice) else line
+        val selectedLineKey = SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs)
+        val personId = assignmentSnapshot.lineSpeakers[selectedLineKey]
+        if (applyToPerson && personId == null) {
+            updateUiForSession(sessionKey) {
+                it.copy(error = "当前字幕还没有可靠的人物编号，请先执行“识别并区分人物”，再应用到该人物的全部字幕。")
+            }
+            return
         }
-        val updatedAssignments = assignmentSnapshot.copy(
-            lineOverrides = assignmentSnapshot.lineOverrides +
-                (SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs) to selectedVoice),
-        )
+        val personLineKeys = if (applyToPerson && personId != null) {
+            SpeakerAssignmentResolver.lineKeysForPerson(oldLines, assignmentSnapshot, personId)
+        } else {
+            setOf(selectedLineKey)
+        }
+        val updated = oldLines.mapIndexed { i, line ->
+            val key = SpeakerAssignmentCodec.lineKey(line.startMs, line.endMs)
+            if (key in personLineKeys) line.copy(speakerId = selectedVoice) else line
+        }
+        val updatedAssignments = if (applyToPerson && personId != null) {
+            SpeakerAssignmentResolver.applyToneToPerson(
+                assignmentSnapshot,
+                personId,
+                selectedVoice,
+                personLineKeys,
+            )
+        } else {
+            assignmentSnapshot.copy(
+                lineOverrides = assignmentSnapshot.lineOverrides + (selectedLineKey to selectedVoice),
+            )
+        }
 
         speakerJob = scope.launch {
             var pendingTts: TtsEngine? = null
