@@ -76,9 +76,13 @@ class ModelDownloadForegroundService : Service() {
                 val asr = manager.asr.value
                 val ttsActive = tts.status == ModelStatus.DOWNLOADING || tts.status == ModelStatus.EXTRACTING
                 val asrActive = asr.status == ModelStatus.DOWNLOADING || asr.status == ModelStatus.EXTRACTING
-                val active = ttsActive || asrActive
+                val managedActive = ttsActive || asrActive
+                val piperTasks = io.translatetube.local.tts.PiperModels.downloadStates.value
+                    .filterValues { it.isActive }
+                val piperActive = piperTasks.isNotEmpty()
+                val active = managedActive || piperActive
 
-                val content = when {
+                val baseContent = when {
                     ttsActive && asrActive -> ModelNotificationContent(
                         title = "正在准备模型",
                         detail = "配音：${statusText(tts)}；转写：${statusText(asr)}",
@@ -123,7 +127,44 @@ class ModelDownloadForegroundService : Service() {
                         detail = "返回设置可查看模型状态",
                     )
                 }
-                val paused = active && manager.isPaused
+
+                val piperDetail = piperTasks.entries.joinToString("；") { (id, state) ->
+                    val modelName = io.translatetube.local.tts.PiperModels.byId(id)?.voiceLabel ?: id
+                    val progressText = if (
+                        state.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING
+                    ) state.stageMessage ?: "解压并安装中"
+                    else "${state.progress.coerceIn(0, 99)}%"
+                    "$modelName：$progressText"
+                }
+                val piperExtracting = piperTasks.values.any {
+                    it.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING
+                }
+                val piperProgress = piperTasks.values
+                    .filter { it.status == io.translatetube.local.tts.PiperModelDownloadStatus.DOWNLOADING }
+                    .map { it.progress.coerceIn(0, 99) }
+                    .takeIf { it.isNotEmpty() }
+                    ?.average()
+                    ?.toInt()
+                val content = when {
+                    piperActive && managedActive -> baseContent.copy(
+                        detail = listOf(baseContent.detail, piperDetail).filter { it.isNotBlank() }.joinToString("；"),
+                        progress = null,
+                        indeterminate = true,
+                    )
+                    piperActive -> ModelNotificationContent(
+                        title = "正在准备 Piper 配音模型",
+                        detail = piperDetail,
+                        progress = piperProgress.takeUnless { piperExtracting },
+                        indeterminate = piperExtracting || piperProgress == null,
+                    )
+                    else -> baseContent
+                }
+                val paused = when {
+                    piperActive && managedActive -> manager.isPaused && io.translatetube.local.tts.PiperModels.isPaused
+                    managedActive -> manager.isPaused
+                    piperActive -> io.translatetube.local.tts.PiperModels.isPaused
+                    else -> false
+                }
                 val notification = buildNotification(
                     title = if (paused) "已暂停 · ${content.title}" else content.title,
                     text = if (paused) "已暂停 · ${content.detail}" else content.detail,
