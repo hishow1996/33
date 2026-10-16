@@ -3445,13 +3445,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         // AudioTrack startup is asynchronous; publish the newest media playhead even while PCM
         // is loading so the audio executor can skip elapsed speech instead of starting late.
         d?.updateTimelinePosition(dubLine, ms)
-        val highlightLine = if (d != null) {
-            // The dubbing timeline already handles unordered and overlapping captions. Reuse its
-            // result to ensure subtitle highlighting and spoken-cue selection cannot disagree.
-            dubLine
-        } else {
-            subtitleHighlightLineAt(st.lines, ms)
-        }
+        // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
+        // index uses the same overlap/time-window rules as dubbing, without depending on an engine
+        // that may be between old and replacement subtitle sessions.
+        val highlightLine = subtitleHighlightLineAt(st.lines, ms)
         if (highlightLine != lastLineIdx) {
             lastLineIdx = highlightLine
             ui.update { it.copy(currentLine = highlightLine) }
