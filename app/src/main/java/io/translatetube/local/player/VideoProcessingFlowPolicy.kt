@@ -76,7 +76,7 @@ object VideoProcessingFlowPolicy {
             VideoSourceKind.LOCAL -> listOf(
                 "读取本地视频",
                 "提取本地视频音轨",
-                "转写原文并生成时间轴字幕",
+                "本地模型转写原文并生成时间轴字幕",
                 "将原文字幕翻译成中文",
                 "按时间轴生成中文配音",
             )
