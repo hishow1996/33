@@ -538,6 +538,7 @@ class SubtitleParsersTest {
         )
     }
 
+    @Test
     fun ttmlNormalizesInlineSpacesWithoutCollapsingExplicitLineBreaks() {
         val source = "<tt><body><div><p begin=\"1s\" end=\"3s\">one    two<br/>three\t\tfour</p></div></body></tt>"
 
@@ -547,6 +548,7 @@ class SubtitleParsersTest {
         assertEquals("one two\nthree four", parsed.single().text)
     }
 
+    @Test
     fun detectsTranslationPlaceholdersAndProgressWithoutTreatingRealTextAsPlaceholder() {
         assertTrue(SubtitleParsers.isPlaceholderTranslation(" 正在翻译 "))
         assertTrue(SubtitleParsers.isPlaceholderTranslation("翻译中 3/5 行"))
