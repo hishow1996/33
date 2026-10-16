@@ -1474,17 +1474,34 @@ class PlaybackService : MediaSessionService() {
                 MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
             } ?: key
             val providerFingerprint = translationProviderFingerprint(selectedTranslationId)
-            val translationCacheKey = TranslationCacheIdentity.forProvider(
+            val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
+                .getString("asr_provider", "local") ?: "local"
+            val asrProvider = storedAsrProvider.takeIf {
+                it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
+            } ?: "local"
+            val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
                 activeId = selectedTranslationId,
                 importedLines = sourceImportedLines,
                 previousKey = resumeState?.translationCacheKey,
                 providerFingerprint = providerFingerprint,
             )
+            // Local Whisper now stores word-timed cues instead of one wide cue per VAD segment.
+            // Invalidate old translated rows for local/web sources as translations also persist timestamps.
+            val translationCacheKey = if (
+                asrProvider == "local" &&
+                sourceImportedLines.isNullOrEmpty() &&
+                (localUri != null || remoteMediaUrl != null)
+            ) "$baseTranslationCacheKey|local-asr-timeline-v2" else baseTranslationCacheKey
             updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                videoId != null -> "$key|source|youtube"
+                // YouTube's key also held previous ASR fallback results; bump it so old coarse captions
+                // are not mistaken for native subtitle tracks after this timeline upgrade.
+                videoId != null -> "$key|source|youtube-v2"
+                remoteMediaUrl != null && asrProvider == "local" ->
+                    "$cacheKeyBase|source|remote-asr-local-timed-v2"
                 remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
+                localUri != null && asrProvider == "local" -> "$key|source|local-asr-timed-v2"
                 else -> "$key|source|local-asr-v1"
             }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
@@ -1533,7 +1550,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 )
                 // A valid caption track supersedes any interrupted ASR transcript for this video.
-                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v1")
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
                 return fetchedLines to lang
             }
 
@@ -1563,7 +1580,7 @@ class PlaybackService : MediaSessionService() {
             if (sourceCached != null && restoredSourceLines != null) {
                 // The completed source cache is authoritative if a crash happened between its
                 // write and deletion of the partial-ASR checkpoint.
-                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v1")
+                db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
             }
             if (sourceCached != null && restoredSourceLines == null) {
                 android.util.Log.w(
@@ -1650,11 +1667,6 @@ class PlaybackService : MediaSessionService() {
             updateUiForSession(key) { it.copy(processingFlow = resolvedProcessingFlow) }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
-                val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("asr_provider", "local") ?: "local"
-                val asrProvider = storedAsrProvider.takeIf {
-                    it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
-                } ?: "local"
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
                 val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
