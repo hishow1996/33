@@ -43,11 +43,18 @@ object VideoProcessingFlowPolicy {
     fun steps(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO): List<String> = when (flow) {
         ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION -> listOf(
             "获取视频信息",
-            "解析 YouTube 视频资源",
+            "查找并读取可用原文字幕",
             "提取视频音轨",
             "转写原文并生成时间轴字幕",
             "将原文字幕翻译成中文",
-            "按时间轴生成中文配音",
+            "准备播放资源并按时间轴生成中文配音",
+        )
+        ProcessingFlow.YOUTUBE_SUBTITLES -> listOf(
+            "获取视频信息",
+            "查找可用字幕轨",
+            "读取原文字幕与时间轴",
+            "将原文字幕翻译成中文",
+            "准备播放资源并按时间轴生成中文配音",
         )
         ProcessingFlow.IMPORTED_SUBTITLES -> listOf(
             "读取导入字幕并检查时间轴",
@@ -61,10 +68,10 @@ object VideoProcessingFlowPolicy {
         else -> when (source) {
             VideoSourceKind.YOUTUBE -> listOf(
                 "获取视频信息",
-                "解析 YouTube 视频资源",
-                "读取可用原文字幕",
+                "查找可用字幕轨",
+                "读取原文字幕与时间轴",
                 "将原文字幕翻译成中文",
-                "按时间轴生成中文配音",
+                "准备播放资源并按时间轴生成中文配音",
             )
             VideoSourceKind.WEB -> listOf(
                 "识别网页视频",
@@ -95,19 +102,38 @@ object VideoProcessingFlowPolicy {
         flow: ProcessingFlow,
         phase: Phase,
         failedPhase: Phase? = null,
+        progress: String = "",
+        waitingForTranscriptionEngine: Boolean = false,
     ): Int {
         if (phase == Phase.ERROR) {
             val stoppedAt = failedPhase?.takeIf { it != Phase.ERROR } ?: return 0
-            return stageIndex(source, flow, stoppedAt)
+            return stageIndex(
+                source = source,
+                flow = flow,
+                phase = stoppedAt,
+                progress = progress,
+            )
         }
-        return when (flow) {
+
+        val resolved = when (flow) {
             ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION -> when (phase) {
-                Phase.IDLE, Phase.PARSING -> 0
+                Phase.IDLE -> 0
+                Phase.PARSING -> youtubeSubtitleLookupStage(progress, fallbackStage = 0)
                 Phase.DOWNLOADING_AUDIO -> 2
                 Phase.TRANSCRIBING -> 3
                 Phase.TRANSLATING -> 4
                 Phase.SYNTHESIZING -> 5
                 Phase.READY -> 6
+                Phase.ERROR -> 0
+            }
+            ProcessingFlow.YOUTUBE_SUBTITLES -> when (phase) {
+                Phase.IDLE -> 0
+                Phase.PARSING -> youtubeSubtitleStage(progress)
+                Phase.DOWNLOADING_AUDIO -> 1
+                Phase.TRANSCRIBING -> 2
+                Phase.TRANSLATING -> 3
+                Phase.SYNTHESIZING -> 4
+                Phase.READY -> 5
                 Phase.ERROR -> 0
             }
             ProcessingFlow.IMPORTED_SUBTITLES -> when (phase) {
@@ -124,19 +150,55 @@ object VideoProcessingFlowPolicy {
                 Phase.READY -> 2
                 Phase.ERROR -> 0
             }
-            else -> when (phase) {
-                Phase.IDLE, Phase.PARSING -> 0
-                Phase.DOWNLOADING_AUDIO -> 1
-                Phase.TRANSCRIBING -> 2
-                Phase.TRANSLATING -> 3
-                Phase.SYNTHESIZING -> 4
-                Phase.READY -> 5
-                Phase.ERROR -> 0
-            }
+            ProcessingFlow.AUTO -> if (source == VideoSourceKind.YOUTUBE) {
+                when (phase) {
+                    Phase.IDLE -> 0
+                    Phase.PARSING -> youtubeSubtitleStage(progress)
+                    Phase.DOWNLOADING_AUDIO -> 1
+                    Phase.TRANSCRIBING -> 2
+                    Phase.TRANSLATING -> 3
+                    Phase.SYNTHESIZING -> 4
+                    Phase.READY -> 5
+                    Phase.ERROR -> 0
+                }
+            } else genericStageIndex(phase)
+            else -> genericStageIndex(phase)
+        }
+        return if (waitingForTranscriptionEngine && phase != Phase.ERROR) {
+            minOf(resolved, transcriptionStageIndex(source, flow))
+        } else {
+            resolved
         }
     }
 
-    fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
+    private fun youtubeSubtitleLookupStage(progress: String, fallbackStage: Int): Int = when {
+        progress.contains("查找可用字幕轨") -> 1
+        progress.contains("检查本地字幕文件与缓存") -> 1
+        progress.contains("下载并读取字幕文件") -> 1
+        else -> fallbackStage
+    }
+
+    private fun youtubeSubtitleStage(progress: String): Int = when {
+        progress.contains("查找可用字幕轨") -> 1
+        progress.contains("检查本地字幕文件与缓存") -> 2
+        progress.contains("下载并读取字幕文件") -> 2
+        else -> 0
+    }
+
+    private fun genericStageIndex(phase: Phase): Int = when (phase) {
+        Phase.IDLE, Phase.PARSING -> 0
+        Phase.DOWNLOADING_AUDIO -> 1
+        Phase.TRANSCRIBING -> 2
+        Phase.TRANSLATING -> 3
+        Phase.SYNTHESIZING -> 4
+        Phase.READY -> 5
+        Phase.ERROR -> 0
+    }
+
+    fun isCompleted(phase: Phase, waitingForTranscriptionEngine: Boolean = false): Boolean =
+        phase == Phase.READY && !waitingForTranscriptionEngine
+
+        fun transcriptionStageIndex(source: VideoSourceKind, flow: ProcessingFlow): Int =
         if (flow == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION) 3 else 2
 
     fun mainTitle(

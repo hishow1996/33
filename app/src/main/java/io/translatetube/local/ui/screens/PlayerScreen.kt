@@ -815,13 +815,15 @@ private fun VideoParsingPage(
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
-    val rawCurrentStage = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase, state.failedPhase)
-    val currentStage = when {
-        state.noModelHint != null && state.phase != Phase.ERROR ->
-            minOf(rawCurrentStage, VideoProcessingFlowPolicy.transcriptionStageIndex(source, flow))
-        state.phase == Phase.ERROR -> rawCurrentStage.coerceIn(0, (steps.size - 1).coerceAtLeast(0))
-        else -> rawCurrentStage
-    }
+    val waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR
+    val currentStage = VideoProcessingFlowPolicy.stageIndex(
+        source = source,
+        flow = flow,
+        phase = state.phase,
+        failedPhase = state.failedPhase,
+        progress = state.progress,
+        waitingForTranscriptionEngine = waitingForTranscriptionEngine,
+    ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
     val fraction = when (state.phase) {
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
@@ -1783,7 +1785,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         phase = state.phase,
         flow = flow,
         isPaused = state.isProcessingPaused,
-        waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR,
+        waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     )
     val detail = when {
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
@@ -1793,15 +1795,19 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
     }
     val stageCount = steps.size.coerceAtLeast(1)
     val lastStageIndex = (stageCount - 1).coerceAtLeast(0)
-    val rawStageIndex = VideoProcessingFlowPolicy.stageIndex(source, flow, state.phase, state.failedPhase)
-    val stageIndex = when {
-        state.noModelHint != null && state.phase != Phase.ERROR ->
-            minOf(rawStageIndex, VideoProcessingFlowPolicy.transcriptionStageIndex(source, flow)).coerceIn(0, lastStageIndex)
-        else -> rawStageIndex.coerceIn(0, lastStageIndex)
-    }
-    val stageNumber = if (state.phase == Phase.READY && state.noModelHint == null) stageCount else stageIndex + 1
+    val waitingForTranscriptionEngine = state.noModelHint != null && state.phase != Phase.ERROR
+    val rawStageIndex = VideoProcessingFlowPolicy.stageIndex(
+        source = source,
+        flow = flow,
+        phase = state.phase,
+        failedPhase = state.failedPhase,
+        progress = state.progress,
+        waitingForTranscriptionEngine = waitingForTranscriptionEngine,
+    )
+    val stageIndex = rawStageIndex.coerceIn(0, lastStageIndex)
+    val stageNumber = if (VideoProcessingFlowPolicy.isCompleted(state.phase, waitingForTranscriptionEngine)) stageCount else stageIndex + 1
     val fraction = when (state.phase) {
-        Phase.READY -> if (state.noModelHint == null) 1f else null
+        Phase.READY -> if (VideoProcessingFlowPolicy.isCompleted(state.phase, waitingForTranscriptionEngine)) 1f else null
         Phase.PARSING -> null
         Phase.DOWNLOADING_AUDIO -> progressPercent(state.progress)
         Phase.TRANSCRIBING -> progressRatio(state.progress) ?: progressPercent(state.progress)

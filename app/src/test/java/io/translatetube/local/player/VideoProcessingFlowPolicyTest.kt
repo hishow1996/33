@@ -23,8 +23,8 @@ class VideoProcessingFlowPolicyTest {
         assertEquals(5, youtube.size)
         assertEquals(5, web.size)
         assertEquals(5, local.size)
-        assertTrue(youtube[1].contains("YouTube"))
-        assertEquals("读取可用原文字幕", youtube[2])
+        assertEquals("查找可用字幕轨", youtube[1])
+        assertEquals("读取原文字幕与时间轴", youtube[2])
         assertEquals("提取视频音轨", web[1])
         assertTrue(web[2].contains("转写原文"))
         assertEquals("提取本地视频音轨", local[1])
@@ -38,6 +38,7 @@ class VideoProcessingFlowPolicyTest {
         val flow = ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
         val steps = VideoProcessingFlowPolicy.steps(VideoSourceKind.YOUTUBE, flow)
         assertEquals(6, steps.size)
+        assertEquals("查找并读取可用原文字幕", steps[1])
         assertEquals("提取视频音轨", steps[2])
         assertEquals("转写原文并生成时间轴字幕", steps[3])
         assertEquals(2, VideoProcessingFlowPolicy.stageIndex(VideoSourceKind.YOUTUBE, flow, Phase.DOWNLOADING_AUDIO))
@@ -99,7 +100,10 @@ class VideoProcessingFlowPolicyTest {
             }
             assertTrue("transcription stage should be present: $steps", transcription >= 0)
             assertEquals("将原文字幕翻译成中文", steps[transcription + 1])
-            assertEquals("按时间轴生成中文配音", steps[transcription + 2])
+            assertTrue(
+                "final stage should describe timeline-aligned dubbing: $steps",
+                steps[transcription + 2].contains("按时间轴生成中文配音"),
+            )
         }
         assertEquals(
             "正在将原文字幕翻译成中文",
@@ -109,6 +113,71 @@ class VideoProcessingFlowPolicyTest {
                 ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
             ),
         )
+    }
+
+    @Test
+    fun youtubeSubtitleLookupProgressMovesTheActiveStageWithinParsing() {
+        assertEquals(
+            0,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                Phase.PARSING,
+                progress = "正在解析 YouTube 视频",
+            ),
+        )
+        assertEquals(
+            1,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                Phase.PARSING,
+                progress = "正在查找可用字幕轨…",
+            ),
+        )
+        assertEquals(
+            2,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                Phase.PARSING,
+                progress = "正在下载并读取字幕文件…",
+            ),
+        )
+        assertEquals(
+            1,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                Phase.PARSING,
+                progress = "正在下载并读取字幕文件…",
+            ),
+        )
+    }
+
+    @Test
+    fun missingTranscriptionEngineMustNotMarkReadyFlowAsComplete() {
+        assertEquals(
+            3,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                Phase.READY,
+                waitingForTranscriptionEngine = true,
+            ),
+        )
+        assertEquals(
+            2,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.LOCAL,
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                Phase.READY,
+                waitingForTranscriptionEngine = true,
+            ),
+        )
+        assertFalse(VideoProcessingFlowPolicy.isCompleted(Phase.READY, waitingForTranscriptionEngine = true))
+        assertTrue(VideoProcessingFlowPolicy.isCompleted(Phase.READY))
+        assertFalse(VideoProcessingFlowPolicy.isCompleted(Phase.ERROR))
     }
 
     @Test
