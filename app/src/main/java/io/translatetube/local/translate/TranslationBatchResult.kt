@@ -39,7 +39,5 @@ internal data class TranslationBatchResult(
             }
             return TranslationBatchResult(translated, missing.toList())
         }
-
-
     }
 }
