@@ -217,7 +217,7 @@ object SubtitleParsers {
             val rawText = match.groupValues[2]
             // Plain text needs no Android Html conversion; escaped entities and markup still do.
             val decodedText = SubtitleTextDecoder.decode(
-                rawText.replace(ttmlLineBreakRegex, "\\n").replace(htmlTagRegex, "")
+                rawText.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, "")
             )
             val text = decodedText.trim()
             if (text.isNotEmpty()) out += SubLine(out.size, timing.first, timing.second, text)
