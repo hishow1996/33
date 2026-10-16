@@ -33,6 +33,13 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
+    fun recognizesMandarinAndCantoneseBcp47Tags() {
+        assertEquals("你好 OK", DubbingTranslationPolicy.usableText("你好 OK", null, "cmn-Hans-CN"))
+        assertEquals("你好世界", DubbingTranslationPolicy.usableText("你好世界", null, "yue-Hant-HK"))
+        assertNull(DubbingTranslationPolicy.usableText("東京", "東京", "ja-JP"))
+    }
+
+    @Test
     fun knownChineseLanguagePreservesMixedHanAndLatinCaption() {
         assertEquals("你好 OK", DubbingTranslationPolicy.usableText("你好 OK", null, "zh-Hans"))
     }
