@@ -154,18 +154,26 @@ object AudioExtract {
                 src != null -> extractor.setDataSource(ctx, src, null)
                 else -> throw IllegalStateException("无音频源")
             }
-            var trackIdx = -1
-            var declaredFormat: MediaFormat? = null
+            val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
             for (i in 0 until extractor.trackCount) {
                 val candidate = extractor.getTrackFormat(i)
                 if (candidate.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
-                    trackIdx = i
-                    declaredFormat = candidate
-                    break
+                    val channelCount = runCatching {
+                        candidate.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    }.getOrDefault(1)
+                    val isDefault = runCatching {
+                        candidate.containsKey("is-default") && candidate.getInteger("is-default") != 0
+                    }.getOrDefault(false)
+                    audioCandidates += AudioTrackSelectionPolicy.Candidate(
+                        index = i,
+                        isDefault = isDefault,
+                        channelCount = channelCount,
+                    )
                 }
             }
-            if (trackIdx < 0) throw IllegalStateException("未找到音频轨")
-            val format = declaredFormat ?: throw IllegalStateException("未找到音频轨格式")
+            val trackIdx = AudioTrackSelectionPolicy.choose(audioCandidates)
+                ?: throw IllegalStateException("未找到音频轨")
+            val format = extractor.getTrackFormat(trackIdx)
             val mediaDurationUs = runCatching {
                 if (format.containsKey(MediaFormat.KEY_DURATION)) {
                     format.getLong(MediaFormat.KEY_DURATION)

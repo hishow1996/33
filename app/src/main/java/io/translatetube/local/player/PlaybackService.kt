@@ -13,6 +13,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import io.translatetube.local.R
 import io.translatetube.local.asr.AudioExtract
+import io.translatetube.local.asr.AudioTrackSelectionPolicy
 import io.translatetube.local.asr.SpeakerDiarizer
 import io.translatetube.local.asr.WhisperEngine
 import io.translatetube.local.asr.vadSegments
@@ -3235,17 +3236,27 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         val work = File(destination.parentFile, destination.name + ".part")
         val extractor = android.media.MediaExtractor()
         var muxer: android.media.MediaMuxer? = null
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         try {
+            // A process can be killed before the normal finally block runs. Remove its unfinished
+            // output before MediaMuxer opens the same path for a fresh extraction attempt.
+            work.parentFile?.mkdirs()
+            if (work.exists() && !work.delete()) {
+                throw IllegalStateException("无法清理上次未完成的音轨暂存文件，请稍后重试。")
+            }
+            awaitResume()
+            ownerJob?.ensureActive()
             val streamHeaders = buildMap {
                 putAll(headers)
                 remoteMediaUserAgent.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
             }
             withContext(Dispatchers.IO) {
-                // MediaExtractor 只有 (path, headers) 两参重载；headers 里带 UA/Cookie/Referer
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                // MediaExtractor 的 URL 读取是平台级同步 I/O；至少不要在任务已取消或暂停时启动它。
                 extractor.setDataSource(mediaUrl, streamHeaders)
             }
-            var chosen = -1
-            var bestChannels = -1
+            ownerJob?.ensureActive()
+            val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
             for (i in 0 until extractor.trackCount) {
                 val fmt = extractor.getTrackFormat(i)
                 val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: continue
@@ -3253,12 +3264,17 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 val channels = runCatching {
                     fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
                 }.getOrDefault(1)
-                if (channels > bestChannels) {
-                    bestChannels = channels
-                    chosen = i
-                }
+                val isDefault = runCatching {
+                    fmt.containsKey("is-default") && fmt.getInteger("is-default") != 0
+                }.getOrDefault(false)
+                audioCandidates += AudioTrackSelectionPolicy.Candidate(
+                    index = i,
+                    isDefault = isDefault,
+                    channelCount = channels,
+                )
             }
-            if (chosen < 0) throw IllegalStateException("该视频流中没有可提取的音频轨")
+            val chosen = AudioTrackSelectionPolicy.choose(audioCandidates)
+                ?: throw IllegalStateException("该视频流中没有可提取的音频轨")
             val trackFormat = extractor.getTrackFormat(chosen)
             val mediaDurationUs = runCatching {
                 if (trackFormat.containsKey(android.media.MediaFormat.KEY_DURATION)) {
