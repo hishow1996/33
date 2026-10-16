@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 播放侧 playAt(index) 用 AudioTrack 即时切行。
  */
 private class DubbingPcmLimitException(message: String) : IllegalStateException(message)
+private class DubbingChunkBoundaryTimeoutException : IllegalStateException("等待配音分段结束超时")
 
 private data class DubbingCacheInspection(
     val hasAudio: Boolean?,
@@ -949,6 +950,7 @@ class DubbingEngine(
         generation: Int,
     ): Boolean {
         val expectedSampleCount = (chunkEndSample - chunkStartSample).coerceAtLeast(0).toLong()
+        val waitStartedMs = android.os.SystemClock.elapsedRealtime()
         while (true) {
             if (!DubbingChunkTransitionPolicy.canCommit(
                     released = released,
@@ -962,6 +964,9 @@ class DubbingEngine(
             if (playedSamples >= expectedSampleCount ||
                 sourceTrack.playState != AudioTrack.PLAYSTATE_PLAYING
             ) return true
+            if (android.os.SystemClock.elapsedRealtime() - waitStartedMs >= 5_000L) {
+                throw DubbingChunkBoundaryTimeoutException()
+            }
             android.os.SystemClock.sleep(2L)
         }
     }
@@ -1158,15 +1163,19 @@ class DubbingEngine(
                                 if (track === sourceTrack &&
                                     !released && playbackGeneration.get() == generation
                                 ) {
-                                    val reachedBoundary = runCatching {
-                                        awaitStaticChunkBoundary(
-                                            sourceTrack,
-                                            chunkStartSample,
-                                            chunkEndSample,
-                                            generation,
-                                        )
-                                    }.getOrDefault(false)
-                                    if (!reachedBoundary || released || playbackGeneration.get() != generation) {
+                                    val reachedBoundary = if (error is DubbingChunkBoundaryTimeoutException) {
+                                        false
+                                    } else {
+                                        runCatching {
+                                            awaitStaticChunkBoundary(
+                                                sourceTrack,
+                                                chunkStartSample,
+                                                chunkEndSample,
+                                                generation,
+                                            )
+                                        }.getOrDefault(false)
+                                    }
+                                    if (!reachedBoundary && error !is DubbingChunkBoundaryTimeoutException) {
                                         return@execute
                                     }
                                     if (track === sourceTrack) track = null
