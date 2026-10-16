@@ -44,6 +44,8 @@ concurrency:
 
 jobs:
   build:
+    # Never build APKs on a source push; the user must explicitly dispatch this workflow.
+    if: github.event_name == 'workflow_dispatch'
     name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
