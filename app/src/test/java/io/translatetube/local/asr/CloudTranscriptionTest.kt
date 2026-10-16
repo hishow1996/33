@@ -44,6 +44,21 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun cloudSubmissionRetriesOnlyTransientExplicitHttpFailures() {
+        assertTrue(CloudTranscription.shouldRetryCloudSubmission(IOException("ElevenLabs 云端转写失败（HTTP 429）：限流")))
+        assertTrue(CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 503）：服务暂不可用")))
+        assertTrue(CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 502）：网关错误")))
+        assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("Cartesia 云端转写失败（HTTP 401）：Key 无效")))
+        assertEquals(false, CloudTranscription.shouldRetryCloudSubmission(IOException("connection reset")))
+        assertEquals(
+            false,
+            CloudTranscription.shouldRetryCloudSubmission(
+                IOException("request cancelled", java.util.concurrent.CancellationException("cancelled"))
+            ),
+        )
+    }
+
+    @Test
     fun cyclicKawaPollErrorCausesDoNotHangRetryDetection() {
         val first = IOException("HTTP 503: transient")
         val second = IllegalStateException("wrapped poll error")

@@ -127,6 +127,20 @@ object CloudTranscription {
      * Kawa's asynchronous job endpoint can be briefly rate-limited or unavailable. Retry only
      * transient network/HTTP failures; authentication and task/schema errors should fail promptly.
      */
+    internal const val MAX_CLOUD_SUBMISSION_RETRIES = 2
+
+    internal fun shouldRetryCloudSubmission(error: Throwable): Boolean {
+        val chain = causeChain(error)
+        if (chain.any { it is java.util.concurrent.CancellationException }) return false
+        val messages = chain.mapNotNull { it.message }.joinToString(" ")
+        // Retry only an explicit transient provider response. A dropped connection after upload
+        // is ambiguous and must not automatically submit a potentially billable transcription twice.
+        if (!messages.contains("云端转写失败")) return false
+        val statusCode = Regex("""HTTP\s*(\d{3})""", RegexOption.IGNORE_CASE)
+            .find(messages)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
+    }
+
     internal fun shouldRetryKawaPoll(error: Throwable): Boolean {
         val chain = causeChain(error)
         if (chain.any { it is java.util.concurrent.CancellationException }) return false
@@ -136,6 +150,9 @@ object CloudTranscription {
         if (statusCode != null) {
             return statusCode in setOf(408, 425, 429, 500, 502, 503, 504)
         }
+        // Bounded-body violations are deterministic; retrying the same oversized response only
+        // wastes the user's time and repeats the same allocation/parse path.
+        if (messages.contains("响应超过") || messages.contains("安全上限")) return false
         return chain.any { it is IOException }
     }
 
@@ -333,35 +350,55 @@ object CloudTranscription {
             .post(form)
             .build()
 
-        checkActive()
-        val responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
-            val body = readResponseBody(response.body, checkActive)
+        var responseText: String? = null
+        var retriesUsed = 0
+        while (responseText == null) {
             checkActive()
-            if (!response.isSuccessful) {
-                val serverMessage = try {
-                    val obj = JSONObject(body)
-                    obj.optString("detail").takeIf { it.isNotBlank() }
-                        ?: obj.optString("message").takeIf { it.isNotBlank() }
-                        ?: obj.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
-                } catch (_: Exception) {
-                    null
+            try {
+                responseText = executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
+                    val body = readResponseBody(response.body, checkActive)
+                    checkActive()
+                    if (!response.isSuccessful) {
+                        val serverMessage = try {
+                            val obj = JSONObject(body)
+                            obj.optString("detail").takeIf { it.isNotBlank() }
+                                ?: obj.optString("message").takeIf { it.isNotBlank() }
+                                ?: obj.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                        } catch (_: Exception) {
+                            null
+                        }
+                        val advice = when (response.code) {
+                            401, 403 -> "API Key 无效或当前账户没有转写权限"
+                            413 -> "音频文件超过服务商允许的大小"
+                            429 -> "云端转写额度或请求频率已达到上限"
+                            else -> serverMessage?.take(240) ?: "请检查网络、模型权限和服务商账户"
+                        }
+                        throw IOException(providerName + " 云端转写失败（HTTP " + response.code + "）：" + advice)
+                    }
+                    body
                 }
-                val advice = when (response.code) {
-                    401, 403 -> "API Key 无效或当前账户没有转写权限"
-                    413 -> "音频文件超过服务商允许的大小"
-                    429 -> "云端转写额度或请求频率已达到上限"
-                    else -> serverMessage?.take(240) ?: "请检查网络、模型权限和服务商账户"
-                }
-                val providerName = if (provider == "elevenlabs") "ElevenLabs" else "Cartesia"
-                throw IOException(providerName + " 云端转写失败（HTTP " + response.code + "）：" + advice)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                if (retriesUsed >= MAX_CLOUD_SUBMISSION_RETRIES ||
+                    !shouldRetryCloudSubmission(error)
+                ) throw error
+                retriesUsed++
+                val waitMs = 750L shl (retriesUsed - 1)
+                onProgress(
+                    "$providerName 云端服务暂时异常，${waitMs} 毫秒后自动重试（" +
+                        "$retriesUsed/$MAX_CLOUD_SUBMISSION_RETRIES）…"
+                )
+                delay(waitMs)
+                checkActive()
             }
-            body
         }
 
         checkActive()
         onProgress("$providerName 云端已返回结果，正在整理词级时间戳…")
+        val completedResponseText = responseText ?: throw IOException("云端转写没有返回响应")
         val root = try {
-            JSONObject(responseText)
+            JSONObject(completedResponseText)
         } catch (error: Exception) {
             throw IOException("云端转写返回的内容无法解析", error)
         }

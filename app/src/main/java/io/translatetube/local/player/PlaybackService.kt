@@ -2072,8 +2072,15 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 segs.subList(chunkStart, chunkEnd),
                                 checkActive = { ownerJob?.ensureActive() },
                             ) { done, _ ->
-                                updateUiForSession(key) {
-                                    it.copy(progress = "转写中 ${chunkStart + done}/${segs.size} 段")
+                                val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
+                                val progressTimeMs = completedSegment?.second ?: 0L
+                                val progressMinutes = progressTimeMs / 60_000L
+                                val progressSeconds = (progressTimeMs / 1_000L) % 60L
+                                val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
+                                updateUiForSession(key) { state ->
+                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                        state.copy(progress = progressLabel)
+                                    } else state
                                 }
                             }
                             rows.addAll(chunkRows)
@@ -2133,6 +2140,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 } else {
                     val providerName = when (asrProvider) { "elevenlabs" -> "ElevenLabs"; "cartesia" -> "Cartesia"; else -> "Kawa" }
                     updateUiForSession(key) { it.copy(progress = "正在准备 " + providerName + " 云端转写音频…") }
+                    val removedStaleCloudWavs = runCatching {
+                        io.translatetube.local.asr.CloudTranscription.cleanupStaleWavStages(cacheDir)
+                    }.onFailure {
+                        android.util.Log.w("PlaybackService", "Stale cloud transcription WAV cleanup failed", it)
+                    }.getOrDefault(0)
+                    if (removedStaleCloudWavs > 0) {
+                        android.util.Log.i("PlaybackService", "Removed $removedStaleCloudWavs stale cloud transcription WAV file(s)")
+                    }
                     val cloudWav = File.createTempFile("asr-cloud-", ".wav", cacheDir)
                     try {
                         withContext(Dispatchers.IO) {
