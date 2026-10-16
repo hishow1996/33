@@ -182,7 +182,9 @@ class DubbingEngine(
                         val cue = this@DubbingEngine.lines[i]
                         if (!DubbingTimeline.isPlayableCue(cue)) {
                             // Invalid timing or blank source text can never be selected by lineAt().
-                            // Mark it as source-audio fallback without reading or synthesizing PCM.
+                            // Remove this engine's now-unusable cache and avoid PCM inspection/TTS.
+                            val invalidCache = cacheFile(i)
+                            deleteCacheIfUnchanged(invalidCache, DubbingCacheFileStamp.capture(invalidCache))
                             readiness.markPrepared(i, hasAudio = false)
                             continue
                         }
