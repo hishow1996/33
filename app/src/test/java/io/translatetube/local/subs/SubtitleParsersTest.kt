@@ -573,4 +573,20 @@ class SubtitleParsersTest {
     }
 
 
+
+    @Test
+    fun decodesLatinAccentsInWebCaptionsWithCorrectEntityCase() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:02.000
+            Caf&eacute; &Eacute; &ntilde; &uuml; &szlig; &#x1F600;
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseVtt(source)
+
+        assertEquals(1, parsed.size)
+        assertEquals("Café É ñ ü ß 😀", parsed.single().text)
+    }
+
 }
