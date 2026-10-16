@@ -519,7 +519,24 @@ fun WebVideoScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { webViewState.value?.reload(); status = "正在重新检测视频…" }) {
+                    IconButton(
+                        enabled = webViewState.value != null,
+                        onClick = {
+                            val view = webViewState.value
+                            if (view == null) {
+                                status = "网页尚未就绪，请稍后重试。"
+                            } else {
+                                status = "正在重新检测视频…"
+                                pageLoading = true
+                                candidatesState.value = emptyList()
+                                verifiedUrls = emptySet()
+                                manualChose = false
+                                autoPlayedUrl = null
+                                runCatching { view.stopLoading() }
+                                view.reload()
+                            }
+                        },
+                    ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新网页")
                     }
                 },
