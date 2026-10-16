@@ -277,7 +277,22 @@ fun HomeScreen(
         }
 
         val shownVideos = if (favoritesOnly) videos.filter { it.isFavorite } else videos
-        if (shownVideos.isEmpty()) {
+        if (!historyLoaded) {
+            Box(
+                Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = BrandBright,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("正在加载观看记录", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        } else if (shownVideos.isEmpty()) {
             Box(
                 Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
