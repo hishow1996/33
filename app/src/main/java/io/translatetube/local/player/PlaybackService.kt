@@ -1619,30 +1619,11 @@ class PlaybackService : MediaSessionService() {
                 val missingLocalModel = asrProvider == "local" &&
                     !io.translatetube.local.data.ModelFiles.asrReady(this)
                 val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
-                if (missingLocalModel || missingCloudKey) {
-                    val hint = when (asrProvider) {
-                        "local" -> "该视频无字幕。请在设置 → 模型管理中下载本地 Whisper 转写模型；安装后重新打开本视频，将自动转写并生成翻译配音。"
-                        "elevenlabs" -> "已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎中填写 API Key；填写后重新打开本视频自动转写。"
-                        "cartesia" -> "已选择 Cartesia 云端转写，请先在设置 → 转写引擎中填写 API Key；填写后重新打开本视频自动转写。"
-                        else -> "已选择 Kawa 云端转写，请先在设置 → 转写引擎中填写 API Key；填写后重新打开本视频自动转写。"
-                    }
-                    // 诚实的进度状态：转写引擎未就绪时步骤条停在「下载或读取字幕」一步，
-                    // 不显示虚假的「翻译/配音完成」。视频播放不受影响。
-                    updateUiForSession(key) {
-                        it.copy(
-                            noModelHint = hint,
-                            phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
-                            progress = if (asrProvider == "local") {
-                                "该视频无字幕：等待本地转写模型安装（设置 → 模型管理）"
-                            } else {
-                                "该视频无字幕：等待云端转写 API Key 配置（设置 → 转写引擎）"
-                            },
-                        )
-                    }
-                } else {
-                // ---- 2b. 无字幕 → 本地转写 ----
+                // ---- 2b. 无字幕 → 先提取音频（落缓存），再判断转写引擎是否就绪 ----
+                // 音频提取无条件先执行：转写模型没装也要把音频准备好，这样用户装完
+                // 模型重新打开本视频时直接复用缓存开始转写，不需要再次联网提取。
                 awaitProcessingResumed(key)
-                updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，准备语音转写…") }
+                updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，正在提取视频音频…") }
                 val audioFile: Any = when {
                     videoId != null -> obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
                     remoteMediaUrl != null -> obtainRemoteMediaAsrFile(
@@ -1657,6 +1638,22 @@ class PlaybackService : MediaSessionService() {
                 val leasedAudioPath = (audioFile as? File)
                     ?.takeIf { videoId != null || remoteMediaUrl != null }
                     ?.absolutePath
+                if (missingLocalModel || missingCloudKey) {
+                    val hint = when (asrProvider) {
+                        "local" -> "视频音频已提取并缓存（约 ${( (audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 模型管理中下载 Whisper 转写模型；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
+                        "elevenlabs" -> "视频音频已提取并缓存。已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                        "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                        else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
+                    }
+                    updateUiForSession(key) {
+                        it.copy(
+                            noModelHint = hint,
+                            phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
+                            progress = "视频音频已提取完成；转写等待引擎就绪" +
+                                if (asrProvider == "local") "（设置 → 模型管理）" else "（设置 → 转写引擎）",
+                        )
+                    }
+                } else {
                 updateUiForSession(key) { it.copy(phase = Phase.TRANSCRIBING, progress = "解码音频…") }
                 val pcmOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 // A prompt cancellation can discard a successful withContext result before its
