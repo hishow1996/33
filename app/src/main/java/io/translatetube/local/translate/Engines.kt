@@ -51,6 +51,54 @@ internal fun buildContextUserPrompt(
         "$ctxText\n\nNow translate:\n$numbered"
 }
 
+/**
+ * Recognize only parser/alignment failures that can improve by lowering the LLM request size.
+ * Authentication, quota, transport and server errors must keep their normal error path.
+ */
+private fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
+    val message = error.message.orEmpty()
+    return message.contains("重复返回字幕编号") ||
+        message.contains("超出本批范围的字幕编号") ||
+        message.contains("编号不完整") ||
+        message.contains("格式不完整")
+}
+
+/**
+ * Retry malformed or truncated model output with smaller cue groups. Successfully translated
+ * halves feed their last few cues into the next half so splitting does not discard continuity.
+ */
+internal suspend fun translateBatchWithAdaptiveRecovery(
+    lines: List<String>,
+    context: Pair<List<String>, List<String>>? = null,
+    translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
+): List<String> {
+    if (lines.isEmpty()) return emptyList()
+
+    try {
+        val response = translate(lines, context)
+        val complete = response.size == lines.size &&
+            response.indices.all { index -> lines[index].isBlank() || response[index].isNotBlank() }
+        if (complete) return response
+    } catch (error: IllegalStateException) {
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (!isRecoverableTranslationFormatError(error)) throw error
+    }
+
+    if (lines.size == 1) {
+        throw IllegalStateException("翻译服务多次未能完整返回单条字幕的译文，请重试或更换翻译模型")
+    }
+
+    val midpoint = lines.size / 2
+    val leftSource = lines.subList(0, midpoint)
+    val rightSource = lines.subList(midpoint, lines.size)
+    val leftTranslation = translateBatchWithAdaptiveRecovery(leftSource, context, translate)
+    val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
+    val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
+    val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
+    val rightTranslation = translateBatchWithAdaptiveRecovery(rightSource, rightContext, translate)
+    return leftTranslation + rightTranslation
+}
+
 private val JSON = "application/json; charset=utf-8".toMediaType()
 private val translationHeaderRegex = Regex(
     "(?i)^(here are (the )?translations?:?|translations?:?|translation results?:?|译文如下[:：]?)$",
@@ -365,7 +413,9 @@ class OpenAiCompatEngine(
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
-            val translated = translateBatch(batch, srcLang, tgtLang, context)
+            val translated = translateBatchWithAdaptiveRecovery(batch, context) { rows, cueContext ->
+                translateBatch(rows, srcLang, tgtLang, cueContext)
+            }
             out += translated
             val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
             context = batch.subList(from, batch.size) to translated.subList(from, translated.size)
@@ -480,7 +530,9 @@ class GeminiEngine(
         var i = 0
         while (i < lines.size) {
             val batch = lines.subList(i, (i + 30).coerceAtMost(lines.size))
-            val translated = translateBatch(batch, srcLang, tgtLang, context)
+            val translated = translateBatchWithAdaptiveRecovery(batch, context) { rows, cueContext ->
+                translateBatch(rows, srcLang, tgtLang, cueContext)
+            }
             out += translated
             val from = (batch.size - CONTEXT_LINES).coerceAtLeast(0)
             context = batch.subList(from, batch.size) to translated.subList(from, translated.size)
