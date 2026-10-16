@@ -41,7 +41,7 @@ object SubtitleParsers {
     /** Normalize visually equivalent Unicode spaces and discard hidden control bytes from captions. */
     private fun normalizeSubtitleWhitespace(text: String): String = text
         .replace(subtitleControlCharactersRegex, "")
-        .replace('\\uFEFF', ' ')
+        .replace('\uFEFF', ' ')
         .replace(unusualSubtitleWhitespaceRegex, " ")
         .replace(whitespaceRegex, " ")
         .trim()
