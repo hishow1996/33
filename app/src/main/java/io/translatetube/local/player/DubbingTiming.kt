@@ -54,7 +54,13 @@ internal object DubbingTiming {
         }
 
         val audioDurationMs = sampleCount.toDouble() * 1000.0 / sampleRate
-        val safeMaxRate = maxSyncRate.takeIf { it.isFinite() && it >= 1.0f } ?: MAX_SYNC_RATE
+        // The actual AudioTrack rate is capped at MAX_OUTPUT_RATE and player speed can reach
+        // 2x. Keep this synchronization component bounded too, or math would assume faster
+        // playback than the audio sink can deliver and subtitle timing would drift.
+        val safeMaxRate = maxSyncRate
+            .takeIf { it.isFinite() && it >= 1.0f }
+            ?.coerceAtMost(MAX_SYNC_RATE)
+            ?: MAX_SYNC_RATE
         val syncRate = maxOf(1.0, audioDurationMs / lineDurationMs.toDouble())
             .coerceAtMost(safeMaxRate.toDouble()).toFloat()
 

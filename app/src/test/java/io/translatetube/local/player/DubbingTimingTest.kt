@@ -218,4 +218,22 @@ class DubbingTimingTest {
         assertEquals(2, DubbingTiming.slice(samples, oversized, 16_000).size)
     }
 
+    @Test
+    fun callerCannotRaiseSyncRateBeyondTheRateUsedByPlaybackOutput() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 10_000,
+            sampleRate = 1_000,
+            lineStartMs = 0,
+            lineEndMs = 1_000,
+            positionMs = 0,
+            playerSpeed = 2.0f,
+            maxSyncRate = 10.0f,
+        )
+
+        assertEquals(2.0f, plan.syncRate, 0.001f)
+        assertEquals(4.0f, plan.playbackRate, 0.001f)
+        assertEquals(2_000, plan.sampleCount)
+        assertTrue(plan.truncated)
+    }
+
 }

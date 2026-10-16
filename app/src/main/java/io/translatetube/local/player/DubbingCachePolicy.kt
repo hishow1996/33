@@ -7,13 +7,13 @@ internal data class DubbingCacheEntry(
     val path: String,
     val bytes: Long,
     val lastModified: Long,
-    val isCurrentVideo: Boolean,
+    val isCurrentSessionFile: Boolean,
 )
 
 internal object DubbingCachePolicy {
     const val BUDGET_BYTES = 160L * 1024L * 1024L
 
-    /** Evict least-recently-used inactive entries until under budget, never choosing active files. */
+    /** Evict least-recently-used entries until under budget, never choosing files required by the active session. */
     fun filesToEvict(
         entries: List<DubbingCacheEntry>,
         budgetBytes: Long = BUDGET_BYTES,
@@ -26,7 +26,7 @@ internal object DubbingCachePolicy {
         if (totalBytes <= budget) return emptyList()
 
         val evicted = mutableListOf<DubbingCacheEntry>()
-        for (entry in valid.asSequence().filterNot { it.isCurrentVideo }.sortedBy { it.lastModified }) {
+        for (entry in valid.asSequence().filterNot { it.isCurrentSessionFile }.sortedBy { it.lastModified }) {
             if (totalBytes <= budget) break
             evicted += entry
             totalBytes = totalBytes.subtract(BigInteger.valueOf(entry.bytes)).max(BigInteger.ZERO)

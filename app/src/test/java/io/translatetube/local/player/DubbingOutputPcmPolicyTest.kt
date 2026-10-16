@@ -35,4 +35,20 @@ class DubbingOutputPcmPolicyTest {
     fun rejectsUnsupportedSampleRates() {
         DubbingOutputPcmPolicy.normalize(floatArrayOf(0.2f), 7_999)
     }
+    @Test
+    fun clipsAndSanitizesCompatibleRatePcmWithoutMutatingTheCachedArray() {
+        val input = floatArrayOf(2.0f, -2.0f, Float.NaN, Float.POSITIVE_INFINITY, 0.25f)
+        val normalized = DubbingOutputPcmPolicy.normalize(input, 8_000)
+
+        assertEquals(8_000, normalized.sampleRate)
+        assertTrue(normalized.samples.contentEquals(floatArrayOf(1.0f, -1.0f, 0.0f, 0.0f, 0.25f)))
+        assertTrue(input[0] == 2.0f && input[1] == -2.0f)
+    }
+
+    @Test
+    fun keepsZeroCopyFastPathForAlreadySafeLowRatePcm() {
+        val input = floatArrayOf(-1.0f, -0.2f, 0.0f, 0.6f, 1.0f)
+        assertSame(input, DubbingOutputPcmPolicy.normalize(input, 8_000).samples)
+    }
+
 }

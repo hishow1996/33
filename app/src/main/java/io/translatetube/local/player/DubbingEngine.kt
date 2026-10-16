@@ -161,22 +161,17 @@ class DubbingEngine(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
 
-                    val expectedCacheNames = this@DubbingEngine.lines.indices
-                        .map { cacheFile(it).name }.toHashSet()
-                    // Coordinate installs with cache pruning across engine instances. Temporary
-                    // staging files use per-engine names and are removed only after they go stale.
+                    // Keep valid PCM caches for other voices/engines. They are harmless when
+                    // the active session uses a different cache key; the shared LRU budget below
+                    // can evict them when needed. Deleting all non-current names here raced with
+                    // overlapping old/new engines for the same video and discarded reusable audio.
                     synchronized(cacheInstallLock) {
                         val nowMs = System.currentTimeMillis()
                         val existing = cacheDir.listFiles().orEmpty()
                         for (file in existing) {
                             checkCacheInitActive()
                             if (released || generation != cacheInitGeneration.get()) return@launch
-                            when {
-                                file.name.endsWith(".pcm") && file.name !in expectedCacheNames ->
-                                    file.delete()
-                                isStalePcmTemp(file, nowMs) ->
-                                    file.delete()
-                            }
+                            if (isStalePcmTemp(file, nowMs)) file.delete()
                         }
                     }
 
@@ -627,6 +622,7 @@ class DubbingEngine(
                 if (temp.delete()) temp.parentFile?.takeIf { it != root && it.list().isNullOrEmpty() }?.delete()
             }
 
+            val currentSessionCacheNames = lines.indices.map { cacheFile(it).name }.toHashSet()
             val pcmFiles = root.walkTopDown()
                 .filter { it.isFile && it.name.endsWith(".pcm") }
                 .toList()
@@ -635,7 +631,11 @@ class DubbingEngine(
                     path = file.absolutePath,
                     bytes = file.length(),
                     lastModified = file.lastModified(),
-                    isCurrentVideo = file.parentFile?.absolutePath == cacheDir.absolutePath,
+                    // Only protect files expected by this engine. Old voice/model variants for
+                    // the same video stay reusable below budget, but become LRU-evictable if the
+                    // global cache grows too large.
+                    isCurrentSessionFile = file.parentFile?.absolutePath == cacheDir.absolutePath &&
+                        file.name in currentSessionCacheNames,
                 )
             }
             for (entry in DubbingCachePolicy.filesToEvict(entries)) {
@@ -728,9 +728,19 @@ class DubbingEngine(
     }
 
     /** Update the file-backed LRU timestamp when a PCM row is actually reused for playback. */
-    private fun touchCacheFile(file: File) {
+    private fun touchCacheFile(
+        file: File,
+        expectedStamp: DubbingCacheFileStamp? = DubbingCacheFileStamp.capture(file),
+    ) {
+        if (expectedStamp == null) return
         runCatching {
-            if (file.isFile) file.setLastModified(System.currentTimeMillis())
+            synchronized(cacheInstallLock) {
+                // Don't update the LRU timestamp of a new atomic replacement using a stale reader's
+                // path. This lock is shared with cache publication and eviction.
+                if (expectedStamp.stillMatches(file)) {
+                    file.setLastModified(System.currentTimeMillis())
+                }
+            }
         }
     }
 
@@ -884,7 +894,7 @@ class DubbingEngine(
                     synchronized(mem) { mem[idx] = samples to sr }
                     readiness.markPrepared(idx, hasAudio = true)
                 }
-                f.setLastModified(System.currentTimeMillis())
+                touchCacheFile(f, cacheStamp)
                 samples to sr
             }
         } catch (e: kotlinx.coroutines.CancellationException) {

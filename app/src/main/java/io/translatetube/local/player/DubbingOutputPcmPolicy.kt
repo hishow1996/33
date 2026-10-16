@@ -22,8 +22,25 @@ internal object DubbingOutputPcmPolicy {
         require(sampleRate in MIN_SUPPORTED_RATE..MAX_SUPPORTED_RATE) {
             "不支持的配音采样率：${sampleRate} Hz"
         }
-        if (samples.isEmpty() || sampleRate <= PREFERRED_SAMPLE_RATE) {
-            return DubbingOutputPcm(samples, sampleRate)
+        if (samples.isEmpty()) return DubbingOutputPcm(samples, sampleRate)
+        if (sampleRate <= PREFERRED_SAMPLE_RATE) {
+            // Keep the zero-copy path for normal TTS output, but don't send out-of-range floats
+            // or NaN/Infinity directly to PCM_FLOAT AudioTrack. PCM_16BIT already clips these
+            // values, so sanitizing here also makes output consistent on devices that support
+            // the float track.
+            var needsSanitizing = false
+            for (sample in samples) {
+                if (!sample.isFinite() || sample < -1.0f || sample > 1.0f) {
+                    needsSanitizing = true
+                    break
+                }
+            }
+            if (!needsSanitizing) return DubbingOutputPcm(samples, sampleRate)
+            val sanitized = FloatArray(samples.size) { index ->
+                val sample = samples[index]
+                if (sample.isFinite()) sample.coerceIn(-1.0f, 1.0f) else 0.0f
+            }
+            return DubbingOutputPcm(sanitized, sampleRate)
         }
         val outputCountLong = (samples.size.toLong() * PREFERRED_SAMPLE_RATE + sampleRate / 2L) / sampleRate
         require(outputCountLong in 1L..DubbingPcmValidation.MAX_SAMPLE_COUNT.toLong()) {

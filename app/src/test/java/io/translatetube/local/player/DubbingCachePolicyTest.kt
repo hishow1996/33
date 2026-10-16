@@ -15,7 +15,7 @@ class DubbingCachePolicyTest {
     }
 
     @Test
-    fun neverEvictsTheCurrentVideosFilesEvenWhenItsCacheExceedsBudget() {
+    fun neverEvictsCurrentSessionFilesEvenWhenTheirCacheExceedsBudget() {
         val active = DubbingCacheEntry("active", 200L, 1L, true)
         assertTrue(DubbingCachePolicy.filesToEvict(listOf(active), 100L).isEmpty())
     }
@@ -38,4 +38,15 @@ class DubbingCachePolicyTest {
         )
         assertTrue(DubbingCachePolicy.filesToEvict(entries, 50L).isEmpty())
     }
+    @Test
+    fun oldVoiceCacheForSameVideoCanBeEvictedButCurrentVoiceCacheIsProtected() {
+        val oldVoice = DubbingCacheEntry("same-video-old-voice", 80L, 10L, false)
+        val currentVoice = DubbingCacheEntry("same-video-current-voice", 80L, 20L, true)
+
+        assertEquals(
+            listOf(oldVoice),
+            DubbingCachePolicy.filesToEvict(listOf(currentVoice, oldVoice), 80L),
+        )
+    }
+
 }
