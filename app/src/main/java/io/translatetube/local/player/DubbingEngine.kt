@@ -946,7 +946,6 @@ class DubbingEngine(
         sourceTrack: AudioTrack,
         chunkStartSample: Int,
         chunkEndSample: Int,
-        lineIndex: Int,
         generation: Int,
     ): Boolean {
         val expectedSampleCount = (chunkEndSample - chunkStartSample).coerceAtLeast(0).toLong()
@@ -1030,7 +1029,6 @@ class DubbingEngine(
                                         sourceTrack,
                                         chunkStartSample,
                                         chunkEndSample,
-                                        lineIndex,
                                         generation,
                                     )
                                 ) {
@@ -1128,7 +1126,6 @@ class DubbingEngine(
                                 }.onFailure {
                                     android.util.Log.w("DubbingEngine", "Could not update next chunk playback rate", it)
                                 }
-                                track = nextTrack
                                 installNextStaticChunk(
                                     sourceTrack = nextTrack,
                                     samples = samples,
@@ -1143,7 +1140,8 @@ class DubbingEngine(
                                     lineEndMs = lineEndMs,
                                     initialHeadPosition = headOffset,
                                 )
-                                sourceTrack.release()
+                                track = nextTrack
+                                runCatching { sourceTrack.release() }
                                 nextTrack.play()
                                 // Ownership is now published through track; don't release it on
                                 // the successful path when the catch block later runs for another reason.
@@ -1165,7 +1163,6 @@ class DubbingEngine(
                                             sourceTrack,
                                             chunkStartSample,
                                             chunkEndSample,
-                                            lineIndex,
                                             generation,
                                         )
                                     }.getOrDefault(false)
@@ -1189,7 +1186,8 @@ class DubbingEngine(
                                     reportSynthesisError("第 ${lineIndex + 1} 句长音频分段播放失败：$detail")
                                 }
                             }
-RejectedExecutionException) {
+                        }
+                    } catch (_: java.util.concurrent.RejectedExecutionException) {
                         // The cleanup barrier owns the track when the audio executor is closing.
                     }
                 }
