@@ -5,10 +5,6 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Tracks per-cue output readiness independently of the contiguous pre-synthesis progress.
  * A later cue can be ready after a seek even while an earlier cue is still synthesizing.
- *
- * Store the audio/silent state in one concurrent map. Two independent sets allow a concurrent
- * markPending() to interleave between markPrepared()'s updates and resurrect a cue with the
- * wrong state while the playback ticker is reading readiness.
  */
 internal class DubbingReadiness {
     // true = synthesized audio is ready; false = intentionally silent/fallback to source audio.
@@ -37,4 +33,73 @@ internal class DubbingReadiness {
     fun isPrepared(index: Int): Boolean = index >= 0 && states[index] == true
 
     fun isSilent(index: Int): Boolean = index >= 0 && states[index] == false
+}
+
+internal data class DubbingReadinessProgressSnapshot(
+    val preparedUntil: Int,
+    val preparedCount: Int,
+)
+
+/**
+ * Serializes readiness mutations with publication of the contiguous-ready prefix.
+ *
+ * The callback runs inside the same critical section as each mutation. Without that guarantee,
+ * concurrent cache validation and synthesis could publish an older prefix after a newer pending
+ * state had already shortened it.
+ */
+internal class DubbingReadinessProgress(
+    private val readiness: DubbingReadiness,
+) {
+    private val lock = Any()
+    private var preparedUntil = 0
+
+    fun clear(
+        totalLines: Int,
+        publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
+    ): DubbingReadinessProgressSnapshot = synchronized(lock) {
+        readiness.clear()
+        preparedUntil = 0
+        snapshot(totalLines).also(publish)
+    }
+
+    fun markPrepared(
+        index: Int,
+        hasAudio: Boolean,
+        totalLines: Int,
+        publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
+    ): DubbingReadinessProgressSnapshot = synchronized(lock) {
+        readiness.markPrepared(index, hasAudio)
+        refreshLocked(totalLines).also(publish)
+    }
+
+    fun markPending(
+        index: Int,
+        totalLines: Int,
+        publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
+    ): DubbingReadinessProgressSnapshot = synchronized(lock) {
+        readiness.markPending(index)
+        if (index >= 0 && index < preparedUntil) preparedUntil = index
+        snapshot(totalLines).also(publish)
+    }
+
+    fun refresh(
+        totalLines: Int,
+        publish: (DubbingReadinessProgressSnapshot) -> Unit = {},
+    ): DubbingReadinessProgressSnapshot = synchronized(lock) {
+        refreshLocked(totalLines).also(publish)
+    }
+
+    private fun refreshLocked(totalLines: Int): DubbingReadinessProgressSnapshot {
+        val limit = totalLines.coerceAtLeast(0)
+        var next = preparedUntil.coerceIn(0, limit)
+        while (next < limit && readiness.isReady(next)) next++
+        preparedUntil = next
+        return snapshot(limit)
+    }
+
+    private fun snapshot(totalLines: Int): DubbingReadinessProgressSnapshot =
+        DubbingReadinessProgressSnapshot(
+            preparedUntil = preparedUntil.coerceIn(0, totalLines.coerceAtLeast(0)),
+            preparedCount = readiness.readyCount().coerceIn(0, totalLines.coerceAtLeast(0)),
+        )
 }
