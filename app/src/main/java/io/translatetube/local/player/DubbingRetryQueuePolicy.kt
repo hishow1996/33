@@ -23,4 +23,22 @@ internal object DubbingRetryQueuePolicy {
      */
     fun shouldKeepCuePendingAfterFailure(retryRequestedWhileActive: Boolean): Boolean =
         retryRequestedWhileActive
+
+    /** Requeue only when the active-cue retry is still needed and the worker can accept it. */
+    fun shouldRequeueAfterActiveSynthesis(
+        retryRequested: Boolean,
+        translatedCue: Boolean,
+        hasReusableAudio: Boolean,
+        workerActive: Boolean,
+        released: Boolean,
+        fallbackRequested: Boolean,
+        alreadyQueued: Boolean,
+    ): Boolean =
+        retryRequested &&
+            translatedCue &&
+            !hasReusableAudio &&
+            workerActive &&
+            !released &&
+            !fallbackRequested &&
+            !alreadyQueued
 }

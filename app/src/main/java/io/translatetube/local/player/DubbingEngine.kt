@@ -334,6 +334,9 @@ class DubbingEngine(
                     if (next != null) activeSynthesisIndex = next
                     next
                 } ?: break
+                // Keep the worker identity visible to finally: cancelled/reconfigured workers
+                // must clear their active slot but must not repopulate the replacement queue.
+                val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 try {
                 val line = lines.getOrNull(idx) ?: continue
                 if (!DubbingTimeline.isPlayableCue(line)) {
@@ -341,7 +344,6 @@ class DubbingEngine(
                     bumpPrepared()
                     continue
                 }
-                val workerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 fun checkSynthesisActive() {
                     if (released || workerJob?.isActive == false) {
                         throw kotlinx.coroutines.CancellationException("配音缓存写入已取消")
@@ -615,18 +617,40 @@ class DubbingEngine(
                     val translatedCue = lines.getOrNull(idx)?.let {
                         DubbingTimeline.isPlayableCue(it) && !it.zh.isNullOrBlank()
                     } == true
-                    val cacheExists = translatedCue && !released &&
-                        runCatching { cacheFile(idx).isFile }.getOrDefault(false)
+                    // File existence alone is not proof of reusable audio: a corrupt/replaced file
+                    // can survive a stamp-guarded delete. Validate only when playback actually asked
+                    // for an active-cue retry, and suppress requeue if this worker was cancelled.
+                    val retryInitiallyRequested = synchronized(pending) {
+                        retryAfterActiveSynthesis.contains(idx)
+                    }
+                    var hasReusableAudio = false
+                    if (retryInitiallyRequested && translatedCue && !released && workerJob?.isActive != false) {
+                        try {
+                            hasReusableAudio = cached(idx) {
+                                if (released || workerJob?.isActive == false) {
+                                    throw kotlinx.coroutines.CancellationException("配音重试状态检查已取消")
+                                }
+                            } == true
+                        } catch (_: kotlinx.coroutines.CancellationException) {
+                            // Cancellation/reconfiguration owns the next queue. Do not enqueue from
+                            // this stale worker, but still clear activeSynthesisIndex below.
+                        } catch (cacheError: Exception) {
+                            android.util.Log.w("DubbingEngine", "Could not validate retry PCM cache", cacheError)
+                        }
+                    }
                     synchronized(pending) {
                         if (activeSynthesisIndex == idx) activeSynthesisIndex = -1
                         val retryWasRequested = retryAfterActiveSynthesis.remove(idx)
                         if (
-                            retryWasRequested &&
-                            translatedCue &&
-                            !cacheExists &&
-                            !released &&
-                            !fallbackRequested.get() &&
-                            !pending.contains(idx)
+                            DubbingRetryQueuePolicy.shouldRequeueAfterActiveSynthesis(
+                                retryRequested = retryWasRequested,
+                                translatedCue = translatedCue,
+                                hasReusableAudio = hasReusableAudio,
+                                workerActive = workerJob?.isActive == true,
+                                released = released,
+                                fallbackRequested = fallbackRequested.get(),
+                                alreadyQueued = pending.contains(idx),
+                            )
                         ) {
                             pending.offerFirst(idx)
                         }

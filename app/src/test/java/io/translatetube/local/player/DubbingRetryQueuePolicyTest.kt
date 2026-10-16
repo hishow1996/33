@@ -43,6 +43,51 @@ class DubbingRetryQueuePolicyTest {
     }
 
     @Test
+    fun retryIsRequeuedWhenTheExistingCacheCannotBeReused() {
+        assertEquals(
+            true,
+            DubbingRetryQueuePolicy.shouldRequeueAfterActiveSynthesis(
+                retryRequested = true,
+                translatedCue = true,
+                hasReusableAudio = false,
+                workerActive = true,
+                released = false,
+                fallbackRequested = false,
+                alreadyQueued = false,
+            ),
+        )
+    }
+
+    @Test
+    fun reusableCacheOrInactiveWorkerDoesNotRequeue() {
+        val base = mapOf(
+            "retryRequested" to true,
+            "translatedCue" to true,
+            "hasReusableAudio" to true,
+            "workerActive" to true,
+            "released" to false,
+            "fallbackRequested" to false,
+            "alreadyQueued" to false,
+        )
+        fun decision(overrides: Map<String, Boolean> = emptyMap()) =
+            DubbingRetryQueuePolicy.shouldRequeueAfterActiveSynthesis(
+                retryRequested = overrides["retryRequested"] ?: base.getValue("retryRequested"),
+                translatedCue = overrides["translatedCue"] ?: base.getValue("translatedCue"),
+                hasReusableAudio = overrides["hasReusableAudio"] ?: base.getValue("hasReusableAudio"),
+                workerActive = overrides["workerActive"] ?: base.getValue("workerActive"),
+                released = overrides["released"] ?: base.getValue("released"),
+                fallbackRequested = overrides["fallbackRequested"] ?: base.getValue("fallbackRequested"),
+                alreadyQueued = overrides["alreadyQueued"] ?: base.getValue("alreadyQueued"),
+            )
+        assertEquals(false, decision())
+        assertEquals(false, decision(mapOf("hasReusableAudio" to false, "workerActive" to false)))
+        assertEquals(false, decision(mapOf("hasReusableAudio" to false, "released" to true)))
+        assertEquals(false, decision(mapOf("hasReusableAudio" to false, "fallbackRequested" to true)))
+        assertEquals(false, decision(mapOf("hasReusableAudio" to false, "alreadyQueued" to true)))
+        assertEquals(false, decision(mapOf("hasReusableAudio" to false, "retryRequested" to false)))
+    }
+
+    @Test
     fun anActiveCueIsDeferredEvenIfItWasAlsoQueuedAgain() {
         assertEquals(
             DubbingRetryQueueDecision.DEFER_UNTIL_ACTIVE_CUE_FINISHES,
