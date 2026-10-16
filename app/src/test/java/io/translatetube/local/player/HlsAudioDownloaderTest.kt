@@ -584,4 +584,21 @@ class HlsAudioDownloaderTest {
         assertTrue(error?.message.orEmpty().contains("上一条 STREAM-INF"))
     }
 
+    @Test
+    fun rejectsExplicitlyEmptyAudioRenditionUriInsteadOfTreatingItAsMuxed() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="main",NAME="Main",URI=""
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,AUDIO="main"
+            video/low.m3u8
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("空 URI"))
+    }
+
 }

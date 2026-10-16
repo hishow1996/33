@@ -173,6 +173,11 @@ internal object HlsAudioDownloader {
             val group = variant.audioGroup ?: return resolveUrl(playlistUrl, variant.uri)
             val groupRows = audioRows.filter { row -> row["GROUP-ID"] == group }
             if (groupRows.isEmpty()) continue
+            // A missing URI attribute means audio is muxed into the variant. An explicitly empty
+            // URI is different: it's a malformed external-rendition declaration, not a muxed row.
+            if (groupRows.any { it.containsKey("URI") && it["URI"].isNullOrBlank() }) {
+                throw IllegalStateException("HLS 音轨组 $group 声明了空 URI，无法读取音轨。")
+            }
 
             val externalAudio = groupRows.filter { !it["URI"].isNullOrBlank() }
             if (externalAudio.isEmpty()) return resolveUrl(playlistUrl, variant.uri)
