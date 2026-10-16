@@ -408,12 +408,44 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         }
     }
 
-    /** Blocking checkpoint for the synchronous archive decoder and checksum reader. */
+    /**
+     * Blocking checkpoint for the synchronous archive decoder and checksum reader.
+     *
+     * The pause signal is shared by TTS and ASR, so cancelling one job must wake only its local
+     * waiter; cancelling the shared signal would incorrectly resume or cancel the other download.
+     */
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     private fun awaitDownloadsResumedBlocking(job: Job?) {
         while (true) {
             job?.ensureActive()
             val signal = synchronized(pauseLock) { resumeSignal } ?: return
-            kotlinx.coroutines.runBlocking { signal.await() }
+            val waiter = java.util.concurrent.CountDownLatch(1)
+            val resumeHandle = signal.invokeOnCompletion { waiter.countDown() }
+            val cancelHandle = job?.invokeOnCompletion(
+                onCancelling = true,
+                invokeImmediately = true,
+            ) { cause ->
+                if (cause is java.util.concurrent.CancellationException) waiter.countDown()
+            }
+            try {
+                if (ModelDownloadWaitPolicy.shouldWait(
+                        jobIsActive = job?.isActive ?: true,
+                        resumeSignalCompleted = signal.isCompleted,
+                    )
+                ) {
+                    try {
+                        waiter.await()
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw kotlinx.coroutines.CancellationException("模型等待已中断").also {
+                            it.initCause(interrupted)
+                        }
+                    }
+                }
+            } finally {
+                resumeHandle.dispose()
+                cancelHandle?.dispose()
+            }
         }
     }
 
