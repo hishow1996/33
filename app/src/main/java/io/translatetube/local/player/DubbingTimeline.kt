@@ -5,9 +5,9 @@ import io.translatetube.local.subs.SubLine
 /**
  * Fast media-timeline lookup for subtitle cues, including overlapping captions.
  *
- * Build an ordered index while retaining each cue's position in the caller's original list. This
- * keeps binary search correct even if a cache/provider gives us rows out of order, without making
- * the index returned by lineAt refer to a different row in DubbingEngine.lines.
+ * Cues are indexed by start time while retaining each cue's position in the caller's original
+ * list. A max-end segment tree finds the latest-started cue that still covers a playback position
+ * in O(log n), even if one long cue overlaps thousands of already-expired short cues.
  */
 internal class DubbingTimeline(lines: List<SubLine>) {
     private data class Cue(val originalIndex: Int, val line: SubLine)
@@ -25,10 +25,19 @@ internal class DubbingTimeline(lines: List<SubLine>) {
         .sortedWith(compareBy<Cue> { it.line.startMs }.thenBy { it.originalIndex })
         .toList()
 
-    /** Prefix maximum end times stop the backwards scan when no earlier cue can still be active. */
-    private val prefixMaxEndMs = LongArray(cues.size).also { prefix ->
-        for (i in cues.indices) {
-            prefix[i] = if (i == 0) cues[i].line.endMs else maxOf(prefix[i - 1], cues[i].line.endMs)
+    private val treeLeafCount: Int = run {
+        var size = 1
+        while (size < cues.size) size *= 2
+        size
+    }
+
+    /** Each node stores the greatest cue end time in its subtree. */
+    private val maxEndTree = LongArray(treeLeafCount * 2) { Long.MIN_VALUE }.also { tree ->
+        for (index in cues.indices) {
+            tree[treeLeafCount + index] = cues[index].line.endMs
+        }
+        for (node in treeLeafCount - 1 downTo 1) {
+            tree[node] = maxOf(tree[node * 2], tree[node * 2 + 1])
         }
     }
 
@@ -47,16 +56,48 @@ internal class DubbingTimeline(lines: List<SubLine>) {
                 high = middle - 1
             }
         }
+        if (latestStarted < 0) return -1
 
-        var index = latestStarted
-        while (index >= 0) {
-            val cue = cues[index]
-            // Prefer the latest-started cue, but fall back to an earlier overlapping cue if this
-            // newer cue ended before the queried media time.
-            if (positionMs < cue.line.endMs) return cue.originalIndex
-            if (index == 0 || prefixMaxEndMs[index - 1] <= positionMs) break
-            index--
-        }
-        return -1
+        val activeCueIndex = findRightmostActive(
+            node = 1,
+            left = 0,
+            right = treeLeafCount - 1,
+            latestAllowedIndex = latestStarted,
+            positionMs = positionMs,
+        )
+        return cues.getOrNull(activeCueIndex)?.originalIndex ?: -1
+    }
+
+    /**
+     * Search right-first so ties/latest starts keep their established priority. Subtrees whose
+     * maximum end is at or before the playhead cannot contain an active cue and are skipped.
+     */
+    private fun findRightmostActive(
+        node: Int,
+        left: Int,
+        right: Int,
+        latestAllowedIndex: Int,
+        positionMs: Long,
+    ): Int {
+        if (left > latestAllowedIndex || maxEndTree[node] <= positionMs) return -1
+        if (left == right) return left.takeIf { it < cues.size } ?: -1
+
+        val middle = (left + right) ushr 1
+        val rightMatch = findRightmostActive(
+            node = node * 2 + 1,
+            left = middle + 1,
+            right = right,
+            latestAllowedIndex = latestAllowedIndex,
+            positionMs = positionMs,
+        )
+        if (rightMatch >= 0) return rightMatch
+
+        return findRightmostActive(
+            node = node * 2,
+            left = left,
+            right = middle,
+            latestAllowedIndex = latestAllowedIndex,
+            positionMs = positionMs,
+        )
     }
 }
