@@ -4097,6 +4097,19 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
 
         val legacyRaw = prefs.getString(legacyAssignmentPrefsKey(key), null)
             ?: return SpeakerAssignmentSnapshot()
+        // On the first upgraded run, the player may load subtitle rows before SystemTts has
+        // persisted its real voice catalogue. Don't permanently migrate legacy Kokoro/system tone
+        // IDs without knowing what the system IDs refer to; retry migration after TTS initializes.
+        if (engineId == "system" &&
+            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+                getSharedPreferences("settings", MODE_PRIVATE).getString(
+                    io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                    null,
+                )
+            ).isEmpty()
+        ) {
+            return SpeakerAssignmentSnapshot()
+        }
         val migrated = migrateLegacyAssignments(SpeakerAssignmentCodec.decode(legacyRaw), engineId)
         prefs.edit().putString(scopedKey, SpeakerAssignmentCodec.encode(migrated)).apply()
         return migrated
