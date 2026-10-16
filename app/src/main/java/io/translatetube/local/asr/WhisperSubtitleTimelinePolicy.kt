@@ -14,6 +14,7 @@ internal object WhisperSubtitleTimelinePolicy {
     private const val MAX_CJK_CODE_POINTS = 24
     private const val MAX_OTHER_CODE_POINTS = 64
     private const val MIN_LAST_TOKEN_DURATION_MS = 80L
+    private val whitespaceRegex = Regex("\\s+")
 
     private data class TimedToken(
         val text: String,
@@ -39,7 +40,7 @@ internal object WhisperSubtitleTimelinePolicy {
         // Token boundaries may encode repeated whitespace differently from the recognizer's
         // plain-text output. Normalize whitespace only; any actual character mismatch still
         // invalidates token timing so we never attach real words to the wrong interval.
-        fun comparableText(value: String): String = value.trim().replace(Regex("\\s+"), " ")
+        fun comparableText(value: String): String = value.trim().replace(whitespaceRegex, " ")
         val joinedText = tokens.filterNot(::isControlToken).joinToString("")
         if (comparableText(joinedText) != comparableText(expectedText)) return emptyList()
 
@@ -111,17 +112,21 @@ internal object WhisperSubtitleTimelinePolicy {
         val text = StringBuilder()
         var cueStartMs = -1L
         var cueEndMs = -1L
+        var cueCodePointCount = 0
+        var cueHasCjk = false
 
         fun flushCue() {
             // Token text can carry tokenizer-specific repeated boundary spaces. Keep the
             // actual subtitle display consistent with the whitespace-tolerant alignment check.
-            val caption = text.toString().trim().replace(Regex("\\s+"), " ")
+            val caption = text.toString().trim().replace(whitespaceRegex, " ")
             if (caption.isNotBlank() && cueStartMs >= 0L && cueEndMs > cueStartMs) {
                 cues += Triple(cueStartMs, cueEndMs, caption)
             }
             text.setLength(0)
             cueStartMs = -1L
             cueEndMs = -1L
+            cueCodePointCount = 0
+            cueHasCjk = false
         }
 
         fun codePointCount(value: String): Int = value.codePointCount(0, value.length)
@@ -137,12 +142,15 @@ internal object WhisperSubtitleTimelinePolicy {
         }
 
         for (token in timedTokens) {
-            val existing = text.toString()
-            val incomingText = if (existing.isBlank()) token.text.trimStart() else token.text
-            val projected = existing + incomingText
-            val maxChars = if (isCjk(projected)) MAX_CJK_CODE_POINTS else MAX_OTHER_CODE_POINTS
-            val tooLong = existing.isNotBlank() && codePointCount(projected) > maxChars
-            val tooLongInTime = existing.isNotBlank() &&
+            // Track code-point count and CJK presence incrementally. Rebuilding the whole current
+            // caption for every token made long Whisper segments quadratic in text allocations.
+            val incomingText = if (text.isEmpty()) token.text.trimStart() else token.text
+            val projectedHasCjk = cueHasCjk || isCjk(incomingText)
+            val maxChars = if (projectedHasCjk) MAX_CJK_CODE_POINTS else MAX_OTHER_CODE_POINTS
+            val incomingCodePoints = codePointCount(incomingText)
+            val tooLong = text.isNotBlank() &&
+                cueCodePointCount + incomingCodePoints > maxChars
+            val tooLongInTime = text.isNotBlank() &&
                 token.startMs - cueStartMs >= MAX_CUE_DURATION_MS
 
             if (tooLong || tooLongInTime) flushCue()
@@ -153,9 +161,13 @@ internal object WhisperSubtitleTimelinePolicy {
                     cueStartMs = token.startMs
                     cueEndMs = token.endMs
                     text.append(cleanToken)
+                    cueCodePointCount = codePointCount(cleanToken)
+                    cueHasCjk = isCjk(cleanToken)
                 }
             } else {
                 text.append(token.text)
+                cueCodePointCount += codePointCount(token.text)
+                cueHasCjk = cueHasCjk || isCjk(token.text)
                 cueEndMs = maxOf(cueEndMs, token.endMs)
             }
 
