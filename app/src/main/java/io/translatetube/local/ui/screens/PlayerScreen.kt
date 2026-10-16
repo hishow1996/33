@@ -1539,24 +1539,46 @@ private fun SubtitleList(
                     }
                     if (active) {
                         Spacer(Modifier.height(4.dp))
-                        Surface(
-                            onClick = {
-                                val ids = listOf(-1, 0, 1, 2, 3)
-                                val index = ids.indexOf(line.speakerId).let { if (it < 0) 0 else it }
-                                svc?.setLineSpeaker(i, ids[(index + 1) % ids.size])
-                            },
-                            shape = RoundedCornerShape(50),
-                            color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
-                            contentColor = if (activeDub) Color(0xFF30343B) else SubText,
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        var voicePickerExpanded by remember(i) { mutableStateOf(false) }
+                        Box {
+                            Surface(
+                                onClick = { voicePickerExpanded = true },
+                                shape = RoundedCornerShape(50),
+                                color = if (activeDub) Color(0xFFE3E6EB) else SurfaceHigh.copy(alpha = 0.75f),
+                                contentColor = if (activeDub) Color(0xFF30343B) else SubText,
                             ) {
-                                Icon(Icons.Filled.Face, contentDescription = "切换配音人物", modifier = Modifier.size(16.dp))
-                                Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
-                                Icon(Icons.Filled.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(Icons.Filled.Face, contentDescription = "选择本句配音音色", modifier = Modifier.size(16.dp))
+                                    Text(speakerLabel(line.speakerId), style = MaterialTheme.typography.labelMedium)
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "展开音色列表", modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = voicePickerExpanded,
+                                onDismissRequest = { voicePickerExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (line.speakerId == -1) "默认音色（当前）" else "默认音色") },
+                                    enabled = line.speakerId != -1,
+                                    onClick = {
+                                        voicePickerExpanded = false
+                                        svc?.setLineSpeaker(i, -1)
+                                    },
+                                )
+                                (0..53).forEach { voiceId ->
+                                    DropdownMenuItem(
+                                        text = { Text(if (line.speakerId == voiceId) "音色 $voiceId（当前）" else "音色 $voiceId") },
+                                        enabled = line.speakerId != voiceId,
+                                        onClick = {
+                                            voicePickerExpanded = false
+                                            svc?.setLineSpeaker(i, voiceId)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -1570,14 +1592,7 @@ private fun SubtitleList(
 private fun subtitleComparisonKey(text: String): String =
     text.trim().lowercase().replace(Regex("[\\p{P}\\p{S}\\s]"), "")
 
-private fun speakerLabel(id: Int): String = when (id) {
-    -1 -> "人物1·默认"
-    0 -> "人物2"
-    1 -> "人物3"
-    2 -> "人物4"
-    3 -> "人物5"
-    else -> "音色$id"
-}
+private fun speakerLabel(id: Int): String = if (id == -1) "默认音色" else "音色 $id"
 
 
 @Composable

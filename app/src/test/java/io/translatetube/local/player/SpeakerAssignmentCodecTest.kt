@@ -1,6 +1,7 @@
 package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -49,6 +50,35 @@ class SpeakerAssignmentCodecTest {
                     SpeakerAssignmentSnapshot(lineOverrides = mapOf("1200:2400" to 9))
                 )
             ).lineOverrides.containsKey("1200:2400")
+        )
+    }
+
+    @Test
+    fun hugeAssignmentMapsKeepTheMostRecentTimedCuesWithinThePersistenceBudget() {
+        val voices = (0..10_000).associate { index ->
+            val start = index.toLong() * 10L
+            "$start:${start + 5L}" to (index % 54)
+        }
+        val decoded = SpeakerAssignmentCodec.decode(
+            SpeakerAssignmentCodec.encode(SpeakerAssignmentSnapshot(lineVoices = voices))
+        )
+
+        assertEquals(10_000, decoded.lineVoices.size)
+        assertFalse(decoded.lineVoices.containsKey("0:5"))
+        assertTrue(decoded.lineVoices.containsKey("100000:100005"))
+    }
+
+    @Test
+    fun oversizedOrExcessivelyFragmentedPayloadsAreRejectedBeforeParsing() {
+        assertEquals(
+            SpeakerAssignmentSnapshot(),
+            SpeakerAssignmentCodec.decode("speaker-map-v2|" + "x".repeat(1_500_001)),
+        )
+        assertEquals(
+            SpeakerAssignmentSnapshot(),
+            SpeakerAssignmentCodec.decode(
+                "speaker-map-v2|" + (0..21_000).joinToString("|") { "x" },
+            ),
         )
     }
 }

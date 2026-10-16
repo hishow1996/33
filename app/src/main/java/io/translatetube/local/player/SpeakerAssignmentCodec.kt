@@ -13,6 +13,11 @@ internal data class SpeakerAssignmentSnapshot(
 internal object SpeakerAssignmentCodec {
     private const val VERSION = "speaker-map-v2"
     private const val PREVIOUS_VERSION = "speaker-map-v1"
+    // Preference strings should stay bounded on long videos and should never fan out into
+    // unbounded split/map allocations if the stored value is corrupt.
+    private const val MAX_LINE_ASSIGNMENTS = 10_000
+    private const val MAX_ENCODED_CHARS = 1_500_000
+    private const val MAX_DECODE_PARTS = 21_000
 
     fun lineKey(startMs: Long, endMs: Long): String = "$startMs:$endMs"
 
@@ -21,18 +26,23 @@ internal object SpeakerAssignmentCodec {
         snapshot.speakerVoices.toSortedMap().forEach { (speaker, voice) ->
             if (speaker in 0..53 && voice in -1..53) parts += "s:$speaker=$voice"
         }
-        snapshot.lineVoices.toSortedMap().forEach { (key, voice) ->
-            if (isValidLineKey(key) && voice in -1..53) parts += "v:$key=$voice"
+        boundedLineEntries(snapshot.lineVoices).forEach { (key, voice) ->
+            parts += "v:$key=$voice"
         }
-        snapshot.lineOverrides.toSortedMap().forEach { (key, voice) ->
-            if (isValidLineKey(key) && voice in -1..53) parts += "m:$key=$voice"
+        boundedLineEntries(snapshot.lineOverrides).forEach { (key, voice) ->
+            parts += "m:$key=$voice"
         }
-        return parts.joinToString("|")
+        // The entry limit makes this a defensive last line rather than a normal truncation path.
+        val encoded = parts.joinToString("|")
+        return if (encoded.length <= MAX_ENCODED_CHARS) encoded else VERSION
     }
 
     fun decode(encoded: String?): SpeakerAssignmentSnapshot {
-        if (encoded.isNullOrBlank()) return SpeakerAssignmentSnapshot()
+        if (encoded.isNullOrBlank() || encoded.length > MAX_ENCODED_CHARS) {
+            return SpeakerAssignmentSnapshot()
+        }
         val parts = encoded.split('|')
+        if (parts.size > MAX_DECODE_PARTS) return SpeakerAssignmentSnapshot()
         val payloadVersion = parts.firstOrNull()
         if (payloadVersion != VERSION && payloadVersion != PREVIOUS_VERSION) {
             return SpeakerAssignmentSnapshot()
@@ -62,6 +72,27 @@ internal object SpeakerAssignmentCodec {
         }
         return SpeakerAssignmentSnapshot(speakers, lines, overrides)
     }
+
+    /**
+     * Keep the most recently timed cues when a very long subtitle file exceeds the persistence
+     * budget. Numeric time ordering matters here; lexicographic key ordering would keep the wrong
+     * range for keys such as 9000:9500 and 10000:10500.
+     */
+    private fun boundedLineEntries(values: Map<String, Int>): List<Map.Entry<String, Int>> =
+        values.entries.asSequence()
+            .filter { isValidLineKey(it.key) && it.value in -1..53 }
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Int>> { lineStart(it.key) }
+                    .thenByDescending { lineEnd(it.key) }
+                    .thenBy { it.key }
+            )
+            .take(MAX_LINE_ASSIGNMENTS)
+            .sortedBy { it.key }
+            .toList()
+
+    private fun lineStart(key: String): Long = key.substringBefore(':').toLongOrNull() ?: -1L
+
+    private fun lineEnd(key: String): Long = key.substringAfter(':').toLongOrNull() ?: -1L
 
     private fun isValidLineKey(key: String): Boolean {
         val parts = key.split(':')

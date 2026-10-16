@@ -69,4 +69,48 @@ class SpeakerAssignmentPolicyTest {
 
         assertEquals(emptyMap<Int, Int>(), SpeakerAssignmentPolicy.canonicalSpeakerIds(observations))
     }
+
+    @Test
+    fun cueAttributionChoosesTheSpeakerWithTheLargestOverlap() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(9, 0L, 400L, 0.99f),
+            SpeakerAssignmentPolicy.SpeakerObservation(2, 100L, 900L, 0.30f),
+        )
+
+        assertEquals(2, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 1_000L, 200L))
+    }
+
+    @Test
+    fun confidenceBreaksEqualOverlapTiesAndRawIdMakesTheResultDeterministic() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(7, 0L, 500L, 0.45f),
+            SpeakerAssignmentPolicy.SpeakerObservation(3, 0L, 500L, 0.91f),
+            SpeakerAssignmentPolicy.SpeakerObservation(1, 0L, 500L, 0.91f),
+        )
+
+        assertEquals(1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 700L, 200L))
+    }
+
+    @Test
+    fun cueAttributionRejectsBriefOverlapAndInvalidCueRanges() {
+        val observations = listOf(SpeakerAssignmentPolicy.SpeakerObservation(5, 0L, 50L, 0.9f))
+
+        assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 0L, 1_000L, 100L))
+        assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, -1L, 1_000L, 0L))
+        assertEquals(-1, SpeakerAssignmentPolicy.bestSpeakerForCue(observations, 1_000L, 1_000L, 0L))
+    }
+
+    @Test
+    fun canonicalSpeakerDurationAggregationDoesNotOverflowLong() {
+        val observations = listOf(
+            SpeakerAssignmentPolicy.SpeakerObservation(1, 0L, Long.MAX_VALUE),
+            SpeakerAssignmentPolicy.SpeakerObservation(1, 0L, Long.MAX_VALUE),
+            SpeakerAssignmentPolicy.SpeakerObservation(2, 0L, Long.MAX_VALUE),
+        )
+
+        assertEquals(
+            mapOf(1 to 0, 2 to 1),
+            SpeakerAssignmentPolicy.canonicalSpeakerIds(observations),
+        )
+    }
 }

@@ -3678,21 +3678,27 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                         )
                     }
                 )
+                val speakerObservations = segments.map { segment ->
+                    SpeakerAssignmentPolicy.SpeakerObservation(
+                        speakerId = segment.speaker,
+                        startMs = (segment.startSec * 1000f).toLong(),
+                        endMs = (segment.endSec * 1000f).toLong(),
+                        confidence = segment.confidence,
+                    )
+                }
                 val updated = originalLines.map { line ->
-                    val start = line.startMs / 1000f
-                    val end = line.endMs / 1000f
-                    val duration = (end - start).coerceAtLeast(0.01f)
-                    val overlapBySpeaker = segments.asSequence()
-                        .mapNotNull { seg ->
-                            val overlap = (minOf(end, seg.endSec) - maxOf(start, seg.startSec)).coerceAtLeast(0f)
-                            if (overlap > 0f) seg.speaker to overlap else null
-                        }
-                        .groupBy({ it.first }, { it.second })
-                        .mapValues { (_, overlaps) -> overlaps.sum() }
-                    val best = overlapBySpeaker.maxByOrNull { it.value }
-                    val detectedSpeaker = if (
-                        best != null && best.value >= minOf(0.25f, duration * 0.2f)
-                    ) best.key else -1
+                    val cueDurationMs = if (line.startMs >= 0L && line.endMs > line.startMs) {
+                        line.endMs - line.startMs
+                    } else {
+                        0L
+                    }
+                    val minimumOverlapMs = minOf(250L, (cueDurationMs.toDouble() * 0.2).toLong())
+                    val detectedSpeaker = SpeakerAssignmentPolicy.bestSpeakerForCue(
+                        observations = speakerObservations,
+                        cueStartMs = line.startMs,
+                        cueEndMs = line.endMs,
+                        minimumOverlapMs = minimumOverlapMs,
+                    )
                     val speaker = canonicalSpeakerIds[detectedSpeaker] ?: -1
                     // Assign each diarized person a stable voice for this video. Manual cue
                     // choices take precedence over the automatic speaker mapping.
