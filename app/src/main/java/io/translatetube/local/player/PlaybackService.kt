@@ -618,6 +618,24 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun isCurrentDubbingEngine(engine: DubbingEngine, sessionKey: String): Boolean =
+        videoKey == sessionKey && ui.value.key == sessionKey && dubbing === engine
+
+    /** Ignore late callbacks from a replaced engine, including when the same video key is reused. */
+    private fun updateUiForCurrentDubbingEngine(
+        engine: DubbingEngine,
+        sessionKey: String,
+        transform: (PlayerUiState) -> PlayerUiState,
+    ) {
+        ui.update { current ->
+            if (current.key == sessionKey && videoKey == sessionKey && dubbing === engine) {
+                transform(current)
+            } else {
+                current
+            }
+        }
+    }
+
     override fun onDestroy() {
         // Cancel work before releasing services it may still be using. In particular, the
         // Whisper JNI recognizer must not be released while a synchronous decode call is active.
@@ -1023,15 +1041,22 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
+                ensureCurrentSession(sessionKey)
+                dubbing = d
                 registerDubbingFailureHandler(d, tts, sessionKey)
-                d.attach(tts, translatedLines)
+                try {
+                    d.attach(tts, translatedLines)
+                } catch (e: Exception) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
                 }
-                dubbing = d
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
                     retireDubbing(d)
@@ -1282,15 +1307,22 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
+                ensureCurrentSession(sessionKey)
+                dubbing = d
                 registerDubbingFailureHandler(d, tts, sessionKey)
-                d.attach(tts, translatedLines, sourceLanguage = srcLang)
+                try {
+                    d.attach(tts, translatedLines, sourceLanguage = srcLang)
+                } catch (e: Exception) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw e
+                }
                 try {
                     ensureCurrentSession(sessionKey)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
                 }
-                dubbing = d
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
                     retireDubbing(d)
@@ -2385,24 +2417,31 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                             runCatching { tts.close() }
                             throw e
                         }
+                        ensureCurrentSession(key)
+                        dubbing = d
                         registerDubbingFailureHandler(d, tts, key)
                         updateUiForSession(key) {
                             it.copy(
                                 ttsEngineName = tts.name,
                                 dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
                                 noModelHint = null,
-                            waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = false,
+                                waitingForTranscriptionEngine = false,
+                                waitingForDubbingEngine = false,
                             )
                         }
-                        d.attach(tts, finalLines, sourceLanguage = srcLang)
+                        try {
+                            d.attach(tts, finalLines, sourceLanguage = srcLang)
+                        } catch (e: Exception) {
+                            retireDubbing(d)
+                            runCatching { tts.close() }
+                            throw e
+                        }
                         try {
                             ensureCurrentSession(key)
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             retireDubbing(d)
                             throw e
                         }
-                        dubbing = d
                         if (videoKey != key || ui.value.key != key) {
                             if (dubbing === d) dubbing = null
                             retireDubbing(d)
@@ -3560,28 +3599,25 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
     ) {
         engine.onFirstSynthesisReady = { index, sampleCount, sampleRate ->
             val durationMs = sampleCount.toLong() * 1_000L / sampleRate.coerceAtLeast(1)
-            ui.update { state ->
-                if (state.key == sessionKey) {
-                    state.copy(
-                        dubbingStatus = "${engine.currentTtsName} 已生成第 ${index + 1} 句 PCM（约 ${durationMs} ms）"
-                    )
-                } else state
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                state.copy(
+                    dubbingStatus = "${engine.currentTtsName} 已生成第 ${index + 1} 句 PCM（约 ${durationMs} ms）"
+                )
             }
         }
         engine.onPlaybackStarted = {
-            ui.update { state ->
-                if (state.key == sessionKey) state.copy(dubbingStatus = "${engine.currentTtsName} 正在播放中文配音")
-                else state
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                state.copy(dubbingStatus = "${engine.currentTtsName} 正在播放中文配音")
             }
         }
 
         engine.onFallbackRequested = { _, detail ->
-            if (engine.currentTtsName != "系统TTS") {
+            if (engine.currentTtsName != "系统TTS" || !isCurrentDubbingEngine(engine, sessionKey)) {
                 false
             } else {
                 // Return false so DubbingEngine marks this cue unavailable and restores the
                 // source audio. Never replace the user's explicitly selected System TTS engine.
-                updateUiForSession(sessionKey) { state ->
+                updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         dubbingStatus = "系统 TTS 合成失败，保持当前引擎",
                         noModelHint = "系统 TTS 合成失败：$detail。应用不会自动切换到本地模型，也不会要求下载 Kokoro/Piper。请检查手机设置中的文字转语音服务、中文语音数据和可用音色；该字幕行将恢复原声。",
@@ -3600,23 +3636,21 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
             } else {
                 "当前配音引擎「$activeName」合成或输出失败，已恢复原声。$detail"
             }
-            ui.update { state ->
-                if (state.key == sessionKey) {
-                    state.copy(
-                        ttsEngineName = activeName,
-                        dubbingStatus = if (systemTtsSelected) {
-                            "系统 TTS 合成失败，保持当前引擎并恢复原声"
-                        } else {
-                            "$activeName 合成或播放失败，已恢复原声"
-                        },
-                        muteOriginal = false,
-                        noModelHint = message,
-                        dubbingHasErrors = true,
-                    )
-                } else state
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                state.copy(
+                    ttsEngineName = activeName,
+                    dubbingStatus = if (systemTtsSelected) {
+                        "系统 TTS 合成失败，保持当前引擎并恢复原声"
+                    } else {
+                        "$activeName 合成或播放失败，已恢复原声"
+                    },
+                    muteOriginal = false,
+                    noModelHint = message,
+                    dubbingHasErrors = true,
+                )
             }
             scope.launch(Dispatchers.Main) {
-                if (::pm.isInitialized && ui.value.key == sessionKey) {
+                if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
                     runCatching { pm.originalVolume = 1f }
                 }
             }
