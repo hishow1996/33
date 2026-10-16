@@ -15,7 +15,7 @@ data class SubLine(
 object SubtitleParsers {
 
     // Hot-path patterns are shared so long subtitle files do not recompile them per cue.
-    private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}""")
+    private val webVttTimestampRegex = Regex("""(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}\s*-->\s*(\d{1,}:)?\d{1,2}:\d{2}[.,]\d{1,6}(?=\s|$)""")
     private val ttmlCueRegex = Regex(
         "<(?:[A-Za-z_][\w.-]*:)?p\b([^>]*)>(.*?)</(?:[A-Za-z_][\w.-]*:)?p\s*>",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
