@@ -156,6 +156,30 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun failedYouTubeSubtitleLookupRetainsTheSpecificSubstage() {
+        assertEquals(
+            2,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                Phase.ERROR,
+                failedPhase = Phase.PARSING,
+                progress = "正在下载并读取字幕文件…",
+            ),
+        )
+        assertEquals(
+            1,
+            VideoProcessingFlowPolicy.stageIndex(
+                VideoSourceKind.YOUTUBE,
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                Phase.ERROR,
+                failedPhase = Phase.PARSING,
+                progress = "正在下载并读取字幕文件…",
+            ),
+        )
+    }
+
+    @Test
     fun missingTranscriptionEngineMustNotMarkReadyFlowAsComplete() {
         assertEquals(
             3,

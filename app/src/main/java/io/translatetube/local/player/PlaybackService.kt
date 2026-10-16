@@ -98,6 +98,8 @@ data class PlayerUiState(
     val processingFlow: ProcessingFlow = ProcessingFlow.AUTO,
     /** Last active pipeline stage when processing entered ERROR. */
     val failedPhase: Phase? = null,
+    /** Last visible step detail captured before an error or cancellation cleared progress. */
+    val failedProgress: String = "",
 )
 
 private data class YouTubeQualitySource(
@@ -578,8 +580,9 @@ class PlaybackService : MediaSessionService() {
                 val updated = transform(current)
                 when {
                     updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
-                        updated.copy(failedPhase = current.phase)
-                    updated.phase != Phase.ERROR -> updated.copy(failedPhase = null)
+                        updated.copy(failedPhase = current.phase, failedProgress = current.progress)
+                    updated.phase != Phase.ERROR ->
+                        updated.copy(failedPhase = null, failedProgress = "")
                     else -> updated
                 }
             }

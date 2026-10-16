@@ -821,7 +821,7 @@ private fun VideoParsingPage(
         flow = flow,
         phase = state.phase,
         failedPhase = state.failedPhase,
-        progress = state.progress,
+        progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
     val fraction = when (state.phase) {
@@ -1801,7 +1801,7 @@ private fun ProcessingProgressCard(state: PlayerUiState) {
         flow = flow,
         phase = state.phase,
         failedPhase = state.failedPhase,
-        progress = state.progress,
+        progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     )
     val stageIndex = rawStageIndex.coerceIn(0, lastStageIndex)
