@@ -54,6 +54,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import io.translatetube.local.web.PikpakEntry
+import io.translatetube.local.web.PikpakShare
 import io.translatetube.local.web.WebMediaUrlPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -110,6 +112,22 @@ fun WebVideoScreen(
 
     DisposableEffect(Unit) {
         onDispose { verifierScope.cancel() }
+    }
+
+    // ---- PikPak 分享清单（mypikpak.com/s/...）：网页 hook 结构化捕获文件树 +
+    // 复用网页自带凭证主动递归枚举文件夹，视频条目直接并入候选列表点播。 ----
+    var pikpakShareId by remember(initialUrl) { mutableStateOf<String?>(null) }
+    var pikpakPasscodeToken by remember(initialUrl) { mutableStateOf("") }
+    var pikpakCapturedHeaders by remember(initialUrl) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var pikpakEntries by remember(initialUrl) { mutableStateOf<List<PikpakEntry>>(emptyList()) }
+    var pikpakListedParents by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    var pikpakNeedsPasscode by remember(initialUrl) { mutableStateOf(false) }
+    var pikpakBusy by remember(initialUrl) { mutableStateOf(false) }
+    var pikpakNotice by remember(initialUrl) { mutableStateOf<String?>(null) }
+    val pikpakScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
+
+    DisposableEffect(Unit) {
+        onDispose { pikpakScope.cancel() }
     }
 
     // 监听候选变化，对未验证的候选后台校验
@@ -291,15 +309,98 @@ fun WebVideoScreen(
         ytDlpHint = null
         pageLoading = true
         candidatesState.value = emptyList()
+        // PikPak 清单跟随整页导航重置（SPA 内点文件夹不触发导航，清单保留）
+        pikpakShareId = null
+        pikpakPasscodeToken = ""
+        pikpakCapturedHeaders = emptyMap()
+        pikpakEntries = emptyList()
+        pikpakListedParents = emptySet()
+        pikpakNeedsPasscode = false
+        pikpakBusy = false
+        pikpakNotice = null
         currentPage = target
         address = target
         pageTitle = ""
         status = "正在打开网页并检测 HTML5 视频…"
     }
 
-    // 页面加载后仍无任何候选媒体时，自动尝试一次 yt-dlp 解析。
+    // PikPak 清单条目合并：按 (parentId,id) 去重，视频条目自动并入候选列表（标题=文件名）
+    fun mergePikpakEntries(incoming: List<PikpakEntry>) {
+        val merged = (incoming + pikpakEntries)
+            .groupBy { "${it.parentId}/${it.id}" }
+            .map { it.value.first() }
+            .take(900)
+        pikpakEntries = merged
+        val videoCandidates = merged
+            .filter { it.isVideo && it.downloadUrl.isNotBlank() }
+            .map {
+                WebVideoCandidate(
+                    url = it.downloadUrl,
+                    title = it.name,
+                    poster = "",
+                    durationSeconds = 0.0,
+                    drmProtected = false,
+                )
+            }
+        if (videoCandidates.isNotEmpty()) {
+            candidatesState.value =
+                WebVideoProbePolicy.mergeCandidates(candidatesState.value, videoCandidates)
+        }
+    }
+
+    // 主动展开 PikPak 分享目录（rootParentId="" 为整棵树；传文件夹 id 则展开该子树）。
+    // 优先复用网页 hook 捕获的同款请求头；没有捕获时用自生成设备 ID 兜底。
+    fun expandPikpak(rootParentId: String) {
+        val shareId = pikpakShareId ?: PikpakShare.parseShareId(currentPage)
+        if (shareId == null) {
+            pikpakNotice = "未识别到 PikPak 分享链接。"
+            return
+        }
+        pikpakShareId = shareId
+        if (pikpakBusy) return
+        pikpakBusy = true
+        pikpakNotice = "正在读取 PikPak 分享清单…"
+        val deviceUuid = PikpakShare.deviceIdentifier(appCtx)
+        val passcodeToken = pikpakPasscodeToken.ifBlank { PikpakShare.capturedPasscodeToken }
+        pikpakScope.launch(Dispatchers.IO) {
+            val result = PikpakShare.enumerateAll(
+                shareId = shareId,
+                rootParentId = rootParentId,
+                passcodeToken = passcodeToken,
+                deviceUuid = deviceUuid,
+            )
+            mainHandler.post {
+                if (!screenActive.get()) return@post
+                pikpakBusy = false
+                if (PikpakShare.capturedPasscodeToken.isNotBlank()) {
+                    pikpakPasscodeToken = PikpakShare.capturedPasscodeToken
+                }
+                if (result.needsPasscode) pikpakNeedsPasscode = true
+                if (result.entries.isNotEmpty()) {
+                    pikpakListedParents = pikpakListedParents + result.visitedParents
+                    mergePikpakEntries(result.entries)
+                }
+                pikpakNotice = when {
+                    result.entries.isNotEmpty() && result.error == null ->
+                        "清单已更新：共 ${pikpakEntries.count { it.isVideo }} 个视频、" +
+                            "${pikpakEntries.count { it.isFolder }} 个文件夹。点下方候选或文件夹继续。"
+                    result.entries.isNotEmpty() -> "部分读取成功：${result.error}"
+                    else -> result.error ?: "未读取到文件，可在网页里点开文件夹后自动读取。"
+                }
+            }
+        }
+    }
+
+    // PikPak 分享链接：页面加载后主动读取清单（文件夹支持），不跑 yt-dlp。
+    // 其他页面仍无候选时，自动尝试一次 yt-dlp 解析。
     LaunchedEffect(currentPage, pageLoadToken) {
         delay(5000)
+        if (PikpakShare.parseShareId(currentPage) != null) {
+            if (pikpakShareId == null && pikpakEntries.isEmpty() && !pikpakBusy) {
+                expandPikpak("")
+            }
+            return@LaunchedEffect
+        }
         if (candidatesState.value.isEmpty() && !ytDlpBusy && ytDlpAutoAttempts == 0) {
             ytDlpAutoAttempts = 1
             runYtDlp(currentPage)
@@ -340,6 +441,32 @@ fun WebVideoScreen(
                         "网页已加载，但暂未检测到媒体地址。DRM、blob/MSE 或封闭式播放器可能无法提取。"
                     } else {
                         "发现 ${merged.size} 个媒体地址；选择可直接访问且未受 DRM 保护的源即可继续。"
+                    }
+                }
+            }
+
+            // PikPak share API 结构化上报：文件树 + 网页同款请求头（供主动枚举复用凭证）
+            @JavascriptInterface
+            fun reportPikpak(payload: String) {
+                val data = runCatching { PikpakShare.parseHookPayload(payload) }.getOrNull() ?: return
+                val bridgeGeneration = pageGeneration.get()
+                mainHandler.post {
+                    if (!screenActive.get() || pageGeneration.get() != bridgeGeneration) return@post
+                    if (!data.shareId.isNullOrBlank()) pikpakShareId = data.shareId
+                    if (data.headers.isNotEmpty()) pikpakCapturedHeaders = data.headers
+                    if (data.passcodeToken.isNotBlank()) pikpakPasscodeToken = data.passcodeToken
+                    if (data.parentId.isNotBlank()) {
+                        pikpakListedParents = pikpakListedParents + data.parentId
+                    }
+                    if (data.api == "verify" || data.api == "share") {
+                        // 提取码已在网页里通过（share 校验端点会下发 pass_code_token）
+                        pikpakNeedsPasscode = false
+                    }
+                    if (data.entries.isNotEmpty()) mergePikpakEntries(data.entries)
+                    if (data.entries.isNotEmpty()) {
+                        val videoCount = pikpakEntries.count { it.isVideo }
+                        val folderCount = pikpakEntries.count { it.isFolder }
+                        pikpakNotice = "已从网页捕获清单：$videoCount 个视频、$folderCount 个文件夹。"
                     }
                 }
             }
@@ -661,6 +788,94 @@ fun WebVideoScreen(
                     )
                 }
             }
+            // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
+            if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
+                val pikpakFolders = pikpakEntries.filter { it.isFolder }
+                val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
+                Text("PikPak 分享清单", style = MaterialTheme.typography.titleMedium)
+                if (pikpakEntries.isEmpty()) {
+                    Text(
+                        "已识别 PikPak 分享链接，正在读取文件清单；若迟迟无结果，请在上方网页里点一下任意文件夹。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "共 ${pikpakVideos.size} 个视频、${pikpakFolders.size} 个文件夹。点视频进入候选列表即可转写翻译配音。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (pikpakNotice != null) {
+                    Text(
+                        pikpakNotice.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (pikpakNeedsPasscode) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (pikpakNeedsPasscode) {
+                    Text(
+                        "该分享需要提取码：请先在上方网页里输入提取码（会自动记住），再点「展开全部文件夹」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                TextButton(enabled = !pikpakBusy, onClick = { expandPikpak("") }) {
+                    Text(
+                        when {
+                            pikpakBusy -> "读取中…"
+                            pikpakEntries.isEmpty() -> "立即读取清单"
+                            else -> "展开全部文件夹"
+                        }
+                    )
+                }
+                if (pikpakFolders.isNotEmpty()) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(132.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(pikpakFolders, key = { "${it.parentId}/${it.id}" }) { folder ->
+                            val alreadyListed = folder.id in pikpakListedParents
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (alreadyListed) MaterialTheme.colorScheme.surface
+                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                ),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !pikpakBusy && !alreadyListed) {
+                                            expandPikpak(folder.id)
+                                        }
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text("📁", style = MaterialTheme.typography.titleMedium)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        folder.name.ifBlank { "文件夹" },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        if (alreadyListed) "已读取" else "展开",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (alreadyListed) MaterialTheme.colorScheme.onSurfaceVariant
+                                        else MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if (candidatesState.value.isNotEmpty()) {
                 Text("检测到的视频", style = MaterialTheme.typography.titleMedium)
                 // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
@@ -803,22 +1018,109 @@ private val NET_HOOK_SCRIPT = """
           }
         } catch (ignored) {}
       };
+      // PikPak share API 结构化收集：把分享目录文件树 + 网页同款请求头一并上报，
+      // 原生侧用它渲染文件清单并复用凭证递归展开嵌套文件夹。
+      // 网页端点均为 /drive/v1/share(校验)与 /drive/v1/share/{list,detail,file_info}
+      var PIKPAK_API_RE = /https?:\/\/[^\/]*mypikpak\.com\/drive\/v1\/share(?:\?|\/(?:list|detail|file_info|verify|restore))/i;
+      var pikpakRow = function(f) {
+        var mediaUrl = '';
+        try {
+          if (f.web_content_link) mediaUrl = String(f.web_content_link);
+          if (!mediaUrl && f.links) {
+            for (var lk in f.links) {
+              if (Object.prototype.hasOwnProperty.call(f.links, lk) && f.links[lk] && f.links[lk].url) {
+                mediaUrl = String(f.links[lk].url);
+                break;
+              }
+            }
+          }
+          if (!mediaUrl && f.medias && f.medias.length && f.medias[0]) {
+            mediaUrl = (f.medias[0].link && f.medias[0].link.url) || f.medias[0].download_url || '';
+          }
+        } catch (e0) {}
+        return {
+          id: String(f.id || ''),
+          name: String(f.name || ''),
+          kind: String(f.kind || ''),
+          file_type: String(f.file_type || ''),
+          mime_type: String(f.mime_type || ''),
+          size: String(f.size || ''),
+          media_url: String(mediaUrl || '')
+        };
+      };
+      var collectPikpak = function(reqUrl, hdrs, reqBody, respText) {
+        try {
+          if (!reqUrl) return;
+          var url2 = String(reqUrl);
+          if (url2.charAt(0) === '/') url2 = target.location.origin + url2;
+          if (!PIKPAK_API_RE.test(url2)) return;
+          var bridge = target.ElephantVideoBridge;
+          if (!bridge || !bridge.reportPikpak) return;
+          var text2 = String(respText || '');
+          if (!text2 || text2.length > 1048576) return;
+          var apiMatch = url2.match(/share\/(list|detail|file_info|verify|restore)/i);
+          var api = apiMatch ? apiMatch[1] : (url2.indexOf('/drive/v1/share?') >= 0 ? 'share' : '');
+          var out = {
+            reqUrl: url2,
+            reqBody: String(reqBody || '').slice(0, 8192),
+            api: api,
+            passcodeToken: '',
+            headers: hdrs || {},
+            files: []
+          };
+          try {
+            var data = JSON.parse(text2);
+            if (data) {
+              out.passcodeToken = String(data.pass_code_token || '');
+              if (api === 'file_info' && data.id) {
+                out.files = [pikpakRow(data)];
+              } else if (data.files && data.files.length) {
+                var rows = [];
+                for (var i = 0; i < data.files.length && i < 300; i++) {
+                  var f = data.files[i];
+                  if (!f || !f.id) continue;
+                  rows.push(pikpakRow(f));
+                }
+                out.files = rows;
+              }
+            }
+          } catch (e3) {}
+          if (out.passcodeToken || out.files.length) {
+            bridge.reportPikpak(JSON.stringify(out));
+          }
+        } catch (ignored) {}
+      };
       try {
         var XHR = target.XMLHttpRequest;
         if (XHR && XHR.prototype) {
           var origOpen = XHR.prototype.open;
           var origSend = XHR.prototype.send;
+          var origSetHeader = XHR.prototype.setRequestHeader;
           XHR.prototype.open = function(method, url) {
             this.__elephantUrl = url;
             return origOpen.apply(this, arguments);
           };
+          if (origSetHeader) {
+            XHR.prototype.setRequestHeader = function(k, v) {
+              try {
+                this.__elephantHdrs = this.__elephantHdrs || {};
+                this.__elephantHdrs[String(k)] = String(v);
+              } catch (ignored) {}
+              return origSetHeader.apply(this, arguments);
+            };
+          }
           XHR.prototype.send = function() {
             var xhr = this;
+            try { xhr.__elephantBody = arguments[0]; } catch (ignored) {}
             this.addEventListener('load', function() {
               try {
                 var type = xhr.responseType;
-                if (!type || type === 'text' || type === 'json') {
-                  reportNet(type === 'json' ? JSON.stringify(xhr.response) : xhr.responseText);
+                var text = null;
+                if (!type || type === 'text') text = xhr.responseText;
+                else if (type === 'json') text = JSON.stringify(xhr.response);
+                if (text) {
+                  reportNet(text);
+                  collectPikpak(xhr.__elephantUrl, xhr.__elephantHdrs, xhr.__elephantBody, text);
                 }
               } catch (ignored) {}
             });
@@ -830,9 +1132,34 @@ private val NET_HOOK_SCRIPT = """
         var origFetch = target.fetch;
         if (origFetch) {
           target.fetch = function() {
+            var reqUrl = '';
+            var reqBody = '';
+            var hdrs = {};
+            try {
+              var input = arguments[0];
+              if (typeof input === 'string') reqUrl = input;
+              else if (input && input.url) reqUrl = String(input.url);
+              var init = arguments[1];
+              if (init) {
+                if (typeof init.body === 'string') reqBody = init.body;
+                var h = init.headers;
+                if (h) {
+                  if (typeof h.forEach === 'function') {
+                    h.forEach(function(v, k) { hdrs[String(k)] = String(v); });
+                  } else {
+                    for (var key in h) {
+                      if (Object.prototype.hasOwnProperty.call(h, key)) hdrs[String(key)] = String(h[key]);
+                    }
+                  }
+                }
+              }
+            } catch (ignored) {}
             return origFetch.apply(this, arguments).then(function(resp) {
               try {
-                resp.clone().text().then(reportNet).catch(function() {});
+                resp.clone().text().then(function(t) {
+                  reportNet(t);
+                  collectPikpak(reqUrl, hdrs, reqBody, t);
+                }).catch(function() {});
               } catch (ignored) {}
               return resp;
             });
