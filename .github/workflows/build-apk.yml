@@ -1,38 +1,8 @@
 name: Build Android APK
 
-# Temporary targeted CI trigger for this repair; restore manual-only after the APK is verified.
+# APKs are built only after an explicit manual request.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - app/src/main/java/io/translatetube/local/ui/screens/WebVideoScreen.kt
-      - app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
-      - app/src/test/java/io/translatetube/local/player/VideoProcessingFlowPolicyTest.kt
-      - app/src/main/java/io/translatetube/local/player/VideoProcessingFlowPolicy.kt
-      - app/src/main/java/io/translatetube/local/player/PlaybackService.kt
-      - app/src/main/java/io/translatetube/local/player/DubbingEngine.kt
-      - app/src/test/java/io/translatetube/local/player/DubbingOutputPcmPolicyTest.kt
-      - app/src/main/java/io/translatetube/local/player/DubbingOutputPcmPolicy.kt
-      - app/src/main/java/io/translatetube/local/player/RemoteMediaRetryPolicy.kt
-      - app/src/main/java/io/translatetube/local/translate/Engines.kt
-      - app/src/main/java/io/translatetube/local/ui/screens/ApiManagerScreen.kt
-      - app/src/main/java/io/translatetube/local/ui/screens/WebVideoProbePolicy.kt
-      - app/src/main/java/io/translatetube/local/player/HlsAudioDownloader.kt
-      - app/src/main/java/io/translatetube/local/yt/YtDlpRepo.kt
-      - app/src/main/java/io/translatetube/local/web/WebMediaUrlPolicy.kt
-      - app/src/test/java/io/translatetube/local/web/WebMediaUrlPolicyTest.kt
-      - app/src/main/java/io/translatetube/local/MainActivity.kt
-      - app/src/main/java/io/translatetube/local/ui/screens/SettingsScreen.kt
-      - app/src/main/res/drawable/splash_screen.xml
-      - app/src/main/java/io/translatetube/local/data/ModelDownloadManager.kt
-      - app/src/main/java/io/translatetube/local/data/ModelDownloadForegroundService.kt
-      - app/src/test/java/io/translatetube/local/player/HlsAudioDownloaderTest.kt
-      - app/src/test/java/io/translatetube/local/player/RemoteMediaRetryPolicyTest.kt
-      - app/src/test/java/io/translatetube/local/translate/GeminiModelFallbackPolicyTest.kt
-      - app/src/test/java/io/translatetube/local/ui/screens/WebVideoProbePolicyTest.kt
-      - .github/workflows/build-apk.yml
 
 permissions:
   contents: read
