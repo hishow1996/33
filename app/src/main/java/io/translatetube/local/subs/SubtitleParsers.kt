@@ -44,7 +44,7 @@ object SubtitleParsers {
     private val defaultAssFormat = listOf(
         "layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"
     )
-    private val htmlTagRegex = Regex("<[^>]+>")
+    private val htmlTagRegex = Regex("""</?[A-Za-z][^<>]*>|<\d{2,}:\d{2}:\d{2}[.,]\d{1,6}>""")
 
 
 
