@@ -1088,7 +1088,7 @@ class PlaybackService : MediaSessionService() {
                         progress = "翻译导入的字幕（${parsedLines.size} 行）…",
                     )
                 }
-                val srcLang = detectLangFromText(parsedLines.take(12).joinToString(" ") { it.text })
+                val srcLang = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(parsedLines.asSequence().map { it.text }.asIterable())
                 val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
                     .getLong("active_api_id", -1L)
                 val providerFingerprint = translationProviderFingerprint(activeTranslationId)
@@ -1574,7 +1574,7 @@ class PlaybackService : MediaSessionService() {
             }
             var restoredSourceLang: String? = restoredSourceLines?.let {
                 sourceCached?.srcLang?.takeIf { lang -> lang.isNotBlank() }
-                    ?: detectLangFromText(it.take(12).joinToString(" ") { cue -> cue.text })
+                    ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(it.asSequence().map { cue -> cue.text }.asIterable())
             }
             if (sourceCached != null && restoredSourceLines != null) {
                 // The completed source cache is authoritative if a crash happened between its
@@ -2086,7 +2086,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
                 // rather than accidentally treating Chinese source subtitles as foreign text.
                 srcLang = cached.srcLang.takeIf { it.isNotBlank() }
                     ?: restoredSourceLang
-                    ?: detectLangFromText(restored.take(12).joinToString(" ") { it.text })
+                    ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(restored.asSequence().map { it.text }.asIterable())
                 // Re-check cached language against the original transcript too. Older releases
                 // may have persisted a provider's incorrect "zh" hint for non-Chinese speech.
                 srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
