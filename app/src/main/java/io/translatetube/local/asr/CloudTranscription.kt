@@ -211,6 +211,7 @@ object CloudTranscription {
         pcmFile: AudioExtract.PcmFile,
         output: File,
         checkActive: () -> Unit = {},
+        onProgressPercent: (Int) -> Unit = {},
     ) {
         require(pcmFile.file.canonicalFile != output.canonicalFile) {
             "WAV 输出不能覆盖输入 PCM 缓存"
@@ -248,6 +249,7 @@ object CloudTranscription {
                         dest.write(header.array())
                         val buffer = ByteArray(64 * 1024)
                         var copied = 0L
+                        var lastProgressPercent = -1
                         while (copied < dataBytes) {
                             checkActive()
                             val wanted = minOf(buffer.size.toLong(), dataBytes - copied).toInt()
@@ -255,6 +257,12 @@ object CloudTranscription {
                             if (count < 0) throw IOException("音频缓存提前结束，无法创建完整 WAV")
                             dest.write(buffer, 0, count)
                             copied += count
+                            val percent = ((copied.toDouble() / dataBytes.toDouble()) * 100.0)
+                                .toInt().coerceIn(0, 99)
+                            if (percent > lastProgressPercent) {
+                                lastProgressPercent = percent
+                                onProgressPercent(percent)
+                            }
                         }
                         checkActive()
                         dest.flush()
@@ -265,6 +273,7 @@ object CloudTranscription {
             checkActive()
             AtomicFileInstaller.install(staged, output)
             installed = true
+            onProgressPercent(100)
         } finally {
             if (!installed) runCatching { staged.delete() }
         }
@@ -277,6 +286,7 @@ object CloudTranscription {
         wavFile: File,
         durationMs: Long,
         checkActive: () -> Unit = {},
+        onProgress: (String) -> Unit = {},
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
@@ -284,8 +294,12 @@ object CloudTranscription {
         if (durationMs <= 0L) throw IOException("待转写音频时长无效，无法建立字幕时间轴")
         checkActive()
         val ownerJob = currentCoroutineContext()[Job]
-        if (provider == "kawa") return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive, ownerJob)
+        if (provider == "kawa") {
+            return transcribeKawa(apiKey, language, wavFile, durationMs, checkActive, ownerJob, onProgress)
+        }
 
+        val providerName = if (provider == "elevenlabs") "ElevenLabs" else "Cartesia"
+        onProgress("正在上传音频并提交 $providerName 转写任务…")
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("file", wavFile.name, wavFile.asRequestBody("audio/wav".toMediaType()))
@@ -344,6 +358,8 @@ object CloudTranscription {
             body
         }
 
+        checkActive()
+        onProgress("$"+"providerName 云端已返回结果，正在整理词级时间戳…")
         val root = try {
             JSONObject(responseText)
         } catch (error: Exception) {
@@ -388,6 +404,7 @@ object CloudTranscription {
         durationMs: Long,
         checkActive: () -> Unit,
         ownerJob: Job?,
+        onProgress: (String) -> Unit,
     ): Result {
         val pcmBytes = wavFile.length() - 44L
         if (pcmBytes <= 0L || pcmBytes % 2L != 0L) {
@@ -401,7 +418,8 @@ object CloudTranscription {
         // Do not create every chunk up front: for a long recording that duplicates almost the
         // entire WAV on disk and can exhaust free storage before the first request is uploaded.
         java.io.RandomAccessFile(wavFile, "r").use { input ->
-            for (range in ranges) {
+            for ((rangeIndex, range) in ranges.withIndex()) {
+                val chunkNumber = rangeIndex + 1
                 val offsetBytes = range.offsetBytes
                 val size = range.sizeBytes
                 checkActive()
@@ -434,6 +452,7 @@ object CloudTranscription {
                         output.flush()
                     }
 
+                    onProgress("正在上传第 ${chunkNumber}/${ranges.size} 段音频到 Kawa…")
                     val form = MultipartBody.Builder().setType(MultipartBody.FORM)
                         .addFormDataPart("file", chunk.name, chunk.asRequestBody("audio/wav".toMediaType()))
                         .apply {
@@ -467,6 +486,7 @@ object CloudTranscription {
 
                     // The service has accepted the file; keep only one request chunk while polling.
                     chunk.delete()
+                    onProgress("第 ${chunkNumber}/${ranges.size} 段已提交，等待 Kawa 识别…")
 
                     var result: JSONObject? = null
                     var attempts = 0
@@ -498,6 +518,7 @@ object CloudTranscription {
                         }
                         when (val stateName = status.optString("status")) {
                             "succeeded" -> {
+                                onProgress("第 ${chunkNumber}/${ranges.size} 段识别完成，整理时间戳…")
                                 result = status.optJSONObject("result")
                                     ?: throw IOException("Kawa 已报告转写完成，但响应缺少有效 result 数据")
                                 break
@@ -507,7 +528,13 @@ object CloudTranscription {
                                     status.optJSONObject("error")?.optString("message").orEmpty()
                                         .ifBlank { "服务端处理失败" }.take(200)
                             )
-                            "queued", "processing" -> Unit
+                            "queued", "processing" -> {
+                                if (attempts == 1 || attempts % 5 == 0) {
+                                    onProgress(
+                                        "Kawa 正在识别第 ${chunkNumber}/${ranges.size} 段…（已等待约 ${attempts * 2L} 秒）"
+                                    )
+                                }
+                            }
                             else -> throw IOException("Kawa 返回未知转写状态：" + stateName.take(80))
                         }
                         delay(2_000L)

@@ -2132,13 +2132,22 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     localAsrResult
                 } else {
                     val providerName = when (asrProvider) { "elevenlabs" -> "ElevenLabs"; "cartesia" -> "Cartesia"; else -> "Kawa" }
-                    updateUiForSession(key) { it.copy(progress = "正在使用 " + providerName + " 云端转写…") }
+                    updateUiForSession(key) { it.copy(progress = "正在准备 " + providerName + " 云端转写音频…") }
                     val cloudWav = File.createTempFile("asr-cloud-", ".wav", cacheDir)
                     try {
                         withContext(Dispatchers.IO) {
                             val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                             io.translatetube.local.asr.CloudTranscription.writeWavFile(
-                                pcmFile, cloudWav, checkActive = { ownerJob?.ensureActive() },
+                                pcmFile,
+                                cloudWav,
+                                checkActive = { ownerJob?.ensureActive() },
+                                onProgressPercent = { percent ->
+                                    updateUiForSession(key) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = "封装云端音频 ${percent}%")
+                                        } else state
+                                    }
+                                },
                             )
                             val result = io.translatetube.local.asr.CloudTranscription.transcribe(
                                 provider = asrProvider,
@@ -2147,6 +2156,13 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 wavFile = cloudWav,
                                 durationMs = pcmFile.durationMs,
                                 checkActive = { ownerJob?.ensureActive() },
+                                onProgress = { message ->
+                                    updateUiForSession(key) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = message)
+                                        } else state
+                                    }
+                                },
                             )
                             ownerJob?.ensureActive()
                             updateUiForSession(key) { it.copy(progress = "云端转写完成，正在整理字幕…") }

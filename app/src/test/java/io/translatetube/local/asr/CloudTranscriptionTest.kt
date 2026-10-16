@@ -169,6 +169,34 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun wavExportReportsMonotonicProgressAndCompletesOnlyAfterInstall() {
+        val directory = createTempDir(prefix = "cloud-wav-progress")
+        try {
+            val samples = 128 * 1024
+            val pcm = File(directory, "source.pcm").apply {
+                writeBytes(ByteArray(samples * 2) { (it and 0xff).toByte() })
+            }
+            val wav = File(directory, "output.wav")
+            val progress = mutableListOf<Int>()
+
+            CloudTranscription.writeWavFile(
+                AudioExtract.PcmFile(pcm, sampleCount = samples.toLong()),
+                wav,
+                onProgressPercent = { progress += it },
+            )
+
+            assertTrue(wav.isFile)
+            assertEquals(pcm.length() + 44L, wav.length())
+            assertTrue(progress.isNotEmpty())
+            assertEquals(100, progress.last())
+            assertTrue(progress.dropLast(1).all { it in 0..99 })
+            assertTrue(progress.zipWithNext().all { (left, right) -> left < right })
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun wavExportDoesNotPublishPartialFileWhenCancelled() {
         val directory = createTempDir(prefix = "cloud-wav-cancel")
         try {
