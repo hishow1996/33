@@ -1707,7 +1707,7 @@ private fun SubtitleList(
                 val activeDub = active && state.dubbingOn
                 val dubbingScale by rememberInfiniteTransition(label = "dubbingLinePulse").animateFloat(
                     initialValue = 1f,
-                    targetValue = if (activeDub) 1.025f else 1f,
+                    targetValue = if (activeDub) 1.01f else 1f,
                     animationSpec = infiniteRepeatable(animation = tween(850), repeatMode = RepeatMode.Reverse),
                     label = "dubbingLineScale",
                 )
@@ -1729,7 +1729,7 @@ private fun SubtitleList(
                             }
                         )
                         .clickable { svc?.seek(line.startMs) }
-                        .padding(horizontal = 10.dp, vertical = if (activeDub) 7.dp else 5.dp),
+                        .padding(horizontal = 10.dp, vertical = if (activeDub) 6.dp else 5.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -1740,9 +1740,9 @@ private fun SubtitleList(
                             else -> SubText
                         },
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (activeDub) 18.sp else if (active) 15.sp else 14.sp,
+                            fontSize = if (activeDub) 16.sp else if (active) 15.sp else 14.sp,
                             fontWeight = when {
-                                activeDub -> FontWeight.Black
+                                activeDub -> FontWeight.Bold
                                 active -> FontWeight.SemiBold
                                 else -> FontWeight.Normal
                             },
