@@ -76,7 +76,7 @@ object VideoProcessingFlowPolicy {
             VideoSourceKind.LOCAL -> listOf(
                 "读取本地视频",
                 "提取本地视频音轨",
-                "本地模型转写原文并生成时间轴字幕",
+                "转写原文并生成时间轴字幕（本地视频）",
                 "将原文字幕翻译成中文",
                 "按时间轴生成中文配音",
             )
@@ -164,7 +164,7 @@ object VideoProcessingFlowPolicy {
             Phase.TRANSCRIBING -> when (source) {
                 VideoSourceKind.YOUTUBE -> "正在转写原文并生成时间轴字幕"
                 VideoSourceKind.WEB -> "正在转写网页视频原文并生成时间轴字幕"
-                VideoSourceKind.LOCAL -> "正在用本地模型转写原文并生成时间轴字幕"
+                VideoSourceKind.LOCAL -> "正在转写本地视频原文并生成时间轴字幕"
                 VideoSourceKind.UNKNOWN -> "正在转写原文并生成时间轴字幕"
             }
             Phase.TRANSLATING -> "正在将原文字幕翻译成中文"

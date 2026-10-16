@@ -76,7 +76,7 @@ class VideoProcessingFlowPolicyTest {
             VideoProcessingFlowPolicy.mainTitle(VideoSourceKind.LOCAL, Phase.PARSING))
         assertEquals("正在提取网页视频音轨",
             VideoProcessingFlowPolicy.mainTitle(VideoSourceKind.WEB, Phase.DOWNLOADING_AUDIO))
-        assertEquals("正在用本地模型转写原文并生成时间轴字幕",
+        assertEquals("正在转写本地视频原文并生成时间轴字幕",
             VideoProcessingFlowPolicy.mainTitle(VideoSourceKind.LOCAL, Phase.TRANSCRIBING))
         assertEquals("正在读取已翻译字幕",
             VideoProcessingFlowPolicy.mainTitle(

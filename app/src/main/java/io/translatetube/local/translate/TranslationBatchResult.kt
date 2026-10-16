@@ -12,13 +12,23 @@ internal data class TranslationBatchResult(
     val missingIndices: List<Int>,
 ) {
     companion object {
-        fun from(indices: List<Int>, rawTranslations: List<String>): TranslationBatchResult {
+        fun from(
+            indices: List<Int>,
+            rawTranslations: List<String>,
+            sourceTexts: Map<Int, String> = emptyMap(),
+            sourceLanguage: String = "auto",
+        ): TranslationBatchResult {
             val translated = linkedMapOf<Int, String>()
             val missing = linkedSetOf<Int>()
             indices.forEachIndexed { position, sourceIndex ->
                 if (sourceIndex < 0) return@forEachIndexed
                 val value = SubtitleParsers.cleanTranslatedText(rawTranslations.getOrNull(position))
-                if (value.isNullOrBlank()) {
+                val sourceEcho = value?.let {
+                    isUntranslatedEcho(sourceTexts[sourceIndex], it, sourceLanguage)
+                } == true
+                if (value.isNullOrBlank() || sourceEcho) {
+                    // Empty output, status text, and source text returned as its own "translation"
+                    // all need another attempt; never publish or cache these rows as Chinese.
                     if (sourceIndex !in translated) missing += sourceIndex
                 } else {
                     // Duplicate indices must not create duplicate retries or let a later blank
@@ -28,6 +38,17 @@ internal data class TranslationBatchResult(
                 }
             }
             return TranslationBatchResult(translated, missing.toList())
+        }
+
+        private fun isUntranslatedEcho(source: String?, translated: String, sourceLanguage: String): Boolean {
+            if (source.isNullOrBlank() || translated.isBlank()) return false
+            val language = sourceLanguage.trim().lowercase(java.util.Locale.ROOT)
+            if (language.startsWith("zh") || language == "cmn" || language.startsWith("yue")) return false
+
+            fun normalize(value: String): String =
+                value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
+
+            return normalize(source) == normalize(translated)
         }
     }
 }

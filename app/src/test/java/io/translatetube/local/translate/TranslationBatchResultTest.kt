@@ -70,4 +70,34 @@ class TranslationBatchResultTest {
         assertTrue(result.missingIndices.isEmpty())
     }
 
+    @Test
+    fun rejectsSourceTextEchoesAndRetriesOnlyThoseSubtitleRows() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(5, 8, 9),
+            rawTranslations = listOf("Bonjour à tous", "Hello world", "你好"),
+            sourceTexts = mapOf(
+                5 to "Bonjour à tous",
+                8 to "Hello world",
+                9 to "Hello there",
+            ),
+            sourceLanguage = "en",
+        )
+
+        assertEquals(mapOf(9 to "你好"), result.translations)
+        assertEquals(listOf(5, 8), result.missingIndices)
+    }
+
+    @Test
+    fun allowsIdenticalChineseSourceTextWhenTheSourceIsAlreadyChinese() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(1, 2),
+            rawTranslations = listOf("你好世界", "保留原声"),
+            sourceTexts = mapOf(1 to "你好世界", 2 to "保留原声"),
+            sourceLanguage = "zh-Hans",
+        )
+
+        assertEquals(mapOf(1 to "你好世界", 2 to "保留原声"), result.translations)
+        assertTrue(result.missingIndices.isEmpty())
+    }
+
 }
