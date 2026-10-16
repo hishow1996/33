@@ -453,4 +453,27 @@ class SubtitleParsersTest {
         )
     }
 
+
+    @Test
+    fun preservesExplicitHtmlLineBreaksInsideWebVttCues() {
+        val parsed = SubtitleParsers.parseVtt(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello<br>你好<br />世界\n",
+        )
+        assertEquals(1, parsed.size)
+        assertEquals("Hello\n你好\n世界", parsed.single().text)
+    }
+
+    @Test
+    fun bilingualExportsAvoidDuplicateRowsWhenOnlyTrailingPunctuationDiffers() {
+        val row = listOf(SubLine(0, 0L, 1_000L, "你好！", "你好"))
+        assertEquals(
+            "1\n00:00:00,000 --> 00:00:01,000\n你好\n\n",
+            SubtitleParsers.toSrt(row, bilingual = true),
+        )
+        assertEquals(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n你好\n\n",
+            SubtitleParsers.toBilingualVtt(row),
+        )
+    }
+
 }
