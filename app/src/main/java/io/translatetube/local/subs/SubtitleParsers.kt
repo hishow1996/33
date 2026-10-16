@@ -506,7 +506,11 @@ object SubtitleParsers {
         checkActive: () -> Unit = {},
     ): List<SubLine> {
         checkActive()
-        val sorted = lines.sortedBy { it.startMs }
+        val sorted = lines.sortedWith(
+            compareBy<SubLine> { it.startMs }
+                .thenBy { it.endMs }
+                .thenBy { it.index },
+        )
         checkActive()
         val merged = mergeDuplicate(sorted, checkActive)
         return merged.mapIndexed { index, line ->
