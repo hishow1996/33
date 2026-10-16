@@ -468,7 +468,7 @@ object PiperModels {
     ) {
         val def = byId(id) ?: throw IllegalArgumentException("未知 Piper 模型：$id")
         val callingJob = currentCoroutineContext()[Job]
-        val guardedCheck = {
+        val guardedCheck: () -> Unit = {
             awaitDownloadsResumedBlocking(callingJob)
             checkActive()
             callingJob?.ensureActive()
