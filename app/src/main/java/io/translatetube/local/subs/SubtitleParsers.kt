@@ -26,6 +26,9 @@ object SubtitleParsers {
     private val translationProgressRegex = Regex("^(正在)?翻译中\\d*/\\d*行?$")
     private val translationChunkRegex = Regex("(?<=[。！？!?；;，,])")
     private val whitespaceRegex = Regex("\\s+")
+    private val captionComparisonTrailingPunctuation = setOf(
+        '.', ',', '!', '?', '。', '，', '！', '？', '；', ';', ':', '：', '…', '、'
+    )
     private val placeholderNormalizationRegex = Regex("[\\s…。.！!·:：]+")
     private val punctuationSymbolsWhitespaceRegex = Regex("[\\p{P}\\p{S}\\s]")
     private val chineseCharRegex = Regex("[\\u4E00-\\u9FFF]")
@@ -100,18 +103,7 @@ object SubtitleParsers {
         parseVtt(src, checkActive)
 
     /** 将字幕行导出为标准 WebVTT，跳过空文本和非法时间窗，并按时间排序。 */
-    fun toVtt(lines: List<SubLine>): String = buildString {
-        appendLine("WEBVTT")
-        appendLine()
-        lines.asSequence()
-            .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
-            .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
-            .forEach { line ->
-                appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
-                line.text.lines().forEach { appendLine(it) }
-                appendLine()
-            }
-    }
+    fun toVtt(lines: List<SubLine>): String = buildVtt(lines) { it.text }
 
     /**
      * Export translated captions as SRT. Invalid cues are dropped before sequential numbering.
@@ -141,24 +133,39 @@ object SubtitleParsers {
             }
     }
 
-    /** Export Chinese-first bilingual WebVTT while preserving every cue's media time. */
-    fun toBilingualVtt(lines: List<SubLine>): String {
-        val bilingualLines = lines.map { line ->
-            val source = line.text.trim()
-            val translated = cleanTranslatedText(line.zh)
-            val caption = when {
-                translated != null && !sameCaptionText(source, translated) -> "$translated\n$source"
-                translated != null -> translated
-                else -> source
-            }
-            line.copy(text = caption)
+    /** Export Chinese-first bilingual WebVTT without cloning the entire subtitle list. */
+    fun toBilingualVtt(lines: List<SubLine>): String = buildVtt(lines) { line ->
+        val source = line.text.trim()
+        val translated = cleanTranslatedText(line.zh)
+        when {
+            translated != null && !sameCaptionText(source, translated) -> "$translated\n$source"
+            translated != null -> translated
+            else -> source
         }
-        return toVtt(bilingualLines)
     }
 
-    private fun sameCaptionText(left: String, right: String): Boolean =
-        left.trim().replace(whitespaceRegex, " ")
-            .equals(right.trim().replace(whitespaceRegex, " "), ignoreCase = true)
+    private fun buildVtt(lines: List<SubLine>, captionText: (SubLine) -> String): String = buildString {
+        appendLine("WEBVTT")
+        appendLine()
+        lines.asSequence()
+            .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+            .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
+            .forEach { line ->
+                val caption = captionText(line)
+                if (caption.isBlank()) return@forEach
+                appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
+                caption.lines().forEach { appendLine(it.trimEnd()) }
+                appendLine()
+            }
+    }
+
+    private fun sameCaptionText(left: String, right: String): Boolean {
+        fun normalize(value: String): String = value.trim()
+            .replace(whitespaceRegex, " ")
+            .trimEnd { it.isWhitespace() || it in captionComparisonTrailingPunctuation }
+            .lowercase(Locale.ROOT)
+        return normalize(left) == normalize(right)
+    }
 
     private fun formatSrtTime(ms: Long): String {
         val safe = ms.coerceAtLeast(0L)
@@ -454,7 +461,7 @@ object SubtitleParsers {
     }
 
     private fun stripTags(s: String): String =
-        SubtitleTextDecoder.decode(s.replace(htmlTagRegex, ""))
+        SubtitleTextDecoder.decode(s.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, ""))
             .replace(Regex("[ \\t]+"), " ").trim()
 
     private fun parseVttTs(value: String): Long? {
