@@ -107,4 +107,21 @@ class WhisperSubtitleTimelinePolicyTest {
         assertTrue(cues.zipWithNext().all { (left, right) -> left.first <= right.first })
     }
 
+    @Test
+    fun clampsHugeFiniteTokenDurationWithoutLongOverflow() {
+        val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+            tokens = listOf("hello"),
+            timestampsSeconds = listOf(0.0f),
+            durationsSeconds = listOf(Float.MAX_VALUE),
+            segmentStartMs = 1_000L,
+            segmentEndMs = Long.MAX_VALUE,
+            expectedText = "hello",
+        )
+
+        assertEquals(1, cues.size)
+        assertEquals(1_000L, cues.single().first)
+        assertEquals(Long.MAX_VALUE, cues.single().second)
+        assertEquals("hello", cues.single().third)
+    }
+
 }

@@ -93,7 +93,11 @@ internal object WhisperSubtitleTimelinePolicy {
             }
 
             val startMs = segmentStartMs + startRelativeMs
-            val endMs = (startMs + durationMs).coerceAtMost(segmentEndMs)
+            // Clamp the duration before addition. Finite-but-hostile model durations can round
+            // to Long.MAX_VALUE; adding the segment's non-zero base time first would overflow,
+            // wrap negative and silently discard a token that should be clamped to the crop end.
+            val safeDurationMs = durationMs.coerceAtMost(segmentEndMs - startMs)
+            val endMs = startMs + safeDurationMs
             if (endMs <= startMs) continue
             timedTokens += TimedToken(token, startMs, endMs)
         }

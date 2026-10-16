@@ -567,4 +567,21 @@ class HlsAudioDownloaderTest {
         assertTrue(error?.message.orEmpty().contains("缺少媒体变体地址"))
     }
 
+    @Test
+    fun rejectsSecondStreamInfWhenPreviousVariantHasNoUri() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=300000
+            #EXT-X-STREAM-INF:BANDWIDTH=450000
+            valid/360.m3u8
+        """.trimIndent()
+
+        val error = runCatching {
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/master.m3u8", master)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("上一条 STREAM-INF"))
+    }
+
 }

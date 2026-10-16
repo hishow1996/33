@@ -139,6 +139,9 @@ internal object HlsAudioDownloader {
         var nextVariant: Map<String, String>? = null
         for (line in lines) {
             if (line.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true)) {
+                if (nextVariant != null) {
+                    throw IllegalStateException("HLS 主清单在上一条 STREAM-INF 后缺少媒体变体地址。")
+                }
                 nextVariant = parseAttributes(line.substringAfter(':'))
             } else if (!line.startsWith("#") && nextVariant != null) {
                 val attrs = nextVariant
