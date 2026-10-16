@@ -142,6 +142,28 @@ object SubtitleParsers {
             }
     }
 
+    /**
+     * Copy the playable subtitle timeline as plain text in the same Chinese-first order as exports.
+     * Malformed timing rows are omitted so copy/export/playback agree on which cues are valid.
+     */
+    fun toPlainText(lines: List<SubLine>, bilingual: Boolean = true): String = buildString {
+        lines.asSequence()
+            .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+            .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
+            .forEach { line ->
+                val source = line.text.trim()
+                val translated = cleanTranslatedText(line.zh)
+                val caption = when {
+                    bilingual && translated != null && !sameCaptionText(source, translated) ->
+                        "$translated\\n$source"
+                    translated != null -> translated
+                    else -> source
+                }.trim()
+                if (caption.isBlank()) return@forEach
+                append(caption).append('\\n').append('\\n')
+            }
+    }.trim()
+
     /** Export Chinese-first bilingual WebVTT without cloning the entire subtitle list. */
     fun toBilingualVtt(lines: List<SubLine>): String = buildVtt(lines) { line ->
         val source = line.text.trim()
