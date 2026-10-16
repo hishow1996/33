@@ -89,7 +89,7 @@ class VideoProcessingFlowPolicyTest {
         assertEquals("YouTube 视频处理", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.YOUTUBE))
         assertEquals("网页视频处理", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB))
         assertEquals("本地视频处理", VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.LOCAL))
-        assertEquals("网页视频 处理失败",
+        assertEquals("网页视频处理失败",
             VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB, failed = true))
         assertEquals("字幕处理失败",
             VideoProcessingFlowPolicy.pageTitle(VideoSourceKind.WEB, ProcessingFlow.IMPORTED_SUBTITLES, failed = true))

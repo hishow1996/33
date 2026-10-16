@@ -37,7 +37,7 @@ object VideoProcessingFlowPolicy {
             VideoSourceKind.LOCAL -> "本地视频"
             VideoSourceKind.UNKNOWN -> "视频"
         }
-        return if (failed) "$label 处理失败" else "$label 处理"
+        return if (failed) "${label}处理失败" else "${label}处理"
     }
 
     fun steps(source: VideoSourceKind, flow: ProcessingFlow = ProcessingFlow.AUTO): List<String> = when (flow) {

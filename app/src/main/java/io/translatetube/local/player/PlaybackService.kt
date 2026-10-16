@@ -1606,17 +1606,6 @@ class PlaybackService : MediaSessionService() {
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
-            val resolvedProcessingFlow = when {
-                !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
-                videoId != null && resumeState == null && lines == null && cached == null &&
-                    sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
-                videoId != null -> ProcessingFlow.YOUTUBE_SUBTITLES
-                remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
-                localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
-                else -> ProcessingFlow.AUTO
-            }
-            updateUiForSession(key) { it.copy(processingFlow = resolvedProcessingFlow) }
-
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
                 (videoId != null || localUri != null || remoteMediaUrl != null)) {
                 if (restoredSourceLines != null) {
@@ -1634,6 +1623,17 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
             }
+
+            val resolvedProcessingFlow = when {
+                !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
+                videoId != null && resumeState == null && lines == null && cached == null &&
+                    sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                videoId != null -> ProcessingFlow.YOUTUBE_SUBTITLES
+                remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
+                localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
+                else -> ProcessingFlow.AUTO
+            }
+            updateUiForSession(key) { it.copy(processingFlow = resolvedProcessingFlow) }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
                 val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
