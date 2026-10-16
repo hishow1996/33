@@ -17,6 +17,9 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
         private set
 
     init {
+        check(io.translatetube.local.data.ModelFiles.asrCoreReady(ctx)) {
+            "本地 Whisper 模型不完整：需要 base-encoder.int8.onnx、base-decoder.int8.onnx 和 base-tokens.txt；请在转写设置中重新下载模型。"
+        }
         val m = io.translatetube.local.data.ModelFiles.asrDir(ctx).absolutePath + "/"
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),

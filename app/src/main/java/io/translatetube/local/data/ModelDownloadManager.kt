@@ -102,12 +102,68 @@ object ModelFiles {
     fun ttsCacheSignature(ctx: Context): String =
         KokoroRuntimeFilePolicy.cacheSignature(ttsDir(ctx))
 
-    fun asrCoreReady(ctx: Context) =
-        validModel(File(asrDir(ctx), "base-encoder.int8.onnx")) &&
-            validModel(File(asrDir(ctx), "base-decoder.int8.onnx"))
-    fun asrReady(ctx: Context) =
-        asrCoreReady(ctx) && validModel(File(asrDir(ctx), "silero_vad.onnx"), 512L * 1024)
+    internal fun asrDirectoryCoreReady(dir: File): Boolean =
+        WhisperModelFilePolicy.isCoreComplete(
+            mapOf(
+                "base-encoder.int8.onnx" to File(dir, "base-encoder.int8.onnx").takeIf { it.isFile }?.length().orZero(),
+                "base-decoder.int8.onnx" to File(dir, "base-decoder.int8.onnx").takeIf { it.isFile }?.length().orZero(),
+                "base-tokens.txt" to File(dir, "base-tokens.txt").takeIf { it.isFile }?.length().orZero(),
+            )
+        )
+
+    fun asrCoreReady(ctx: Context): Boolean = asrDirectoryCoreReady(asrDir(ctx))
+
+    fun asrReady(ctx: Context): Boolean =
+        asrCoreReady(ctx) && isValidVadModel(File(asrDir(ctx), "silero_vad.onnx"))
+
+    internal fun isValidVadModel(file: File): Boolean {
+        if (!file.isFile || file.length() < WhisperModelFilePolicy.MIN_VAD_BYTES) {
+            vadValidationCache.remove(file.absolutePath)
+            return false
+        }
+        val identity = runCatching {
+            val stat = android.system.Os.stat(file.absolutePath)
+            "${stat.st_dev}:${stat.st_ino}"
+        }.getOrNull()
+        val path = file.absolutePath
+        val length = file.length()
+        val modified = file.lastModified()
+        vadValidationCache[path]?.let { cached ->
+            if (cached.length == length && cached.modifiedMs == modified && cached.identity == identity) {
+                return cached.valid
+            }
+        }
+        val valid = runCatching {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).buffered().use { input ->
+                val buffer = ByteArray(32 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                .equals(VAD_SHA256, ignoreCase = true)
+        }.getOrDefault(false)
+        vadValidationCache[path] = VadValidation(length, modified, identity, valid)
+        return valid
+    }
+
+    private data class VadValidation(
+        val length: Long,
+        val modifiedMs: Long,
+        val identity: String?,
+        val valid: Boolean,
+    )
+
+    private const val VAD_SHA256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+    private val vadValidationCache =
+        java.util.concurrent.ConcurrentHashMap<String, VadValidation>()
+
     fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
+
+    private fun Long?.orZero(): Long = this ?: 0L
 }
 
 /**
@@ -126,6 +182,24 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
     private var ttsJob: Job? = null
     private var asrJob: Job? = null
+    /** Guards against rapid repeated taps starting multiple installers for the same model. */
+    private val downloadStartLock = Any()
+    private val startingDownloads = mutableSetOf<ModelKind>()
+
+    private fun claimDownloadStart(kind: ModelKind): Boolean = synchronized(downloadStartLock) {
+        val job = if (kind == ModelKind.TTS) ttsJob else asrJob
+        val state = if (kind == ModelKind.TTS) _tts.value else _asr.value
+        if (kind in startingDownloads || job?.isActive == true || isActiveModelState(state)) {
+            false
+        } else {
+            startingDownloads.add(kind)
+            true
+        }
+    }
+
+    private fun releaseDownloadStart(kind: ModelKind) {
+        synchronized(downloadStartLock) { startingDownloads.remove(kind) }
+    }
 
     // A shared pause gate lets the notification pause either or both active model tasks.
     private val pauseLock = Any()
@@ -197,59 +271,90 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     }
 
     fun download(kind: ModelKind) {
-        when (kind) {
-            ModelKind.TTS -> {
-                if (ttsJob?.isActive == true ||
-                    _tts.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING)) return
-                runCatching {
-                    if (ModelFiles.ttsCoreReady(ctx)) ModelFiles.installBundledTtsSupportFiles(ctx)
-                }.onFailure {
-                    Log.w("ModelDL", "无法修复 Kokoro 应用内附属文件，将检查完整模型包：${it.message}")
-                }
-                if (ModelFiles.ttsReady(ctx)) return
-                if (!startBackgroundDownloadService()) {
-                    _tts.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
-                    return
-                }
-                ttsJob = scope.launch {
-                    try {
-                        runDownload(ModelKind.TTS, _tts, ttsUrls, ModelFiles.ttsDir(ctx))
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.e("ModelDL", "TTS 下载任务异常", e)
-                        _tts.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
+        if (!claimDownloadStart(kind)) return
+        try {
+            when (kind) {
+                ModelKind.TTS -> {
+                    runCatching {
+                        if (ModelFiles.ttsCoreReady(ctx)) ModelFiles.installBundledTtsSupportFiles(ctx)
+                    }.onFailure {
+                        Log.w("ModelDL", "无法修复 Kokoro 应用内附属文件，将检查完整模型包：${it.message}")
                     }
+                    if (ModelFiles.ttsReady(ctx)) {
+                        _tts.value = ModelState(status = ModelStatus.READY, progress = 100)
+                        return
+                    }
+                    if (!startBackgroundDownloadService()) {
+                        _tts.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
+                        return
+                    }
+                    val job = scope.launch {
+                        val worker = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        try {
+                            runDownload(ModelKind.TTS, _tts, ttsUrls, ModelFiles.ttsDir(ctx))
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.e("ModelDL", "TTS 下载任务异常", e)
+                            _tts.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
+                        } finally {
+                            if (worker?.isCancelled == true && isActiveModelState(_tts.value)) {
+                                _tts.value = ModelState(status = ModelStatus.FAILED, error = "下载任务已取消")
+                            }
+                            synchronized(downloadStartLock) {
+                                if (ttsJob === worker) ttsJob = null
+                            }
+                            clearPauseIfIdle()
+                        }
+                    }
+                    synchronized(downloadStartLock) { ttsJob = job }
+                }
+                ModelKind.ASR -> {
+                    if (ModelFiles.asrReady(ctx)) {
+                        _asr.value = ModelState(status = ModelStatus.READY, progress = 100)
+                        return
+                    }
+                    if (!startBackgroundDownloadService()) {
+                        _asr.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
+                        return
+                    }
+                    val job = scope.launch {
+                        val worker = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        try {
+                            if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
+                            else runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.e("ModelDL", "ASR 下载任务异常", e)
+                            _asr.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
+                        } finally {
+                            if (worker?.isCancelled == true && isActiveModelState(_asr.value)) {
+                                _asr.value = ModelState(status = ModelStatus.FAILED, error = "下载任务已取消")
+                            }
+                            synchronized(downloadStartLock) {
+                                if (asrJob === worker) asrJob = null
+                            }
+                            clearPauseIfIdle()
+                        }
+                    }
+                    synchronized(downloadStartLock) { asrJob = job }
                 }
             }
-            ModelKind.ASR -> {
-                if (asrJob?.isActive == true ||
-                    _asr.value.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
-                    ModelFiles.asrReady(ctx)) return
-                if (!startBackgroundDownloadService()) {
-                    _asr.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
-                    return
-                }
-                asrJob = scope.launch {
-                    try {
-                        if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
-                        else runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.e("ModelDL", "ASR 下载任务异常", e)
-                        _asr.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
-                    }
-                }
-            }
+        } finally {
+            releaseDownloadStart(kind)
         }
     }
 
     fun cancel(kind: ModelKind) {
-        when (kind) {
-            ModelKind.TTS -> { ttsJob?.cancel(); _tts.value = ModelState(status = ModelStatus.FAILED, error = "已取消") }
-            ModelKind.ASR -> { asrJob?.cancel(); _asr.value = ModelState(status = ModelStatus.FAILED, error = "已取消") }
+        val job = synchronized(downloadStartLock) {
+            if (kind == ModelKind.TTS) ttsJob else asrJob
         }
+        when (kind) {
+            ModelKind.TTS -> _tts.value = ModelState(status = ModelStatus.FAILED, error = "已取消")
+            ModelKind.ASR -> _asr.value = ModelState(status = ModelStatus.FAILED, error = "已取消")
+        }
+        job?.cancel()
         clearPauseIfIdle()
     }
 
@@ -425,16 +530,37 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     )
                 }
                 if (kind == ModelKind.ASR) {
-                    // ASR 包附带 VAD 小模型（0.6MB，双源）
+                    // VAD is its own download stage; expose progress instead of leaving the UI
+                    // stuck on "installing" while a network request is running.
                     val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
-                    if (!vad.isFile || vad.length() < 512L * 1024) {
-                        for (u in listOf(
+                    if (!ModelFiles.isValidVadModel(vad)) {
+                        val vadUrls = listOf(
                             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-                        )) {
+                        )
+                        for ((index, url) in vadUrls.withIndex()) {
+                            state.value = ModelState(
+                                status = ModelStatus.DOWNLOADING,
+                                progress = 0,
+                                totalMB = 1,
+                                stageMessage = if (index == 0) "正在下载语音检测模型…" else "正在切换语音检测模型下载源…",
+                            )
                             try {
-                                downloadTo(u, vad, expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6")
-                                break
+                                downloadTo(
+                                    url,
+                                    vad,
+                                    expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+                                    onProgress = { got, total ->
+                                        val expected = total.takeIf { it > 0L } ?: 643_854L
+                                        state.value = state.value.copy(
+                                            progress = if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
+                                            downloadedMB = got / (1024L * 1024L),
+                                            totalMB = 1,
+                                            stageMessage = "正在下载语音检测模型…",
+                                        )
+                                    },
+                                )
+                                if (ModelFiles.isValidVadModel(vad)) break
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 throw e
                             } catch (e: Exception) {
@@ -442,11 +568,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             }
                         }
                     }
-                    if (!vad.isFile || vad.length() < 512L * 1024) {
+                    if (!ModelFiles.isValidVadModel(vad)) {
                         pkg.delete()
                         state.value = ModelState(
                             status = ModelStatus.FAILED,
-                            error = "Whisper 主模型已安装，但语音检测模型下载失败；点击重试只会补下载小型 VAD 模型。",
+                            error = "Whisper 主模型已安装，但语音检测模型完整性校验失败；点击重试只会补下载小型 VAD 模型。",
                         )
                         return
                     }
@@ -480,18 +606,41 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
     /** Whisper 主模型已经存在时，只补下载缺失/损坏的 VAD 文件，避免重新下载近 200 MB 模型包。 */
     private suspend fun runVadOnly(state: MutableStateFlow<ModelState>) {
-        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 1)
         val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
         var lastError: String? = null
         val urls = listOf(
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
         )
-        for (url in urls) {
+        for ((index, url) in urls.withIndex()) {
+            state.value = ModelState(
+                status = ModelStatus.DOWNLOADING,
+                progress = 0,
+                totalMB = 1,
+                stageMessage = if (index == 0) "正在补下载语音检测模型…" else "正在切换语音检测模型下载源…",
+            )
             try {
-                downloadTo(url, vad, expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6")
+                downloadTo(
+                    url,
+                    vad,
+                    expectedSha256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+                    onProgress = { got, total ->
+                        val expected = total.takeIf { it > 0L } ?: 643_854L
+                        state.value = state.value.copy(
+                            progress = if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
+                            downloadedMB = got / (1024L * 1024L),
+                            totalMB = 1,
+                            stageMessage = "正在下载语音检测模型…",
+                        )
+                    },
+                )
                 if (!ModelFiles.asrReady(ctx)) throw java.io.IOException("VAD 模型校验失败")
-                state.value = ModelState(status = ModelStatus.READY, progress = 100, downloadedMB = vad.length() / 1048576, totalMB = vad.length() / 1048576)
+                state.value = ModelState(
+                    status = ModelStatus.READY,
+                    progress = 100,
+                    downloadedMB = (vad.length() + 1_048_575L) / 1_048_576L,
+                    totalMB = 1,
+                )
                 return
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -542,6 +691,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     throw IllegalStateException("附属模型响应声明的文件大小无效或超过限制")
                 }
                 var written = 0L
+                onProgress?.invoke(0L, expectedBytes)
                 body.byteStream().use { input ->
                     FileOutputStream(temp).use { output ->
                         val buffer = ByteArray(32 * 1024)
@@ -553,7 +703,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             written += count
                             if (written > maxBytes) throw IllegalStateException("附属模型超过大小限制")
                             output.write(buffer, 0, count)
+                            onProgress?.invoke(written, expectedBytes)
                         }
+                        output.flush()
                         output.fd.sync()
                     }
                 }
@@ -676,16 +828,26 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             checkActive()
             // 不完整或伪造的压缩包不能覆盖已经可用的模型。
             val required = if (destDir.name == "tts") {
-                listOf("model.int8.onnx", "voices.bin")
+                listOf("model.int8.onnx" to (1L * 1024 * 1024), "voices.bin" to (1L * 1024 * 1024))
             } else {
-                listOf("base-encoder.int8.onnx", "base-decoder.int8.onnx")
+                listOf(
+                    "base-encoder.int8.onnx" to WhisperModelFilePolicy.MIN_ONNX_BYTES,
+                    "base-decoder.int8.onnx" to WhisperModelFilePolicy.MIN_ONNX_BYTES,
+                    "base-tokens.txt" to WhisperModelFilePolicy.MIN_TOKENS_BYTES,
+                )
             }
-            if (required.any { name ->
+            if (required.any { (name, minimumBytes) ->
                     val file = File(staging, name)
-                    // 这些模型文件正常体积均远大于 1 MB；过小通常意味着下载/解压不完整。
-                    !file.isFile || file.length() < 1L * 1024 * 1024
+                    !file.isFile || file.length() < minimumBytes
                 }) {
-                throw java.io.IOException("模型包缺少必要文件或文件体积异常，已取消安装")
+                throw java.io.IOException(
+                    if (destDir.name == "tts") "模型包缺少必要文件或文件体积异常，已取消安装"
+                    else "Whisper 模型包缺少 encoder、decoder 或 base-tokens.txt 词表，已取消安装"
+                )
+            }
+
+            if (destDir.name != "tts" && !ModelFiles.asrDirectoryCoreReady(staging)) {
+                throw java.io.IOException("Whisper 模型核心文件校验失败：缺少 base-tokens.txt 或模型文件不完整")
             }
 
             if (destDir.name == "tts") {

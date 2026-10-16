@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
@@ -214,6 +215,7 @@ Section("转写引擎") {
             ready = asrReady,
             pkgMB = 198,
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
+            onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
     } else {
         val selectedApiKey = when (asrEngine) {
@@ -413,6 +415,7 @@ Section("配音设置") {
                     ready = ttsReady,
                     pkgMB = 140,
                     onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.TTS) },
+                    onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.TTS) },
                 )
                 HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
                 Spacer(Modifier.height(8.dp))
@@ -962,6 +965,7 @@ private fun ModelRow(
     ready: Boolean,
     pkgMB: Int,
     onDownload: () -> Unit,
+    onCancel: () -> Unit = {},
 ) {
     val active = state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING ||
         state.status == io.translatetube.local.data.ModelStatus.EXTRACTING
@@ -975,7 +979,18 @@ private fun ModelRow(
             )
             if (ready) {
                 Text("已就绪", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-            } else if (!active) {
+            } else if (active) {
+                IconButton(
+                    onClick = onCancel,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "取消$title 下载与安装",
+                        tint = DangerRed,
+                    )
+                }
+            } else {
                 IconButton(
                     onClick = onDownload,
                     modifier = Modifier.size(40.dp),
