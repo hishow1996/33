@@ -46,7 +46,12 @@ object SubtitleLanguageDetector {
         providerLanguage: String?,
         cues: Iterable<String>,
         maxCues: Int = 120,
-    ): String = resolveLanguageUsingContent(providerLanguage, detectFromCues(cues, maxCues))
+    ): String {
+        // With no sampled cue text, neither the content nor the provider hint is reliable enough
+        // to choose a source language; keep auto-detection enabled.
+        if (maxCues <= 0) return "auto"
+        return resolveLanguageUsingContent(providerLanguage, detectFromCues(cues, maxCues))
+    }
 
     private fun resolveLanguageUsingContent(providerLanguage: String?, contentLanguage: String): String {
         if (contentLanguage != "auto") return contentLanguage

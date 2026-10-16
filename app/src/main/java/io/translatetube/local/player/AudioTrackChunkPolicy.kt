@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import java.util.Locale
+
 /** Bounded static-buffer sizes to retry when an OEM audio service rejects a larger track. */
 internal object AudioTrackChunkPolicy {
     const val MIN_STATIC_TRACK_SAMPLES = 512
@@ -24,7 +26,7 @@ internal object AudioTrackChunkPolicy {
     }
 
     fun failureMessage(sampleRate: Int, candidateCounts: List<Int>, detail: String?): String {
-        val sizes = candidateCounts.joinToString(", ")
+        val sizes = candidateCounts.joinToString(", ") { String.format(Locale.ROOT, "%,d", it) }
         return "系统配音音轨创建失败：已尝试 ${sizes.ifBlank { "无有效缓冲区" }} 个采样点的静态缓冲区" +
             "（${sampleRate}Hz）；最后错误：${detail?.take(240).orEmpty().ifBlank { "系统未提供详细原因" }}"
     }

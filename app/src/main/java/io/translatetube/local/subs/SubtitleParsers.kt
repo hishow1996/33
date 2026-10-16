@@ -123,7 +123,7 @@ object SubtitleParsers {
         val raw = line.zh?.replace('\u00a0', ' ')?.replace(whitespaceRegex, " ")?.trim()
             ?.takeIf { it.isNotEmpty() } ?: return null
         val source = line.text.trim()
-        if (source.isNotEmpty() && sameCaptionText(source, raw)) return source
+        if (source.isNotEmpty() && source == raw) return source
         return cleanTranslatedText(raw)
     }
 
