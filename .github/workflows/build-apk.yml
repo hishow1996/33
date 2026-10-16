@@ -2,6 +2,10 @@ name: Build Android APK
 
 # APKs are built only after an explicit manual request.
 on:
+  # Temporarily enable push-triggered builds while an explicitly requested build is verified.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
