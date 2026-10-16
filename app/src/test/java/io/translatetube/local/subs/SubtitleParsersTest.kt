@@ -497,7 +497,7 @@ class SubtitleParsersTest {
     fun assParserConvertsHardSpacesAndPreservesExplicitLineBreaks() {
         val source = """
             [Events]
-            Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,one\\htwo\\Nthree
+            Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,one\htwo\Nthree
         """.trimIndent()
 
         val parsed = SubtitleParsers.parseAss(source)
