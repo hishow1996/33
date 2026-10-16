@@ -445,7 +445,7 @@ class PlaybackService : MediaSessionService() {
             Phase.TRANSLATING -> "正在将原文字幕翻译成中文" to state.progress.ifBlank {
                 if (state.totalLines > 0) "已翻译 ${state.lines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null }}/${state.totalLines} 行" else "正在逐句翻译原文字幕"
             }
-            Phase.SYNTHESIZING -> "正在生成配音" to if (state.totalLines > 0) {
+            Phase.SYNTHESIZING -> "正在按时间轴生成中文配音" to if (state.totalLines > 0) {
                 "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音"
             } else state.progress.ifBlank { "正在准备语音" }
             Phase.READY -> when {
