@@ -105,12 +105,68 @@ object SubtitleParsers {
         appendLine()
         lines.asSequence()
             .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
-            .sortedBy { it.startMs }
+            .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
             .forEach { line ->
                 appendLine(formatVttTime(line.startMs) + " --> " + formatVttTime(line.endMs))
                 line.text.lines().forEach { appendLine(it) }
                 appendLine()
             }
+    }
+
+    /**
+     * Export translated captions as SRT. Invalid cues are dropped before sequential numbering.
+     * Bilingual output keeps Chinese first and the original text below it.
+     */
+    fun toSrt(lines: List<SubLine>, bilingual: Boolean = false): String = buildString {
+        var sequence = 0
+        lines.asSequence()
+            .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
+            .sortedWith(compareBy<SubLine> { it.startMs }.thenBy { it.endMs }.thenBy { it.index })
+            .forEach { line ->
+                val source = line.text.trim()
+                val translated = cleanTranslatedText(line.zh)
+                val caption = when {
+                    bilingual && translated != null && !sameCaptionText(source, translated) ->
+                        "$translated\n$source"
+                    translated != null -> translated
+                    else -> source
+                }.trim()
+                if (caption.isBlank()) return@forEach
+
+                sequence++
+                appendLine(sequence)
+                appendLine(formatSrtTime(line.startMs) + " --> " + formatSrtTime(line.endMs))
+                caption.lines().forEach { appendLine(it.trimEnd()) }
+                appendLine()
+            }
+    }
+
+    /** Export Chinese-first bilingual WebVTT while preserving every cue's media time. */
+    fun toBilingualVtt(lines: List<SubLine>): String {
+        val bilingualLines = lines.map { line ->
+            val source = line.text.trim()
+            val translated = cleanTranslatedText(line.zh)
+            val caption = when {
+                translated != null && !sameCaptionText(source, translated) -> "$translated\n$source"
+                translated != null -> translated
+                else -> source
+            }
+            line.copy(text = caption)
+        }
+        return toVtt(bilingualLines)
+    }
+
+    private fun sameCaptionText(left: String, right: String): Boolean =
+        left.trim().replace(whitespaceRegex, " ")
+            .equals(right.trim().replace(whitespaceRegex, " "), ignoreCase = true)
+
+    private fun formatSrtTime(ms: Long): String {
+        val safe = ms.coerceAtLeast(0L)
+        val hours = safe / 3_600_000L
+        val minutes = (safe % 3_600_000L) / 60_000L
+        val seconds = (safe % 60_000L) / 1_000L
+        val millis = safe % 1_000L
+        return String.format(Locale.ROOT, "%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
     }
 
     private fun formatVttTime(ms: Long): String {
