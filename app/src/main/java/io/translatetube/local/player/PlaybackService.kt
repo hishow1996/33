@@ -160,6 +160,10 @@ class PlaybackService : MediaSessionService() {
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
     private var importedLines: List<SubLine>? = null
+    // Subtitle inputs can arrive out of time order. Reuse the same interval index as dubbing
+    // rather than rebuilding it every playback tick or assuming the UI list is sorted.
+    private var highlightTimelineSource: List<SubLine>? = null
+    private var highlightTimeline = DubbingTimeline(emptyList())
     private var lastLineIdx = Int.MIN_VALUE
     private var dubCollectJob: Job? = null
     private var speakerJob: Job? = null
@@ -3423,6 +3427,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
     }
 
     // ============ 时间轴驱动 ============
+    private fun subtitleHighlightLineAt(lines: List<SubLine>, positionMs: Long): Int {
+        if (highlightTimelineSource !== lines) {
+            highlightTimeline = DubbingTimeline(lines)
+            highlightTimelineSource = lines
+        }
+        return highlightTimeline.lineAt(positionMs)
+    }
+
     private fun tick(ms: Long) {
         val st = ui.value
         val d = dubbing
@@ -3433,26 +3445,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段…") }
         // AudioTrack startup is asynchronous; publish the newest media playhead even while PCM
         // is loading so the audio executor can skip elapsed speech instead of starting late.
         d?.updateTimelinePosition(dubLine, ms)
-        var highlightLine = dubLine
-        if (highlightLine < 0) {
-            val ls = st.lines
-            var lo = 0
-            var hi = ls.size - 1
-            var ans = -1
-            while (lo <= hi) {
-                val mid = (lo + hi) / 2
-                if (ls[mid].startMs <= ms) {
-                    ans = mid
-                    lo = mid + 1
-                } else {
-                    hi = mid - 1
-                }
-            }
-            // Do not keep highlighting the last-started cue after its end time.
-            // This makes subtitle focus follow the actual media timeline, including gaps.
-            highlightLine = ans.takeIf { index ->
-                index >= 0 && ms >= ls[index].startMs && ms < ls[index].endMs
-            } ?: -1
+        val highlightLine = if (d != null) {
+            // The dubbing timeline already handles unordered and overlapping captions. Reuse its
+            // result to ensure subtitle highlighting and spoken-cue selection cannot disagree.
+            dubLine
+        } else {
+            subtitleHighlightLineAt(st.lines, ms)
         }
         if (highlightLine != lastLineIdx) {
             lastLineIdx = highlightLine
