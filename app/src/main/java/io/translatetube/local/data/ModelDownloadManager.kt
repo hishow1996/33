@@ -758,6 +758,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         var nextProgressAt = progressStep
 
         val seenRegularFiles = HashSet<String>()
+        var archiveRootName: String? = null
         var archiveEntryCount = 0
         try {
             TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
@@ -771,20 +772,24 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     if (entry.isSymbolicLink || entry.isLink) {
                         throw java.io.IOException("模型压缩包包含链接条目")
                     }
-                    val normalized = entry.name.replace("\\", "/")
-                    val parts = normalized.split('/').filter { it.isNotEmpty() }
-                    if (parts.isEmpty() || parts.any { it == "." || it == ".." }) {
-                        throw java.io.IOException("模型压缩包包含非法路径")
+                    val safePath = ModelArchiveEntryPolicy.normalize(
+                        entryName = entry.name,
+                        expectedRootName = archiveRootName,
+                    ) ?: throw java.io.IOException("模型压缩包包含绝对路径、路径穿越或多个顶层目录")
+                    if (archiveRootName == null) archiveRootName = safePath.rootName
+                    val relative = safePath.relativePath.replace('/', File.separatorChar)
+                    if (relative.isEmpty()) {
+                        if (!entry.isDirectory) throw java.io.IOException("模型压缩包根路径不是目录")
+                        continue
                     }
-
-                    // 模型官方压缩包带顶层目录；剥掉一层，匹配应用预期路径。
-                    val relative = parts.drop(1).joinToString(File.separator)
-                    if (relative.isEmpty()) continue
                     val output = File(staging, relative).canonicalFile
                     if (!output.path.startsWith(rootPath)) {
                         throw java.io.IOException("模型压缩包路径越界")
                     }
                     if (entry.isDirectory) {
+                        if (output.exists() && !output.isDirectory) {
+                            throw java.io.IOException("模型压缩包将普通文件重复用作目录：$relative")
+                        }
                         if (!output.exists() && !output.mkdirs()) throw java.io.IOException("无法创建模型子目录")
                         continue
                     }
