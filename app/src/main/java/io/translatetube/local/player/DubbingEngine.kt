@@ -2246,7 +2246,9 @@ class DubbingEngine(
         synchronized(pending) {
             pending.clear()
             priorityTarget = -1
+            priorityLookAhead = 2
         }
+        synthesisRealtimeFactorValue = Float.NaN
 
         scope.launch {
             oldCacheInit?.join()
