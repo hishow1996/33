@@ -410,6 +410,7 @@ fun PlayerScreen(
         phase = state.phase,
         waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
         waitingForDubbingEngine = state.waitingForDubbingEngine,
+        playerIsPlaying = state.isPlaying,
     )
 
     Box(
