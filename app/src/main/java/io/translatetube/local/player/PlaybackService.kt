@@ -4176,9 +4176,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             pm.originalVolume = if (st.dubbingOn) 1f else if (st.muteOriginal) 0f else 1f
             if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty() && st.noModelHint == null) {
                 ui.update {
-                    it.copy(
-                        noModelHint = "配音引擎尚未启动或未能创建。系统 TTS 请检查手机文字转语音服务与中文语音数据；其他引擎请检查模型是否就绪。"
-                    )
+                    if (it.key == st.key) {
+                        it.copy(
+                            muteOriginal = false,
+                            noModelHint = "配音引擎尚未启动或未能创建。已恢复视频原声以避免无声播放。系统 TTS 请检查手机文字转语音服务与中文语音数据；其他引擎请检查模型是否就绪。"
+                        )
+                    } else it
                 }
             }
         }
