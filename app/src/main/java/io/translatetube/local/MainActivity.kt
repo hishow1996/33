@@ -76,24 +76,32 @@ class MainActivity : ComponentActivity() {
             .commit()
     }
 
+    /** Give even rapid repeat taps on the same row a distinct playback request token. */
+    private fun withFreshRequestToken(request: PlayRequest): PlayRequest {
+        val previousToken = playReq.value?.ts ?: 0L
+        return request.copy(ts = maxOf(request.ts, previousToken + 1L))
+    }
+
     /** Save each new request before the navigation/parse pipeline starts. */
     private fun rememberPlayRequest(request: PlayRequest) {
-        playReq.value = request
+        val tokenizedRequest = withFreshRequestToken(request)
+        playReq.value = tokenizedRequest
         val generation = (resumePrefs.getLong(KEY_GENERATION, 0L) + 1L).coerceAtLeast(1L)
-        val task = PendingResumeTask(request.key, request.key, generation)
+        val task = PendingResumeTask(tokenizedRequest.key, tokenizedRequest.key, generation)
         persistPendingResumeTask(task)
         pendingResumeTaskState.value = task
     }
 
     /** Keep the original web page as the recovery source if parsing resolves to a temporary media URL. */
     private fun advancePlayRequest(request: PlayRequest) {
-        playReq.value = request
+        val tokenizedRequest = withFreshRequestToken(request)
+        playReq.value = tokenizedRequest
         val current = pendingResumeTaskState.value ?: loadPendingResumeTask()
         if (current == null) {
-            rememberPlayRequest(request)
+            rememberPlayRequest(tokenizedRequest)
             return
         }
-        val updated = current.copy(activeKey = request.key)
+        val updated = current.copy(activeKey = tokenizedRequest.key)
         persistPendingResumeTask(updated)
         pendingResumeTaskState.value = updated
     }
