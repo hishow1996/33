@@ -1,8 +1,14 @@
 name: Build Android APK
 
-# APKs are built only after an explicit manual request.
+# APKs require an explicit request. Ordinary source pushes never trigger a build.
+# This narrowly guarded workflow-only commit is a one-time fallback when dispatch is unavailable.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-apk.yml
 
 permissions:
   contents: read
@@ -14,8 +20,8 @@ concurrency:
 
 jobs:
   build:
-    # Never build APKs on a source push; the user must explicitly dispatch this workflow.
-    if: github.event_name == 'workflow_dispatch'
+    # Run only on manual dispatch or the uniquely named, explicitly requested one-time trigger commit.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'Trigger one-time APK build requested by user')
     name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
