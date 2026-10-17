@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
             .putString(KEY_SOURCE, task.sourceKey)
             .putString(KEY_ACTIVE, task.activeKey)
             .putLong(KEY_GENERATION, task.generation)
-            .apply()
+            .commit()
     }
 
     /** Save each new request before the navigation/parse pipeline starts. */
@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
             current.activeKey != expected.activeKey ||
             current.generation != expected.generation
         ) return
-        resumePrefs.edit().remove(KEY_SOURCE).remove(KEY_ACTIVE).apply()
+        resumePrefs.edit().remove(KEY_SOURCE).remove(KEY_ACTIVE).commit()
         pendingResumeTaskState.value = null
     }
 
