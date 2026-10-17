@@ -145,8 +145,8 @@ class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     @Volatile private var dubbing: DubbingEngine? = null
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
-    private var localAsrEngine: LocalAsrEngine? = null
-    private var localAsrEngineModelId: String? = null
+    @Volatile private var localAsrEngine: LocalAsrEngine? = null
+    @Volatile private var localAsrEngineModelId: String? = null
     // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
     private val localAsrMutex = kotlinx.coroutines.sync.Mutex()
 
@@ -818,7 +818,6 @@ class PlaybackService : MediaSessionService() {
         sessionKey: String,
         pipelineGeneration: Long,
     ) {
-        if (localAsrEngine == null) return
         withContext(Dispatchers.IO) {
             localAsrMutex.withLock {
                 ensureCurrentSession(sessionKey, pipelineGeneration)
@@ -4399,14 +4398,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 }
             }
             if (detail.contains("设备内存不足")) {
-                // Retire the failed native TTS after its worker unwinds, so history replay and
-                // switching to another engine do not keep the failed runtime resident.
+                // Retire even if attach() reported the OOM just before publishing the engine.
+                // retireDubbing only clears the service field when this exact engine owns it.
                 scope.launch(Dispatchers.IO) {
-                    if (isCurrentDubbingEngine(engine, sessionKey)) {
-                        retireDubbing(engine)
-                        runCatching { awaitRetiredDubbingEngines() }
-                            .onFailure { android.util.Log.w("PlaybackService", "TTS cleanup after memory failure did not finish cleanly", it) }
-                    }
+                    retireDubbing(engine)
+                    runCatching { awaitRetiredDubbingEngines() }
+                        .onFailure { android.util.Log.w("PlaybackService", "TTS cleanup after memory failure did not finish cleanly", it) }
                     withContext(Dispatchers.Main) {
                         if (::pm.isInitialized && videoKey == sessionKey && ui.value.key == sessionKey) {
                             runCatching { pm.originalVolume = 1f }
