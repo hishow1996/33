@@ -162,7 +162,7 @@ class PlaybackService : MediaSessionService() {
     private var prepJob: Job? = null
     private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
     @Volatile private var processingPaused = false
-    private var videoKey = ""
+    @Volatile private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
     private var remoteMediaUrl: String? = null
@@ -748,12 +748,13 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
-        activeOpenRequestToken = requestToken
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.remoteMediaUrl = remoteMediaUrl
         this.remoteMediaTitle = remoteMediaTitle
         this.remoteMediaReferrer = remoteMediaReferrer
         this.remoteMediaUserAgent = remoteMediaUserAgent.orEmpty()
+        // Publish the request token after its associated media identity.
+        activeOpenRequestToken = requestToken
         // 兜底防护：blob:/data: 等网页内嵌地址绝不能进入 ExoPlayer（会以
         // PARSING_CONTAINER_UNSUPPORTED 失败甚至崩溃），必须在此拦截并给出可操作的提示。
         if (remoteMediaUrl != null && !remoteMediaUrl.startsWith("http://", true) &&
