@@ -2204,9 +2204,8 @@ class DubbingEngine(
         val invalidated = invalidatePlayback()
         // Stop only the exact utterance owned by the invalidated generation. A late pause from
         // an older cue must never stop a newer system-TTS utterance.
-        (tts as? TimelineTtsPlayback)
-            ?.takeIf { it.useDirectTimelinePlayback }
-            ?.stopTimelineSpeech(invalidated.second)
+        val directTts = (tts as? TimelineTtsPlayback)?.takeIf { it.useDirectTimelinePlayback }
+        invalidated.second?.let { staleId -> directTts?.stopTimelineSpeech(staleId) }
         val active = track ?: return
         try {
             audioExec.execute {
@@ -2259,7 +2258,9 @@ class DubbingEngine(
 
     fun stop() {
         val invalidated = invalidatePlayback()
-        (tts as? TimelineTtsPlayback)?.stopTimelineSpeech(invalidated.second)
+        invalidated.second?.let { staleId ->
+            (tts as? TimelineTtsPlayback)?.stopTimelineSpeech(staleId)
+        }
         val old = track
         track = null
         if (released) {
