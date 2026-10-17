@@ -10,6 +10,7 @@ import android.os.Looper
 import android.media.PlaybackParams
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.tts.TtsEngine
+import io.translatetube.local.tts.TimelineTtsPlayback
 import io.translatetube.local.tts.TtsInputLimitException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -219,6 +220,21 @@ class DubbingEngine(
                 try {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
+
+                    // The Android system TTS path speaks each translated cue directly when its
+                    // timeline becomes active. It must not wait for PCM cache generation or route
+                    // the system voice through the OEM AudioTrack implementation.
+                    if (tts is TimelineTtsPlayback) {
+                        for (i in this@DubbingEngine.lines.indices) {
+                            checkCacheInitActive()
+                            val cue = this@DubbingEngine.lines[i]
+                            val hasSpeech = DubbingTimeline.isPlayableCue(cue) &&
+                                !cue.zh.isNullOrBlank()
+                            markCuePrepared(i, hasAudio = hasSpeech)
+                        }
+                        bumpPrepared()
+                        return@launch
+                    }
 
                     // Keep valid PCM caches for other voices/engines. They are harmless when
                     // the active session uses a different cache key; the shared LRU budget below
@@ -1733,6 +1749,89 @@ class DubbingEngine(
             _currentLine.value = idx
             playbackGeneration.incrementAndGet()
         }
+
+        val timelineTts = tts as? TimelineTtsPlayback
+        if (timelineTts != null) {
+            val spokenText = line.zh?.trim().orEmpty()
+            if (spokenText.isBlank()) {
+                markCuePrepared(idx, hasAudio = false)
+                synchronized(playbackControlLock) {
+                    if (playbackGeneration.get() == generation && _currentLine.value == idx) {
+                        playbackStartedLine = -1
+                        _currentLine.value = -1
+                    }
+                }
+                return
+            }
+            val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
+            val estimatedSpeechMs = spokenText.length * 180L
+            val timingRate = (estimatedSpeechMs.toFloat() / cueDurationMs.toFloat())
+                .coerceIn(0.75f, 2.2f)
+            val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
+            val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(
+                speed * timingRate * timelineSpeed,
+            )
+            val utteranceId = "timeline-${System.nanoTime()}-$idx-$generation"
+            val accepted = timelineTts.speakOnTimeline(
+                text = spokenText,
+                speed = speechRate,
+                speakerId = line.speakerId,
+                volume = activeVolume,
+                utteranceId = utteranceId,
+                onStarted = {
+                    val stillCurrent = synchronized(playbackControlLock) {
+                        val allowed = !released &&
+                            playbackGeneration.get() == generation &&
+                            _currentLine.value == idx &&
+                            isActivePlaybackAllowedLocked()
+                        if (allowed) playbackStartedLine = idx
+                        allowed
+                    }
+                    if (stillCurrent) {
+                        runCatching { onPlaybackStarted?.invoke(idx) }
+                            .onFailure {
+                                android.util.Log.w(
+                                    "DubbingEngine",
+                                    "Could not publish live system-TTS playback state",
+                                    it,
+                                )
+                            }
+                    } else {
+                        timelineTts.stopTimelineSpeech(utteranceId)
+                    }
+                },
+                onCompleted = { error ->
+                    if (!error.isNullOrBlank()) {
+                        val stillCurrent = synchronized(playbackControlLock) {
+                            !released &&
+                                playbackGeneration.get() == generation &&
+                                _currentLine.value == idx
+                        }
+                        if (stillCurrent) {
+                            markCuePrepared(idx, hasAudio = false)
+                            synchronized(playbackControlLock) {
+                                if (playbackGeneration.get() == generation && _currentLine.value == idx) {
+                                    playbackStartedLine = -1
+                                    _currentLine.value = -1
+                                }
+                            }
+                            reportSynthesisError("第 ${idx + 1} 行系统 TTS 朗读失败：$error")
+                        }
+                    }
+                },
+            )
+            if (!accepted) {
+                markCuePrepared(idx, hasAudio = false)
+                synchronized(playbackControlLock) {
+                    if (playbackGeneration.get() == generation && _currentLine.value == idx) {
+                        playbackStartedLine = -1
+                        _currentLine.value = -1
+                    }
+                }
+            }
+            return
+        }
+
         try {
             audioExec.execute {
                 var created: AudioTrack? = null
@@ -2046,6 +2145,7 @@ class DubbingEngine(
 
     fun stop() {
         invalidatePlayback()
+        (tts as? TimelineTtsPlayback)?.stopTimelineSpeech()
         val old = track
         track = null
         if (released) {
@@ -2106,6 +2206,17 @@ class DubbingEngine(
             synchronized(mem) { mem.clear() }
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
+            if (tts is TimelineTtsPlayback) {
+                lines.indices.forEach { index ->
+                    val cue = lines[index]
+                    markCuePrepared(
+                        index,
+                        hasAudio = DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank(),
+                    )
+                }
+                bumpPrepared()
+                return@launch
+            }
             synchronized(pending) {
                 pending.clear()
                 lines.indices
@@ -2133,6 +2244,9 @@ class DubbingEngine(
         val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
         if (kotlin.math.abs(normalized - activeVolume) < 0.01f) return
         activeVolume = normalized
+        // Live Android TTS takes its volume in the utterance Bundle; the next cue uses this
+        // value. AudioTrack-backed engines can update the already-running track immediately.
+        if (tts is TimelineTtsPlayback) return
         val active = track ?: return
         try {
             audioExec.execute {
@@ -2207,6 +2321,8 @@ class DubbingEngine(
         // TTS engine underneath that just-started synthesis call.
         val activeSynthesis = synchronized(synthStartLock) { synthJob }
         activeSynthesis?.cancel()
+        oldTtsInstances.filterIsInstance<TimelineTtsPlayback>()
+            .forEach { runCatching { it.stopTimelineSpeech() } }
         val systemInstances = oldTtsInstances.filterIsInstance<io.translatetube.local.tts.SystemTts>()
         val nativeInstances = oldTtsInstances.filterNot { it is io.translatetube.local.tts.SystemTts }
         // Close latch-backed System TTS instances first so any waiting synth() call can unwind.
