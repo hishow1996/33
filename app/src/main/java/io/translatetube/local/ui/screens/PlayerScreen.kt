@@ -1487,7 +1487,9 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     if (!state.isPlaying) {
         Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
             Surface(
-                onClick = { svc?.playPause() },
+                // This control is only shown while isPlaying=false; issue an explicit play
+                // rather than toggling based on playWhenReady during buffering.
+                onClick = { svc?.playPlayback() },
                 shape = CircleShape,
                 color = Color.White,
             ) {
@@ -1560,7 +1562,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             Modifier.fillMaxWidth(),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { svc?.playPause() }, modifier = Modifier.size(36.dp)) {
+            IconButton(
+                onClick = { if (state.isPlaying) svc?.pausePlayback() else svc?.playPlayback() },
+                modifier = Modifier.size(36.dp),
+            ) {
                 Icon(
                     imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = if (state.isPlaying) "暂停" else "播放",
