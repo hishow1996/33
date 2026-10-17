@@ -11,7 +11,7 @@ import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
  * SenseVoiceSmall INT8 running locally through the app's existing sherpa-onnx Android runtime.
  * The app's VAD supplies stable media timestamps; recognized text stays within each VAD segment.
  */
-class SenseVoiceEngine(ctx: Context) : LocalAsrEngine {
+class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEngine {
     private val recognizer: OfflineRecognizer
     @Volatile private var closed = false
 
@@ -28,6 +28,7 @@ class SenseVoiceEngine(ctx: Context) : LocalAsrEngine {
         private set
 
     init {
+        require(numThreads in 1..4) { "本地转写线程数必须在 1 到 4 之间" }
         check(io.translatetube.local.data.ModelFiles.senseVoiceCoreReady(ctx)) {
             "本地 SenseVoice 模型不完整：需要 model.int8.onnx 和 tokens.txt；请在设置 → 转写引擎中重新下载模型。"
         }
@@ -41,7 +42,7 @@ class SenseVoiceEngine(ctx: Context) : LocalAsrEngine {
                     useInverseTextNormalization = true,
                 ),
                 tokens = "${dir}tokens.txt",
-                numThreads = 2,
+                numThreads = numThreads,
                 debug = false,
                 provider = "cpu",
             ),
@@ -78,6 +79,11 @@ class SenseVoiceEngine(ctx: Context) : LocalAsrEngine {
         val durationMs = pcmFile.durationMs
         val sampleRate = pcmFile.sampleRate.toLong()
         val output = mutableListOf<Triple<Long, Long, String>>()
+        val batchStartedMs = android.os.SystemClock.elapsedRealtime()
+        var audioMs = 0L
+        var sampleReadMs = 0L
+        var inferenceMs = 0L
+        var decodedSegments = 0
         segs.forEachIndexed { index, (startMs, endMs) ->
             checkActive()
             val safeStartMs = startMs.coerceIn(0L, durationMs)
@@ -90,13 +96,29 @@ class SenseVoiceEngine(ctx: Context) : LocalAsrEngine {
             if (endSample > startSample) {
                 val count = endSample - startSample
                 require(count <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
+                val readStartedMs = android.os.SystemClock.elapsedRealtime()
                 val samples = pcmFile.readFloatSamples(startSample, count.toInt(), checkActive)
-                val text = decodeResult(samples).text.trim()
+                sampleReadMs += android.os.SystemClock.elapsedRealtime() - readStartedMs
+                val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
+                val result = decodeResult(samples)
+                inferenceMs += android.os.SystemClock.elapsedRealtime() - decodeStartedMs
+                audioMs += safeEndMs - safeStartMs
+                decodedSegments++
+                val text = result.text.trim()
                 checkActive()
                 if (text.isNotEmpty()) output += Triple(safeStartMs, safeEndMs, text)
             }
             onProgress(index + 1, segs.size)
         }
+        LocalAsrPerformanceLogger.log(
+            modelId = "sensevoice",
+            numThreads = numThreads,
+            decodedSegments = decodedSegments,
+            audioMs = audioMs,
+            sampleReadMs = sampleReadMs,
+            inferenceMs = inferenceMs,
+            batchMs = android.os.SystemClock.elapsedRealtime() - batchStartedMs,
+        )
         return output
     }
 

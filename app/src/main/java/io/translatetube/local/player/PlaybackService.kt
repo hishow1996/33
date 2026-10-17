@@ -15,6 +15,7 @@ import io.translatetube.local.R
 import io.translatetube.local.asr.AudioExtract
 import io.translatetube.local.asr.AudioTrackSelectionPolicy
 import io.translatetube.local.asr.LocalAsrEngine
+import io.translatetube.local.asr.LocalAsrPerformancePolicy
 import io.translatetube.local.asr.SenseVoiceEngine
 import io.translatetube.local.asr.SpeakerDiarizer
 import io.translatetube.local.asr.WhisperEngine
@@ -2214,10 +2215,23 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         val engine = localAsrEngine?.takeIf { localAsrEngineModelId == selectedModelId }
                             ?: run {
                                 releaseLocalAsr()
+                                val playbackState = ui.value
+                                val asrThreads = LocalAsrPerformancePolicy.recommendedThreadCount(
+                                    modelId = selectedModelId,
+                                    processorCount = Runtime.getRuntime().availableProcessors(),
+                                    isPlaying = playbackState.isPlaying,
+                                    dubbingEnabled = playbackState.dubbingOn,
+                                )
+                                android.util.Log.i(
+                                    "PlaybackService",
+                                    "Local ASR engine=$selectedModelId threads=$asrThreads " +
+                                        "cpuCount=${Runtime.getRuntime().availableProcessors()} " +
+                                        "playing=${playbackState.isPlaying} dubbing=${playbackState.dubbingOn}",
+                                )
                                 val created: LocalAsrEngine = if (selectedModelId == "sensevoice") {
-                                    SenseVoiceEngine(this@PlaybackService)
+                                    SenseVoiceEngine(this@PlaybackService, asrThreads)
                                 } else {
-                                    WhisperEngine(this@PlaybackService)
+                                    WhisperEngine(this@PlaybackService, asrThreads)
                                 }
                                 localAsrEngine = created
                                 localAsrEngineModelId = selectedModelId

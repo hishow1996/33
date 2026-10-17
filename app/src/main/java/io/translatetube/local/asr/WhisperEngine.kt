@@ -9,7 +9,7 @@ import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult
 
 /** Whisper base 多语言本地转写（sherpa-onnx） */
-class WhisperEngine(ctx: Context) : LocalAsrEngine {
+class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEngine {
     private val recognizer: OfflineRecognizer
     @Volatile private var closed = false
     /** 最近一次转写检测到的语言码（如 "en"/"ja"） */
@@ -19,6 +19,7 @@ class WhisperEngine(ctx: Context) : LocalAsrEngine {
     override val lastEvent: String get() = ""
 
     init {
+        require(numThreads in 1..4) { "本地转写线程数必须在 1 到 4 之间" }
         check(io.translatetube.local.data.ModelFiles.whisperCoreReady(ctx)) {
             "本地 Whisper 模型不完整：需要 base-encoder.int8.onnx、base-decoder.int8.onnx 和 base-tokens.txt；请在转写设置中重新下载模型。"
         }
@@ -33,7 +34,7 @@ class WhisperEngine(ctx: Context) : LocalAsrEngine {
                     enableTokenTimestamps = true,
                 ),
                 tokens = "${m}base-tokens.txt",
-                numThreads = 2,
+                numThreads = numThreads,
                 debug = false,
                 provider = "cpu",
                 modelType = "whisper",
@@ -158,6 +159,11 @@ class WhisperEngine(ctx: Context) : LocalAsrEngine {
         require(sr == 16_000) { "Whisper 只支持 16kHz PCM 输入" }
         val durationMs = pcmFile.durationMs
         val out = mutableListOf<Triple<Long, Long, String>>()
+        val batchStartedMs = android.os.SystemClock.elapsedRealtime()
+        var audioMs = 0L
+        var sampleReadMs = 0L
+        var inferenceMs = 0L
+        var decodedSegments = 0
         segs.forEachIndexed { index, (startMs, endMs) ->
             checkActive()
             val safeStartMs = startMs.coerceIn(0L, durationMs)
@@ -170,8 +176,14 @@ class WhisperEngine(ctx: Context) : LocalAsrEngine {
             if (endSample > startSample) {
                 val sampleCount = endSample - startSample
                 require(sampleCount <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
+                val readStartedMs = android.os.SystemClock.elapsedRealtime()
                 val samples = pcmFile.readFloatSamples(startSample, sampleCount.toInt(), checkActive)
+                sampleReadMs += android.os.SystemClock.elapsedRealtime() - readStartedMs
+                val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
                 val result = decodeResult(samples)
+                inferenceMs += android.os.SystemClock.elapsedRealtime() - decodeStartedMs
+                audioMs += safeEndMs - safeStartMs
+                decodedSegments++
                 val text = result.text.trim()
                 checkActive()
                 if (text.isNotEmpty()) {
@@ -189,6 +201,15 @@ class WhisperEngine(ctx: Context) : LocalAsrEngine {
             }
             onProgress(index + 1, segs.size)
         }
+        LocalAsrPerformanceLogger.log(
+            modelId = "whisper",
+            numThreads = numThreads,
+            decodedSegments = decodedSegments,
+            audioMs = audioMs,
+            sampleReadMs = sampleReadMs,
+            inferenceMs = inferenceMs,
+            batchMs = android.os.SystemClock.elapsedRealtime() - batchStartedMs,
+        )
         return out
     }
 
