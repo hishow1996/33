@@ -273,7 +273,11 @@ object PiperModels {
         updateDownloadState(id) { current ->
             current.copy(
                 status = status,
-                progress = if (status == PiperModelDownloadStatus.READY) 100 else current.progress,
+                progress = when (status) {
+                    PiperModelDownloadStatus.READY -> 100
+                    PiperModelDownloadStatus.EXTRACTING -> 0
+                    else -> current.progress
+                },
                 stageMessage = stage,
                 error = null,
             )
