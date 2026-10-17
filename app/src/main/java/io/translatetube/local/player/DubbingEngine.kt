@@ -114,6 +114,7 @@ class DubbingEngine(
     /** Cache misses observed while the same cue is synthesizing are reconsidered when it exits. */
     private val retryAfterActiveSynthesis = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     @Volatile private var priorityTarget = -1
+    @Volatile private var priorityLookAhead = 2
     @Volatile private var synthJob: Job? = null
     @Volatile private var cacheInitJob: Job? = null
     private val synthStartLock = Any()
@@ -207,6 +208,7 @@ class DubbingEngine(
             readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
             pending.clear()
             priorityTarget = -1
+            priorityLookAhead = 2
             latestTimelineCursor = DubbingTimelineCursor()
             cacheInitJob?.cancel()
             val generation = cacheInitGeneration.incrementAndGet()
@@ -342,18 +344,28 @@ class DubbingEngine(
 
 
     /**
-     * When playback reaches a line whose TTS is not ready, move that line and the next
-     * two queued lines to the front. A seek must not wait for every earlier line to synthesize.
+     * Promote the current cue and a configurable look-ahead window. Startup can request a deeper
+     * buffer for slow synthesizers; ordinary ticker calls preserve that learned window instead of
+     * shrinking it back to two rows.
      */
-    fun prioritizeAround(index: Int) {
-        if (released || index !in lines.indices || index == priorityTarget) return
+    fun prioritizeAround(index: Int, lookAhead: Int? = null) {
+        if (released || index !in lines.indices) return
+        val requestedAhead = (lookAhead ?: priorityLookAhead).coerceIn(2, 12)
+        if (index == priorityTarget && requestedAhead <= priorityLookAhead) return
         synchronized(pending) {
-            if (index == priorityTarget) return
+            if (index == priorityTarget && requestedAhead <= priorityLookAhead) return
             val queued = mutableListOf<Int>()
             pending.drainTo(queued)
-            val reordered = DubbingQueueOrder.prioritize(queued, index, lines.size)
+            val effectiveAhead = maxOf(priorityLookAhead, requestedAhead)
+            val reordered = DubbingQueueOrder.prioritize(
+                queued,
+                index,
+                lines.size,
+                lookAhead = effectiveAhead,
+            )
             reordered.forEach { pending.offerLast(it) }
             priorityTarget = index
+            priorityLookAhead = effectiveAhead
         }
     }
 
