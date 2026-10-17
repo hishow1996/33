@@ -1238,7 +1238,9 @@ class PlaybackService : MediaSessionService() {
                                     startMs = row.optLong("s", Long.MIN_VALUE),
                                     endMs = row.optLong("e", Long.MIN_VALUE),
                                     sourceText = row.optString("t"),
-                                    translatedText = row.optString("zh").takeIf { it.isNotBlank() },
+                                    // JSONObject.NULL.toString() can become the literal "null";
+                                    // treat absent/null translations as missing so they are retried.
+                                    translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
                                 )
                             }
                             SubtitleCacheValidationPolicy.restoreTranslationsForSource(parsedLines, rows)
@@ -1504,7 +1506,7 @@ class PlaybackService : MediaSessionService() {
                 val originalText = row.optString("t").trim()
                 timelineRows += Triple(startMs, endMs, originalText)
 
-                translations += row.optString("zh")
+                translations += row.optString("zh", "")
             }
             if (!SubtitleCacheValidationPolicy.hasValidTimeline(timelineRows)) {
                 throw IllegalArgumentException("字幕缓存时间轴无效或未按开始时间排序")

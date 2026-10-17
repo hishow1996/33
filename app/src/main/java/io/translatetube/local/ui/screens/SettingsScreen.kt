@@ -481,9 +481,16 @@ Section("视频源（yt-dlp）") {
         }
 
         Section("存储管理") {
-            var cacheSize by remember { mutableStateOf(formatCacheSize(ctx)) }
+            // Cache trees can contain large audio segments. Never scan them synchronously during
+            // composition; the first frame should remain responsive even when the cache is large.
+            var cacheSize by remember { mutableStateOf("计算中…") }
             var showClearConfirm by remember { mutableStateOf(false) }
             var cacheClearMessage by remember { mutableStateOf<String?>(null) }
+            var cacheClearing by remember { mutableStateOf(false) }
+            val cacheScope = rememberCoroutineScope()
+            LaunchedEffect(ctx) {
+                cacheSize = withContext(Dispatchers.IO) { formatCacheSize(ctx) }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("临时缓存", color = OnBg, style = MaterialTheme.typography.bodyLarge)
@@ -491,7 +498,7 @@ Section("视频源（yt-dlp）") {
                     Text("当前占用 $cacheSize", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
                 OutlinedButton(
-                    enabled = !cacheBusy,
+                    enabled = !cacheBusy && !cacheClearing,
                     onClick = {
                         cacheClearMessage = null
                         showClearConfirm = true
@@ -506,6 +513,8 @@ Section("视频源（yt-dlp）") {
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
+            } else if (cacheClearing) {
+                Text("正在清理临时缓存…", color = SubText, style = MaterialTheme.typography.bodySmall)
             }
             cacheClearMessage?.let {
                 Text(it, color = SubText, style = MaterialTheme.typography.bodySmall)
@@ -524,20 +533,36 @@ Section("视频源（yt-dlp）") {
                     },
                     confirmButton = {
                         TextButton(
-                            enabled = !cacheBusy,
+                            enabled = !cacheBusy && !cacheClearing,
                             onClick = {
-                                if (!cacheBusy) {
-                                    val cleared = clearAppCache(ctx)
-                                    cacheSize = formatCacheSize(ctx)
-                                    cacheClearMessage = if (cleared) {
-                                        "临时缓存已清理。"
-                                    } else {
-                                        "部分缓存仍被占用，未能完全清理；请稍后重试。"
-                                    }
+                                if (!cacheBusy && !cacheClearing) {
                                     showClearConfirm = false
+                                    cacheClearing = true
+                                    cacheClearMessage = null
+                                    cacheScope.launch {
+                                        try {
+                                            val result = withContext(Dispatchers.IO) {
+                                                val cleared = clearAppCache(ctx)
+                                                cleared to formatCacheSize(ctx)
+                                            }
+                                            cacheSize = result.second
+                                            cacheClearMessage = if (result.first) {
+                                                "临时缓存已清理。"
+                                            } else {
+                                                "部分缓存仍被占用，未能完全清理；请稍后重试。"
+                                            }
+                                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                            throw cancelled
+                                        } catch (error: Exception) {
+                                            android.util.Log.w("SettingsScreen", "清理临时缓存失败", error)
+                                            cacheClearMessage = "清理缓存失败；请检查存储空间后重试。"
+                                        } finally {
+                                            cacheClearing = false
+                                        }
+                                    }
                                 }
                             },
-                        ) { Text("确认清理", color = if (cacheBusy) SubText else DangerRed) }
+                        ) { Text(if (cacheClearing) "清理中…" else "确认清理", color = if (cacheBusy || cacheClearing) SubText else DangerRed) }
                     },
                     dismissButton = {
                         TextButton(onClick = { showClearConfirm = false }) { Text("取消", color = SubText) }
@@ -662,7 +687,11 @@ private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
                 track.write(audio.samples, 0, audio.samples.size, android.media.AudioTrack.WRITE_BLOCKING)
                 track.play()
                 val playMs = audio.samples.size * 1000L / audio.sampleRate
-                Thread.sleep(playMs + 150)
+                // Suspend instead of blocking the IO worker; changing the selected voice or
+                // leaving this screen can cancel the preview promptly and release AudioTrack.
+                kotlinx.coroutines.delay(playMs + 150)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 android.util.Log.w("SettingsScreen", "音色试听失败", e)
             } finally {
