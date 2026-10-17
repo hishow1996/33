@@ -49,7 +49,7 @@ internal interface TimelineTtsPlayback {
         onCompleted: (String?) -> Unit,
     ): Boolean
 
-    fun stopTimelineSpeech()
+    fun stopTimelineSpeech(utteranceId: String? = null)
 }
 
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
@@ -351,12 +351,17 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         }
     }
 
-    override fun stopTimelineSpeech() {
+    override fun stopTimelineSpeech(utteranceId: String?) {
         val engine = synchronized(lifecycleLock) {
-            activeTimelineUtteranceId?.let(timelineCallbacks::remove)
-            activeTimelineUtteranceId = null
-            if (closed) null else ttsRef.get()
+            if (utteranceId != null && activeTimelineUtteranceId != utteranceId) {
+                null
+            } else {
+                activeTimelineUtteranceId?.let(timelineCallbacks::remove)
+                activeTimelineUtteranceId = null
+                if (closed) null else ttsRef.get()
+            }
         }
+        if (utteranceId != null && engine == null) return
         runCatching { engine?.stop() }
     }
 
