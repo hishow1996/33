@@ -187,7 +187,7 @@ class SystemTts(context: Context) : TtsEngine {
             // This mode must remain the selected system TTS engine. Do not silently switch
             // to another locale or another engine when Chinese voice data is missing.
             disposeFailedEngine()
-            throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据") 
+            throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据")
         }
 
         val allChineseVoices = tts.voices.orEmpty()
@@ -270,7 +270,7 @@ class SystemTts(context: Context) : TtsEngine {
             }
 
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                synchronized(lifecycleLock) {
+                val matched = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = if (interrupted) {
                             "系统 TTS 合成过程中被中断"
@@ -278,7 +278,14 @@ class SystemTts(context: Context) : TtsEngine {
                             "系统 TTS 合成在开始前被取消或从队列中移除"
                         }
                         activeLatch?.countDown()
-                    }
+                        true
+                    } else false
+                }
+                if (matched) {
+                    android.util.Log.w(
+                        "SystemTts",
+                        "WAV synthesis stopped: interrupted=$interrupted",
+                    )
                 }
             }
         })
@@ -406,6 +413,19 @@ class SystemTts(context: Context) : TtsEngine {
                 android.util.Log.w("SystemTts", "STREAM_MUSIC volume is 0; generated PCM will follow media-volume routing")
             }
             return normalized
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            android.util.Log.d(
+                "SystemTts",
+                "WAV synthesis cancelled: chars=${text.length}",
+            )
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.e(
+                "SystemTts",
+                "WAV synthesis failed: chars=${text.length} detail=${error.message ?: error.javaClass.simpleName}",
+                error,
+            )
+            throw error
         } finally {
             synchronized(lifecycleLock) {
                 if (activeUtteranceId == utteranceId) {
