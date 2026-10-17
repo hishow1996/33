@@ -732,7 +732,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 return
             } catch (e: Exception) {
                 lastError = e.message ?: e.javaClass.simpleName
-                primarySourceWasSlow = sourceIndex == 0 && e is SlowDownloadSourceException
+                if (sourceIndex == 0) {
+                    primarySourceWasSlow = e is SlowDownloadSourceException
+                }
                 Log.w("ModelDL", "$kind 源失败: $lastError，尝试下一源")
             }
         }
