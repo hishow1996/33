@@ -213,20 +213,28 @@ object VideoProcessingFlowPolicy {
     ): Boolean = dubbingOn && totalLines > 0 && preparedCount.coerceAtLeast(0) < totalLines
 
     /**
-     * Keep the page visible during subtitle preparation, but do not let the final dubbing stage
-     * cover a video that has already started playing. Remaining speech can continue in background.
+     * Live Android System TTS speaks directly on the subtitle timeline and does not need a PCM
+     * generation queue. Other TTS engines must keep the preparation page visible until their
+     * subtitle cues are ready, even if the video surface has already started playing.
      */
     fun shouldShowProcessingPage(
         phase: Phase,
         waitingForTranscriptionEngine: Boolean = false,
         waitingForDubbingEngine: Boolean = false,
         playerIsPlaying: Boolean = false,
-    ): Boolean = if (playerIsPlaying && phase in setOf(Phase.SYNTHESIZING, Phase.READY)) {
-        false
-    } else {
-        phase != Phase.READY ||
-            waitingForTranscriptionEngine ||
-            waitingForDubbingEngine
+        systemTtsLivePlayback: Boolean = false,
+        dubbingPreparationIncomplete: Boolean = false,
+    ): Boolean {
+        if (phase == Phase.ERROR || waitingForTranscriptionEngine || waitingForDubbingEngine) {
+            return true
+        }
+        if (systemTtsLivePlayback) {
+            // Keep the processing page until playback really starts, then show the player without
+            // waiting for a PCM queue that System TTS never creates.
+            return phase != Phase.READY || !playerIsPlaying
+        }
+        // Kokoro/Piper and other synthesis engines need their speech cues prepared first.
+        return phase != Phase.READY || dubbingPreparationIncomplete
     }
 
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
