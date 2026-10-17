@@ -135,7 +135,11 @@ fun HomeScreen(
 
         // The service state covers an in-process task; the saved key restores the entry after force-stop.
         val liveTaskKey = playback.key.takeIf { it.isNotBlank() && playback.phase != Phase.IDLE }
-        val resumeTaskKey = liveTaskKey ?: pendingResumeTaskKey?.takeIf { it.isNotBlank() }
+        val resumeTaskKey = when {
+            playback.phase == Phase.ERROR && !pendingResumeTaskKey.isNullOrBlank() -> pendingResumeTaskKey
+            liveTaskKey != null -> liveTaskKey
+            else -> pendingResumeTaskKey?.takeIf { it.isNotBlank() }
+        }
         if (resumeTaskKey != null) {
             val hasLiveTask = liveTaskKey != null
             val taskTitle = if (hasLiveTask) {
