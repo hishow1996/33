@@ -1597,7 +1597,7 @@ class DubbingEngine(
                 .setBufferSizeInBytes(samples.size * 4)
                 .build()
 
-            if (floatTrack.state != AudioTrack.STATE_INITIALIZED) {
+            if (floatTrack.state == AudioTrack.STATE_UNINITIALIZED) {
                 throw IllegalStateException(
                     "PCM_FLOAT AudioTrack 初始化失败，state=${floatTrack.state}"
                 )
@@ -1606,6 +1606,11 @@ class DubbingEngine(
             if (written != samples.size) {
                 throw IllegalStateException(
                     "PCM_FLOAT AudioTrack 写入不完整：$written/${samples.size} 个采样点"
+                )
+            }
+            if (floatTrack.state != AudioTrack.STATE_INITIALIZED) {
+                throw IllegalStateException(
+                    "PCM_FLOAT AudioTrack 写入后仍未就绪，state=${floatTrack.state}"
                 )
             }
             return floatTrack
@@ -1631,7 +1636,7 @@ class DubbingEngine(
                 .setTransferMode(AudioTrack.MODE_STATIC)
                 .setBufferSizeInBytes(pcm16.size * 2)
                 .build()
-            if (pcm16Track.state != AudioTrack.STATE_INITIALIZED) {
+            if (pcm16Track.state == AudioTrack.STATE_UNINITIALIZED) {
                 throw IllegalStateException(
                     "PCM_16BIT AudioTrack 初始化失败，state=${pcm16Track.state}"
                 )
@@ -1640,6 +1645,11 @@ class DubbingEngine(
             if (written != pcm16.size) {
                 throw IllegalStateException(
                     "PCM_16BIT AudioTrack 写入不完整：$written/${pcm16.size} 个采样点"
+                )
+            }
+            if (pcm16Track.state != AudioTrack.STATE_INITIALIZED) {
+                throw IllegalStateException(
+                    "PCM_16BIT AudioTrack 写入后仍未就绪，state=${pcm16Track.state}"
                 )
             }
             android.util.Log.i(
@@ -1663,7 +1673,7 @@ class DubbingEngine(
                     pcm16.size * 2,
                     AudioTrack.MODE_STATIC,
                 )
-                if (legacyTrack.state != AudioTrack.STATE_INITIALIZED) {
+                if (legacyTrack.state == AudioTrack.STATE_UNINITIALIZED) {
                     throw IllegalStateException(
                         "传统 PCM_16BIT AudioTrack 初始化失败，state=${legacyTrack.state}"
                     )
@@ -1672,6 +1682,11 @@ class DubbingEngine(
                 if (written != pcm16.size) {
                     throw IllegalStateException(
                         "传统 PCM_16BIT AudioTrack 写入不完整：$written/${pcm16.size} 个采样点"
+                    )
+                }
+                if (legacyTrack.state != AudioTrack.STATE_INITIALIZED) {
+                    throw IllegalStateException(
+                        "传统 PCM_16BIT AudioTrack 写入后仍未就绪，state=${legacyTrack.state}"
                     )
                 }
                 android.util.Log.i("DubbingEngine", "Using legacy PCM_16BIT AudioTrack fallback")
