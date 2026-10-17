@@ -284,6 +284,24 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
 
+        // Once subtitles have played, a seek/network rebuffer must not reopen the processing page.
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.SYNTHESIZING,
+                playerIsPlaying = false,
+                progressiveTtsPlayback = true,
+                playbackHasStarted = true,
+            ),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                playerIsPlaying = false,
+                progressiveTtsPlayback = true,
+                playbackHasStarted = true,
+            ),
+        )
+
         // Engine startup waits and failures must not be skipped just because playback was requested.
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
