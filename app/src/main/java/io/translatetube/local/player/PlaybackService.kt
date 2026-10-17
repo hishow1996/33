@@ -2751,34 +2751,65 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     }
                 }
             }
-            // System TTS has returned to the pre-synthesized PCM path: synthesize the first
-            // spoken cue through synthesizeToFile/WAV, then play it through DubbingEngine's
-            // AudioTrack timeline like the other engines. Wait briefly for the first cue only;
-            // remaining cues continue synthesizing in the background while the video plays.
+            // Generated mode waits for a measured startup buffer rather than just one or two
+            // lines. The target grows when early TTS calls prove slower than the video timeline.
+            // Immediate mode is different: its cues are marked available without PCM generation,
+            // so only the first real speech cue is needed before playback begins.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
-                // Wait for actual speech cues, not the contiguous prepared-row counter. Empty or
-                // failed rows before the first spoken cue must not block a ready first sentence.
-                val startupSpeechIndices = finalLines.indices
-                    .filter { !finalLines[it].zh.isNullOrBlank() }
-                    .take(2)
-                if (startupSpeechIndices.isNotEmpty()) {
-                    startupDubbing.prioritizeAround(startupSpeechIndices.first())
-                    val deadlineNs = System.nanoTime() + 12_000_000_000L
+                val immediateMode = startupDubbing.usesImmediateTimelinePlayback
+                var startupBuffer = DubbingStartupBufferPolicy.plan(
+                    finalLines,
+                    immediateMode = immediateMode,
+                    synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
+                )
+                if (startupBuffer.lineIndices.isNotEmpty()) {
+                    startupDubbing.prioritizeAround(startupBuffer.lineIndices.first())
+                    val deadlineNs = System.nanoTime() +
+                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
                     fun cueFinished(index: Int): Boolean =
                         startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
-                    while (
-                        startupSpeechIndices.any { !cueFinished(it) } &&
-                        System.nanoTime() < deadlineNs
-                    ) {
+                    while (System.nanoTime() < deadlineNs) {
+                        startupBuffer = DubbingStartupBufferPolicy.plan(
+                            finalLines,
+                            immediateMode = immediateMode,
+                            synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
+                        )
+                        if (startupBuffer.lineIndices.all(::cueFinished)) break
                         kotlinx.coroutines.delay(100)
                     }
-                    val firstSpeech = startupSpeechIndices.first()
-                    if (!cueFinished(firstSpeech)) {
-                        android.util.Log.w("PlaybackService", "TTS startup buffer timed out before first spoken line")
-                        updateUiForSession(key) { it.copy(progress = "首句配音仍在准备，已先开始视频播放") }
-                    } else if (startupSpeechIndices.drop(1).any { !cueFinished(it) }) {
-                        updateUiForSession(key) { it.copy(progress = "首句配音已就绪，其余配音继续准备…") }
+                    val firstSpeech = startupBuffer.lineIndices.first()
+                    val bufferIncomplete = startupBuffer.lineIndices.any { !cueFinished(it) }
+                    val measuredRtf = startupDubbing.synthesisRealtimeFactor
+                    when {
+                        !cueFinished(firstSpeech) -> {
+                            android.util.Log.w(
+                                "PlaybackService",
+                                "TTS startup timed out before the first cue; start with original audio audible",
+                            )
+                            updateUiForSession(key) {
+                                it.copy(progress = "首句配音仍在准备，先开始播放；配音就绪后继续生成")
+                            }
+                        }
+                        bufferIncomplete && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
+                            android.util.Log.w(
+                                "PlaybackService",
+                                "TTS synthesis is slower than real time (rtf=$measuredRtf); startup buffer incomplete",
+                            )
+                            updateUiForSession(key) {
+                                it.copy(progress = "检测到配音生成速度偏慢，已尽量增加首段缓冲；未就绪片段会保留原声，建议尝试即时朗读")
+                            }
+                        }
+                        bufferIncomplete -> {
+                            updateUiForSession(key) {
+                                it.copy(progress = "首段配音缓冲未满，后续继续生成；未就绪时保留原声")
+                            }
+                        }
+                        !immediateMode && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
+                            updateUiForSession(key) {
+                                it.copy(progress = "已加深首段配音缓冲；后续生成速度偏慢时可切换即时朗读")
+                            }
+                        }
                     }
                 }
             }
