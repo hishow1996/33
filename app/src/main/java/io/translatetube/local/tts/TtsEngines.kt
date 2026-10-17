@@ -172,9 +172,9 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             throw IllegalStateException("系统 TTS 初始化失败")
         }
 
-        // Route live subtitle speech explicitly to media output. Some OEM Android 9 TTS engines
-        // acknowledge speak() but are silent when the app leaves audio attributes to the engine
-        // default; STREAM_MUSIC on each utterance remains as a compatibility fallback.
+        // Treat live caption narration as speech/accessibility output rather than another movie
+        // stream. Set the attributes once after initialization; older/OEM engines can fall back
+        // to the legacy STREAM_MUSIC hint if they reject modern audio attributes.
         val liveSpeechAttributes = android.media.AudioAttributes.Builder()
             .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
             .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -182,7 +182,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         liveSpeechAttributesReady =
             tts.setAudioAttributes(liveSpeechAttributes) == TextToSpeech.SUCCESS
         if (!liveSpeechAttributesReady) {
-            android.util.Log.w("SystemTts", "System TTS rejected media speech audio attributes; using STREAM_MUSIC parameters")
+            android.util.Log.w("SystemTts", "System TTS rejected speech audio attributes; using STREAM_MUSIC parameters")
         }
 
         val languageResult = tts.setLanguage(Locale.SIMPLIFIED_CHINESE)
@@ -236,6 +236,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 if (utteranceId == null) return
+                android.util.Log.d("SystemTts", "Live subtitle utterance started: $utteranceId")
                 val callback = synchronized(lifecycleLock) {
                     if (utteranceId == activeTimelineUtteranceId) {
                         timelineCallbacks[utteranceId]?.onStarted
@@ -247,6 +248,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             }
 
             override fun onDone(utteranceId: String?) {
+                android.util.Log.d("SystemTts", "Live subtitle utterance completed: $utteranceId")
                 synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) activeLatch?.countDown()
                 }
@@ -254,6 +256,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             }
 
             override fun onError(utteranceId: String?) {
+                android.util.Log.e("SystemTts", "Live subtitle utterance error: $utteranceId")
                 synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = "系统 TTS 合成回调返回错误"
@@ -264,6 +267,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
+                android.util.Log.e("SystemTts", "Live subtitle utterance error: $utteranceId, code=$errorCode")
                 synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = "系统 TTS 合成失败（错误码 $errorCode）"
