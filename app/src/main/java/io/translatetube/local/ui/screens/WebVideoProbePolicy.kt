@@ -20,6 +20,22 @@ internal object WebVideoProbePolicy {
     const val MAX_TITLE_CHARS = 512
     const val MAX_POSTER_CHARS = 2048
 
+    /** Auto-try yt-dlp once a normal webpage is ready, without requiring an extractor choice. */
+    fun shouldStartAutomaticYtDlp(
+        pageLoaded: Boolean,
+        isEligible: Boolean,
+        isPikPakShare: Boolean,
+        isBusy: Boolean,
+        autoAttempts: Int,
+    ): Boolean = pageLoaded && isEligible && !isPikPakShare && !isBusy && autoAttempts == 0
+
+    /** Direct manifest playback is a fallback; let automatic yt-dlp have the first chance. */
+    fun shouldAutoPlayManifest(
+        manualChose: Boolean,
+        alreadyAutoPlayed: Boolean,
+        ytDlpAttemptCompleted: Boolean,
+    ): Boolean = !manualChose && !alreadyAutoPlayed && ytDlpAttemptCompleted
+
     fun acceptsPayload(payload: String): Boolean =
         payload.length in 2..MAX_PAYLOAD_CHARS
 
