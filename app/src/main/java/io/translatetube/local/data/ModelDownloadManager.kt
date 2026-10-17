@@ -1,6 +1,8 @@
 package io.translatetube.local.data
 
 import io.translatetube.local.util.HttpDownloadResponsePolicy
+import io.translatetube.local.util.HttpDownloadSpeedPolicy
+import io.translatetube.local.util.SlowDownloadSourceException
 
 import android.content.Context
 import android.util.Log
@@ -17,6 +19,8 @@ import io.translatetube.local.asr.AtomicFileInstaller
 import io.translatetube.local.asr.ArchiveEntryLimitPolicy
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -518,6 +522,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             return
         }
         var lastError: String? = null
+        var primarySourceWasSlow = false
         for ((sourceIndex, url) in urls.withIndex()) {
             awaitDownloadsResumed()
             // Reset the phase before every fallback source. Otherwise an extraction error leaves
@@ -526,8 +531,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 status = ModelStatus.DOWNLOADING,
                 progress = 0,
                 totalMB = if (kind == ModelKind.TTS) 140 else 198,
-                stageMessage = if (sourceIndex == 0) "正在下载模型包…" else "正在切换下载源（${sourceIndex + 1}/${urls.size}）…",
+                stageMessage = when {
+                    sourceIndex == 0 -> "正在连接官方模型源…"
+                    primarySourceWasSlow -> "官方源速度较慢，正在切换加速源（${sourceIndex + 1}/${urls.size}）…"
+                    else -> "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
+                },
             )
+            val sourceStartedAtNanos = System.nanoTime()
             try {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
@@ -544,8 +554,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         val total = expectedBytes.takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
                         body.byteStream().use { ins ->
                             FileOutputStream(pkg).use { out ->
-                                val buf = ByteArray(128 * 1024)
+                                val buf = ByteArray(256 * 1024)
                                 var got = 0L
+                                var lastProgressBytes = 0L
+                                var lastProgressAtNanos = System.nanoTime()
                                 if (total > maxArchiveBytes) {
                                     throw IllegalStateException("模型压缩包超过大小限制")
                                 }
@@ -557,15 +569,33 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                     if (n < 0) break
                                     got += n
                                     if (got > maxArchiveBytes) throw IllegalStateException("模型压缩包超过大小限制")
+                                    val elapsedMillis = (System.nanoTime() - sourceStartedAtNanos) / 1_000_000L
+                                    if (HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, got, elapsedMillis)) {
+                                        throw SlowDownloadSourceException(got, elapsedMillis)
+                                    }
                                     out.write(buf, 0, n)
-                                    val pct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
-                                    state.value = state.value.copy(
-                                        progress = pct,
-                                        downloadedMB = got / 1048576,
-                                        totalMB = total / 1048576,
-                                        stageMessage = "正在下载模型包…",
-                                    )
+                                    val nowNanos = System.nanoTime()
+                                    if (got - lastProgressBytes >= 512L * 1024L ||
+                                        nowNanos - lastProgressAtNanos >= 250_000_000L
+                                    ) {
+                                        val pct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
+                                        state.value = state.value.copy(
+                                            progress = pct,
+                                            downloadedMB = got / 1048576,
+                                            totalMB = total / 1048576,
+                                            stageMessage = "正在下载模型包…",
+                                        )
+                                        lastProgressBytes = got
+                                        lastProgressAtNanos = nowNanos
+                                    }
                                 }
+                                val finalPct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
+                                state.value = state.value.copy(
+                                    progress = finalPct,
+                                    downloadedMB = got / 1048576,
+                                    totalMB = total / 1048576,
+                                    stageMessage = "正在下载模型包…",
+                                )
                                 if (!HttpDownloadResponsePolicy.isCompletePayload(
                                         expectedBytes, got, maxArchiveBytes
                                     )
@@ -690,6 +720,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 return
             } catch (e: Exception) {
                 lastError = e.message ?: e.javaClass.simpleName
+                primarySourceWasSlow = sourceIndex == 0 && e is SlowDownloadSourceException
                 Log.w("ModelDL", "$kind 源失败: $lastError，尝试下一源")
             }
         }
@@ -893,11 +924,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val progressStep = 8L * 1024 * 1024
         var nextProgressAt = progressStep
 
+        // Reuse a large extraction buffer for the whole archive; BZip2 reads bits in small
+        // increments, so buffering the underlying file avoids excessive low-level disk reads.
+        val extractionBuffer = ByteArray(256 * 1024)
         val seenRegularFiles = HashSet<String>()
         var archiveRootName: String? = null
         var archiveEntryCount = 0
         try {
-            TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(pkg))).use { tar ->
+            TarArchiveInputStream(
+                BZip2CompressorInputStream(
+                    BufferedInputStream(FileInputStream(pkg), 256 * 1024)
+                )
+            ).use { tar ->
                 while (true) {
                     checkActive()
                     val entry = tar.nextTarEntry ?: break
@@ -943,19 +981,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     output.parentFile?.let {
                         if (!it.exists() && !it.mkdirs()) throw java.io.IOException("无法创建模型子目录")
                     }
-                    FileOutputStream(output).use { out ->
-                        val buffer = ByteArray(64 * 1024)
+                    BufferedOutputStream(FileOutputStream(output), 256 * 1024).use { out ->
                         var fileBytes = 0L
                         while (true) {
                             checkActive()
-                            val count = io.translatetube.local.util.ProgressSafeInput.read(tar, buffer)
+                            val count = io.translatetube.local.util.ProgressSafeInput.read(tar, extractionBuffer)
                             if (count < 0) break
                             fileBytes += count
                             extractedBytes += count
                             if (extractedBytes > maxExtractedBytes || fileBytes > entry.size) {
                                 throw java.io.IOException("解压后的模型超过大小限制")
                             }
-                            out.write(buffer, 0, count)
+                            out.write(extractionBuffer, 0, count)
                             if (extractedBytes >= nextProgressAt) {
                                 onProgress?.invoke(extractedBytes)
                                 nextProgressAt = (extractedBytes / progressStep + 1L) * progressStep
