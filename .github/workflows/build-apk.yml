@@ -6,6 +6,7 @@ name: Build Android APK
 # Explicit trigger for the user's yt-dlp local-version detection fix.
 # User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.
 # Explicit rebuild trigger for making the player visible before the first progressive TTS cue.
+# User-requested APK build after thread-safe playbackAllowed player-state read.
 # Explicit trigger for the user's request to build the latest main-branch source.
 # Explicit retry trigger after fixing the duplicate unavailable-TTS fallback branch.
 on:
