@@ -689,6 +689,8 @@ object PiperModels {
                         throw java.io.IOException("Piper 模型压缩包响应声明的大小无效或超过 256 MB 安全上限")
                     }
                     var done = 0L
+                    var lastProgressBytes = 0L
+                    var lastProgressAtNanos = System.nanoTime()
                     body.byteStream().use { input ->
                         FileOutputStream(archive).use { output ->
                             val buffer = ByteArray(256 * 1024)
@@ -707,8 +709,15 @@ object PiperModels {
                                 }
                                 output.write(buffer, 0, count)
                                 digest?.update(buffer, 0, count)
-                                if (total > 0L) {
+                                val nowNanos = System.nanoTime()
+                                if (total > 0L && (
+                                        done - lastProgressBytes >= 512L * 1024L ||
+                                            nowNanos - lastProgressAtNanos >= 250_000_000L
+                                    )
+                                ) {
                                     onProgress(((done * 100L) / total).toInt().coerceIn(0, 99))
+                                    lastProgressBytes = done
+                                    lastProgressAtNanos = nowNanos
                                 }
                             }
                             output.flush()
