@@ -410,9 +410,6 @@ fun PlayerScreen(
         phase = state.phase,
         waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
         waitingForDubbingEngine = state.waitingForDubbingEngine,
-        dubbingOn = state.dubbingOn,
-        totalLines = state.totalLines,
-        preparedCount = state.preparedCount,
     )
 
     Box(
@@ -1818,7 +1815,11 @@ private fun SubtitleList(
                 val translatedComparisonKey = remember(translatedText) {
                     subtitleComparisonKey(translatedText)
                 }
-                val showOriginalText = activeDub &&
+                // Show the source line as soon as its subtitle is active, not only
+                // after the asynchronous voice output callback starts. This keeps English
+                // source text visible while System TTS is preparing/reading the Chinese line.
+                val showOriginalText = state.dubbingOn &&
+                    (activeDub || active) &&
                     translatedText != "中文字幕暂不可用" &&
                     line.text.isNotBlank() &&
                     sourceComparisonKey != translatedComparisonKey
