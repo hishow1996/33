@@ -93,6 +93,11 @@ class ModelDownloadForegroundService : Service() {
                         detail = statusText(tts),
                         progress = tts.progress.coerceIn(0, 99),
                     )
+                    ttsActive && tts.status == ModelStatus.EXTRACTING -> ModelNotificationContent(
+                        title = "正在安装配音模型",
+                        detail = "解压安装 ${tts.progress.coerceIn(0, 99)}% · ${statusText(tts)}",
+                        progress = tts.progress.coerceIn(0, 99),
+                    )
                     ttsActive -> ModelNotificationContent(
                         title = "正在安装配音模型",
                         detail = statusText(tts),
@@ -101,6 +106,11 @@ class ModelDownloadForegroundService : Service() {
                     asrActive && asr.status == ModelStatus.DOWNLOADING -> ModelNotificationContent(
                         title = "正在下载转写模型",
                         detail = statusText(asr),
+                        progress = asr.progress.coerceIn(0, 99),
+                    )
+                    asrActive && asr.status == ModelStatus.EXTRACTING -> ModelNotificationContent(
+                        title = "正在安装转写模型",
+                        detail = "解压安装 ${asr.progress.coerceIn(0, 99)}% · ${statusText(asr)}",
                         progress = asr.progress.coerceIn(0, 99),
                     )
                     asrActive -> ModelNotificationContent(
