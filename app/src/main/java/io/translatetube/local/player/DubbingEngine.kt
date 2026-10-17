@@ -65,6 +65,12 @@ class DubbingEngine(
     @Volatile var onFallbackRequested: ((index: Int, detail: String) -> Boolean)? = null
     @Volatile var onSynthesisError: ((String) -> Unit)? = null
     val currentTtsName: String get() = tts?.name.orEmpty()
+    /** True when the selected system TTS mode speaks directly instead of preparing PCM. */
+    val usesImmediateTimelinePlayback: Boolean
+        get() = (tts as? TimelineTtsPlayback)?.useDirectTimelinePlayback == true
+    /** Smoothed synthesis-time / produced-audio-time ratio; >1 means generation is slower than real time. */
+    @Volatile private var synthesisRealtimeFactorValue: Float = Float.NaN
+    val synthesisRealtimeFactor: Float get() = synthesisRealtimeFactorValue
     /** Diagnostic callback: the first successful PCM result for this session. */
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
@@ -196,6 +202,7 @@ class DubbingEngine(
                 this.timeline = preparedTimeline
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
+            synthesisRealtimeFactorValue = Float.NaN
             _totalLines.value = this.lines.size
             readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
             pending.clear()
@@ -555,11 +562,25 @@ class DubbingEngine(
                     } else firstAudio
                     val synthesisElapsedMs = (System.nanoTime() - synthesisStartedAtNanos)
                         .coerceAtLeast(0L) / 1_000_000L
+                    val outputAudioDurationMs = readyAudio.samples.size.toDouble() * 1_000.0 /
+                        readyAudio.sampleRate.coerceAtLeast(1)
+                    if (outputAudioDurationMs.isFinite() && outputAudioDurationMs > 0.0) {
+                        val measuredRtf = (synthesisElapsedMs.toDouble() / outputAudioDurationMs)
+                            .toFloat()
+                        if (measuredRtf.isFinite() && measuredRtf > 0f) {
+                            val previousRtf = synthesisRealtimeFactorValue
+                            synthesisRealtimeFactorValue = if (previousRtf.isFinite()) {
+                                previousRtf * 0.65f + measuredRtf * 0.35f
+                            } else measuredRtf
+                        }
+                    }
                     if (synthesisElapsedMs >= 500L || synthesisCallCount > 1) {
                         android.util.Log.d(
                             "DubbingEngine",
                             "TTS performance: engine=${tts?.name} line=${idx + 1}/${lines.size} " +
-                                "chars=${text.length} synthMs=${synthesisElapsedMs} calls=${synthesisCallCount}",
+                                "chars=${text.length} synthMs=${synthesisElapsedMs} " +
+                                "audioMs=${outputAudioDurationMs.toLong()} rtf=${synthesisRealtimeFactorValue} " +
+                                "calls=${synthesisCallCount}",
                         )
                     }
                     val maxUsefulSamples = DubbingSynthesisPolicy.maxUsefulSampleCount(
