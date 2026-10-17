@@ -933,15 +933,17 @@ private fun VideoParsingPage(
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
     val waitingForTranscriptionEngine = state.waitingForTranscriptionEngine && state.phase != Phase.ERROR
     val waitingForDubbingEngine = state.waitingForDubbingEngine && state.phase != Phase.ERROR
-    val displayPhase = if (
-        waitingForDubbingEngine ||
-        VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(state.dubbingOn, state.totalLines, state.preparedCount)
-    ) Phase.SYNTHESIZING else state.phase
     val dubbingPreparationIncomplete = VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(
         dubbingOn = state.dubbingOn,
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
+    // The pipeline can set READY before background dubbing finishes; only this READY-state
+    // tail should override the displayed stage, never an earlier translation stage.
+    val dubbingPreparationPendingOnReady = state.phase == Phase.READY && dubbingPreparationIncomplete
+    val displayPhase = if (
+        waitingForDubbingEngine || dubbingPreparationPendingOnReady
+    ) Phase.SYNTHESIZING else state.phase
     val currentStage = VideoProcessingFlowPolicy.stageIndex(
         source = source,
         flow = flow,
@@ -970,8 +972,8 @@ private fun VideoParsingPage(
     val mainTitle = when {
         isCancelled -> "处理已取消"
         waitingForDubbingEngine -> "等待配音引擎就绪"
-        dubbingPreparationIncomplete && state.dubbingHasErrors -> "正在准备配音，失败字幕已恢复原声"
-        dubbingPreparationIncomplete -> "正在按时间轴生成中文配音"
+        dubbingPreparationPendingOnReady && state.dubbingHasErrors -> "正在准备配音，失败字幕已恢复原声"
+        dubbingPreparationPendingOnReady -> "正在按时间轴生成中文配音"
         state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
         else -> VideoProcessingFlowPolicy.mainTitle(
             source = source,
@@ -985,7 +987,7 @@ private fun VideoParsingPage(
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
         state.progress.isNotBlank() -> state.progress
-        dubbingPreparationIncomplete ->
+        dubbingPreparationPendingOnReady ->
             "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音；剩余字幕仍在处理。"
         else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
@@ -1294,7 +1296,7 @@ private fun VideoParsingPage(
                                     "字幕轨已就绪；下载为可选操作，不影响当前处理。"
                                 state.phase == Phase.ERROR ->
                                     "处理未完成，尚未取得字幕轨列表；可重试或导入字幕文件。"
-                                dubbingPreparationIncomplete ->
+                                dubbingPreparationPendingOnReady ->
                                     "字幕读取已结束，正在继续准备中文配音。"
                                 else -> "正在获取可用字幕轨…"
                             }
