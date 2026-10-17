@@ -45,12 +45,12 @@ class DubbingStartupBufferPolicyTest {
         val baseline = DubbingStartupBufferPolicy.plan(
             lines(16),
             immediateMode = false,
-            synthesisRealtimeFactor = 1.0f,
+            synthesisTimelineLagFactor = 1.0f,
         )
         val slow = DubbingStartupBufferPolicy.plan(
             lines(16),
             immediateMode = false,
-            synthesisRealtimeFactor = 1.8f,
+            synthesisTimelineLagFactor = 1.8f,
         )
         assertEquals(8_000L, baseline.lookAheadMs)
         assertEquals(20_000L, slow.lookAheadMs)
@@ -66,7 +66,7 @@ class DubbingStartupBufferPolicyTest {
             lines = lines(16),
             spokenCueIndices = spoken,
             immediateMode = false,
-            synthesisRealtimeFactor = 2.2f,
+            synthesisTimelineLagFactor = 2.2f,
             synthesisSampleCount = 2,
         )
         assertTrue(plan.waitForAllBeforePlayback)
@@ -80,7 +80,7 @@ class DubbingStartupBufferPolicyTest {
         val plan = DubbingStartupBufferPolicy.plan(
             lines(16),
             immediateMode = false,
-            synthesisRealtimeFactor = 2.2f,
+            synthesisTimelineLagFactor = 2.2f,
             synthesisSampleCount = 1,
         )
         assertFalse(plan.waitForAllBeforePlayback)
@@ -93,7 +93,7 @@ class DubbingStartupBufferPolicyTest {
         val plan = DubbingStartupBufferPolicy.plan(
             lines(16),
             immediateMode = true,
-            synthesisRealtimeFactor = 5.0f,
+            synthesisTimelineLagFactor = 5.0f,
             synthesisSampleCount = 100,
         )
         assertFalse(plan.waitForAllBeforePlayback)
@@ -106,7 +106,7 @@ class DubbingStartupBufferPolicyTest {
         val plan = DubbingStartupBufferPolicy.plan(
             lines(16),
             immediateMode = false,
-            synthesisRealtimeFactor = 0.5f,
+            synthesisTimelineLagFactor = 0.5f,
         )
         assertEquals(5_000L, plan.lookAheadMs)
         assertEquals(2, plan.minimumCueCount)
