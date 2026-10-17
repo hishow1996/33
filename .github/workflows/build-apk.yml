@@ -21,7 +21,7 @@ concurrency:
 jobs:
   build:
     # Run only on manual dispatch or a uniquely named, explicitly requested trigger commit.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.event.head_commit.message == 'Trigger one-time APK build requested by user' || github.event.head_commit.message == 'Trigger retry APK build after Kotlin compile fixes'))
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.event.head_commit.message == 'Trigger one-time APK build requested by user' || github.event.head_commit.message == 'Trigger retry APK build after Kotlin compile fixes' || github.event.head_commit.message == 'Trigger final APK build after unit-test import fix'))
     name: Build installable APKs
     runs-on: ubuntu-latest
     timeout-minutes: 90
