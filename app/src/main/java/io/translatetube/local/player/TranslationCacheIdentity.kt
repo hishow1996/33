@@ -87,7 +87,7 @@ internal object TranslationCacheIdentity {
     private fun importedLinesSignature(lines: List<SubLine>): String {
         val digest = MessageDigest.getInstance("SHA-256")
         val colon = byteArrayOf(':'.code.toByte())
-        val newline = byteArrayOf('\\n'.code.toByte())
+        val newline = byteArrayOf('\n'.code.toByte())
         for (line in lines) {
             digest.update(line.startMs.toString().toByteArray(Charsets.UTF_8))
             digest.update(colon)
