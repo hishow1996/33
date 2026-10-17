@@ -205,6 +205,29 @@ object VideoProcessingFlowPolicy {
         !waitingForDubbingEngine &&
         !dubbingHasErrors
 
+    /** A READY player may still be preparing remaining dubbed cues in the background. */
+    fun isDubbingPreparationIncomplete(
+        dubbingOn: Boolean,
+        totalLines: Int,
+        preparedCount: Int,
+    ): Boolean = dubbingOn && totalLines > 0 && preparedCount.coerceAtLeast(0) < totalLines
+
+    /**
+     * Keep the processing page (and its optional YouTube subtitle downloads) visible until every
+     * dubbing cue is prepared or intentionally falls back to original audio.
+     */
+    fun shouldShowProcessingPage(
+        phase: Phase,
+        waitingForTranscriptionEngine: Boolean = false,
+        waitingForDubbingEngine: Boolean = false,
+        dubbingOn: Boolean = true,
+        totalLines: Int = 0,
+        preparedCount: Int = 0,
+    ): Boolean = phase != Phase.READY ||
+        waitingForTranscriptionEngine ||
+        waitingForDubbingEngine ||
+        isDubbingPreparationIncomplete(dubbingOn, totalLines, preparedCount)
+
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
         if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
 
