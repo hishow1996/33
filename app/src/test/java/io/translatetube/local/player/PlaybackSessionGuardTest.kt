@@ -47,6 +47,24 @@ class PlaybackSessionGuardTest {
     }
 
     @Test
+    fun rejectsStaleDubbingMutationForTheSamePlaybackSession() {
+        val failure = runCatching {
+            PlaybackSessionGuard.ensureCurrent(
+                sessionKey = "youtube:same",
+                activeVideoKey = "youtube:same",
+                activeUiKey = "youtube:same",
+                expectedPipelineGeneration = 9L,
+                activePipelineGeneration = 9L,
+                expectedDubbingMutationGeneration = 12L,
+                activeDubbingMutationGeneration = 13L,
+            )
+        }.exceptionOrNull()
+
+        assertNotNull(failure)
+        assertTrue(failure is CancellationException)
+    }
+
+    @Test
     fun rejectsSameVideoWhenItsUiSessionHasAlreadyBeenReplaced() {
         val failure = runCatching {
             PlaybackSessionGuard.ensureCurrent(
