@@ -1,6 +1,8 @@
 package io.translatetube.local.tts
 
 import io.translatetube.local.util.HttpDownloadResponsePolicy
+import io.translatetube.local.util.HttpDownloadSpeedPolicy
+import io.translatetube.local.util.SlowDownloadSourceException
 
 import android.content.Context
 import com.k2fsa.sherpa.onnx.OfflineTts
@@ -23,6 +25,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -649,14 +653,19 @@ object PiperModels {
         val urls = PiperDownloadSourcePolicy.urls("$BASE/${definition.archive}")
         if (urls.isEmpty()) throw java.io.IOException("Piper 模型下载地址为空")
         var lastError: Exception? = null
+        var primarySourceWasSlow = false
         for ((sourceIndex, url) in urls.withIndex()) {
             checkActive()
             onProgress(0)
             onStage(
-                if (sourceIndex == 0) "正在连接 Piper 官方模型源…"
-                else "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
+                when {
+                    sourceIndex == 0 -> "正在连接 Piper 官方模型源…"
+                    primarySourceWasSlow -> "官方源下载速度较慢，正在切换加速源（${sourceIndex + 1}/${urls.size}）…"
+                    else -> "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
+                }
             )
             runCatching { if (archive.exists()) archive.delete() }
+            val sourceStartedAtNanos = System.nanoTime()
             try {
                 val request = Request.Builder()
                     .url(url)
@@ -678,7 +687,7 @@ object PiperModels {
                     var done = 0L
                     body.byteStream().use { input ->
                         FileOutputStream(archive).use { output ->
-                            val buffer = ByteArray(64 * 1024)
+                            val buffer = ByteArray(256 * 1024)
                             while (true) {
                                 checkActive()
                                 ownerJob?.ensureActive()
@@ -688,6 +697,10 @@ object PiperModels {
                                     throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
                                 }
                                 done += count
+                                val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sourceStartedAtNanos)
+                                if (HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, done, elapsedMillis)) {
+                                    throw SlowDownloadSourceException(done, elapsedMillis)
+                                }
                                 output.write(buffer, 0, count)
                                 digest?.update(buffer, 0, count)
                                 if (total > 0L) {
@@ -714,6 +727,7 @@ object PiperModels {
                 throw cancelled
             } catch (error: Exception) {
                 lastError = error
+                primarySourceWasSlow = sourceIndex == 0 && error is SlowDownloadSourceException
                 runCatching { archive.delete() }
             }
         }
@@ -737,7 +751,13 @@ object PiperModels {
         val progressStepBytes = 8L * 1024L * 1024L
         var nextProgressBytes = progressStepBytes
 
-        TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(archive))).use { tar ->
+        // BZip2 performs many small reads internally; buffering its file input avoids a syscall
+        // for each low-level read on slower Android storage.
+        TarArchiveInputStream(
+            BZip2CompressorInputStream(
+                BufferedInputStream(FileInputStream(archive), 256 * 1024)
+            )
+        ).use { tar ->
             while (true) {
                 checkActive()
                 val entry = tar.nextTarEntry ?: break
@@ -787,7 +807,7 @@ object PiperModels {
                 }
 
                 var written = 0L
-                FileOutputStream(output).use { out ->
+                BufferedOutputStream(FileOutputStream(output), 256 * 1024).use { out ->
                     while (written < entry.size) {
                         checkActive()
                         val wanted = minOf(buffer.size.toLong(), entry.size - written).toInt()
@@ -807,7 +827,9 @@ object PiperModels {
                             nextProgressBytes = (extractedBytes / progressStepBytes + 1L) * progressStepBytes
                         }
                     }
-                    out.fd.sync()
+                    // Closing the buffered stream flushes its contents. An fd.sync() for every
+                    // extracted file stalls low-end flash storage without improving model-level
+                    // atomicity: only the completed staging directory is published below.
                 }
                 if (!PiperModelFilePolicy.hasExpectedEntryLength(entry.size, written)) {
                     throw java.io.IOException("Piper 模型文件长度校验失败：${entry.name}")
