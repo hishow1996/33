@@ -352,8 +352,8 @@ class PlaybackService : MediaSessionService() {
             pm.onEnded = {
             // AudioTrack is independent from ExoPlayer. Once the player reaches STATE_ENDED its
             // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
-            dubbing?.stop()
-            pm.originalVolume = 1f
+            safelyControlDubbing("player ended") { dubbing?.stop() }
+            safelySetOriginalVolume(1f, "player ended")
             ui.update { it.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1) }
         }
             pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
@@ -366,11 +366,11 @@ class PlaybackService : MediaSessionService() {
                     if (isPlaying && ui.value.dubbingOn) {
                         // Re-select the cue for the exact resumed video timestamp. Do not resume
                         // a stale AudioTrack if a seek or a disabled dubbing state changed meanwhile.
-                        dubbing?.stop()
+                        safelyControlDubbing("player resumed") { dubbing?.stop() }
                         lastLineIdx = Int.MIN_VALUE
                         if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
                     } else {
-                        dubbing?.pausePlayback()
+                        safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
                         ui.update { state ->
                             if (state.activeDubbingLine == -1) state
                             else state.copy(activeDubbingLine = -1)
@@ -386,7 +386,7 @@ class PlaybackService : MediaSessionService() {
                     // A seek can land inside the same subtitle cue, so comparing line indexes
                     // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
                     // Media3's new playhead immediately; this also covers seeks from media controls.
-                    dubbing?.stop()
+                    safelyControlDubbing("position discontinuity") { dubbing?.stop() }
                     lastLineIdx = Int.MIN_VALUE
                     if (::pm.isInitialized) tickFromPlayerCallback(newPosition.positionMs, "position discontinuity")
                 }
@@ -4241,6 +4241,34 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
      * A stale subtitle snapshot or a TTS transition must not let an ordinary runtime exception
      * escape that callback and terminate the app process.
      */
+    /**
+     * TTS engines and AudioTrack implementations can reject stop/pause during teardown or a seek.
+     * These calls originate in Media3 callbacks; an ordinary engine exception must not escape them
+     * and terminate the Android process.
+     */
+    private fun safelyControlDubbing(source: String, action: () -> Unit) {
+        try {
+            action()
+        } catch (error: Exception) {
+            android.util.Log.e("PlaybackService", "Unable to synchronize dubbing during $source", error)
+            safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, source)
+            ui.update { state ->
+                state.copy(
+                    activeDubbingLine = -1,
+                    dubbingStatus = "配音音频正在恢复，视频播放继续",
+                )
+            }
+        }
+    }
+
+    private fun safelySetOriginalVolume(volume: Float, source: String) {
+        try {
+            if (playerReady && ::pm.isInitialized) pm.originalVolume = volume
+        } catch (error: Exception) {
+            android.util.Log.w("PlaybackService", "Unable to set source volume during $source", error)
+        }
+    }
+
     private fun tickFromPlayerCallback(ms: Long, source: String) {
         try {
             tick(ms)
