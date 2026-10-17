@@ -253,8 +253,8 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
 
-        // System TTS uses the PCM queue again. Keep the page until the first cue lets video
-        // playback start, then return to the player while remaining cues synthesize in background.
+        // While the first cue is still being prepared, keep showing progress. Once READY is
+        // published, render the player before play() starts so the first short cue can highlight.
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.SYNTHESIZING,
@@ -262,7 +262,7 @@ class VideoProcessingFlowPolicyTest {
                 progressiveTtsPlayback = true,
             ),
         )
-        assertTrue(
+        assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
                 playerIsPlaying = false,
