@@ -25,6 +25,45 @@ class HttpDownloadResponsePolicyTest {
     }
 
     @Test
+    fun onlyAbandonsASlowPrimarySourceAfterEnoughEvidence() {
+        assertTrue(
+            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(
+                sourceIndex = 0,
+                downloadedBytes = 1L * 1024L * 1024L,
+                elapsedMillis = 10_000L,
+            ),
+        )
+        assertFalse(
+            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(
+                sourceIndex = 0,
+                downloadedBytes = 512L * 1024L,
+                elapsedMillis = 10_000L,
+            ),
+        )
+        assertFalse(
+            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(
+                sourceIndex = 0,
+                downloadedBytes = 8L * 1024L * 1024L,
+                elapsedMillis = 10_000L,
+            ),
+        )
+        assertFalse(
+            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(
+                sourceIndex = 1,
+                downloadedBytes = 1L * 1024L * 1024L,
+                elapsedMillis = 60_000L,
+            ),
+        )
+        assertFalse(
+            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(
+                sourceIndex = 0,
+                downloadedBytes = 2L * 1024L * 1024L,
+                elapsedMillis = 7_999L,
+            ),
+        )
+    }
+
+    @Test
     fun checksActualPayloadLengthAndRejectsEmptyOrOversizedDownloads() {
         assertTrue(HttpDownloadResponsePolicy.isCompletePayload(1024L, 1024L, 2048L))
         assertTrue(HttpDownloadResponsePolicy.isCompletePayload(-1L, 512L, 2048L))
