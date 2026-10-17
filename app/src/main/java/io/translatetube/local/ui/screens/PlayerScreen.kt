@@ -433,6 +433,12 @@ fun PlayerScreen(
     // The service gives the first usable cue a short startup window; once playback starts,
     // later cues can continue generating PCM in the background for Kokoro, Piper and System TTS.
     val progressiveTtsPlayback = state.ttsEngineName.isNotBlank()
+    // A failed YouTube seek may trigger one bounded stream-refresh attempt. Keep the player
+    // visible during those two explicitly-labelled recovery steps instead of showing the parser.
+    val playbackRecoveryInProgress = state.key == requestKey && (
+        state.progress.startsWith("YouTube 视频流加载失败，正在刷新播放地址") ||
+            state.progress.startsWith("正在尝试兼容清晰度 ")
+        )
     val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
         phase = state.phase,
         waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
@@ -441,6 +447,7 @@ fun PlayerScreen(
         progressiveTtsPlayback = progressiveTtsPlayback,
         dubbingPreparationIncomplete = dubbingPreparationIncomplete,
         playbackHasStarted = playbackHasStarted,
+        playbackRecoveryInProgress = playbackRecoveryInProgress,
     )
 
     Box(
