@@ -1859,7 +1859,7 @@ private fun SubtitleList(
                     Text(
                         translatedText,
                         color = when {
-                            activeDub -> Color(0xFF111318)
+                            activeDub -> BrandBright
                             active -> OnBg
                             else -> SubText
                         },

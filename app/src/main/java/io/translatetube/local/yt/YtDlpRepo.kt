@@ -109,17 +109,38 @@ object YtDlpRepo {
 
         _updateState.value = _updateState.value.copy(checking = true, error = null)
         try {
-            // YoutubeDL.version() returns the updater's private SharedPreferences value,
-            // not the version of the yt-dlp executable bundled in a fresh APK. Query the binary
-            // directly when the runtime is already initialized; use our persisted version only
-            // as a temporary value for automatic checks that should not initialize the runtime.
-            var currentVersion = if (inited && !force) {
-                runCatching { readInstalledBinaryVersion(appCtx) }
-                    .onFailure { Log.w(TAG, "Could not read installed yt-dlp version during automatic check", it) }
-                    .getOrNull()
-            } else null
-            currentVersion = currentVersion?.takeIf { it.isNotBlank() }
-                ?: prefs.getString("current_version", null)?.takeIf { it.isNotBlank() }
+            // A manual check must read the installed executable before the network probes so
+            // "current version" remains available even when every upstream version source fails.
+            var localVersionError: String? = null
+            var currentVersion: String? = null
+            if (force) {
+                try {
+                    ensureReady(appCtx)
+                    currentVersion = readInstalledBinaryVersion(appCtx)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (localError: Exception) {
+                    Log.w(TAG, "Could not directly read the installed yt-dlp version", localError)
+                    currentVersion = runCatching { YoutubeDL.version(appCtx) }
+                        .getOrNull()
+                        ?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
+                        ?: prefs.getString("current_version", null)
+                            ?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
+                    if (currentVersion == null) {
+                        localVersionError =
+                            "无法直接读取本机 yt-dlp 二进制版本：${localError.message ?: localError.javaClass.simpleName}"
+                    }
+                }
+            } else {
+                currentVersion = if (inited) {
+                    runCatching { readInstalledBinaryVersion(appCtx) }
+                        .onFailure { Log.w(TAG, "Could not read installed yt-dlp version during automatic check", it) }
+                        .getOrNull()
+                } else null
+                currentVersion = currentVersion?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
+                    ?: prefs.getString("current_version", null)
+                        ?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
+            }
 
             val latestKnown = fetchLatestReleaseTag()
             if (latestKnown == null) {
@@ -132,23 +153,6 @@ object YtDlpRepo {
                     error = "无法获取 yt-dlp 上游稳定版：$diagnostic",
                 )
                 return@withContext
-            }
-
-            var localVersionError: String? = null
-            if (force) {
-                try {
-                    // A manual check must verify the real installed executable even if a stale
-                    // or updater-only version string is already present in app preferences.
-                    ensureReady(appCtx)
-                    currentVersion = readInstalledBinaryVersion(appCtx)
-                } catch (initError: kotlinx.coroutines.CancellationException) {
-                    throw initError
-                } catch (initError: Exception) {
-                    currentVersion = null
-                    localVersionError =
-                        "已获取上游最新版，但读取本机版本失败：${initError.message ?: "运行时初始化失败"}"
-                    Log.w(TAG, "Latest yt-dlp version fetched, but local runtime version is unavailable", initError)
-                }
             }
 
             val hasUpdate = currentVersion != null && currentVersion != latestKnown

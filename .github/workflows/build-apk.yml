@@ -1,6 +1,6 @@
 name: Build Android APK
 
-# APKs require an explicit request. This workflow-only trigger is used for user-requested builds.
+# This workflow build was explicitly requested for the playback, TTS, Piper and yt-dlp fixes in this commit.
 # Explicit retry trigger after fixing the VideoSourceKind import in subtitle processing UI.
 # Explicit trigger for the user's yt-dlp local-version detection fix.
 # User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.

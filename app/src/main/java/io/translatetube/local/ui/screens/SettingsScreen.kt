@@ -592,7 +592,6 @@ Section("配音设置") {
                     )
                     Column(Modifier.weight(1f)) {
                         Text("生成合成配音（边合成边播）", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                        Text("先准备前面的语音缓冲，再边播放边生成后续字幕", color = SubText, style = MaterialTheme.typography.bodySmall)
                     }
                 }
                 Row(
@@ -615,10 +614,8 @@ Section("配音设置") {
                     )
                     Column(Modifier.weight(1f)) {
                         Text("即时朗读配音", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                        Text("在字幕时间点调用系统 TTS 直接朗读，不先生成 WAV/PCM 文件", color = SubText, style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                Text("即时朗读不需要等待整段配音合成，但系统语音服务仍可能有启动延迟；模式和音色将在下次打开视频时生效。", color = SubText, style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1018,7 +1015,7 @@ private fun PiperModelSection() {
         val isBusy = modelState.isActive
         Row(
             Modifier.fillMaxWidth()
-                .clickable(enabled = isInstalled && def.supportsChineseOutput) {
+                .clickable(enabled = def.supportsChineseOutput) {
                     selected = def.id
                     prefs.edit().putString("piper_model", def.id).apply()
                 }
@@ -1028,12 +1025,12 @@ private fun PiperModelSection() {
             RadioButton(
                 selected = selected == def.id,
                 onClick = {
-                    if (isInstalled) {
+                    if (def.supportsChineseOutput) {
                         selected = def.id
                         prefs.edit().putString("piper_model", def.id).apply()
                     }
                 },
-                enabled = isInstalled && def.supportsChineseOutput,
+                enabled = def.supportsChineseOutput,
                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
             )
             Column(Modifier.weight(1f)) {
