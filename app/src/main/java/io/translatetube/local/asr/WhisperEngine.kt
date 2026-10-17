@@ -9,15 +9,17 @@ import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult
 
 /** Whisper base 多语言本地转写（sherpa-onnx） */
-class WhisperEngine(ctx: Context) : AutoCloseable {
+class WhisperEngine(ctx: Context) : LocalAsrEngine {
     private val recognizer: OfflineRecognizer
     @Volatile private var closed = false
     /** 最近一次转写检测到的语言码（如 "en"/"ja"） */
-    @Volatile var lastLang: String = ""
+    @Volatile override var lastLang: String = ""
         private set
+    override val lastEmotion: String get() = ""
+    override val lastEvent: String get() = ""
 
     init {
-        check(io.translatetube.local.data.ModelFiles.asrCoreReady(ctx)) {
+        check(io.translatetube.local.data.ModelFiles.whisperCoreReady(ctx)) {
             "本地 Whisper 模型不完整：需要 base-encoder.int8.onnx、base-decoder.int8.onnx 和 base-tokens.txt；请在转写设置中重新下载模型。"
         }
         val m = io.translatetube.local.data.ModelFiles.asrDir(ctx).absolutePath + "/"
@@ -92,7 +94,7 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
 
     /** Reset language inference before a new video's ASR task to prevent cross-video leakage. */
     @Synchronized
-    fun clearDetectedLanguage() {
+    override fun clearDetectedLanguage() {
         check(!closed) { "Whisper 识别器已关闭" }
         lastLang = ""
     }
@@ -145,11 +147,11 @@ class WhisperEngine(ctx: Context) : AutoCloseable {
 
     /** File-backed VAD transcription: materialize only the current speech segment. */
     @Synchronized
-    fun transcribeBySegments(
+    override fun transcribeBySegments(
         pcmFile: AudioExtract.PcmFile,
         segs: List<Pair<Long, Long>>,
-        checkActive: () -> Unit = {},
-        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+        checkActive: () -> Unit,
+        onProgress: (done: Int, total: Int) -> Unit,
     ): List<Triple<Long, Long, String>> {
         check(!closed) { "Whisper 识别器已关闭" }
         val sr = pcmFile.sampleRate

@@ -47,7 +47,17 @@ object ModelFiles {
     )
 
     fun ttsDir(ctx: Context) = File(ctx.filesDir, "models/tts")
+    /** Keep the existing directory for Whisper and the shared Silero VAD file. */
     fun asrDir(ctx: Context) = File(ctx.filesDir, "models/whisper")
+    fun senseVoiceDir(ctx: Context) = File(ctx.filesDir, "models/sensevoice")
+
+    fun selectedLocalAsrModelId(ctx: Context): String =
+        ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString("asr_local_model", "whisper")
+            .let { if (it == "sensevoice") "sensevoice" else "whisper" }
+
+    fun localAsrModelDisplayName(modelId: String): String =
+        if (modelId == "sensevoice") "SenseVoice Small INT8" else "Whisper Base"
 
     private fun validModel(file: File, minBytes: Long = 1L * 1024 * 1024) =
         file.isFile && file.length() >= minBytes
@@ -115,10 +125,32 @@ object ModelFiles {
             )
         )
 
-    fun asrCoreReady(ctx: Context): Boolean = asrDirectoryCoreReady(asrDir(ctx))
+    fun whisperCoreReady(ctx: Context): Boolean = asrDirectoryCoreReady(asrDir(ctx))
+
+    internal fun senseVoiceDirectoryCoreReady(dir: File): Boolean =
+        SenseVoiceModelFilePolicy.isCoreComplete(
+            mapOf(
+                "model.int8.onnx" to File(dir, "model.int8.onnx").takeIf { it.isFile }?.length().orZero(),
+                "tokens.txt" to File(dir, "tokens.txt").takeIf { it.isFile }?.length().orZero(),
+            )
+        )
+
+    fun senseVoiceCoreReady(ctx: Context): Boolean =
+        senseVoiceDirectoryCoreReady(senseVoiceDir(ctx))
+
+    fun asrCoreReady(ctx: Context): Boolean =
+        if (selectedLocalAsrModelId(ctx) == "sensevoice") senseVoiceCoreReady(ctx)
+        else whisperCoreReady(ctx)
+
+    fun whisperReady(ctx: Context): Boolean =
+        whisperCoreReady(ctx) && isValidVadModel(File(asrDir(ctx), "silero_vad.onnx"))
+
+    fun senseVoiceReady(ctx: Context): Boolean =
+        senseVoiceCoreReady(ctx) && isValidVadModel(File(asrDir(ctx), "silero_vad.onnx"))
 
     fun asrReady(ctx: Context): Boolean =
-        asrCoreReady(ctx) && isValidVadModel(File(asrDir(ctx), "silero_vad.onnx"))
+        if (selectedLocalAsrModelId(ctx) == "sensevoice") senseVoiceReady(ctx)
+        else whisperReady(ctx)
 
     internal fun isValidVadModel(file: File): Boolean {
         if (!file.isFile || file.length() < WhisperModelFilePolicy.MIN_VAD_BYTES) {
@@ -165,7 +197,7 @@ object ModelFiles {
     private val vadValidationCache =
         java.util.concurrent.ConcurrentHashMap<String, VadValidation>()
 
-    fun anyReady(ctx: Context) = ttsReady(ctx) || asrReady(ctx)
+    fun anyReady(ctx: Context) = ttsReady(ctx) || whisperReady(ctx) || senseVoiceReady(ctx)
 
     private fun Long?.orZero(): Long = this ?: 0L
 }
@@ -274,6 +306,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
         "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
     )
+    private val senseVoiceUrls = listOf(
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
+        "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
+        "https://gh-proxy.com/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
+    )
 
     private fun startBackgroundDownloadService(): Boolean {
         val intent = android.content.Intent(ctx, ModelDownloadForegroundService::class.java)
@@ -336,6 +373,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     synchronized(downloadStartLock) { ttsJob = job }
                 }
                 ModelKind.ASR -> {
+                    val selectedModelId = ModelFiles.selectedLocalAsrModelId(ctx)
                     if (ModelFiles.asrReady(ctx)) {
                         _asr.value = ModelState(status = ModelStatus.READY, progress = 100)
                         return
@@ -347,8 +385,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     val job = scope.launch {
                         val worker = kotlinx.coroutines.currentCoroutineContext()[Job]
                         try {
-                            if (ModelFiles.asrCoreReady(ctx)) runVadOnly(_asr)
-                            else runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                            when {
+                                ModelFiles.asrCoreReady(ctx) -> runVadOnly(_asr)
+                                selectedModelId == "sensevoice" ->
+                                    runDownload(ModelKind.ASR, _asr, senseVoiceUrls, ModelFiles.senseVoiceDir(ctx))
+                                else -> runDownload(ModelKind.ASR, _asr, asrUrls, ModelFiles.asrDir(ctx))
+                            }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -370,6 +412,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         } finally {
             releaseDownloadStart(kind)
         }
+    }
+
+    fun refreshAsrState() {
+        val busy = synchronized(downloadStartLock) {
+            ModelKind.ASR in startingDownloads || asrJob?.isActive == true || isActiveModelState(_asr.value)
+        }
+        if (busy) return
+        val ready = runCatching { ModelFiles.asrReady(ctx) }.getOrDefault(false)
+        _asr.value = ModelState(
+            status = ModelAvailabilityPolicy.initialStatus(ready),
+            progress = if (ready) 100 else 0,
+        )
     }
 
     fun cancel(kind: ModelKind) {
@@ -502,10 +556,17 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 archiveBytes = 147_031_220L,
                 extractedBytes = 207L * ModelStoragePreflightPolicy.MIB,
             )
-            ModelKind.ASR -> ModelStoragePreflightPolicy.requiredBytes(
-                archiveBytes = 207_557_382L,
-                extractedBytes = 160L * ModelStoragePreflightPolicy.MIB,
-            )
+            ModelKind.ASR -> if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) {
+                ModelStoragePreflightPolicy.requiredBytes(
+                    archiveBytes = 165_783_878L,
+                    extractedBytes = 228L * ModelStoragePreflightPolicy.MIB,
+                )
+            } else {
+                ModelStoragePreflightPolicy.requiredBytes(
+                    archiveBytes = 207_557_382L,
+                    extractedBytes = 160L * ModelStoragePreflightPolicy.MIB,
+                )
+            }
         }
         val usableSpace = ModelStoragePreflightPolicy.minimumKnownUsableSpace(
             ctx.cacheDir.usableSpace,
@@ -553,7 +614,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             throw IllegalStateException("模型压缩包响应声明的文件大小无效或超过限制")
                         }
                         val total = expectedBytes.takeIf { it > 0L } ?: 0L
-                        val downloadDigest = if (kind == ModelKind.TTS) {
+                        val downloadDigest = if (kind == ModelKind.TTS || ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) {
                             java.security.MessageDigest.getInstance("SHA-256")
                         } else null
                         body.byteStream().use { ins ->
@@ -619,11 +680,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 }
                 awaitDownloadsResumed()
                 state.value = state.value.copy(progress = 99, stageMessage = "正在校验模型压缩包…")
-                // TTS 压缩包有 GitHub Release API 公布的 SHA-256；镜像下载也必须通过相同校验。
-                // Whisper 压缩包当前上游没有提供可直接核验的 asset digest，因此仍依赖 HTTPS、大小限制和解压结构校验。
-                val expectedArchiveSha256 = when (kind) {
-                    ModelKind.TTS -> "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
-                    ModelKind.ASR -> null
+                // Verify the TTS and SenseVoice archives against official release SHA-256 digests.
+                // The current Whisper archive does not publish an asset digest.
+                val expectedArchiveSha256 = when {
+                    kind == ModelKind.TTS -> "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
+                    ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) ->
+                        "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
+                    else -> null
                 }
                 if (expectedArchiveSha256 != null) {
                     val actual = downloadedArchiveSha256
@@ -652,7 +715,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         onProgress = { extractedBytes ->
                             val handledMB = extractedBytes / (1024L * 1024L)
                             val expectedExtractedBytes = (
-                                if (kind == ModelKind.TTS) 207L else 160L
+                                when {
+                                    kind == ModelKind.TTS -> 207L
+                                    ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> 228L
+                                    else -> 160L
+                                }
                             ) * ModelStoragePreflightPolicy.MIB
                             val extractionProgress = (
                                 extractedBytes * 100L / expectedExtractedBytes
@@ -707,15 +774,15 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         pkg.delete()
                         state.value = ModelState(
                             status = ModelStatus.FAILED,
-                            error = "Whisper 主模型已安装，但语音检测模型完整性校验失败；点击重试只会补下载小型 VAD 模型。",
+                            error = "本地转写主模型已安装，但语音检测模型完整性校验失败；点击重试只会补下载小型 VAD 模型。",
                         )
                         return
                     }
                 }
-                val installed = if (kind == ModelKind.TTS) {
-                    ModelFiles.ttsReady(ctx)
-                } else {
-                    ModelFiles.asrReady(ctx)
+                val installed = when {
+                    kind == ModelKind.TTS -> ModelFiles.ttsReady(ctx)
+                    ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> ModelFiles.senseVoiceReady(ctx)
+                    else -> ModelFiles.whisperReady(ctx)
                 }
                 if (!installed) throw java.io.IOException("模型文件安装后完整性检查未通过")
                 pkg.delete()
@@ -866,9 +933,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         }
     }
 
-    private fun isModelDirectoryReady(dir: File): Boolean =
-        if (ModelDirectoryKindPolicy.isTtsDirectoryName(dir.name)) ModelFiles.ttsDirectoryReady(dir)
-        else ModelFiles.asrDirectoryCoreReady(dir)
+    private fun isModelDirectoryReady(dir: File): Boolean = when {
+        ModelDirectoryKindPolicy.isTtsDirectoryName(dir.name) -> ModelFiles.ttsDirectoryReady(dir)
+        ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(dir.name) -> ModelFiles.senseVoiceDirectoryCoreReady(dir)
+        else -> ModelFiles.asrDirectoryCoreReady(dir)
+    }
 
     private fun extractTarBz2(
         pkg: File,
@@ -970,6 +1039,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         if (!entry.isDirectory) throw java.io.IOException("模型压缩包根路径不是目录")
                         continue
                     }
+                    // The official SenseVoice archive also ships test WAVs. Install only the
+                    // recognizer model and vocabulary, not the example audio that is never used.
+                    if (destDir.name == "sensevoice" &&
+                        relative != "model.int8.onnx" && relative != "tokens.txt"
+                    ) continue
                     val output = File(staging, relative).canonicalFile
                     if (!output.path.startsWith(rootPath)) {
                         throw java.io.IOException("模型压缩包路径越界")
@@ -1019,10 +1093,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
             checkActive()
             // 不完整或伪造的压缩包不能覆盖已经可用的模型。
-            val required = if (destDir.name == "tts") {
-                listOf("model.int8.onnx" to (1L * 1024 * 1024), "voices.bin" to (1L * 1024 * 1024))
-            } else {
-                listOf(
+            val required = when (destDir.name) {
+                "tts" -> listOf(
+                    "model.int8.onnx" to (1L * 1024 * 1024),
+                    "voices.bin" to (1L * 1024 * 1024),
+                )
+                "sensevoice" -> listOf(
+                    "model.int8.onnx" to SenseVoiceModelFilePolicy.MIN_MODEL_BYTES,
+                    "tokens.txt" to SenseVoiceModelFilePolicy.MIN_TOKENS_BYTES,
+                )
+                else -> listOf(
                     "base-encoder.int8.onnx" to WhisperModelFilePolicy.MIN_ONNX_BYTES,
                     "base-decoder.int8.onnx" to WhisperModelFilePolicy.MIN_ONNX_BYTES,
                     "base-tokens.txt" to WhisperModelFilePolicy.MIN_TOKENS_BYTES,
@@ -1033,13 +1113,22 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     !file.isFile || file.length() < minimumBytes
                 }) {
                 throw java.io.IOException(
-                    if (destDir.name == "tts") "模型包缺少必要文件或文件体积异常，已取消安装"
-                    else "Whisper 模型包缺少 encoder、decoder 或 base-tokens.txt 词表，已取消安装"
+                    when (destDir.name) {
+                        "tts" -> "模型包缺少必要文件或文件体积异常，已取消安装"
+                        "sensevoice" -> "SenseVoice 模型包缺少 model.int8.onnx 或 tokens.txt，已取消安装"
+                        else -> "Whisper 模型包缺少 encoder、decoder 或 base-tokens.txt 词表，已取消安装"
+                    }
                 )
             }
 
-            if (destDir.name != "tts" && !ModelFiles.asrDirectoryCoreReady(staging)) {
-                throw java.io.IOException("Whisper 模型核心文件校验失败：缺少 base-tokens.txt 或模型文件不完整")
+            when (destDir.name) {
+                "sensevoice" -> if (!ModelFiles.senseVoiceDirectoryCoreReady(staging)) {
+                    throw java.io.IOException("SenseVoice 模型核心文件校验失败：model.int8.onnx 或 tokens.txt 不完整")
+                }
+                "tts" -> Unit
+                else -> if (!ModelFiles.asrDirectoryCoreReady(staging)) {
+                    throw java.io.IOException("Whisper 模型核心文件校验失败：缺少 base-tokens.txt 或模型文件不完整")
+                }
             }
 
             if (destDir.name == "tts") {

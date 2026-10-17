@@ -1,0 +1,117 @@
+package io.translatetube.local.asr
+
+import android.content.Context
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
+
+/**
+ * SenseVoiceSmall INT8 running locally through the app's existing sherpa-onnx Android runtime.
+ * The app's VAD supplies stable media timestamps; recognized text stays within each VAD segment.
+ */
+class SenseVoiceEngine(ctx: Context) : LocalAsrEngine {
+    private val recognizer: OfflineRecognizer
+    @Volatile private var closed = false
+
+    @Volatile
+    override var lastLang: String = ""
+        private set
+
+    @Volatile
+    override var lastEmotion: String = ""
+        private set
+
+    @Volatile
+    override var lastEvent: String = ""
+        private set
+
+    init {
+        check(io.translatetube.local.data.ModelFiles.senseVoiceCoreReady(ctx)) {
+            "本地 SenseVoice 模型不完整：需要 model.int8.onnx 和 tokens.txt；请在设置 → 转写引擎中重新下载模型。"
+        }
+        val dir = io.translatetube.local.data.ModelFiles.senseVoiceDir(ctx).absolutePath + "/"
+        val config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
+            modelConfig = OfflineModelConfig(
+                senseVoice = OfflineSenseVoiceModelConfig(
+                    model = "${dir}model.int8.onnx",
+                    language = "auto",
+                    useInverseTextNormalization = true,
+                ),
+                tokens = "${dir}tokens.txt",
+                numThreads = 2,
+                debug = false,
+                provider = "cpu",
+            ),
+        )
+        recognizer = OfflineRecognizer(assetManager = null, config = config)
+    }
+
+    private fun decodeResult(samples: FloatArray): com.k2fsa.sherpa.onnx.OfflineRecognizerResult {
+        check(!closed) { "SenseVoice 识别器已关闭" }
+        require(samples.isNotEmpty()) { "没有可供 SenseVoice 转写的音频样本" }
+        val stream = recognizer.createStream()
+        try {
+            stream.acceptWaveform(samples, sampleRate = 16000)
+            recognizer.decode(stream)
+            return recognizer.getResult(stream).also { result ->
+                result.lang.takeIf { it.isNotBlank() }?.let { lastLang = it }
+                result.emotion.takeIf { it.isNotBlank() }?.let { lastEmotion = it }
+                result.event.takeIf { it.isNotBlank() }?.let { lastEvent = it }
+            }
+        } finally {
+            runCatching { stream.release() }
+        }
+    }
+
+    @Synchronized
+    override fun transcribeBySegments(
+        pcmFile: AudioExtract.PcmFile,
+        segs: List<Pair<Long, Long>>,
+        checkActive: () -> Unit,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): List<Triple<Long, Long, String>> {
+        check(!closed) { "SenseVoice 识别器已关闭" }
+        require(pcmFile.sampleRate == 16_000) { "SenseVoice 只支持 16kHz PCM 输入" }
+        val durationMs = pcmFile.durationMs
+        val sampleRate = pcmFile.sampleRate.toLong()
+        val output = mutableListOf<Triple<Long, Long, String>>()
+        segs.forEachIndexed { index, (startMs, endMs) ->
+            checkActive()
+            val safeStartMs = startMs.coerceIn(0L, durationMs)
+            val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
+            require(safeEndMs - safeStartMs <= VadSegmentMergePolicy.MAX_MERGED_SEGMENT_MS) {
+                "单条 SenseVoice 语音段超过 25 秒安全上限，请先重新分段"
+            }
+            val startSample = safeStartMs * sampleRate / 1000L
+            val endSample = (safeEndMs * sampleRate / 1000L).coerceAtMost(pcmFile.sampleCount)
+            if (endSample > startSample) {
+                val count = endSample - startSample
+                require(count <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
+                val samples = pcmFile.readFloatSamples(startSample, count.toInt(), checkActive)
+                val text = decodeResult(samples).text.trim()
+                checkActive()
+                if (text.isNotEmpty()) output += Triple(safeStartMs, safeEndMs, text)
+            }
+            onProgress(index + 1, segs.size)
+        }
+        return output
+    }
+
+    @Synchronized
+    override fun clearDetectedLanguage() {
+        check(!closed) { "SenseVoice 识别器已关闭" }
+        lastLang = ""
+        lastEmotion = ""
+        lastEvent = ""
+    }
+
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+        recognizer.release()
+    }
+}

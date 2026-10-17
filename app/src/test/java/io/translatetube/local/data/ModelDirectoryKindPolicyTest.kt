@@ -12,8 +12,17 @@ class ModelDirectoryKindPolicyTest {
     }
 
     @Test
-    fun doesNotMistakeWhisperBackupForKokoro() {
+    fun doesNotMistakeWhisperOrSenseVoiceBackupsForKokoro() {
         assertFalse(ModelDirectoryKindPolicy.isTtsDirectoryName("whisper"))
         assertFalse(ModelDirectoryKindPolicy.isTtsDirectoryName("whisper.old"))
+        assertFalse(ModelDirectoryKindPolicy.isTtsDirectoryName("sensevoice"))
+        assertFalse(ModelDirectoryKindPolicy.isTtsDirectoryName("sensevoice.old"))
+    }
+
+    @Test
+    fun recognizesSenseVoiceDirectoryAndItsTransactionalBackup() {
+        assertTrue(ModelDirectoryKindPolicy.isSenseVoiceDirectoryName("sensevoice"))
+        assertTrue(ModelDirectoryKindPolicy.isSenseVoiceDirectoryName("sensevoice.old"))
+        assertFalse(ModelDirectoryKindPolicy.isSenseVoiceDirectoryName("whisper"))
     }
 }

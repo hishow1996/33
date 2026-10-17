@@ -14,6 +14,8 @@ import androidx.media3.session.MediaSessionService
 import io.translatetube.local.R
 import io.translatetube.local.asr.AudioExtract
 import io.translatetube.local.asr.AudioTrackSelectionPolicy
+import io.translatetube.local.asr.LocalAsrEngine
+import io.translatetube.local.asr.SenseVoiceEngine
 import io.translatetube.local.asr.SpeakerDiarizer
 import io.translatetube.local.asr.WhisperEngine
 import io.translatetube.local.asr.vadSegments
@@ -134,9 +136,10 @@ class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     @Volatile private var dubbing: DubbingEngine? = null
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
-    private var whisper: WhisperEngine? = null
+    private var localAsrEngine: LocalAsrEngine? = null
+    private var localAsrEngineModelId: String? = null
     // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
-    private val whisperMutex = kotlinx.coroutines.sync.Mutex()
+    private val localAsrMutex = kotlinx.coroutines.sync.Mutex()
 
     private fun retireDubbing(engine: DubbingEngine?): DubbingEngine? {
         if (engine == null) return null
@@ -660,7 +663,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         // Cancel work before releasing services it may still be using. In particular, the
-        // Whisper JNI recognizer must not be released while a synchronous decode call is active.
+        // local ASR JNI recognizer must not be released while a synchronous decode call is active.
         val activePipeline = prepJob
         prepJob?.cancel()
         speakerJob?.cancel()
@@ -676,9 +679,9 @@ class PlaybackService : MediaSessionService() {
             // Cancellation is cooperative around blocking JNI calls. Close the recognizer only
             // after the owning pipeline has completed. Do cleanup off-main because older canceled
             // jobs may still be returning from a synchronous native decode.
-            activePipeline.invokeOnCompletion { releaseWhisperOffMainThread() }
+            activePipeline.invokeOnCompletion { releaseLocalAsrOffMainThread() }
         } else {
-            releaseWhisperOffMainThread()
+            releaseLocalAsrOffMainThread()
         }
         runCatching { session?.release() }
         if (::pm.isInitialized) runCatching { pm.release() }
@@ -688,7 +691,7 @@ class PlaybackService : MediaSessionService() {
     }
 
 
-    private fun shouldReleaseWhisperForMemoryPressure(): Boolean {
+    private fun shouldReleaseLocalAsrForMemoryPressure(): Boolean {
         val manager = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
             ?: return false
         val memoryInfo = android.app.ActivityManager.MemoryInfo()
@@ -702,21 +705,22 @@ class PlaybackService : MediaSessionService() {
         )
     }
 
-    private fun releaseWhisperOffMainThread() {
+    private fun releaseLocalAsrOffMainThread() {
         Thread(
-            { releaseWhisper() },
-            "tt-whisper-release",
+            { releaseLocalAsr() },
+            "tt-local-asr-release",
         ).apply {
             isDaemon = true
             start()
         }
     }
 
-    private fun releaseWhisper() {
-        val engine = whisper
-        whisper = null
+    private fun releaseLocalAsr() {
+        val engine = localAsrEngine
+        localAsrEngine = null
+        localAsrEngineModelId = null
         runCatching { engine?.close() }
-            .onFailure { android.util.Log.w("PlaybackService", "Whisper recognizer cleanup failed", it) }
+            .onFailure { android.util.Log.w("PlaybackService", "Local ASR recognizer cleanup failed", it) }
     }
 
     // ============ 管线入口 ============
@@ -1769,22 +1773,22 @@ class PlaybackService : MediaSessionService() {
                 previousKey = resumeState?.translationCacheKey,
                 providerFingerprint = providerFingerprint,
             )
-            // Local Whisper now stores word-timed cues instead of one wide cue per VAD segment.
-            // Invalidate old translated rows for local/web sources as translations also persist timestamps.
+            val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
+            // Keep locally generated transcript/translation caches model-specific to avoid stale output
+            // when a user switches between Whisper and SenseVoice.
             val translationCacheKey = if (
-                asrProvider == "local" &&
-                sourceImportedLines.isNullOrEmpty() &&
-                (localUri != null || remoteMediaUrl != null)
-            ) "$baseTranslationCacheKey|local-asr-timeline-v2" else baseTranslationCacheKey
+                asrProvider == "local" && sourceImportedLines.isNullOrEmpty()
+            ) "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3" else baseTranslationCacheKey
             updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                // Bump the source-caption cache after changing track ranking so a prior
-                // non-English manual track cannot shadow available English captions.
-                videoId != null -> "$key|source|youtube-v3"
+                // Keep local ASR transcript caches separate by model selection.
+                videoId != null -> "$key|source|youtube-v4" +
+                    if (asrProvider == "local") "|asr-$localAsrModelId" else ""
                 remoteMediaUrl != null && asrProvider == "local" ->
-                    "$cacheKeyBase|source|remote-asr-local-timed-v2"
+                    "$cacheKeyBase|source|remote-asr-$localAsrModelId-timed-v3"
                 remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
-                localUri != null && asrProvider == "local" -> "$key|source|local-asr-timed-v2"
+                localUri != null && asrProvider == "local" ->
+                    "$key|source|local-asr-$localAsrModelId-timed-v3"
                 else -> "$key|source|local-asr-v1"
             }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
@@ -1990,7 +1994,10 @@ class PlaybackService : MediaSessionService() {
                     ?.absolutePath
                 if (missingLocalModel || missingCloudKey) {
                     val hint = when (asrProvider) {
-                        "local" -> "视频音频已提取并缓存（约 ${( (audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 转写引擎中下载 Whisper 转写模型；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
+                        "local" -> {
+                            val modelName = io.translatetube.local.data.ModelFiles.localAsrModelDisplayName(localAsrModelId)
+                            "视频音频已提取并缓存（约 ${((audioFile as? File)?.length() ?: 0L) / 1024 / 1024} MB）。请在设置 → 转写引擎中下载$modelName；安装后重新打开本视频，直接复用已提取的音频自动转写并配音。"
+                        }
                         "elevenlabs" -> "视频音频已提取并缓存。已选择 ElevenLabs 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
                         "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
                         else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
@@ -2002,7 +2009,7 @@ class PlaybackService : MediaSessionService() {
                             waitingForDubbingEngine = false,
                             phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
                             progress = "视频音频已提取完成；转写等待引擎就绪" +
-                                if (asrProvider == "local") "（设置 → 转写引擎 → 本地 Whisper）" else "（设置 → 转写引擎）",
+                                if (asrProvider == "local") "（设置 → 转写引擎 → 本地转写）" else "（设置 → 转写引擎）",
                         )
                     }
                 } else {
@@ -2200,10 +2207,22 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     }
                 }
 
-                val localAsrResult = whisperMutex.withLock {
+                val localAsrResult = localAsrMutex.withLock {
                     ensureCurrentSession(key)
                     withContext(Dispatchers.IO) {
-                        val engine = whisper ?: WhisperEngine(this@PlaybackService).also { whisper = it }
+                        val selectedModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this@PlaybackService)
+                        val engine = localAsrEngine?.takeIf { localAsrEngineModelId == selectedModelId }
+                            ?: run {
+                                releaseLocalAsr()
+                                val created: LocalAsrEngine = if (selectedModelId == "sensevoice") {
+                                    SenseVoiceEngine(this@PlaybackService)
+                                } else {
+                                    WhisperEngine(this@PlaybackService)
+                                }
+                                localAsrEngine = created
+                                localAsrEngineModelId = selectedModelId
+                                created
+                            }
                         if (restoredProcessedSegments < segs.size) {
                             // A shared engine may remember the previous video's detected language.
                             // Reset it for this transcript, then use the saved checkpoint language as fallback.
@@ -2278,13 +2297,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 ?: restoredAsrLanguage.takeIf { it.isNotBlank() }
                                 ?: "en"
                         }
-                        if (shouldReleaseWhisperForMemoryPressure() && whisper === engine) {
+                        if (shouldReleaseLocalAsrForMemoryPressure() && localAsrEngine === engine) {
                             // The recognizer is native-memory heavy. Release only under reported
                             // memory pressure; healthy phones can keep it warm for another ASR job.
-                            whisper = null
+                            localAsrEngine = null
+                            localAsrEngineModelId = null
                             runCatching { engine.close() }
-                                .onFailure { android.util.Log.w("PlaybackService", "Whisper release under memory pressure failed", it) }
-                            android.util.Log.i("PlaybackService", "Released Whisper recognizer after ASR because of memory pressure")
+                                .onFailure { android.util.Log.w("PlaybackService", "Local ASR release under memory pressure failed", it) }
+                            android.util.Log.i("PlaybackService", "Released local ASR recognizer after transcription because of memory pressure")
                         }
                         rows to language
                     }

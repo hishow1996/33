@@ -58,6 +58,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     var systemTtsVoiceStatus by remember { mutableStateOf<String?>(null) }
     val systemTtsSettingsScope = androidx.compose.runtime.rememberCoroutineScope()
     var asrEngine by remember { mutableStateOf(prefs.getString("asr_provider", "local") ?: "local") }
+    var localAsrModel by remember {
+        mutableStateOf(io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(ctx))
+    }
     var elevenLabsKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_elevenlabs_key", "").orEmpty())) }
     var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
     var kawaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_kawa_key", "").orEmpty())) }
@@ -203,7 +206,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             "elevenlabs" -> "ElevenLabs"
             "cartesia" -> "Cartesia Ink"
             "kawa" -> "Kawa 云端识别"
-            else -> "本地 Whisper"
+            else -> if (localAsrModel == "sensevoice") "本地 SenseVoice" else "本地 Whisper"
         }
         val apiProfiles by AppDatabase.get(ctx).apiProfileDao().all()
             .collectAsState(initial = emptyList())
@@ -311,7 +314,7 @@ Section("转写引擎") {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         AsrProviderCard(
-            title = "本地 Whisper",
+            title = "本地转写",
             selected = asrEngine == "local",
             modifier = Modifier.weight(1f),
             onClick = {
@@ -367,11 +370,50 @@ Section("转写引擎") {
 
     Spacer(Modifier.height(12.dp))
     if (asrEngine == "local") {
+        val asrModelBusy = asrState.status in setOf(
+            io.translatetube.local.data.ModelStatus.DOWNLOADING,
+            io.translatetube.local.data.ModelStatus.EXTRACTING,
+        )
+        Text("本地转写模型", color = OnBg, style = MaterialTheme.typography.titleSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AsrProviderCard(
+                title = "Whisper Base",
+                selected = localAsrModel == "whisper",
+                enabled = !asrModelBusy,
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    localAsrModel = "whisper"
+                    prefs.edit().putString("asr_local_model", "whisper").apply()
+                    dlManager.refreshAsrState()
+                },
+            )
+            AsrProviderCard(
+                title = "SenseVoice INT8",
+                selected = localAsrModel == "sensevoice",
+                enabled = !asrModelBusy,
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    localAsrModel = "sensevoice"
+                    prefs.edit().putString("asr_local_model", "sensevoice").apply()
+                    dlManager.refreshAsrState()
+                },
+            )
+        }
+        if (localAsrModel == "sensevoice") {
+            Text(
+                "支持普通话、粤语、英语、日语和韩语；模型还可返回语音情绪与声音事件标签。",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         ModelRow(
-            title = "Whisper 转写模型",
+            title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8 转写模型" else "Whisper Base 转写模型",
             state = asrState,
             ready = asrReady,
-            pkgMB = 198,
+            pkgMB = if (localAsrModel == "sensevoice") 158 else 198,
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
             onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
@@ -1213,13 +1255,14 @@ private fun EngineOption(
 private fun AsrProviderCard(
     title: String,
     selected: Boolean,
+    enabled: Boolean = true,
     onWebsiteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(14.dp)
     Surface(
-        modifier = modifier.clip(shape).clickable(onClick = onClick),
+        modifier = modifier.clip(shape).clickable(enabled = enabled, onClick = onClick),
         color = if (selected) Color(0xFFEAF2FF) else Color.White,
         shape = shape,
         border = androidx.compose.foundation.BorderStroke(

@@ -4,4 +4,7 @@ package io.translatetube.local.data
 internal object ModelDirectoryKindPolicy {
     fun isTtsDirectoryName(name: String): Boolean =
         name == "tts" || name == "tts.old"
+
+    fun isSenseVoiceDirectoryName(name: String): Boolean =
+        name == "sensevoice" || name == "sensevoice.old"
 }
