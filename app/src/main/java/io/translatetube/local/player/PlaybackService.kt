@@ -2822,7 +2822,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             }
                             // preparedCount is a constant-time terminal-row count. Avoid scanning
                             // every subtitle repeatedly on older phones while a long video is synthesizing.
-                            if (startupDubbing.preparedCount.value >= finalLines.size) break
+                            if (
+                                startupDubbing.preparedCount.value >= finalLines.size ||
+                                dubbing !== startupDubbing ||
+                                !startupDubbing.isPreparing
+                            ) break
                         } else {
                             val minimumBufferReady = startupBuffer.lineIndices
                                 .take(startupBuffer.minimumCueCount)
