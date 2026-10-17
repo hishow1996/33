@@ -344,7 +344,8 @@ object YtDlpRepo {
      * dependency's updater metadata and stays null on fresh installs until an in-app update.
      */
     private fun readInstalledBinaryVersion(): String? = try {
-        val response = YoutubeDL.execute(YoutubeDLRequest("--version"))
+        val request = YoutubeDLRequest(emptyList<String>()).addOption("--version")
+        val response = YoutubeDL.execute(request)
         YtDlpVersionPolicy.installedVersionFromOutput(response.out).also { version ->
             if (version == null) {
                 Log.w(TAG, "yt-dlp --version returned no recognizable stable tag: ${response.out.take(120)}")
