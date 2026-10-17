@@ -4855,7 +4855,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
             .getString("tts_engine", "kokoro") ?: "kokoro"
         if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
-            updateUiForSession(sessionKey, pipelineGeneration) {
+            updateUiForSession(sessionKey) {
                 it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
             }
             return
@@ -4871,7 +4871,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         val selectedLineKey = SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs)
         val personId = assignmentSnapshot.lineSpeakers[selectedLineKey]
         if (applyToPerson && personId == null) {
-            updateUiForSession(sessionKey, pipelineGeneration) {
+            updateUiForSession(sessionKey) {
                 it.copy(error = "当前字幕还没有可靠的人物编号，请先执行“识别并区分人物”，再应用到该人物的全部字幕。")
             }
             return
