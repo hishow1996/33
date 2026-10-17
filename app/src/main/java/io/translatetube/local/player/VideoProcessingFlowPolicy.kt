@@ -224,20 +224,25 @@ object VideoProcessingFlowPolicy {
         playerIsPlaying: Boolean = false,
         progressiveTtsPlayback: Boolean = false,
         dubbingPreparationIncomplete: Boolean = false,
+        playbackHasStarted: Boolean = false,
     ): Boolean {
         if (phase == Phase.ERROR || waitingForTranscriptionEngine || waitingForDubbingEngine) {
             return true
         }
+        // Remember that the player has already been shown after the first cue started. A seek
+        // or network rebuffer may briefly make isPlaying=false; that must not send the user back
+        // to the parsing/progress page while playback is merely recovering.
+        val playbackHasEnteredPlayer = playbackHasStarted || playerIsPlaying
         if (
             progressiveTtsPlayback &&
-            playerIsPlaying &&
+            playbackHasEnteredPlayer &&
             phase in setOf(Phase.SYNTHESIZING, Phase.READY)
         ) {
-            // The first cue has allowed playback to start; remaining PCM cues may finish later.
+            // Remaining PCM cues may continue synthesizing while the player stays visible.
             return false
         }
-        if (progressiveTtsPlayback && phase == Phase.READY && !playerIsPlaying) {
-            // Avoid a one-frame flash of the player between READY and ExoPlayer actually starting.
+        if (progressiveTtsPlayback && phase == Phase.READY && !playbackHasEnteredPlayer) {
+            // Avoid a one-frame flash of the player before ExoPlayer actually starts for the first time.
             return true
         }
         // In non-progressive mode, all speech cues must be prepared before leaving this page.
