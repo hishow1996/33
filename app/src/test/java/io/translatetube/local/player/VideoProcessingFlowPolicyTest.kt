@@ -224,55 +224,80 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
-    fun processingPageHidesAfterPlaybackIsReadyWhileBackgroundDubbingContinues() {
+    fun processingPageDependsOnTtsEngineAndActualPlaybackReadiness() {
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.TRANSLATING,
+                playerIsPlaying = true,
             ),
         )
-        // Playback should return to the player even if the remaining voice lines are
-        // synthesized in the background after the first playable cue.
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.SYNTHESIZING,
+                playerIsPlaying = true,
+                systemTtsLivePlayback = false,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                playerIsPlaying = true,
+                dubbingPreparationIncomplete = true,
+            ),
+        )
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
+                playerIsPlaying = true,
+                dubbingPreparationIncomplete = false,
+            ),
+        )
+
+        // System TTS does not synthesize a PCM queue: keep the page until actual video playback,
+        // then return to the player while it speaks each subtitle live on the timeline.
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.SYNTHESIZING,
+                playerIsPlaying = false,
+                systemTtsLivePlayback = true,
             ),
         )
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
-                waitingForDubbingEngine = true,
+                playerIsPlaying = false,
+                systemTtsLivePlayback = true,
             ),
         )
-        assertTrue(
-            VideoProcessingFlowPolicy.shouldShowProcessingPage(
-                phase = Phase.READY,
-                waitingForTranscriptionEngine = true,
-            ),
-        )
-        // Once the video is actually playing, the final dubbing-preparation page must not
-        // cover the player. Earlier subtitle/translation phases remain visible.
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.SYNTHESIZING,
                 playerIsPlaying = true,
+                systemTtsLivePlayback = true,
             ),
         )
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
-                waitingForDubbingEngine = true,
                 playerIsPlaying = true,
+                systemTtsLivePlayback = true,
             ),
         )
+
+        // Engine startup waits and failures must not be skipped just because playback was requested.
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
-                phase = Phase.TRANSLATING,
+                phase = Phase.READY,
                 playerIsPlaying = true,
+                systemTtsLivePlayback = true,
+                waitingForDubbingEngine = true,
             ),
         )
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.ERROR,
+                playerIsPlaying = true,
+                systemTtsLivePlayback = true,
             ),
         )
     }
