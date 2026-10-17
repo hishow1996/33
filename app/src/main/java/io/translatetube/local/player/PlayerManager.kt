@@ -62,13 +62,23 @@ class PlayerManager(private val ctx: Context) {
     var onVideoAspect: ((ratio: Float) -> Unit)? = null
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var released = false
     private var tickFailureLogged = false
 
     /** A faulty consumer must not permanently kill the playback timeline ticker. */
-    private fun notifyTick(positionMs: Long = player.currentPosition) {
+    private fun notifyTick(positionMs: Long? = null) {
+        if (released) return
         val callback = onTick ?: return
+        val safePosition = try {
+            positionMs ?: player.currentPosition
+        } catch (error: Exception) {
+            if (!released) {
+                android.util.Log.w("PlayerManager", "Could not read the playhead for timeline update", error)
+            }
+            return
+        }
         try {
-            callback(positionMs)
+            callback(safePosition)
             tickFailureLogged = false
         } catch (error: Exception) {
             if (!tickFailureLogged) {
@@ -80,9 +90,16 @@ class PlayerManager(private val ctx: Context) {
 
     private val ticker = object : Runnable {
         override fun run() {
-            if (onTick == null || !player.isPlaying) return
+            if (released || onTick == null) return
+            val playing = try {
+                player.isPlaying
+            } catch (error: Exception) {
+                if (!released) android.util.Log.w("PlayerManager", "Ticker could not read player state", error)
+                false
+            }
+            if (!playing) return
             notifyTick()
-            if (onTick != null && player.isPlaying) {
+            if (!released && onTick != null && runCatching { player.isPlaying }.getOrDefault(false)) {
                 mainHandler.postDelayed(this, 100)
             }
         }
@@ -91,7 +108,8 @@ class PlayerManager(private val ctx: Context) {
     /** Poll only while playback is active and a consumer needs timeline updates. */
     private fun syncTicker() {
         mainHandler.removeCallbacks(ticker)
-        if (onTick != null && player.isPlaying) {
+        if (released || onTick == null) return
+        if (runCatching { player.isPlaying }.getOrDefault(false)) {
             mainHandler.postDelayed(ticker, 100)
         }
     }
@@ -116,9 +134,8 @@ class PlayerManager(private val ctx: Context) {
             }
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                 // Push seek/speed synchronization now rather than waiting for the 100 ms ticker.
-                // Use the same guarded path as normal polling so one callback failure cannot escape
-                // through Media3's listener dispatch.
-                notifyTick(player.currentPosition)
+                // Read the playhead inside notifyTick's guarded path.
+                notifyTick()
             }
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) {
@@ -356,12 +373,33 @@ class PlayerManager(private val ctx: Context) {
         player.prepare()
     }
 
-    fun play() { player.play() }
-    fun pause() { player.pause() }
+    fun play() {
+        if (released) return
+        try {
+            player.play()
+        } catch (error: Exception) {
+            if (!released) android.util.Log.e("PlayerManager", "Unable to start playback", error)
+        }
+    }
+
+    fun pause() {
+        if (released) return
+        try {
+            player.pause()
+        } catch (error: Exception) {
+            if (!released) android.util.Log.w("PlayerManager", "Unable to pause playback", error)
+        }
+    }
+
     fun seekTo(ms: Long) {
+        if (released) return
         val safePosition = ms.coerceAtLeast(0L)
-        player.seekTo(safePosition)
-        notifyTick(safePosition)
+        try {
+            player.seekTo(safePosition)
+            notifyTick(safePosition)
+        } catch (error: Exception) {
+            if (!released) android.util.Log.e("PlayerManager", "Player rejected seek to $safePosition ms", error)
+        }
     }
     fun speed(s: Float) {
         player.playbackParameters = PlaybackParameters(DubbingTiming.normalizePlayerSpeed(s))
@@ -370,11 +408,21 @@ class PlayerManager(private val ctx: Context) {
     var originalVolume: Float
         get() = player.volume
         set(v) { player.volume = v }
-    fun duration(): Long = player.duration.coerceAtLeast(0)
-    fun position(): Long = player.currentPosition.coerceAtLeast(0)
+    fun duration(): Long = if (released) 0L else
+        runCatching { player.duration.coerceAtLeast(0) }
+            .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read duration", it) }
+            .getOrDefault(0L)
+
+    fun position(): Long = if (released) 0L else
+        runCatching { player.currentPosition.coerceAtLeast(0) }
+            .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read playhead", it) }
+            .getOrDefault(0L)
 
     fun release() {
+        if (released) return
+        released = true
         mainHandler.removeCallbacks(ticker)
-        player.release()
+        runCatching { player.release() }
+            .onFailure { android.util.Log.w("PlayerManager", "Player release failed", it) }
     }
 }
