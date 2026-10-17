@@ -2303,7 +2303,8 @@ class DubbingEngine(
             synchronized(mem) { mem.clear() }
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
-            if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
+            val currentTts = tts
+            if (currentTts is TimelineTtsPlayback && currentTts.useDirectTimelinePlayback) {
                 lines.indices.forEach { index ->
                     val cue = lines[index]
                     markCuePrepared(
@@ -2343,7 +2344,8 @@ class DubbingEngine(
         activeVolume = normalized
         // Live Android TTS takes its volume in the utterance Bundle; the next cue uses this
         // value. AudioTrack-backed engines can update the already-running track immediately.
-        if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) return
+        val currentTts = tts
+        if (currentTts is TimelineTtsPlayback && currentTts.useDirectTimelinePlayback) return
         val active = track ?: return
         try {
             audioExec.execute {
