@@ -21,9 +21,18 @@ import androidx.core.content.ContextCompat
 import io.translatetube.local.ui.screens.*
 import io.translatetube.local.ui.theme.BgDark
 import io.translatetube.local.ui.theme.TranslateTubeTheme
+import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.player.Phase
 import io.translatetube.local.yt.NewPipeRepo
 
 enum class Screen { HOME, PLAYER, WEB, SETTINGS, API }
+
+/** Survives process death so an interrupted parse can be restarted from its original entry URL. */
+private data class PendingResumeTask(
+    val sourceKey: String,
+    val activeKey: String,
+    val generation: Long,
+)
 
 /** 一次播放请求：YouTube 或 本地视频 */
 data class PlayRequest(
@@ -48,12 +57,65 @@ data class PlayRequest(
 class MainActivity : ComponentActivity() {
     /** 从分享/链接/历史/本地选择进入的播放请求 */
     private val playReq = mutableStateOf<PlayRequest?>(null)
+    private val pendingResumeTaskState = mutableStateOf<PendingResumeTask?>(null)
+    private val resumePrefs by lazy { getSharedPreferences(RESUME_PREFS, MODE_PRIVATE) }
+
+    private fun loadPendingResumeTask(): PendingResumeTask? {
+        val sourceKey = resumePrefs.getString(KEY_SOURCE, null)?.takeIf { it.isNotBlank() }
+            ?: return null
+        val activeKey = resumePrefs.getString(KEY_ACTIVE, null)?.takeIf { it.isNotBlank() } ?: sourceKey
+        val generation = resumePrefs.getLong(KEY_GENERATION, 1L).coerceAtLeast(1L)
+        return PendingResumeTask(sourceKey, activeKey, generation)
+    }
+
+    private fun persistPendingResumeTask(task: PendingResumeTask) {
+        resumePrefs.edit()
+            .putString(KEY_SOURCE, task.sourceKey)
+            .putString(KEY_ACTIVE, task.activeKey)
+            .putLong(KEY_GENERATION, task.generation)
+            .apply()
+    }
+
+    /** Save each new request before the navigation/parse pipeline starts. */
+    private fun rememberPlayRequest(request: PlayRequest) {
+        playReq.value = request
+        val generation = (resumePrefs.getLong(KEY_GENERATION, 0L) + 1L).coerceAtLeast(1L)
+        val task = PendingResumeTask(request.key, request.key, generation)
+        persistPendingResumeTask(task)
+        pendingResumeTaskState.value = task
+    }
+
+    /** Keep the original web page as the recovery source if parsing resolves to a temporary media URL. */
+    private fun advancePlayRequest(request: PlayRequest) {
+        playReq.value = request
+        val current = pendingResumeTaskState.value ?: loadPendingResumeTask()
+        if (current == null) {
+            rememberPlayRequest(request)
+            return
+        }
+        val updated = current.copy(activeKey = request.key)
+        persistPendingResumeTask(updated)
+        pendingResumeTaskState.value = updated
+    }
+
+    private fun clearPendingResumeTask(expected: PendingResumeTask) {
+        val current = loadPendingResumeTask() ?: return
+        if (current.sourceKey != expected.sourceKey ||
+            current.activeKey != expected.activeKey ||
+            current.generation != expected.generation
+        ) return
+        resumePrefs.edit().remove(KEY_SOURCE).remove(KEY_ACTIVE).apply()
+        pendingResumeTaskState.value = null
+    }
 
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
+        if (pendingResumeTaskState.value == null) {
+            pendingResumeTaskState.value = loadPendingResumeTask()
+        }
         // 先显示首页首帧，再请求 Android 13+ 通知权限；避免权限弹窗抢在 setContent 前启动，
         // 让系统启动页一直停留，看起来像是应用启动很慢。
         setContent {
@@ -74,8 +136,34 @@ class MainActivity : ComponentActivity() {
                 var screen by remember { mutableStateOf(Screen.HOME) }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
                 val req by playReq
+                val pendingTask by pendingResumeTaskState
+                val playback by PlaybackService.ui.collectAsState()
+                var startedPendingGeneration by remember { mutableStateOf<Long?>(null) }
 
-                // 立即展示主界面；启动品牌画面由 Android windowBackground / 系统启动页负责。
+                // Clear a persisted recovery entry only after the matching run reaches READY.
+                LaunchedEffect(pendingTask?.generation, playback.key, playback.phase) {
+                    val task = pendingTask
+                    if (task == null) {
+                        startedPendingGeneration = null
+                        return@LaunchedEffect
+                    }
+                    if (startedPendingGeneration != task.generation) startedPendingGeneration = null
+                    if (playback.key != task.activeKey) return@LaunchedEffect
+                    when (playback.phase) {
+                        Phase.PARSING,
+                        Phase.DOWNLOADING_AUDIO,
+                        Phase.TRANSCRIBING,
+                        Phase.TRANSLATING,
+                        Phase.SYNTHESIZING -> startedPendingGeneration = task.generation
+                        Phase.READY -> if (startedPendingGeneration == task.generation) {
+                            clearPendingResumeTask(task)
+                            startedPendingGeneration = null
+                        }
+                        else -> Unit
+                    }
+                }
+
+                // 立即展示主界面；启动品牌画面由 Android windowBackground / 系统启动页负责.
                 // 不再叠加 Compose 启动页或固定延时，减少冷启动等待。
                 LaunchedEffect(req) {
                     when {
@@ -92,18 +180,20 @@ class MainActivity : ComponentActivity() {
                     Box(Modifier.widthIn(max = 720.dp)) {
                         when (screen) {
                             Screen.HOME -> HomeScreen(
-                                onPlay = { r -> playReq.value = r },
+                                onPlay = { r -> rememberPlayRequest(r) },
                                 onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
+                                pendingResumeTaskKey = pendingTask?.sourceKey,
                                 onResumeTask = { taskKey ->
                                     val request = when {
                                         taskKey.startsWith("youtube:") -> PlayRequest(videoId = taskKey.removePrefix("youtube:"))
+                                        taskKey.startsWith("webpage:") -> PlayRequest(webPageUrl = taskKey.removePrefix("webpage:"))
                                         taskKey.startsWith("remote:") -> PlayRequest(mediaUrl = taskKey.removePrefix("remote:"))
                                         taskKey.startsWith("local:") -> PlayRequest(localUri = taskKey.removePrefix("local:"))
                                         else -> null
                                     }
                                     if (request != null) {
-                                        playReq.value = request
-                                        screen = Screen.PLAYER
+                                        rememberPlayRequest(request)
+                                        screen = if (request.webPageUrl != null) Screen.WEB else Screen.PLAYER
                                     }
                                 },
                             )
@@ -122,12 +212,14 @@ class MainActivity : ComponentActivity() {
                                 initialUrl = req?.webPageUrl.orEmpty(),
                                 onBack = { playReq.value = null; screen = Screen.HOME },
                                 onOpenMedia = { url, title, referrer, cookie, userAgent ->
-                                    playReq.value = PlayRequest(
-                                        mediaUrl = url,
-                                        mediaTitle = title,
-                                        mediaReferrer = referrer,
-                                        mediaCookie = cookie,
-                                        mediaUserAgent = userAgent,
+                                    advancePlayRequest(
+                                        PlayRequest(
+                                            mediaUrl = url,
+                                            mediaTitle = title,
+                                            mediaReferrer = referrer,
+                                            mediaCookie = cookie,
+                                            mediaUserAgent = userAgent,
+                                        )
                                     )
                                     screen = Screen.PLAYER
                                 },
@@ -157,10 +249,10 @@ class MainActivity : ComponentActivity() {
                 val id = NewPipeRepo.extractVideoId(text)
                     ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(text.trim())) text.trim() else null
                 if (id != null) {
-                    playReq.value = PlayRequest(videoId = id)
+                    rememberPlayRequest(PlayRequest(videoId = id))
                 } else {
                     io.translatetube.local.web.WebMediaUrlPolicy.normalizePageUrl(text)?.let { url ->
-                        playReq.value = PlayRequest(webPageUrl = url)
+                        rememberPlayRequest(PlayRequest(webPageUrl = url))
                     }
                 }
             }
@@ -173,19 +265,26 @@ class MainActivity : ComponentActivity() {
                             uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
                         )
                     }
-                    playReq.value = PlayRequest(localUri = uri.toString())
+                    rememberPlayRequest(PlayRequest(localUri = uri.toString()))
                 } else {
                     val id = NewPipeRepo.extractVideoId(uri.toString())
                     if (id != null) {
-                        playReq.value = PlayRequest(videoId = id)
+                        rememberPlayRequest(PlayRequest(videoId = id))
                     } else {
                         io.translatetube.local.web.WebMediaUrlPolicy.normalizePageUrl(uri.toString())?.let { url ->
-                            playReq.value = PlayRequest(webPageUrl = url)
+                            rememberPlayRequest(PlayRequest(webPageUrl = url))
                         }
                     }
                 }
             }
         }
+    }
+    
+    private companion object {
+        const val RESUME_PREFS = "pending_video_resume"
+        const val KEY_SOURCE = "source_key"
+        const val KEY_ACTIVE = "active_key"
+        const val KEY_GENERATION = "generation"
     }
 }
 
