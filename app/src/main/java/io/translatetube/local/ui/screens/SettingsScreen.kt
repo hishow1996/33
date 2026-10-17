@@ -109,8 +109,9 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             }
         }
     }
-    LaunchedEffect(ttsEngine, systemTtsVoiceCatalog.isEmpty()) {
-        if (ttsEngine == "system" && systemTtsVoiceCatalog.isEmpty()) {
+    LaunchedEffect(ttsEngine) {
+        if (ttsEngine == "system") {
+            // Refresh even when an older app version stored a filtered voice catalogue.
             refreshSystemTtsVoices()
         }
     }
