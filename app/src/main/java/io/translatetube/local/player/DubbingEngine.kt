@@ -104,6 +104,8 @@ class DubbingEngine(
     /** Live owner guard supplied by PlaybackService; checked on the audio thread immediately before play(). */
     @Volatile private var activePlaybackGuard: (() -> Boolean)? = null
     @Volatile private var released = false
+    /** A fatal synthesis OOM disables this engine's queue until the service retires it. */
+    @Volatile private var synthesisMemoryFailure = false
     /** AudioTrack 操作专用单线程：write(MODE_STATIC) 数据拷贝耗时，绝不放主线程 */
     private val audioExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "tt-audio").apply { priority = Thread.MAX_PRIORITY }
@@ -374,7 +376,7 @@ class DubbingEngine(
      * shrinking it back to two rows.
      */
     fun prioritizeAround(index: Int, lookAhead: Int? = null) {
-        if (released || index !in lines.indices) return
+        if (released || synthesisMemoryFailure || index !in lines.indices) return
         val requestedAhead = (lookAhead ?: priorityLookAhead).coerceIn(2, 12)
         if (index == priorityTarget && requestedAhead <= priorityLookAhead) return
         synchronized(pending) {
@@ -401,8 +403,9 @@ class DubbingEngine(
         synchronized(synthStartLock) {
             // Never cancel an active provider call just to restart queue processing: many TTS
             // providers perform blocking native work and cancellation cannot stop it immediately.
-            if (released || synthJob?.isActive == true) return
+            if (released || synthesisMemoryFailure || synthJob?.isActive == true) return
             synthJob = scope.launch(Dispatchers.Default) {
+            try {
             // Poll under the same lock used by prioritizeAround(). Do not inspect isEmpty()
             // outside the lock: queue reordering temporarily drains the deque, and a separate
             // isEmpty() check could let this worker exit before the reordered work is restored.
@@ -799,6 +802,31 @@ class DubbingEngine(
                     }
                 }
             }
+            } catch (memoryError: OutOfMemoryError) {
+                // An unhandled OOM in this service-scope worker would terminate the whole app.
+                // Stop this engine's queue, release cached PCM references and tell the service to
+                // retire the native TTS runtime; the source video can continue on its original audio.
+                if (!released) {
+                    synthesisMemoryFailure = true
+                    synchronized(mem) { mem.clear() }
+                    synchronized(pending) {
+                        pending.clear()
+                        retryAfterActiveSynthesis.clear()
+                    }
+                    android.util.Log.e(
+                        "DubbingEngine",
+                        "Stopping selected TTS engine after out-of-memory during synthesis",
+                        memoryError,
+                    )
+                    runCatching {
+                        reportSynthesisError(
+                            "设备内存不足，已停止继续生成中文配音并恢复视频原声；请重新打开视频或选择占用更低的配音引擎后重试。"
+                        )
+                    }.onFailure {
+                        android.util.Log.w("DubbingEngine", "Unable to publish out-of-memory recovery status", it)
+                    }
+                }
+            }
 
             // Close the empty-queue race: a cue can be enqueued after pollFirst() returned null
             // but before this Job completes. Publish this worker as idle under the same lock used
@@ -806,7 +834,7 @@ class DubbingEngine(
             val completedWorker = kotlinx.coroutines.currentCoroutineContext()[Job]
             val shouldRestart = synchronized(synthStartLock) {
                 if (synthJob === completedWorker) synthJob = null
-                !released && !fallbackRequested.get() && pending.isNotEmpty()
+                !released && !synthesisMemoryFailure && !fallbackRequested.get() && pending.isNotEmpty()
             }
             if (shouldRestart) startSynthLoop()
             }
