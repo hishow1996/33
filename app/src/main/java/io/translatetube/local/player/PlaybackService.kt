@@ -2936,6 +2936,22 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 }
             }
 
+            if (
+                unresolvedIndices.isNotEmpty() &&
+                sourceEchoAsUntranslatedFallback &&
+                resolvedBatch.values.any { it.isNotBlank() }
+            ) {
+                // Google/ML Kit returned useful Chinese for this batch, but a small number of
+                // cues stayed empty/status-only after retry. Preserve those source subtitles
+                // without Chinese speech instead of failing the whole video over one bad row.
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Keeping ${unresolvedIndices.size} unresolved Google subtitle cues on original audio",
+                )
+                unresolvedIndices.forEach { resolvedBatch[it] = "" }
+                unresolvedIndices = emptyList()
+            }
+
             if (unresolvedIndices.isNotEmpty()) {
                 throw TranslationFailureException(
                     "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
