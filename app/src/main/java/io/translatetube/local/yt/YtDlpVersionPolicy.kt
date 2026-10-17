@@ -13,6 +13,16 @@ internal object YtDlpVersionPolicy {
 
     fun isStableTag(value: String): Boolean = stableTagPattern.matches(value.trim())
 
+    /**
+     * yt-dlp's actual `--version` command prints a bare stable release tag.
+     * Unlike YoutubeDL.version(), this reflects the bundled/installed binary and does not
+     * depend on the updater having previously saved its private SharedPreferences key.
+     */
+    fun installedVersionFromOutput(output: String): String? =
+        output.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { isStableTag(it) }
+
     fun latestStableFromPypiJson(json: String): String? = runCatching {
         val root = JSONObject(json)
         val releases = root.optJSONObject("releases")
