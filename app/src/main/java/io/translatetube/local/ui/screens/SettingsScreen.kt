@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -65,32 +67,36 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     Column(
-        Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-            .clip(RoundedCornerShape(28.dp)).background(Color(0xFFF2F6FC))
-            .verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+        Modifier.fillMaxSize()
+            .background(BgDark)
+            .systemBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(Color(0xFFF3F6FC))
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                "‹",
-                color = OnBg,
-                style = MaterialTheme.typography.headlineMedium,
+            Box(
                 modifier = Modifier
                     .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable(onClick = onBack)
-                    .wrapContentSize(Alignment.Center),
-            )
-            Spacer(Modifier.width(8.dp))
-            Column {
-                Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
+                    .clip(CircleShape)
+                    .background(Color.White)
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("‹", color = OnBg, style = MaterialTheme.typography.headlineMedium)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("设置中心", style = MaterialTheme.typography.titleLarge, color = OnBg)
+                Text("个性化你的翻译体验", style = MaterialTheme.typography.bodySmall, color = SubText)
             }
         }
-        Spacer(Modifier.height(2.dp))
 
         // ===== 语音模型（方案 B：软件内下载） =====
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
@@ -128,6 +134,101 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 
 
 
+
+        val ttsLabel = when (ttsEngine) {
+            "system" -> "系统 TTS"
+            "piper" -> "Piper 多语种"
+            else -> "Kokoro 神经网络"
+        }
+        val ttsSummary = when (ttsEngine) {
+            "system" -> "使用手机已安装语音 · 无需下载模型"
+            "piper" -> "按目标语种选择语音模型"
+            else -> if (ttsReady) "本地配音模型已就绪" else "首次使用需下载配音模型"
+        }
+        val asrLabel = when (asrEngine) {
+            "elevenlabs" -> "ElevenLabs"
+            "cartesia" -> "Cartesia Ink"
+            "kawa" -> "Kawa 云端识别"
+            else -> "本地 Whisper"
+        }
+        val asrSummary = when (asrEngine) {
+            "local" -> if (asrReady) "离线识别模型已就绪" else "首次使用需下载识别模型"
+            else -> "云端转写 · 需网络与 API 配置"
+        }
+
+        // Settings overview: surface the active engines before the detailed sections.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(Color(0xFF244DB5), Color(0xFF3978E8), Color(0xFF5A9BFA)),
+                    ),
+                )
+                .padding(18.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("翻译工作台", color = Color.White, style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            "管理识别、配音与播放体验",
+                            color = Color.White.copy(alpha = 0.82f),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Surface(color = Color.White.copy(alpha = 0.16f), shape = RoundedCornerShape(50)) {
+                        Text(
+                            "设置",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(
+                        Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                            .background(Color.White.copy(alpha = 0.14f)).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.VolumeUp,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("配音引擎", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelMedium)
+                        }
+                        Text(ttsLabel, color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                        Text(ttsSummary, color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                    }
+                    Column(
+                        Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                            .background(Color.White.copy(alpha = 0.14f)).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.Translate,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("转写方式", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelMedium)
+                        }
+                        Text(asrLabel, color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                        Text(asrSummary, color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(2.dp))
 
 Section("翻译引擎", onHeaderClick = onApiManager) {}
 
@@ -592,57 +693,78 @@ private fun Section(
     val glyph = when (title) {
         "翻译引擎", "翻译设置" -> Icons.Filled.Translate
         "配音设置" -> Icons.Filled.VolumeUp
-        "模型管理" -> Icons.Filled.Download
-        "播放体验" -> Icons.Filled.FolderOpen
-        "存储管理" -> Icons.Filled.FolderOpen
+        "模型管理", "视频源（yt-dlp）" -> Icons.Filled.Download
+        "播放体验", "存储管理" -> Icons.Filled.FolderOpen
         else -> Icons.Filled.Info
     }
+    val subtitle = when (title) {
+        "翻译引擎", "翻译设置" -> "API 服务商、翻译模型与密钥"
+        "转写引擎" -> "本地离线识别或云端语音转写"
+        "配音设置" -> "选择发音引擎、模型和音色"
+        "视频源（yt-dlp）" -> "更新网页视频解析规则"
+        "播放体验" -> "悬浮窗和播放相关权限"
+        "存储管理" -> "查看并清理临时文件"
+        "关于应用" -> "版本信息与应用说明"
+        else -> "查看与管理相关选项"
+    }
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
         color = Color.White,
         shape = RoundedCornerShape(20.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F3F8)),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (expanded) Color(0xFFB9CDF6) else Color(0xFFE8EDF5),
+        ),
         tonalElevation = 0.dp,
     ) {
         Column {
             Row(
                 Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
                     .clickable {
                         if (onHeaderClick != null) onHeaderClick() else expanded = !expanded
                     }
-                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
-                    Modifier.size(52.dp).clip(RoundedCornerShape(15.dp)).background(SurfaceHigh),
+                    Modifier.size(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (expanded) Color(0xFFDDE8FF) else Color(0xFFF0F4FC)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = glyph,
                         contentDescription = null,
                         tint = BrandBright,
-                        modifier = Modifier.size(25.dp),
+                        modifier = Modifier.size(22.dp),
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(title, color = OnBg, style = MaterialTheme.typography.titleLarge)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        subtitle,
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                    )
                 }
                 if (onHeaderClick != null) {
-                    Text("＞", color = SubText, style = MaterialTheme.typography.titleLarge)
+                    Text("›", color = BrandBright, style = MaterialTheme.typography.headlineSmall)
                 } else {
                     Icon(
                         imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                         contentDescription = if (expanded) "收起设置项" else "展开设置项",
-                        tint = SubText,
+                        tint = if (expanded) BrandBright else SubText,
                         modifier = Modifier.size(24.dp),
                     )
                 }
             }
             if (expanded && onHeaderClick == null) {
-                HorizontalDivider(color = OutlineSoft)
+                HorizontalDivider(color = Color(0xFFEAF0F8), modifier = Modifier.padding(horizontal = 14.dp))
                 Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
                 ) {
                     content()
                 }
@@ -930,22 +1052,44 @@ private fun EngineOption(
     id: String, title: String,
     current: String, onPick: (String) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().clickable { onPick(id) }.padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    val selected = current == id
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(15.dp))
+            .clickable { onPick(id) },
+        color = if (selected) Color(0xFFEAF1FF) else Color.White,
+        shape = RoundedCornerShape(15.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            if (selected) 1.4.dp else 1.dp,
+            if (selected) BrandBright else OutlineSoft,
+        ),
+        tonalElevation = 0.dp,
     ) {
-        RadioButton(
-            selected = current == id,
-            onClick = { onPick(id) },
-            colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
-        )
-        Text(
-            title,
-            color = OnBg,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f).padding(start = 4.dp),
-        )
-        if (current == id) Text("当前", color = BrandBright, style = MaterialTheme.typography.labelSmall)
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = { onPick(id) },
+                colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
+            )
+            Text(
+                title,
+                color = OnBg,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+            )
+            if (selected) {
+                Surface(color = Color(0xFFD6E5FF), shape = RoundedCornerShape(30.dp)) {
+                    Text(
+                        "当前使用",
+                        color = BrandBright,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    )
+                }
+            }
+        }
     }
 }
 
