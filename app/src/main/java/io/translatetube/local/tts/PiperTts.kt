@@ -264,7 +264,7 @@ object PiperModels {
     private fun publishProgress(id: String, progress: Int) {
         updateDownloadState(id) { current ->
             if (current.status == PiperModelDownloadStatus.READY) current
-            else current.copy(progress = progress.coerceIn(0, 99), error = null)
+            else current.copy(progress = progress.coerceIn(0, 100), error = null)
         }
     }
 
