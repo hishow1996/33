@@ -348,7 +348,7 @@ class PlaybackService : MediaSessionService() {
             startForeground(1001, boot)
 
             pm = PlayerManager(this)
-            pm.onTick = { ms -> tick(ms) }
+            pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
             pm.onEnded = {
             // AudioTrack is independent from ExoPlayer. Once the player reaches STATE_ENDED its
             // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
@@ -368,7 +368,7 @@ class PlaybackService : MediaSessionService() {
                         // a stale AudioTrack if a seek or a disabled dubbing state changed meanwhile.
                         dubbing?.stop()
                         lastLineIdx = Int.MIN_VALUE
-                        if (::pm.isInitialized) tick(pm.position())
+                        if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
                     } else {
                         dubbing?.pausePlayback()
                         ui.update { state ->
@@ -388,7 +388,7 @@ class PlaybackService : MediaSessionService() {
                     // Media3's new playhead immediately; this also covers seeks from media controls.
                     dubbing?.stop()
                     lastLineIdx = Int.MIN_VALUE
-                    if (::pm.isInitialized) tick(newPosition.positionMs)
+                    if (::pm.isInitialized) tickFromPlayerCallback(newPosition.positionMs, "position discontinuity")
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -423,17 +423,13 @@ class PlaybackService : MediaSessionService() {
                     if (err == null) return@collect
                     val activeRecovery = qualityRecoveryJob?.takeIf { it.isActive }
                     if (activeRecovery != null) {
-                        // An error after the one recovery attempt is a real failure; stop retrying.
-                        activeRecovery.cancel()
-                        ui.update { state ->
-                            if (videoId != null && state.key == ui.value.key) {
-                                state.copy(
-                                    phase = Phase.ERROR,
-                                    progress = "",
-                                    error = "重新获取 YouTube 视频流后仍无法播放：$err",
-                                )
-                            } else state
-                        }
+                        // Media3 can report the same obsolete signed-URL failure more than once
+                        // while the replacement source is being installed. Do not cancel the
+                        // active recovery job in response to that duplicate callback.
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Ignoring duplicate player error while YouTube recovery is active: $err",
+                        )
                     } else {
                         val id = videoId
                         val sessionKey = ui.value.key
@@ -4238,6 +4234,28 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             highlightTimelineSource = lines
         }
         return highlightTimeline.lineAt(positionMs)
+    }
+
+    /**
+     * ExoPlayer invokes some callbacks synchronously from seek()/play() on its application looper.
+     * A stale subtitle snapshot or a TTS transition must not let an ordinary runtime exception
+     * escape that callback and terminate the app process.
+     */
+    private fun tickFromPlayerCallback(ms: Long, source: String) {
+        try {
+            tick(ms)
+        } catch (error: Exception) {
+            android.util.Log.e("PlaybackService", "Timeline update failed during $source", error)
+            val key = ui.value.key
+            updateUiForSession(key) { state ->
+                if (state.key == key) {
+                    state.copy(
+                        dubbingStatus = "字幕时间轴正在恢复，请稍后重试",
+                        activeDubbingLine = -1,
+                    )
+                } else state
+            }
+        }
     }
 
     private fun tick(ms: Long) {

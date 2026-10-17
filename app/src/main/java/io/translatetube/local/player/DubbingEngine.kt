@@ -152,11 +152,13 @@ class DubbingEngine(
     private fun isActivePlaybackAllowedLocked(): Boolean =
         runCatching { activePlaybackGuard?.invoke() ?: true }.getOrDefault(false)
 
-    private fun invalidatePlayback(): Int = synchronized(playbackControlLock) {
+    private fun invalidatePlayback(): Pair<Int, String?> = synchronized(playbackControlLock) {
         playbackStartedLine = -1
         _currentLine.value = -1
         activePlaybackGuard = null
-        playbackGeneration.incrementAndGet()
+        val staleUtteranceId = activeTimelineUtteranceId
+        activeTimelineUtteranceId = null
+        playbackGeneration.incrementAndGet() to staleUtteranceId
     }
 
     private val _preparedUntil = MutableStateFlow(0)   // 连续前缀就绪行数，用于定位最早未就绪行
@@ -178,6 +180,8 @@ class DubbingEngine(
     val currentLine: StateFlow<Int> = _currentLine
     // Set only after AudioTrack.play() succeeds; PCM readiness alone does not mean voice is audible.
     @Volatile private var playbackStartedLine = -1
+    /** Exact direct-TTS utterance owned by the current playback generation. */
+    @Volatile private var activeTimelineUtteranceId: String? = null
 
     fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
         // Validate every incoming resource and timeline before publishing state. Even an over-limit
@@ -1859,6 +1863,18 @@ class DubbingEngine(
                 speed * timingRate * timelineSpeed,
             )
             val utteranceId = "timeline-${System.nanoTime()}-$idx-$generation"
+            val ownsCue = synchronized(playbackControlLock) {
+                if (
+                    !released &&
+                    playbackGeneration.get() == generation &&
+                    _currentLine.value == idx &&
+                    isActivePlaybackAllowedLocked()
+                ) {
+                    activeTimelineUtteranceId = utteranceId
+                    true
+                } else false
+            }
+            if (!ownsCue) return
             val accepted = timelineTts.speakOnTimeline(
                 text = spokenText,
                 speed = speechRate,
@@ -1888,12 +1904,15 @@ class DubbingEngine(
                     }
                 },
                 onCompleted = { error ->
-                    if (!error.isNullOrBlank()) {
-                        val stillCurrent = synchronized(playbackControlLock) {
-                            !released &&
-                                playbackGeneration.get() == generation &&
-                                _currentLine.value == idx
+                    val stillCurrent = synchronized(playbackControlLock) {
+                        if (activeTimelineUtteranceId == utteranceId) {
+                            activeTimelineUtteranceId = null
                         }
+                        !released &&
+                            playbackGeneration.get() == generation &&
+                            _currentLine.value == idx
+                    }
+                    if (!error.isNullOrBlank()) {
                         if (stillCurrent) {
                             markCuePrepared(idx, hasAudio = false)
                             synchronized(playbackControlLock) {
@@ -1910,6 +1929,9 @@ class DubbingEngine(
             if (!accepted) {
                 markCuePrepared(idx, hasAudio = false)
                 synchronized(playbackControlLock) {
+                    if (activeTimelineUtteranceId == utteranceId) {
+                        activeTimelineUtteranceId = null
+                    }
                     if (playbackGeneration.get() == generation && _currentLine.value == idx) {
                         playbackStartedLine = -1
                         _currentLine.value = -1
@@ -2179,12 +2201,12 @@ class DubbingEngine(
         // Invalidate an in-flight PCM load/track creation and clear "voice is audible" immediately.
         // PlaybackService reselects the active cue and calls playAt() when ExoPlayer resumes, so
         // retaining a static AudioTrack here only holds native buffer memory while the user pauses.
-        invalidatePlayback()
-        // Immediate Android TTS has no AudioTrack to pause; stop its active utterance so the
-        // system voice cannot continue reading after the video itself has paused.
+        val invalidated = invalidatePlayback()
+        // Stop only the exact utterance owned by the invalidated generation. A late pause from
+        // an older cue must never stop a newer system-TTS utterance.
         (tts as? TimelineTtsPlayback)
             ?.takeIf { it.useDirectTimelinePlayback }
-            ?.stopTimelineSpeech()
+            ?.stopTimelineSpeech(invalidated.second)
         val active = track ?: return
         try {
             audioExec.execute {
@@ -2236,8 +2258,8 @@ class DubbingEngine(
     }
 
     fun stop() {
-        invalidatePlayback()
-        (tts as? TimelineTtsPlayback)?.stopTimelineSpeech()
+        val invalidated = invalidatePlayback()
+        (tts as? TimelineTtsPlayback)?.stopTimelineSpeech(invalidated.second)
         val old = track
         track = null
         if (released) {

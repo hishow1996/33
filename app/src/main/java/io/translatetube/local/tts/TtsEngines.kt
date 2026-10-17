@@ -429,6 +429,7 @@ class SystemTts(
         }
     }
 
+    @Synchronized
     override fun stopTimelineSpeech(utteranceId: String?) {
         val engine = synchronized(lifecycleLock) {
             val active = activeTimelineUtteranceId
