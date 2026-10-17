@@ -26,6 +26,22 @@ class YtDlpVersionPolicyTest {
     }
 
     @Test
+    fun readsInstalledVersionFromActualYtDlpCommandOutput() {
+        assertEquals(
+            "2026.10.10",
+            YtDlpVersionPolicy.installedVersionFromOutput(
+                "Python 3.12.0\\n2026.10.10\\n",
+            ),
+        )
+        assertNull(
+            YtDlpVersionPolicy.installedVersionFromOutput(
+                "yt-dlp --version\\n2026.10.10.dev0\\n",
+            ),
+        )
+        assertNull(YtDlpVersionPolicy.installedVersionFromOutput("".trimIndent()))
+    }
+
+    @Test
     fun acceptsOnlyStableDateTags() {
         assertTrue(YtDlpVersionPolicy.isStableTag("2026.8.19"))
         assertFalse(YtDlpVersionPolicy.isStableTag("2026.10.10.233141.dev0"))
