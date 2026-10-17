@@ -182,6 +182,9 @@ class PlaybackService : MediaSessionService() {
     private val pipelineGenerationLock = Any()
     private var pipelineGenerationCounter = 0L
     @Volatile private var activePipelineGeneration = 0L
+    // Do not let an older same-video pipeline finish a blocking TTS/native operation while the
+    // replacement pipeline initializes another engine. Cancellation alone cannot stop JNI calls.
+    private val pipelineExecutionMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile private var qualityRecoveryAttempted = false
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
@@ -777,7 +780,8 @@ class PlaybackService : MediaSessionService() {
         }
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
-        prepJob?.cancel()
+        val previousPrepJob = prepJob
+        previousPrepJob?.cancel()
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         speakerJob?.cancel(); speakerJob = null
         dubCollectJob?.cancel(); dubCollectJob = null
@@ -853,7 +857,10 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
+            pipelineExecutionMutex.withLock {
+                ensureCurrentSession(key, pipelineGeneration)
+                runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
+            }
         }
     }
 
@@ -2722,8 +2729,22 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             runCatching { tts.close() }
                             throw e
                         }
-                        dubbing = d
-                        registerDubbingFailureHandler(d, tts, key)
+                        val enginePublished = synchronized(pipelineGenerationLock) {
+                            if (pipelineGeneration != activePipelineGeneration) {
+                                false
+                            } else {
+                                dubbing = d
+                                registerDubbingFailureHandler(d, tts, key)
+                                true
+                            }
+                        }
+                        if (!enginePublished) {
+                            retireDubbing(d)
+                            runCatching { tts.close() }
+                            throw kotlinx.coroutines.CancellationException(
+                                "视频处理任务已被新的打开请求替代，取消旧的配音引擎初始化",
+                            )
+                        }
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 ttsEngineName = tts.name,
