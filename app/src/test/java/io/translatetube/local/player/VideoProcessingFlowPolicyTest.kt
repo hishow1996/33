@@ -224,57 +224,37 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
-    fun processingPageStaysVisibleUntilEveryDubbingCueFinishes() {
+    fun processingPageHidesAfterPlaybackIsReadyWhileBackgroundDubbingContinues() {
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.TRANSLATING,
-                totalLines = 20,
-                preparedCount = 0,
             ),
         )
-        assertTrue(
-            VideoProcessingFlowPolicy.shouldShowProcessingPage(
-                phase = Phase.READY,
-                dubbingOn = true,
-                totalLines = 20,
-                preparedCount = 19,
-            ),
-        )
+        // Playback should return to the player even if the remaining voice lines are
+        // synthesized in the background after the first playable cue.
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
-                dubbingOn = true,
-                totalLines = 20,
-                preparedCount = 20,
             ),
         )
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
                 waitingForDubbingEngine = true,
-                dubbingOn = true,
-                totalLines = 20,
-                preparedCount = 0,
             ),
         )
-        assertFalse(
+        assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
-                dubbingOn = false,
-                totalLines = 20,
-                preparedCount = 0,
+                waitingForTranscriptionEngine = true,
             ),
         )
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.ERROR,
-                dubbingOn = true,
-                totalLines = 20,
-                preparedCount = 20,
             ),
         )
     }
-
     @Test
     fun readyNotificationDoesNotClaimDubbingIsCompleteWhileEnginesAreMissing() {
         assertEquals(
