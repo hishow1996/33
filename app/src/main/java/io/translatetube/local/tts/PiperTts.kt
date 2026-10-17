@@ -704,7 +704,7 @@ object PiperModels {
                                 output.write(buffer, 0, count)
                                 digest?.update(buffer, 0, count)
                                 if (total > 0L) {
-                                    onProgress(((done * 70L) / total).toInt().coerceIn(0, 69))
+                                    onProgress(((done * 100L) / total).toInt().coerceIn(0, 99))
                                 }
                             }
                             output.flush()
@@ -720,7 +720,7 @@ object PiperModels {
                 if (!PiperDownloadSourcePolicy.checksumMatches(definition.archiveSha256, actualDigest)) {
                     throw java.io.IOException("Piper 模型压缩包 SHA-256 校验失败")
                 }
-                onProgress(70)
+                onProgress(100)
                 onStage("模型包下载完成并通过校验，准备解压…")
                 return@withContext
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
