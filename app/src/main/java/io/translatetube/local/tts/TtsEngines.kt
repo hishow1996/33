@@ -35,6 +35,20 @@ interface TtsEngine {
 }
 
 /**
+ * Conservative CPU thread selection for local ONNX TTS on phones.
+ * Small CPUs keep two or fewer workers; larger big.LITTLE devices get at most three so
+ * inference can use more cores without aggressively oversubscribing a thermally limited phone.
+ */
+internal object TtsCpuThreadPolicy {
+    fun recommendedThreads(availableProcessors: Int = Runtime.getRuntime().availableProcessors()): Int =
+        when {
+            availableProcessors <= 2 -> 1
+            availableProcessors >= 6 -> 3
+            else -> 2
+        }
+}
+
+/**
  * Optional direct timeline-speech contract for engines that explicitly support live utterances.
  * The current SystemTts intentionally uses the WAV-to-PCM path below so it shares the same
  * caching, sample normalization, timing, pause and cancellation behavior as local TTS models.
@@ -54,7 +68,11 @@ interface TimelineTtsPlayback {
 }
 
 /** Kokoro v1.1 int8 本地神经 TTS（中文主力） */
-class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, private val numThreads: Int = 2) : TtsEngine {
+class KokoroTts(
+    private val ctx: Context,
+    private val speakerId: Int = 14,
+    private val numThreads: Int = TtsCpuThreadPolicy.recommendedThreads(),
+) : TtsEngine {
     override val name = "Kokoro"
     private val runtimeSignature by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         io.translatetube.local.data.ModelFiles.ttsCacheSignature(ctx)
