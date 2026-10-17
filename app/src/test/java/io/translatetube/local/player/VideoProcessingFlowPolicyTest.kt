@@ -224,6 +224,58 @@ class VideoProcessingFlowPolicyTest {
     }
 
     @Test
+    fun processingPageStaysVisibleUntilEveryDubbingCueFinishes() {
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.TRANSLATING,
+                totalLines = 20,
+                preparedCount = 0,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                dubbingOn = true,
+                totalLines = 20,
+                preparedCount = 19,
+            ),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                dubbingOn = true,
+                totalLines = 20,
+                preparedCount = 20,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                waitingForDubbingEngine = true,
+                dubbingOn = true,
+                totalLines = 20,
+                preparedCount = 0,
+            ),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                dubbingOn = false,
+                totalLines = 20,
+                preparedCount = 0,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.ERROR,
+                dubbingOn = true,
+                totalLines = 20,
+                preparedCount = 20,
+            ),
+        )
+    }
+
+    @Test
     fun readyNotificationDoesNotClaimDubbingIsCompleteWhileEnginesAreMissing() {
         assertEquals(
             "视频可播放 · 等待转写引擎",
