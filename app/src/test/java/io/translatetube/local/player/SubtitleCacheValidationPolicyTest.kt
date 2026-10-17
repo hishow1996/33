@@ -102,6 +102,27 @@ class SubtitleCacheValidationPolicyTest {
     }
 
     @Test
+    fun cancellationIsCheckedWhileRestoringLargeImportedCaches() {
+        val source = (0 until 700).map { index ->
+            io.translatetube.local.subs.SubLine(index, index * 1_000L, (index + 1) * 1_000L, "row $index")
+        }
+        val cached = source.map { line ->
+            SubtitleCacheValidationPolicy.CachedTranslationRow(
+                line.startMs, line.endMs, line.text, "译文 ${line.index}",
+            )
+        }
+        var checks = 0
+        val error = runCatching {
+            SubtitleCacheValidationPolicy.restoreTranslationsForSource(source, cached) {
+                checks++
+                if (checks >= 3) throw java.util.concurrent.CancellationException("test cancellation")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is java.util.concurrent.CancellationException)
+        assertTrue("cancellation callback should be checked repeatedly", checks >= 3)
+    }
+
+    @Test
     fun rejectsImportedCacheWhenSubtitleTextOrTimelineDiffers() {
         val source = listOf(
             io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "Hello"),

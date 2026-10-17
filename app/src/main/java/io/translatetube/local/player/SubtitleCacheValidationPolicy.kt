@@ -23,7 +23,9 @@ internal object SubtitleCacheValidationPolicy {
     fun restoreTranslationsForSource(
         sourceLines: List<SubLine>,
         cachedRows: List<CachedTranslationRow>,
+        checkActive: () -> Unit = {},
     ): List<SubLine>? {
+        checkActive()
         if (sourceLines.isEmpty() || sourceLines.size != cachedRows.size ||
             sourceLines.size > MAX_CACHED_CUE_COUNT
         ) return null
@@ -34,6 +36,7 @@ internal object SubtitleCacheValidationPolicy {
         var hasRecoverableTranslation = false
         val uniqueRows = HashSet<Triple<Long, Long, String>>(cachedRows.size)
         for (index in cachedRows.indices) {
+            if ((index and 0xff) == 0) checkActive()
             val cached = cachedRows[index]
             val source = sourceLines[index]
             if (
@@ -53,9 +56,16 @@ internal object SubtitleCacheValidationPolicy {
         }
         if (!hasRecoverableTranslation) return null
 
-        return sourceLines.mapIndexed { index, source ->
-            source.copy(zh = SubtitleParsers.cleanTranslatedText(cachedRows[index].translatedText))
+        val restored = ArrayList<SubLine>(sourceLines.size)
+        for (index in sourceLines.indices) {
+            if ((index and 0xff) == 0) checkActive()
+            val source = sourceLines[index]
+            restored += source.copy(
+                zh = SubtitleParsers.cleanTranslatedText(cachedRows[index].translatedText)
+            )
         }
+        checkActive()
+        return restored
     }
 
     /**

@@ -1229,21 +1229,29 @@ class PlaybackService : MediaSessionService() {
                     if (cachedEntry == null) {
                         null
                     } else {
+                        val cacheLoadJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                         val restored = runCatching {
                             val cacheRows = org.json.JSONArray(cachedEntry.linesJson)
-                            val rows = (0 until cacheRows.length()).map { index ->
+                            if (cacheRows.length() > 500_000) {
+                                throw IllegalArgumentException("字幕缓存条数超过安全上限")
+                            }
+                            val rows = ArrayList<SubtitleCacheValidationPolicy.CachedTranslationRow>(cacheRows.length())
+                            for (index in 0 until cacheRows.length()) {
+                                if ((index and 0xff) == 0) cacheLoadJob?.ensureActive()
                                 val row = cacheRows.optJSONObject(index)
                                     ?: throw IllegalArgumentException("字幕缓存第 ${index + 1} 行不是对象")
-                                SubtitleCacheValidationPolicy.CachedTranslationRow(
+                                rows += SubtitleCacheValidationPolicy.CachedTranslationRow(
                                     startMs = row.optLong("s", Long.MIN_VALUE),
                                     endMs = row.optLong("e", Long.MIN_VALUE),
-                                    sourceText = row.optString("t"),
+                                    sourceText = row.optString("t", ""),
                                     // JSONObject.NULL.toString() can become the literal "null";
                                     // treat absent/null translations as missing so they are retried.
                                     translatedText = row.optString("zh", "").takeIf { it.isNotBlank() },
                                 )
                             }
-                            SubtitleCacheValidationPolicy.restoreTranslationsForSource(parsedLines, rows)
+                            SubtitleCacheValidationPolicy.restoreTranslationsForSource(parsedLines, rows) {
+                                cacheLoadJob?.ensureActive()
+                            }
                         }.getOrNull()
                         if (restored == null) {
                             android.util.Log.w(
