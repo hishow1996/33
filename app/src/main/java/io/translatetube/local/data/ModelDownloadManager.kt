@@ -494,7 +494,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         urls: List<String>,
         destDir: File,
     ) {
-        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = if (kind == ModelKind.TTS) 140 else 198)
+        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0)
         val pkg = File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp")
         val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         val requiredStorageBytes = when (kind) {
@@ -530,7 +530,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             state.value = ModelState(
                 status = ModelStatus.DOWNLOADING,
                 progress = 0,
-                totalMB = if (kind == ModelKind.TTS) 140 else 198,
+                totalMB = 0,
                 stageMessage = when {
                     sourceIndex == 0 -> "正在连接官方模型源…"
                     primarySourceWasSlow -> "官方源速度较慢，正在切换加速源（${sourceIndex + 1}/${urls.size}）…"
@@ -552,7 +552,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         if (!HttpDownloadResponsePolicy.isValidExpectedLength(expectedBytes, maxArchiveBytes)) {
                             throw IllegalStateException("模型压缩包响应声明的文件大小无效或超过限制")
                         }
-                        val total = expectedBytes.takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
+                        val total = expectedBytes.takeIf { it > 0L } ?: 0L
                         val downloadDigest = if (kind == ModelKind.TTS) {
                             java.security.MessageDigest.getInstance("SHA-256")
                         } else null
