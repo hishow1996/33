@@ -4211,9 +4211,18 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     else -> 0.15f
                 }
             } else if (dubLine >= 0) {
-                // The current cue is not ready yet. Keep the original audible instead of creating
-                // a silent interval while Piper/Kokoro is still synthesizing or loading PCM.
-                d.prioritizeAround(dubLine)
+                // If generation is falling behind real time, continuously enlarge the look-ahead
+                // priority window so the single TTS worker prepares more upcoming cues first.
+                // Immediate mode has no PCM queue and therefore keeps the normal small window.
+                val synthesisRtf = d.synthesisRealtimeFactor
+                val lookAhead = when {
+                    d.usesImmediateTimelinePlayback -> 2
+                    synthesisRtf.isFinite() && synthesisRtf >= 1.6f -> 7
+                    synthesisRtf.isFinite() && synthesisRtf >= 1.2f -> 6
+                    synthesisRtf.isFinite() && synthesisRtf < 0.75f -> 2
+                    else -> 4
+                }
+                d.prioritizeAround(dubLine, lookAhead = lookAhead)
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
             } else {
