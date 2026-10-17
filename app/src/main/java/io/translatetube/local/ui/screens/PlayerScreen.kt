@@ -1031,30 +1031,6 @@ private fun VideoParsingPage(
                             )
                         }
                     }
-                    if (state.phase in setOf(
-                            Phase.PARSING,
-                            Phase.DOWNLOADING_AUDIO,
-                            Phase.TRANSCRIBING,
-                            Phase.TRANSLATING,
-                            Phase.SYNTHESIZING,
-                        )
-                    ) {
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text(if (state.isProcessingPaused) "继续处理" else "暂停处理") },
-                            onClick = {
-                                parsingMenuExpanded = false
-                                onTogglePause()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("取消处理") },
-                            onClick = {
-                                parsingMenuExpanded = false
-                                onCancel()
-                            },
-                        )
-                    }
                     if (state.phase == Phase.ERROR) {
                         HorizontalDivider()
                         DropdownMenuItem(
@@ -1231,14 +1207,6 @@ private fun VideoParsingPage(
                     ) { Text("重试") }
                 }
                 HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 13.dp))
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Subtitles, contentDescription = null, tint = BrandBright, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("已有字幕文件？", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                        Text("可导入本地字幕，减少不必要的处理", color = SubText, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
                 Spacer(Modifier.height(12.dp))
                 OutlinedButton(
                     onClick = onImportSubtitles,
@@ -1250,12 +1218,6 @@ private fun VideoParsingPage(
                     Icon(Icons.Filled.Subtitles, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("导入字幕并自动翻译", style = MaterialTheme.typography.titleMedium)
-                }
-                TextButton(
-                    onClick = onImportTranslatedSubtitles,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("已翻译好？上传字幕并直接配音", color = BrandBright)
                 }
             }
         }
