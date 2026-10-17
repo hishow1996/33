@@ -1248,7 +1248,11 @@ private fun VideoParsingPage(
             }
         }
 
-        if (state.availableSubtitleTracks.isNotEmpty() || state.subtitleTrackStatus.isNotBlank()) {
+        if (
+            source == VideoSourceKind.YOUTUBE ||
+            state.availableSubtitleTracks.isNotEmpty() ||
+            state.subtitleTrackStatus.isNotBlank()
+        ) {
             Spacer(Modifier.height(14.dp))
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1264,8 +1268,12 @@ private fun VideoParsingPage(
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text("可用字幕文件", color = OnBg, style = MaterialTheme.typography.titleLarge)
                             Text(
-                                if (state.availableSubtitleTracks.isEmpty()) "未发现可下载字幕轨"
-                                else "发现 " + state.availableSubtitleTracks.size + " 个字幕轨",
+                                when {
+                                    state.availableSubtitleTracks.isNotEmpty() ->
+                                        "发现 " + state.availableSubtitleTracks.size + " 个字幕轨"
+                                    state.phase == Phase.ERROR -> "未能获取字幕轨列表"
+                                    else -> "正在查找可用字幕轨…"
+                                },
                                 color = SubText,
                                 style = MaterialTheme.typography.bodySmall,
                             )
@@ -1278,14 +1286,22 @@ private fun VideoParsingPage(
                         color = SubText,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    if (state.subtitleTrackStatus.isNotBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            state.subtitleTrackStatus,
-                            color = SubText,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        state.subtitleTrackStatus.ifBlank {
+                            when {
+                                state.availableSubtitleTracks.isNotEmpty() ->
+                                    "字幕轨已就绪；下载为可选操作，不影响当前处理。"
+                                state.phase == Phase.ERROR ->
+                                    "处理未完成，尚未取得字幕轨列表；可重试或导入字幕文件。"
+                                dubbingPreparationIncomplete ->
+                                    "字幕读取已结束，正在继续准备中文配音。"
+                                else -> "正在获取可用字幕轨…"
+                            }
+                        },
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     if (state.availableSubtitleTracks.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
                         state.availableSubtitleTracks.forEachIndexed { index, track ->
