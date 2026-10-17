@@ -578,11 +578,15 @@ object SubtitleParsers {
         return out
     }
 
-    private fun stripTags(s: String): String =
-        normalizeSubtitleWhitespace(
-            SubtitleTextDecoder.decode(s.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, ""))
-                .replace(inlineWhitespaceRegex, " ")
-        )
+    private fun stripTags(s: String): String {
+        val decoded = SubtitleTextDecoder.decode(
+            s.replace(ttmlLineBreakRegex, "\n").replace(htmlTagRegex, "")
+        ).replace(inlineWhitespaceRegex, " ")
+        // Normalize each line separately so explicit WebVTT <br> tags remain visible as line breaks.
+        return decoded.split('\n')
+            .joinToString("\n") { normalizeSubtitleWhitespace(it) }
+            .trim()
+    }
 
     private fun parseVttTs(value: String): Long? {
         val clean = value.trim().replace(",", ".")
