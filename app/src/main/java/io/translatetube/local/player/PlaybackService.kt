@@ -2786,11 +2786,18 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 lookAhead = maxOf(2, startupBuffer.lineIndices.size - 1),
                             )
                         }
-                        if (startupBuffer.lineIndices.all(::cueFinished)) break
+                        val minimumBufferReady = startupBuffer.lineIndices
+                            .take(startupBuffer.minimumCueCount)
+                            .all(::cueFinished)
+                        if (minimumBufferReady) break
                         kotlinx.coroutines.delay(100)
                     }
                     val firstSpeech = startupBuffer.lineIndices.first()
-                    val bufferIncomplete = startupBuffer.lineIndices.any { !cueFinished(it) }
+                    val minimumBufferReady = startupBuffer.lineIndices
+                        .take(startupBuffer.minimumCueCount)
+                        .all(::cueFinished)
+                    val bufferIncomplete = !minimumBufferReady
+                    val remainingBufferCues = startupBuffer.lineIndices.count { !cueFinished(it) }
                     val measuredRtf = startupDubbing.synthesisRealtimeFactor
                     when {
                         !cueFinished(firstSpeech) -> {
@@ -2805,20 +2812,20 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         bufferIncomplete && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
                             android.util.Log.w(
                                 "PlaybackService",
-                                "TTS synthesis is slower than real time (rtf=$measuredRtf); startup buffer incomplete",
+                                "TTS synthesis is slower than real time (rtf=$measuredRtf); minimum startup buffer incomplete",
                             )
                             updateUiForSession(key) {
-                                it.copy(progress = "检测到配音生成速度偏慢，已尽量增加首段缓冲；未就绪片段会保留原声，建议尝试即时朗读")
+                                it.copy(progress = "配音生成速度偏慢，首段缓冲时间到后先开始播放；未就绪片段会保留原声，可改用即时朗读")
                             }
                         }
                         bufferIncomplete -> {
                             updateUiForSession(key) {
-                                it.copy(progress = "首段配音缓冲未满，后续继续生成；未就绪时保留原声")
+                                it.copy(progress = "首段最低配音缓冲未满，先开始播放；后续继续生成，未就绪时保留原声")
                             }
                         }
-                        !immediateMode && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
+                        !immediateMode && remainingBufferCues > 0 && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
                             updateUiForSession(key) {
-                                it.copy(progress = "已加深首段配音缓冲；后续生成速度偏慢时可切换即时朗读")
+                                it.copy(progress = "首段配音缓冲已就绪，额外缓冲与后续字幕继续在后台生成")
                             }
                         }
                     }
