@@ -1429,9 +1429,14 @@ class PlaybackService : MediaSessionService() {
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 val selectedImportTts = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("tts_engine", "kokoro") ?: "kokoro"
-                if (isChineseLanguage(srcLang) && selectedImportTts != "system") {
-                    // 非系统 TTS 模式下，中文源字幕直接显示原文并保留原声。
-                    // 用户明确选择系统 TTS 时，仍朗读中文字幕。
+                val importEngineReady = when (selectedImportTts) {
+                    "kokoro" -> kokoroRuntimeReady()
+                    "piper" -> piperModelReadyForChinese()
+                    else -> selectedImportTts == "system"
+                }
+                if (isChineseLanguage(srcLang) && !importEngineReady) {
+                    // 中文源 + 所选 TTS 引擎未就绪（模型未下载/未知引擎）：直接显示原文并保留原声。
+                    // 引擎就绪时（含系统 TTS 与已装模型）仍按时间轴朗读中文字幕。
                     pm.originalVolume = 1f
                     val translatedCount = translatedLines.count {
                         SubtitleParsers.cleanTranslatedText(it.zh) != null
@@ -2782,17 +2787,17 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     "piper" -> piperModelReadyForChinese()
                     else -> false
                 }
-                // Chinese source material already speaks the target language. Do not require a
-                // TTS model just to show Chinese subtitles over the original Chinese audio.
-                val isRemoteVideoSource = videoId != null || !remoteMediaUrl.isNullOrBlank()
-                if (isChineseLanguage(srcLang) && selectedTts != "system" && !isRemoteVideoSource) {
-                    // 默认本地模型模式下，中文源字幕直接显示原文并保留原声。
-                    // 用户明确选择系统 TTS 时仍按时间轴朗读中文字幕；这也覆盖 YouTube
-                    // 只有中文可用字幕轨、但用户仍需要中文语音播报的情况。
+                // Chinese source material speaks the target language, but the dubbing switch is an
+                // explicit user preference: when the selected engine is ready, build it and read
+                // the Chinese cues (with the original kept audible by default). Only degrade to
+                // subtitle-over-original when the engine itself is not ready yet.
+                if (isChineseLanguage(srcLang) && !selectedEngineReady) {
+                    // TTS 引擎未就绪（模型未下载/未知引擎）：中文源直接显示原文并保留原声。
+                    // 引擎就绪后（含系统 TTS）按时间轴朗读中文字幕。
                     updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             ttsEngineName = "",
-                            dubbingStatus = "中文视频：显示中文字幕，保留原声",
+                            dubbingStatus = "中文视频：$selectedTtsName 未就绪，先显示中文字幕并保留原声；就绪后即可朗读",
                             muteOriginal = false,
                             noModelHint = null,
                             waitingForTranscriptionEngine = false,
@@ -2919,6 +2924,16 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     }
                     withContext(Dispatchers.Main) {
                         if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                    }
+                } else {
+                    // Non-Chinese source whose selected engine is not ready. This previously fell
+                    // through silently: no engine, no voice, and no hint about why. Surface it.
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            waitingForDubbingEngine = false,
+                            dubbingStatus = "$selectedTtsName 未就绪，配音暂不可用；可切换系统 TTS 或完成模型下载",
+                            noModelHint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(selectedTtsName),
+                        )
                     }
                 }
             }
