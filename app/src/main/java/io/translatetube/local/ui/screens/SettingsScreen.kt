@@ -910,7 +910,8 @@ private fun YtDlpUpdateSection() {
                                 checked.hasUpdate && checked.latest != null ->
                                     "检查结果：发现新版本 ${checked.latest}"
                                 checked.latest != null && checked.current == null ->
-                                    "已获取最新版本 ${checked.latest}，暂时无法读取本机版本"
+                                    checked.error?.let { "检查失败：$it" }
+                                        ?: "已获取最新版本 ${checked.latest}，暂时无法读取本机版本"
                                 else -> checked.error?.let { "检查失败：$it" }
                                     ?: "检查失败：无法获取上游版本信息，请检查网络后重试"
                             }
