@@ -73,6 +73,12 @@ class DubbingEngine(
     val synthesisRealtimeFactor: Float get() = synthesisRealtimeFactorValue
     @Volatile private var synthesisRealtimeSampleCountValue: Int = 0
     val synthesisRealtimeSampleCount: Int get() = synthesisRealtimeSampleCountValue
+    /** Scheduler-aware lag: synthesis wall time divided by the interval before the next speech cue. */
+    @Volatile private var synthesisTimelineLagFactorValue: Float = Float.NaN
+    val synthesisTimelineLagFactor: Float get() = synthesisTimelineLagFactorValue
+    @Volatile private var synthesisTimelineLagSampleCountValue: Int = 0
+    val synthesisTimelineLagSampleCount: Int get() = synthesisTimelineLagSampleCountValue
+    @Volatile private var nextSpeechStartMsByLine: LongArray = LongArray(0)
     /** Diagnostic callback: the first successful PCM result for this session. */
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
@@ -203,10 +209,22 @@ class DubbingEngine(
                 fallbackRequested.set(false)
                 this.lines = preparedLines
                 this.timeline = preparedTimeline
+                val nextSpeechStarts = LongArray(preparedLines.size) { Long.MAX_VALUE }
+                var nextSpeechStart = Long.MAX_VALUE
+                for (lineIndex in preparedLines.indices.reversed()) {
+                    nextSpeechStarts[lineIndex] = nextSpeechStart
+                    val line = preparedLines[lineIndex]
+                    if (DubbingTimeline.isPlayableCue(line) && !line.zh.isNullOrBlank()) {
+                        nextSpeechStart = line.startMs
+                    }
+                }
+                nextSpeechStartMsByLine = nextSpeechStarts
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
             synthesisRealtimeFactorValue = Float.NaN
             synthesisRealtimeSampleCountValue = 0
+            synthesisTimelineLagFactorValue = Float.NaN
+            synthesisTimelineLagSampleCountValue = 0
             _totalLines.value = this.lines.size
             readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
             pending.clear()
@@ -589,12 +607,29 @@ class DubbingEngine(
                             synthesisRealtimeSampleCountValue += 1
                         }
                     }
+                    // Audio-duration RTF alone can overestimate lag for sparse subtitles. Compare
+                    // generation cost with the actual timeline interval before the next speech cue.
+                    val currentTimelineLine = lines.getOrNull(idx)
+                    val nextSpeechStart = nextSpeechStartMsByLine.getOrNull(idx) ?: Long.MAX_VALUE
+                    if (currentTimelineLine != null && nextSpeechStart != Long.MAX_VALUE) {
+                        val timelineBudgetMs =
+                            (nextSpeechStart - currentTimelineLine.startMs).coerceAtLeast(500L)
+                        val measuredTimelineLag = synthesisElapsedMs.toDouble() / timelineBudgetMs
+                        if (measuredTimelineLag.isFinite() && measuredTimelineLag >= 0.0) {
+                            val previousLag = synthesisTimelineLagFactorValue
+                            synthesisTimelineLagFactorValue = if (previousLag.isFinite()) {
+                                previousLag * 0.65f + measuredTimelineLag.toFloat() * 0.35f
+                            } else measuredTimelineLag.toFloat()
+                            synthesisTimelineLagSampleCountValue += 1
+                        }
+                    }
                     if (synthesisElapsedMs >= 500L || synthesisCallCount > 1) {
                         android.util.Log.d(
                             "DubbingEngine",
                             "TTS performance: engine=${tts?.name} line=${idx + 1}/${lines.size} " +
                                 "chars=${text.length} synthMs=${synthesisElapsedMs} " +
                                 "audioMs=${outputAudioDurationMs.toLong()} rtf=${synthesisRealtimeFactorValue} " +
+                                "timelineLag=${synthesisTimelineLagFactorValue} samples=${synthesisTimelineLagSampleCountValue} " +
                                 "calls=${synthesisCallCount}",
                         )
                     }
@@ -2254,6 +2289,8 @@ class DubbingEngine(
         }
         synthesisRealtimeFactorValue = Float.NaN
         synthesisRealtimeSampleCountValue = 0
+        synthesisTimelineLagFactorValue = Float.NaN
+        synthesisTimelineLagSampleCountValue = 0
 
         scope.launch {
             oldCacheInit?.join()
