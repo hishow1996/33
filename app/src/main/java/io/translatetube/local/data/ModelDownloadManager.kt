@@ -537,7 +537,6 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     else -> "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
                 },
             )
-            val sourceStartedAtNanos = System.nanoTime()
             try {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
@@ -546,6 +545,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             throw IllegalStateException("模型下载需要完整 HTTP 200 响应，收到 HTTP ${resp.code}")
                         }
                         val body = resp.body ?: throw IllegalStateException("空响应")
+                        val sourceStartedAtNanos = System.nanoTime()
                         val maxArchiveBytes = 512L * 1024 * 1024
                         val expectedBytes = body.contentLength()
                         if (!HttpDownloadResponsePolicy.isValidExpectedLength(expectedBytes, maxArchiveBytes)) {
