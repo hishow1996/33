@@ -2763,8 +2763,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     lines = finalLines,
                     spokenCueIndices = startupSpeechCueIndices,
                     immediateMode = immediateMode,
-                    synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
-                    synthesisSampleCount = startupDubbing.synthesisRealtimeSampleCount,
+                    synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
+                    synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
                 )
                 if (startupBuffer.lineIndices.isNotEmpty()) {
                     fun cueFinished(index: Int): Boolean =
@@ -2786,8 +2786,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             lines = finalLines,
                             spokenCueIndices = startupSpeechCueIndices,
                             immediateMode = immediateMode,
-                            synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
-                            synthesisSampleCount = startupDubbing.synthesisRealtimeSampleCount,
+                            synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
+                            synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
                         )
                         if (!immediateMode && startupBuffer.waitForAllBeforePlayback) {
                             waitForAllBeforePlayback = true
@@ -2849,7 +2849,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             .all(::cueFinished)
                     }
                     val bufferIncomplete = !minimumBufferReady
-                    val measuredRtf = startupDubbing.synthesisRealtimeFactor
+                    val measuredLag = startupDubbing.synthesisTimelineLagFactor
                     when {
                         waitForAllBeforePlayback && allSpeechReady -> {
                             android.util.Log.i(
@@ -2869,7 +2869,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 it.copy(progress = "首句配音仍在准备，先开始播放；配音就绪后继续生成")
                             }
                         }
-                        bufferIncomplete && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
+                        bufferIncomplete && measuredLag.isFinite() && measuredLag >= 1.2f -> {
                             android.util.Log.w(
                                 "PlaybackService",
                                 "TTS synthesis is slower than real time; buffer deadline reached",
@@ -2883,7 +2883,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 it.copy(progress = "首段缓冲未完全就绪，先开始播放；后续配音继续生成")
                             }
                         }
-                        !immediateMode && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
+                        !immediateMode && measuredLag.isFinite() && measuredLag >= 1.2f -> {
                             updateUiForSession(key) {
                                 it.copy(progress = "已准备较长的首段配音缓冲，播放期间继续合成后续字幕")
                             }
