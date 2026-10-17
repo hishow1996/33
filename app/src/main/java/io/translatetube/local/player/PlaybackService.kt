@@ -4532,7 +4532,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         playbackAllowed = {
                             val latest = ui.value
                             ::pm.isInitialized &&
-                                pm.player.isPlaying &&
+                                pm.isPlaying.value &&
                                 latest.key == st.key &&
                                 latest.dubbingOn &&
                                 dubbing === d
