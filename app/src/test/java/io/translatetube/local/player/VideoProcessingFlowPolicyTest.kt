@@ -235,7 +235,7 @@ class VideoProcessingFlowPolicyTest {
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.SYNTHESIZING,
                 playerIsPlaying = true,
-                systemTtsLivePlayback = false,
+                progressiveTtsPlayback = false,
             ),
         )
         assertTrue(
@@ -253,34 +253,34 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
 
-        // System TTS does not synthesize a PCM queue: keep the page until actual video playback,
-        // then return to the player while it speaks each subtitle live on the timeline.
+        // System TTS uses the PCM queue again. Keep the page until the first cue lets video
+        // playback start, then return to the player while remaining cues synthesize in background.
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.SYNTHESIZING,
                 playerIsPlaying = false,
-                systemTtsLivePlayback = true,
+                progressiveTtsPlayback = true,
             ),
         )
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
                 playerIsPlaying = false,
-                systemTtsLivePlayback = true,
+                progressiveTtsPlayback = true,
             ),
         )
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.SYNTHESIZING,
                 playerIsPlaying = true,
-                systemTtsLivePlayback = true,
+                progressiveTtsPlayback = true,
             ),
         )
         assertFalse(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
                 playerIsPlaying = true,
-                systemTtsLivePlayback = true,
+                progressiveTtsPlayback = true,
             ),
         )
 
@@ -289,7 +289,7 @@ class VideoProcessingFlowPolicyTest {
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.READY,
                 playerIsPlaying = true,
-                systemTtsLivePlayback = true,
+                progressiveTtsPlayback = true,
                 waitingForDubbingEngine = true,
             ),
         )
@@ -297,7 +297,7 @@ class VideoProcessingFlowPolicyTest {
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.ERROR,
                 playerIsPlaying = true,
-                systemTtsLivePlayback = true,
+                progressiveTtsPlayback = true,
             ),
         )
     }
