@@ -537,6 +537,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     else -> "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
                 },
             )
+            var downloadedArchiveSha256: String? = null
             try {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
@@ -552,6 +553,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             throw IllegalStateException("模型压缩包响应声明的文件大小无效或超过限制")
                         }
                         val total = expectedBytes.takeIf { it > 0 } ?: (state.value.totalMB * 1048576)
+                        val downloadDigest = if (kind == ModelKind.TTS) {
+                            java.security.MessageDigest.getInstance("SHA-256")
+                        } else null
                         body.byteStream().use { ins ->
                             FileOutputStream(pkg).use { out ->
                                 val buf = ByteArray(256 * 1024)
@@ -574,6 +578,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                         throw SlowDownloadSourceException(got, elapsedMillis)
                                     }
                                     out.write(buf, 0, n)
+                                    downloadDigest?.update(buf, 0, n)
                                     val nowNanos = System.nanoTime()
                                     if (got - lastProgressBytes >= 512L * 1024L ||
                                         nowNanos - lastProgressAtNanos >= 250_000_000L
@@ -604,6 +609,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                         "模型压缩包下载不完整或大小异常：预期 ${expectedBytes} 字节，实际收到 ${got} 字节"
                                     )
                                 }
+                                downloadedArchiveSha256 = downloadDigest?.digest()
+                                    ?.joinToString("") { "%02x".format(it.toInt() and 0xff) }
                                 out.flush()
                                 out.fd.sync()
                             }
@@ -619,12 +626,10 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     ModelKind.ASR -> null
                 }
                 if (expectedArchiveSha256 != null) {
-                    withContext(Dispatchers.IO) {
-                        val checksumJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-                        val actual = sha256(pkg) { awaitDownloadsResumedBlocking(checksumJob) }
-                        if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
-                            throw java.io.IOException("模型压缩包 SHA-256 校验失败")
-                        }
+                    val actual = downloadedArchiveSha256
+                        ?: throw java.io.IOException("模型压缩包未能完成 SHA-256 校验")
+                    if (!actual.equals(expectedArchiveSha256, ignoreCase = true)) {
+                        throw java.io.IOException("模型压缩包 SHA-256 校验失败")
                     }
                 }
 
