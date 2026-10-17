@@ -30,12 +30,12 @@ internal object DubbingStartupBufferPolicy {
         // voices/devices so that a short startup lead can absorb temporary synthesis stalls.
         val (lookAheadMs, minCues, maxCues) = when {
             synthesisRealtimeFactor.isFinite() && synthesisRealtimeFactor >= 1.6f ->
-                Triple(15_000L, 8, 12)
+                Triple(12_000L, 6, 8)
             synthesisRealtimeFactor.isFinite() && synthesisRealtimeFactor >= 1.2f ->
-                Triple(13_000L, 6, 10)
+                Triple(10_000L, 5, 7)
             synthesisRealtimeFactor.isFinite() && synthesisRealtimeFactor < 0.75f ->
-                Triple(6_000L, 3, 6)
-            else -> Triple(10_000L, 4, 8)
+                Triple(5_000L, 2, 4)
+            else -> Triple(8_000L, 3, 6)
         }
         val firstStart = lines[spoken.first()].startMs
         val inWindow = spoken.filter { lines[it].startMs <= firstStart + lookAheadMs }
@@ -50,7 +50,7 @@ internal object DubbingStartupBufferPolicy {
             lineIndices = selected,
             lookAheadMs = lookAheadMs,
             minimumCueCount = minimum,
-            waitTimeoutMs = 18_000L,
+            waitTimeoutMs = 15_000L,
         )
     }
 }
