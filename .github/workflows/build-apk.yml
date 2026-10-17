@@ -4,12 +4,8 @@ name: Build Android APK
 # Explicit retry trigger after fixing the VideoSourceKind import in subtitle processing UI.
 # User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.
 on:
+  # Build only when the user explicitly asks for an APK.
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/build-apk.yml
 
 permissions:
   contents: read
