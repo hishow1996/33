@@ -231,7 +231,7 @@ fun WebVideoScreen(
     fun runYtDlp(target: String) {
         if (ytDlpBusy) return
         if (!screenActive.get() || !io.translatetube.local.yt.YtDlpRepo.isEligible(target)) {
-            ytDlpHint = "yt-dlp 仅适用于 http/https 非 YouTube 链接"
+            ytDlpHint = "该网页地址暂不适用于 yt-dlp 解析"
             return
         }
         ytDlpBusy = true
@@ -410,17 +410,51 @@ fun WebVideoScreen(
         }
     }
 
-    // PikPak 分享链接：页面加载后主动读取清单（文件夹支持），不跑 yt-dlp。
-    // 其他页面仍无候选时，自动尝试一次 yt-dlp 解析。
+    // PikPak share manifests use their own resolver and never enter the yt-dlp fallback.
     LaunchedEffect(currentPage, pageLoadToken) {
         delay(5000)
-        if (PikpakShare.parseShareId(currentPage) != null) {
-            if (pikpakShareId == null && pikpakEntries.isEmpty() && !pikpakBusy) {
-                expandPikpak("")
-            }
-            return@LaunchedEffect
+        if (PikpakShare.parseShareId(currentPage) != null &&
+            pikpakShareId == null && pikpakEntries.isEmpty() && !pikpakBusy
+        ) {
+            expandPikpak("")
         }
-        if (candidatesState.value.isEmpty() && !ytDlpBusy && ytDlpAutoAttempts == 0) {
+    }
+
+    // Give the existing WebView probe and HEAD/Range candidate verifier first chance. Any newly
+    // observed candidate restarts this quiet period; yt-dlp is used automatically only after the
+    // page is loaded and no verified playable media URL remains.
+    LaunchedEffect(
+        currentPage,
+        pageLoadToken,
+        pageLoading,
+        candidatesState.value,
+        verifiedUrls,
+        ytDlpBusy,
+        ytDlpAutoAttempts,
+    ) {
+        if (
+            pageLoading ||
+            ytDlpBusy ||
+            ytDlpAutoAttempts != 0 ||
+            PikpakShare.parseShareId(currentPage) != null
+        ) return@LaunchedEffect
+
+        delay(8000)
+        val hasUsableCandidate = candidatesState.value.any { candidate ->
+            candidate.url in verifiedUrls &&
+                WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
+        }
+        if (
+            screenActive.get() &&
+            WebVideoProbePolicy.shouldStartAutomaticYtDlp(
+                pageLoaded = !pageLoading,
+                isEligible = io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage),
+                isPikPakShare = PikpakShare.parseShareId(currentPage) != null,
+                isBusy = ytDlpBusy,
+                autoAttempts = ytDlpAutoAttempts,
+                hasUsableCandidate = hasUsableCandidate,
+            )
+        ) {
             ytDlpAutoAttempts = 1
             runYtDlp(currentPage)
         }
@@ -808,21 +842,22 @@ fun WebVideoScreen(
                     ) { Text(if (updatingRules) "更新中…" else "更新 yt-dlp 解析规则") }
                 }
             }
-            if (candidatesState.value.isEmpty() && WebMediaUrlPolicy.normalizePageUrl(currentPage) != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        enabled = !ytDlpBusy,
-                        onClick = { runYtDlp(currentPage) },
-                    ) {
-                        Text(if (ytDlpBusy) "yt-dlp 解析中…" else "用 yt-dlp 解析本页视频")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "支持B站、TikTok、Twitter 等上千个网站；YouTube 风控期也可用此方式兜底",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            if (
+                !pageLoading &&
+                !ytDlpBusy &&
+                ytDlpAutoAttempts == 0 &&
+                candidatesState.value.none { candidate ->
+                    candidate.url in verifiedUrls &&
+                        WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
+                } &&
+                PikpakShare.parseShareId(currentPage) == null &&
+                WebMediaUrlPolicy.normalizePageUrl(currentPage) != null
+            ) {
+                Text(
+                    "正在优先检测网页视频源；如果现有方式没有找到可用地址，将自动尝试备用解析。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
             if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
