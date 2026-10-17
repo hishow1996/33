@@ -118,8 +118,7 @@ class KokoroTts(private val ctx: Context, private val speakerId: Int = 14, priva
     override fun close() = tts.release()
 }
 
-/** 系统 TTS：等待合成回调完成后再读取 WAV，避免读到尚未写完的文件。 */
-/** 系统 TTS：等待合成回调完成后再读取 WAV，避免读到尚未写完的文件。 */
+/** 系统 TTS：逐句合成 WAV，再由时间轴配音引擎输出 PCM。 */
 class SystemTts(context: Context) : TtsEngine {
     private val appCtx = context.applicationContext
     override val name = "系统TTS"
@@ -149,6 +148,7 @@ class SystemTts(context: Context) : TtsEngine {
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeLatch: java.util.concurrent.CountDownLatch? = null
     @Volatile private var activeFailure: String? = null
+    @Volatile private var activeSynthesisStartedAtNanos: Long = 0L
     /**
      * Makes utterance-id validation, latch publication, callbacks and close atomic with respect
      * to one another. Utterance callbacks may arrive on different threads.
@@ -161,17 +161,33 @@ class SystemTts(context: Context) : TtsEngine {
             ready.countDown()
         }
         ttsRef.set(tts)
-        if (!ready.await(15, java.util.concurrent.TimeUnit.SECONDS) || !ok) {
+        fun disposeFailedEngine() {
+            ttsRef.compareAndSet(tts, null)
+            runCatching { tts.stop() }
             runCatching { tts.shutdown() }
-            throw IllegalStateException("系统 TTS 初始化失败")
+        }
+        val initialized = try {
+            ready.await(15, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (interrupted: InterruptedException) {
+            disposeFailedEngine()
+            Thread.currentThread().interrupt()
+            throw IllegalStateException("等待手机系统 TTS 初始化时被中断", interrupted)
+        }
+        if (!initialized) {
+            disposeFailedEngine()
+            throw IllegalStateException("手机系统 TTS 初始化超时（15 秒），请检查默认文字转语音服务")
+        }
+        if (!ok) {
+            disposeFailedEngine()
+            throw IllegalStateException("手机系统文字转语音服务启动失败，请检查系统 TTS 引擎")
         }
 
         val languageResult = tts.setLanguage(Locale.SIMPLIFIED_CHINESE)
         if (languageResult < TextToSpeech.LANG_AVAILABLE) {
             // This mode must remain the selected system TTS engine. Do not silently switch
             // to another locale or another engine when Chinese voice data is missing.
-            runCatching { tts.shutdown() }
-            throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据")
+            disposeFailedEngine()
+            throw IllegalStateException("系统 TTS 未安装或不支持中文语音数据") 
         }
 
         val allChineseVoices = tts.voices.orEmpty()
@@ -190,7 +206,7 @@ class SystemTts(context: Context) : TtsEngine {
             availableChineseVoices,
         ) { it.name }
         if (defaultVoice == null) {
-            runCatching { tts.shutdown() }
+            disposeFailedEngine()
             throw IllegalStateException("系统 TTS 没有可用的中文音色")
         }
         val catalogue = (listOf(defaultVoice) + availableChineseVoices)
@@ -198,7 +214,7 @@ class SystemTts(context: Context) : TtsEngine {
         if (tts.voice?.name != defaultVoice.name) {
             val voiceResult = tts.setVoice(defaultVoice)
             if (voiceResult != TextToSpeech.SUCCESS) {
-                runCatching { tts.shutdown() }
+                disposeFailedEngine()
                 throw IllegalStateException("系统 TTS 无法切换到可用中文音色：${defaultVoice.name}")
             }
         }
@@ -218,27 +234,39 @@ class SystemTts(context: Context) : TtsEngine {
             override fun onStart(utteranceId: String?) = Unit
 
             override fun onDone(utteranceId: String?) {
-                synchronized(lifecycleLock) {
-                    if (utteranceId == activeUtteranceId) activeLatch?.countDown()
+                val elapsedMs = synchronized(lifecycleLock) {
+                    if (utteranceId == activeUtteranceId) {
+                        activeLatch?.countDown()
+                        ((System.nanoTime() - activeSynthesisStartedAtNanos).coerceAtLeast(0L) / 1_000_000L)
+                    } else {
+                        null
+                    }
+                }
+                if (elapsedMs != null) {
+                    android.util.Log.d("SystemTts", "WAV synthesis callback completed in ${elapsedMs} ms")
                 }
             }
 
             override fun onError(utteranceId: String?) {
-                synchronized(lifecycleLock) {
+                val matched = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = "系统 TTS 合成回调返回错误"
                         activeLatch?.countDown()
-                    }
+                        true
+                    } else false
                 }
+                if (matched) android.util.Log.e("SystemTts", "WAV synthesis callback failed")
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
-                synchronized(lifecycleLock) {
+                val matched = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = "系统 TTS 合成失败（错误码 $errorCode）"
                         activeLatch?.countDown()
-                    }
+                        true
+                    } else false
                 }
+                if (matched) android.util.Log.e("SystemTts", "WAV synthesis callback failed, code=$errorCode")
             }
 
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
@@ -283,6 +311,7 @@ class SystemTts(context: Context) : TtsEngine {
                 activeUtteranceId = utteranceId
                 activeLatch = completed
                 activeFailure = null
+                activeSynthesisStartedAtNanos = System.nanoTime()
                 instance
             }
             val defaultVoice = defaultChineseVoice
@@ -302,6 +331,10 @@ class SystemTts(context: Context) : TtsEngine {
             }
             val result = tts.synthesizeToFile(text, android.os.Bundle(), tmp, utteranceId)
             if (result != TextToSpeech.SUCCESS) {
+                android.util.Log.e(
+                    "SystemTts",
+                    "synthesizeToFile rejected request: result=$result chars=${text.length} voice=${targetVoice.name}",
+                )
                 throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
             }
             val timeoutMs = SystemTtsTimeoutPolicy.timeoutMs(text, safeSpeed)
@@ -313,8 +346,12 @@ class SystemTts(context: Context) : TtsEngine {
                     checkActive()
                     val remainingNanos = timeoutDeadlineNanos - System.nanoTime()
                     if (remainingNanos <= 0L) {
+                        android.util.Log.e(
+                            "SystemTts",
+                            "WAV synthesis timed out after ${timeoutMs} ms; chars=${text.length} voice=${targetVoice.name}",
+                        )
                         runCatching { tts.stop() }
-                        throw IllegalStateException("系统 TTS 合成超时")
+                        throw IllegalStateException("系统 TTS 合成超时（${timeoutMs / 1000} 秒）")
                     }
                     val waitMs = minOf(
                         100L,
@@ -325,6 +362,15 @@ class SystemTts(context: Context) : TtsEngine {
             } catch (cancelled: java.util.concurrent.CancellationException) {
                 runCatching { tts.stop() }
                 throw cancelled
+            } catch (interrupted: InterruptedException) {
+                runCatching { tts.stop() }
+                try {
+                    checkActive()
+                } catch (cancelled: java.util.concurrent.CancellationException) {
+                    throw cancelled
+                }
+                Thread.currentThread().interrupt()
+                throw IllegalStateException("等待系统 TTS 合成结果时线程被中断", interrupted)
             }
             checkActive()
             if (closed) throw IllegalStateException("系统 TTS 已关闭，本次合成已取消")
@@ -344,11 +390,21 @@ class SystemTts(context: Context) : TtsEngine {
                 audio,
                 checkActive = checkTtsActive,
             )
+            val mediaVolume = runCatching {
+                (appCtx.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager)
+                    ?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+            }.getOrNull()
+            val elapsedMs = ((System.nanoTime() - activeSynthesisStartedAtNanos).coerceAtLeast(0L) / 1_000_000L)
             android.util.Log.d(
                 "SystemTts",
-                "PCM output: input=${audio.sampleRate}Hz/${audio.samples.size} samples, " +
+                "PCM ready: chars=${text.length} voice=${targetVoice.name} speed=$safeSpeed " +
+                    "elapsed=${elapsedMs}ms wav=${tmp.length()}B mediaVolume=$mediaVolume " +
+                    "input=${audio.sampleRate}Hz/${audio.samples.size} samples, " +
                     "output=${normalized.sampleRate}Hz/${normalized.samples.size} samples",
             )
+            if (mediaVolume == 0) {
+                android.util.Log.w("SystemTts", "STREAM_MUSIC volume is 0; generated PCM will follow media-volume routing")
+            }
             return normalized
         } finally {
             synchronized(lifecycleLock) {
@@ -356,6 +412,7 @@ class SystemTts(context: Context) : TtsEngine {
                     activeUtteranceId = null
                     activeLatch = null
                     activeFailure = null
+                    activeSynthesisStartedAtNanos = 0L
                 }
             }
             tmp.delete()
@@ -387,7 +444,9 @@ class SystemTts(context: Context) : TtsEngine {
         }
         if (engine != null) {
             runCatching { engine.stop() }
+                .onFailure { android.util.Log.w("SystemTts", "Could not stop system TTS during close", it) }
             runCatching { engine.shutdown() }
+                .onFailure { android.util.Log.w("SystemTts", "Could not shut down system TTS cleanly", it) }
         }
     }
 }
