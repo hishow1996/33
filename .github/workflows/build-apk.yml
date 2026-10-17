@@ -1,7 +1,7 @@
 name: Build Android APK
 
 # APKs require an explicit request. Ordinary source pushes never trigger a build.
-# Uniquely named workflow-only commits act as one-time fallbacks when dispatch is unavailable.
+# User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.
 on:
   workflow_dispatch:
   push:
