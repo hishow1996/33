@@ -933,7 +933,15 @@ private fun VideoParsingPage(
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
     val waitingForTranscriptionEngine = state.waitingForTranscriptionEngine && state.phase != Phase.ERROR
     val waitingForDubbingEngine = state.waitingForDubbingEngine && state.phase != Phase.ERROR
-    val displayPhase = if (waitingForDubbingEngine && state.phase == Phase.READY) Phase.SYNTHESIZING else state.phase
+    val displayPhase = if (
+        waitingForDubbingEngine ||
+        VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(state.dubbingOn, state.totalLines, state.preparedCount)
+    ) Phase.SYNTHESIZING else state.phase
+    val dubbingPreparationIncomplete = VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(
+        dubbingOn = state.dubbingOn,
+        totalLines = state.totalLines,
+        preparedCount = state.preparedCount,
+    )
     val currentStage = VideoProcessingFlowPolicy.stageIndex(
         source = source,
         flow = flow,
@@ -943,12 +951,17 @@ private fun VideoParsingPage(
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
     val fraction = when (state.phase) {
-        Phase.READY -> if (VideoProcessingFlowPolicy.isCompleted(
-            state.phase,
-            waitingForTranscriptionEngine,
-            waitingForDubbingEngine,
-            state.dubbingHasErrors,
-        )) 1f else null
+        Phase.READY -> when {
+            waitingForTranscriptionEngine || waitingForDubbingEngine -> null
+            dubbingPreparationIncomplete -> (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            VideoProcessingFlowPolicy.isCompleted(
+                state.phase,
+                waitingForTranscriptionEngine,
+                waitingForDubbingEngine,
+                state.dubbingHasErrors,
+            ) -> 1f
+            else -> null
+        }
         Phase.SYNTHESIZING -> if (state.totalLines > 0) {
             (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
         } else null
@@ -956,8 +969,10 @@ private fun VideoParsingPage(
     }
     val mainTitle = when {
         isCancelled -> "处理已取消"
-        state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
         waitingForDubbingEngine -> "等待配音引擎就绪"
+        dubbingPreparationIncomplete && state.dubbingHasErrors -> "正在准备配音，失败字幕已恢复原声"
+        dubbingPreparationIncomplete -> "正在按时间轴生成中文配音"
+        state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
         else -> VideoProcessingFlowPolicy.mainTitle(
             source = source,
             flow = flow,
@@ -970,6 +985,8 @@ private fun VideoParsingPage(
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
         state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
         state.progress.isNotBlank() -> state.progress
+        dubbingPreparationIncomplete ->
+            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音；剩余字幕仍在处理。"
         else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
 
