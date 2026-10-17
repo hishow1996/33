@@ -2737,7 +2737,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             // 其他配音引擎会在后台预合成 PCM；系统 TTS 已按时间轴就绪，首句会在
             // 播放头进入字幕区间时直接调用 Android 朗读服务，不再等待整段音频合成。
             // 只短暂等待首句可用状态，避免配音队列尚未初始化就开始处理时间轴。
-            val startupDubbing = dubbing
+            // Native System TTS does not need a first PCM buffer. Start the video immediately
+            // and let Android speak each Chinese line when the playback timeline reaches it.
+            val startupDubbing = dubbing?.takeUnless {
+                it.currentTtsName.contains("系统TTS", ignoreCase = true)
+            }
             if (startupDubbing != null) {
                 // Wait for actual speech cues, not the contiguous prepared-row counter. Empty or
                 // failed rows before the first spoken cue must not block a ready first sentence.
