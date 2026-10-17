@@ -1199,16 +1199,29 @@ private fun ModelRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    CircularProgressIndicator(
-                        progress = { (state.progress / 100f).coerceIn(0f, 1f) },
-                        modifier = Modifier.size(36.dp),
-                        color = BrandBright,
-                        trackColor = Color(0xFFE5EAF0),
-                        strokeWidth = 3.dp,
-                    )
+                    if (state.totalMB > 0L) {
+                        CircularProgressIndicator(
+                            progress = { (state.progress / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier.size(36.dp),
+                            color = BrandBright,
+                            trackColor = Color(0xFFE5EAF0),
+                            strokeWidth = 3.dp,
+                        )
+                    } else {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(36.dp),
+                            color = BrandBright,
+                            trackColor = Color(0xFFE5EAF0),
+                            strokeWidth = 3.dp,
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "下载中 ${state.progress}% · ${state.downloadedMB}/${state.totalMB} MB",
+                            if (state.totalMB > 0L) {
+                                "下载中 ${state.progress}% · ${state.downloadedMB}/${state.totalMB} MB"
+                            } else {
+                                "下载中 · 已下载 ${state.downloadedMB} MB（文件总大小未知）"
+                            },
                             color = BrandBright,
                             style = MaterialTheme.typography.bodySmall,
                         )
