@@ -213,9 +213,8 @@ object VideoProcessingFlowPolicy {
     ): Boolean = dubbingOn && totalLines > 0 && preparedCount.coerceAtLeast(0) < totalLines
 
     /**
-     * Keep the processing page visible while subtitle processing is active or a required engine is
-     * missing. Once playback is READY, the player page owns the UI while remaining cues continue
-     * to synthesize in the background.
+     * Keep the page visible during subtitle preparation, but do not let the final dubbing stage
+     * cover a video that has already started playing. Remaining speech can continue in background.
      */
     fun shouldShowProcessingPage(
         phase: Phase,
