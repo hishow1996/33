@@ -50,8 +50,8 @@ internal object TtsCpuThreadPolicy {
 
 /**
  * Optional direct timeline-speech contract for engines that explicitly support live utterances.
- * The current SystemTts intentionally uses the WAV-to-PCM path below so it shares the same
- * caching, sample normalization, timing, pause and cancellation behavior as local TTS models.
+ * SystemTts uses this path only in immediate mode; generated mode uses the WAV-to-PCM path
+ * below to share caching, normalization, timing, pause and cancellation with local neural models.
  */
 interface TimelineTtsPlayback {
     /** True only when the user selected immediate, live Android TTS instead of generated PCM. */
