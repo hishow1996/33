@@ -207,7 +207,7 @@ internal object PikpakShare {
                     .header("X-User-Region", "1")
                     .header("X-Alt-Capability", "3")
                     .header("X-Client-Version-Code", CLIENT_VERSION_CODE)
-                    .header("X-Captcha-Token", captcha)
+                    .header("X-Captcha-Token", captcha.orEmpty())
                     .build()
                 val response = runCatching { client.newCall(request).execute() }.getOrNull()
                 if (response == null) {
