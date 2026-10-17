@@ -5117,11 +5117,45 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, nowOnly)
             .build()
     }
+    /** Seek from the visible progress bar while preserving the user's intended play/pause state. */
     fun seek(ms: Long) {
-        // Invalidate old speech before seekTo emits its immediate timeline tick.
-        dubbing?.stop()
-        lastLineIdx = Int.MIN_VALUE
-        pm.seekTo(ms)
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.seek(ms)
+            return
+        }
+        if (!playerReady || !::pm.isInitialized || ui.value.key != videoKey) {
+            android.util.Log.w("PlaybackService", "Ignoring progress seek for an inactive playback service")
+            return
+        }
+        try {
+            // Keep playWhenReady, not isPlaying: isPlaying becomes false during buffering.
+            val shouldResume = pm.player.playWhenReady
+            // TTS/AudioTrack teardown can race the Media3 discontinuity callback. A voice-side
+            // failure must not prevent the actual video seek from being applied.
+            safelyControlDubbing("progress seek") { dubbing?.stop() }
+            lastLineIdx = Int.MIN_VALUE
+            pm.seekTo(ms.coerceAtLeast(0L))
+            if (
+                shouldResume &&
+                playerReady &&
+                ::pm.isInitialized &&
+                instance === this &&
+                ui.value.key == videoKey
+            ) {
+                pm.play()
+            }
+        } catch (error: Exception) {
+            android.util.Log.e("PlaybackService", "Progress-bar seek failed", error)
+            updateUiForSession(videoKey) { state ->
+                if (state.key == videoKey) {
+                    state.copy(
+                        activeDubbingLine = -1,
+                        dubbingStatus = "进度跳转时正在恢复播放，请稍后再试",
+                    )
+                } else state
+            }
+        }
     }
 
     /** Jump to a subtitle and ensure playback starts, even when the player was paused. */
@@ -5138,7 +5172,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         }
         try {
             // Stop any utterance from the previous subtitle before moving the playhead.
-            dubbing?.stop()
+            safelyControlDubbing("subtitle seek") { dubbing?.stop() }
             lastLineIdx = Int.MIN_VALUE
             pm.seekTo(ms.coerceAtLeast(0L))
             if (playerReady && ::pm.isInitialized && instance === this && ui.value.key == videoKey) {
@@ -5148,7 +5182,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             android.util.Log.e("PlaybackService", "Subtitle seek failed", error)
             updateUiForSession(videoKey) {
                 if (it.key == videoKey) {
-                    it.copy(error = "跳转到字幕时间点失败：${error.message ?: error.javaClass.simpleName}")
+                    it.copy(
+                        activeDubbingLine = -1,
+                        dubbingStatus = "跳转到字幕时间点失败：${error.message ?: error.javaClass.simpleName}",
+                    )
                 } else it
             }
         }
