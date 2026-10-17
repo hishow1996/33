@@ -646,7 +646,14 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         checkActive = { awaitDownloadsResumedBlocking(extractionJob) },
                         onProgress = { extractedBytes ->
                             val handledMB = extractedBytes / (1024L * 1024L)
+                            val expectedExtractedBytes = (
+                                if (kind == ModelKind.TTS) 207L else 160L
+                            ) * ModelStoragePreflightPolicy.MIB
+                            val extractionProgress = (
+                                extractedBytes * 100L / expectedExtractedBytes
+                            ).toInt().coerceIn(0, 99)
                             state.value = state.value.copy(
+                                progress = extractionProgress,
                                 stageMessage = "正在解压并安装模型（已处理 ${handledMB} MB）",
                             )
                         },
