@@ -93,6 +93,7 @@ fun PlayerScreen(
     mediaReferrer: String = "",
     mediaCookie: String? = null,
     mediaUserAgent: String? = null,
+    requestToken: Long = 0L,
 ) {
     val ctx = LocalContext.current
     val settingsPrefs = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
@@ -146,17 +147,22 @@ fun PlayerScreen(
             current.phase == Phase.ERROR &&
             current.lines.isNotEmpty() && current.sourceLang.isNotBlank()
         if (canResumeExistingWork && service?.isReady == true) {
-            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent)
+            service.open(key, videoId, localUri, resumeState = current, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, requestToken = requestToken)
         } else {
             retryNonce++
         }
     }
 
     // 打开视频：先确保服务在跑，再下发任务
-    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, mediaUserAgent, retryNonce) {
+    LaunchedEffect(videoId, localUri, mediaUrl, mediaTitle, mediaReferrer, mediaCookie, mediaUserAgent, requestToken, retryNonce) {
         val key = requestKey
         val retryRequested = retryNonce != handledRetryNonce
-        if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true) {
+        // A repeated tap on the same history row has the same media key but a new request token.
+        // Reopen that session so the latest selected TTS engine is actually initialized. Returning
+        // from Settings carries the same token, so it must not restart the video a second time.
+        val newPlaybackRequest = requestToken > 0L &&
+            PlaybackService.instance?.isOpenRequestActive(key, requestToken) != true
+        if (state.key != key || retryRequested || PlaybackService.instance?.isReady != true || newPlaybackRequest) {
             if (retryRequested) handledRetryNonce = retryNonce
             try {
                 var s = PlaybackService.instance
@@ -197,7 +203,7 @@ fun PlayerScreen(
                         failedState.phase == Phase.ERROR &&
                         failedState.lines.isNotEmpty() && failedState.sourceLang.isNotBlank()
                     ) failedState else null
-                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent)
+                    s.open(key, videoId, localUri, resumeState = resumeExistingWork, remoteMediaUrl = mediaUrl, remoteMediaTitle = mediaTitle, remoteMediaReferrer = mediaReferrer, remoteMediaCookie = mediaCookie, remoteMediaUserAgent = mediaUserAgent, requestToken = requestToken)
                 }
             } catch (e: Throwable) {
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
