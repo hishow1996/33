@@ -405,10 +405,19 @@ fun PlayerScreen(
         }
     }
 
+    val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
+        phase = state.phase,
+        waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
+        waitingForDubbingEngine = state.waitingForDubbingEngine,
+        dubbingOn = state.dubbingOn,
+        totalLines = state.totalLines,
+        preparedCount = state.preparedCount,
+    )
+
     Box(
         Modifier.fillMaxSize().background(BgDark).systemBarsPadding()
     ) {
-        if (state.phase != Phase.READY) {
+        if (showProcessingPage) {
             VideoParsingPage(
                 state = state,
                 onBack = { exitFloating(); PlaybackService.instance?.saveProgress(); onBack() },
