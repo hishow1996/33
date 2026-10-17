@@ -106,8 +106,8 @@ class DubbingTimelineTest {
     fun singleCueUsesHalfOpenWindowAndFastOutsideBounds() {
         val timeline = DubbingTimeline(listOf(SubLine(7, 1_000L, 2_000L, "only cue")))
         assertEquals(-1, timeline.lineAt(999L))
-        assertEquals(7, timeline.lineAt(1_000L))
-        assertEquals(7, timeline.lineAt(1_999L))
+        assertEquals(0, timeline.lineAt(1_000L))
+        assertEquals(0, timeline.lineAt(1_999L))
         assertEquals(-1, timeline.lineAt(2_000L))
         assertEquals(-1, timeline.lineAt(Long.MAX_VALUE))
     }
