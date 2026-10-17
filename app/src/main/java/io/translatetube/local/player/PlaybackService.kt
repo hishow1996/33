@@ -2813,6 +2813,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             engine = MlKitEngine()
             engineName = "本地引擎（离线）"
         }
+        // The Google hybrid engine can fall back to offline ML Kit. For these Google paths,
+        // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
+        // to abort every subtitle and prevent the video from playing.
+        val sourceEchoAsUntranslatedFallback =
+            engine!!.id == "local" || engine!!.id == "google-hybrid"
         val pendingIndices = ArrayList<Int>()
         var completed = 0
         for (index in lines.indices) {
@@ -2917,6 +2922,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     rawTranslations = batchTranslations,
                     sourceTexts = unresolvedIndices.associateWith { plain[it] },
                     sourceLanguage = srcLang,
+                    sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                 )
                 resolvedBatch.putAll(parsedBatch.translations)
                 unresolvedIndices = parsedBatch.missingIndices
