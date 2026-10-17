@@ -228,13 +228,21 @@ object VideoProcessingFlowPolicy {
         if (phase == Phase.ERROR || waitingForTranscriptionEngine || waitingForDubbingEngine) {
             return true
         }
-        if (systemTtsLivePlayback) {
-            // Keep the processing page until playback really starts, then show the player without
-            // waiting for a PCM queue that System TTS never creates.
-            return phase != Phase.READY || !playerIsPlaying
+        if (
+            systemTtsLivePlayback &&
+            playerIsPlaying &&
+            phase in setOf(Phase.SYNTHESIZING, Phase.READY)
+        ) {
+            // Keep the page until playback really starts, then show the player without waiting
+            // for a PCM queue that Android System TTS never creates.
+            return false
+        }
+        if (systemTtsLivePlayback && phase == Phase.READY && !playerIsPlaying) {
+            // Avoid a one-frame flash of the player between READY and ExoPlayer actually starting.
+            return true
         }
         // Kokoro/Piper and other synthesis engines need their speech cues prepared first.
-        return phase != Phase.READY || dubbingPreparationIncomplete
+        return phase != Phase.READY || (!systemTtsLivePlayback && dubbingPreparationIncomplete)
     }
 
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
