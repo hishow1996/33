@@ -224,7 +224,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                             .background(if (isGoogleActive) Color(0xFFEAF1FF) else Color(0xFFF7F9FC)),
                         contentAlignment = Alignment.Center,
                     ) {
-                        GoogleTranslateIcon()
+                        GoogleTranslateIcon(providerLogoImageLoader)
                     }
                     Text(
                         "Google 翻译",
@@ -644,7 +644,7 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean, imageLoader:
         contentAlignment = Alignment.Center,
     ) {
         when {
-            spec.useGoogleTranslate -> GoogleTranslateIcon()
+            spec.useGoogleTranslate -> GoogleTranslateIcon(imageLoader)
             spec.layers.isNotEmpty() -> {
                 val vectorPaths = remember(spec) {
                     spec.layers.map { layer ->
@@ -883,8 +883,14 @@ private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray? {
 
 private fun providerImageExtension(bytes: ByteArray): String? {
     if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return null
-    val prefix = bytes.toString(Charsets.UTF_8).take(2048).trimStart('\uFEFF', ' ', '\n', '\r', '\t')
-    if (prefix.contains("<svg", ignoreCase = true)) return "svg"
+    val prefix = bytes.toString(Charsets.UTF_8).take(2048)
+        .trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+    if (prefix.contains("<!doctype html", ignoreCase = true) ||
+        Regex("""(?is)<html\b""").containsMatchIn(prefix)
+    ) return null
+    if (Regex("""(?is)<svg\b""").containsMatchIn(prefix)) {
+        return if (isValidProviderSvg(bytes)) "svg" else null
+    }
 
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
@@ -900,8 +906,21 @@ private fun providerImageExtension(bytes: ByteArray): String? {
             bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP" -> "webp"
         bytes.size >= 6 && (bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) == "GIF87a" ||
             bytes.copyOfRange(0, 6).toString(Charsets.US_ASCII) == "GIF89a") -> "gif"
-        else -> "png"
+        else -> null
     }
+}
+
+private fun isValidProviderSvg(bytes: ByteArray): Boolean {
+    if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return false
+    val svg = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF").trim()
+    if (svg.contains("<!doctype html", ignoreCase = true) ||
+        Regex("""(?is)<html\b""").containsMatchIn(svg)
+    ) return false
+    val hasRoot = Regex("""(?is)<svg\b[^>]*>""").containsMatchIn(svg)
+    val hasGraphic = Regex("""(?is)<(path|g|rect|circle|ellipse|polygon|polyline|line|text|use|image)\b""")
+        .containsMatchIn(svg)
+    val hasClosingRoot = Regex("""(?is)</svg\s*>""").containsMatchIn(svg)
+    return hasRoot && hasGraphic && hasClosingRoot
 }
 
 private fun findCachedProviderLogo(context: android.content.Context, host: String): File? {
@@ -911,11 +930,15 @@ private fun findCachedProviderLogo(context: android.content.Context, host: Strin
         ?.firstOrNull { it.isFile && it.name.startsWith(prefix) && it.length() > 0L }
         ?.takeIf { file ->
             val extension = file.extension.lowercase(Locale.ROOT)
-            extension == "svg" || runCatching {
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.absolutePath, options)
-                options.outWidth > 0 && options.outHeight > 0
-            }.getOrDefault(false)
+            when (extension) {
+                "svg" -> runCatching { isValidProviderSvg(file.readBytes()) }.getOrDefault(false)
+                "png", "jpg", "jpeg", "webp", "gif" -> runCatching {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(file.absolutePath, options)
+                    options.outWidth in 1..8192 && options.outHeight in 1..8192
+                }.getOrDefault(false)
+                else -> false
+            }
         }
 }
 
