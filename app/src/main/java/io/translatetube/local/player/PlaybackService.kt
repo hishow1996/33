@@ -2758,8 +2758,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 val immediateMode = startupDubbing.usesImmediateTimelinePlayback
+                // Subtitle count can be large. Reuse the valid speech-row index once instead of
+                // filtering every subtitle again on each 100 ms startup-buffer update.
+                val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
                 var startupBuffer = DubbingStartupBufferPolicy.plan(
-                    finalLines,
+                    lines = finalLines,
+                    spokenCueIndices = startupSpeechCueIndices,
                     immediateMode = immediateMode,
                     synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
                 )
@@ -2774,7 +2778,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
                     while (System.nanoTime() < deadlineNs) {
                         startupBuffer = DubbingStartupBufferPolicy.plan(
-                            finalLines,
+                            lines = finalLines,
+                            spokenCueIndices = startupSpeechCueIndices,
                             immediateMode = immediateMode,
                             synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
                         )
