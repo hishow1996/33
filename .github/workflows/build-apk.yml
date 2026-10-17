@@ -7,6 +7,7 @@ name: Build Android APK
 # User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.
 # Explicit rebuild trigger for making the player visible before the first progressive TTS cue.
 # Explicit trigger for the user's request to build the latest main-branch source.
+# Explicit retry trigger after fixing the duplicate unavailable-TTS fallback branch.
 on:
   # Preferred path: run only after a manual user request.
   workflow_dispatch:
