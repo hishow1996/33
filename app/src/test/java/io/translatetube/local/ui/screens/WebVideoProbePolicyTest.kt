@@ -52,6 +52,78 @@ class WebVideoProbePolicyTest {
     }
 
     @Test
+    fun automaticallyStartsYtDlpAfterPageLoadWithoutManualEngineSelection() {
+        assertTrue(
+            WebVideoProbePolicy.shouldStartAutomaticYtDlp(
+                pageLoaded = true,
+                isEligible = true,
+                isPikPakShare = false,
+                isBusy = false,
+                autoAttempts = 0,
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.shouldStartAutomaticYtDlp(
+                pageLoaded = false,
+                isEligible = true,
+                isPikPakShare = false,
+                isBusy = false,
+                autoAttempts = 0,
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.shouldStartAutomaticYtDlp(
+                pageLoaded = true,
+                isEligible = true,
+                isPikPakShare = true,
+                isBusy = false,
+                autoAttempts = 0,
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.shouldStartAutomaticYtDlp(
+                pageLoaded = true,
+                isEligible = true,
+                isPikPakShare = false,
+                isBusy = false,
+                autoAttempts = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun onlyUsesDetectedManifestAsFallbackAfterYtDlpHasFinished() {
+        assertFalse(
+            WebVideoProbePolicy.shouldAutoPlayManifest(
+                manualChose = false,
+                alreadyAutoPlayed = false,
+                ytDlpAttemptCompleted = false,
+            ),
+        )
+        assertTrue(
+            WebVideoProbePolicy.shouldAutoPlayManifest(
+                manualChose = false,
+                alreadyAutoPlayed = false,
+                ytDlpAttemptCompleted = true,
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.shouldAutoPlayManifest(
+                manualChose = true,
+                alreadyAutoPlayed = false,
+                ytDlpAttemptCompleted = true,
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.shouldAutoPlayManifest(
+                manualChose = false,
+                alreadyAutoPlayed = true,
+                ytDlpAttemptCompleted = true,
+            ),
+        )
+    }
+
+    @Test
     fun prioritizesManifestStreamsOverPlainFiles() {
         val merged = WebVideoProbePolicy.mergeCandidates(
             existing = listOf(WebVideoCandidate("https://cdn.example/ad.mp4", "ad", "", 5.0, false)),
