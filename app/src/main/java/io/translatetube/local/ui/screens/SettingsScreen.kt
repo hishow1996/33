@@ -885,7 +885,11 @@ private fun PiperModelSection() {
                             )
                         }
                         Text(
-                            "${modelState.progress.coerceIn(0, 99)}% · ${modelState.stageMessage ?: "正在准备下载…"}",
+                            if (modelState.status == io.translatetube.local.tts.PiperModelDownloadStatus.EXTRACTING) {
+                                modelState.stageMessage ?: "下载已完成，正在解压并安装模型…"
+                            } else {
+                                "${modelState.progress.coerceIn(0, 100)}% · ${modelState.stageMessage ?: "正在准备下载…"}"
+                            },
                             color = SubText,
                             style = MaterialTheme.typography.labelSmall,
                         )
