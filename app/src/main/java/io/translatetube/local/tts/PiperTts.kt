@@ -86,7 +86,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
                     lexicon = if (definition.supportsChineseOutput) lexicon.absolutePath else "",
                     dataDir = if (definition.supportsChineseOutput) "" else dataDir.absolutePath,
                 ),
-                numThreads = 2,
+                numThreads = TtsCpuThreadPolicy.recommendedThreads(),
                 debug = false,
                 provider = "cpu",
             ),
