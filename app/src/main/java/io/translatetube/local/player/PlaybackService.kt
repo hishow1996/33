@@ -4228,6 +4228,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     else -> 4
                 }
                 d.prioritizeAround(dubLine, lookAhead = lookAhead)
+                if (!d.usesImmediateTimelinePlayback && synthesisRtf.isFinite() && synthesisRtf >= 1.2f) {
+                    updateUiForCurrentDubbingEngine(d, st.key) { state ->
+                        if (state.dubbingStatus.startsWith("配音生成偏慢")) state
+                        else state.copy(
+                            dubbingStatus = "配音生成偏慢，正在优先准备后续字幕；未就绪片段保留原声",
+                        )
+                    }
+                }
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = 1f
             } else {
