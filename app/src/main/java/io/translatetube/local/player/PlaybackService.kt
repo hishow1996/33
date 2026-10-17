@@ -2764,7 +2764,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
                 )
                 if (startupBuffer.lineIndices.isNotEmpty()) {
-                    startupDubbing.prioritizeAround(startupBuffer.lineIndices.first())
+                    startupDubbing.prioritizeAround(
+                        startupBuffer.lineIndices.first(),
+                        lookAhead = maxOf(2, startupBuffer.lineIndices.size - 1),
+                    )
                     val deadlineNs = System.nanoTime() +
                         java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
                     fun cueFinished(index: Int): Boolean =
@@ -2775,6 +2778,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             immediateMode = immediateMode,
                             synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
                         )
+                        if (!immediateMode && startupBuffer.lineIndices.isNotEmpty()) {
+                            // If the first synthesis proves slow, raise the queue priority for the
+                            // deeper plan while retaining future cues behind the active synthesis.
+                            startupDubbing.prioritizeAround(
+                                startupBuffer.lineIndices.first(),
+                                lookAhead = maxOf(2, startupBuffer.lineIndices.size - 1),
+                            )
+                        }
                         if (startupBuffer.lineIndices.all(::cueFinished)) break
                         kotlinx.coroutines.delay(100)
                     }
