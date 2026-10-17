@@ -33,10 +33,10 @@ class DubbingStartupBufferPolicyTest {
     @Test
     fun generatedModePreparesSeveralCuesAcrossUpcomingTimeline() {
         val plan = DubbingStartupBufferPolicy.plan(lines(12), immediateMode = false)
-        assertTrue(plan.lineIndices.size >= 4)
-        assertTrue(plan.lineIndices.size <= 8)
-        assertEquals(10_000L, plan.lookAheadMs)
-        assertEquals(18_000L, plan.waitTimeoutMs)
+        assertTrue(plan.lineIndices.size >= 3)
+        assertTrue(plan.lineIndices.size <= 6)
+        assertEquals(8_000L, plan.lookAheadMs)
+        assertEquals(15_000L, plan.waitTimeoutMs)
     }
 
     @Test
@@ -51,8 +51,8 @@ class DubbingStartupBufferPolicyTest {
             immediateMode = false,
             synthesisRealtimeFactor = 1.8f,
         )
-        assertEquals(10_000L, baseline.lookAheadMs)
-        assertEquals(15_000L, slow.lookAheadMs)
+        assertEquals(8_000L, baseline.lookAheadMs)
+        assertEquals(12_000L, slow.lookAheadMs)
         assertTrue(slow.lineIndices.size >= baseline.lineIndices.size)
     }
 
@@ -63,8 +63,8 @@ class DubbingStartupBufferPolicyTest {
             immediateMode = false,
             synthesisRealtimeFactor = 0.5f,
         )
-        assertEquals(6_000L, plan.lookAheadMs)
-        assertEquals(3, plan.minimumCueCount)
+        assertEquals(5_000L, plan.lookAheadMs)
+        assertEquals(2, plan.minimumCueCount)
     }
 
     @Test
