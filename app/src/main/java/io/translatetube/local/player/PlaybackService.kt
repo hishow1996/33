@@ -808,6 +808,31 @@ class PlaybackService : MediaSessionService() {
             .onFailure { android.util.Log.w("PlaybackService", "Local ASR recognizer cleanup failed", it) }
     }
 
+    /**
+     * Local ASR recognizers hold native model memory after transcription. Release that memory
+     * before constructing a TTS engine: replaying a cached video can reach synthesis almost
+     * immediately, while the previous Whisper/SenseVoice session is still resident in this
+     * long-lived service. This shared path covers YouTube, web video, local video and imports.
+     */
+    private suspend fun releaseLocalAsrBeforeDubbing(
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ) {
+        if (localAsrEngine == null) return
+        withContext(Dispatchers.IO) {
+            localAsrMutex.withLock {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (localAsrEngine != null) {
+                    releaseLocalAsr()
+                    android.util.Log.i(
+                        "PlaybackService",
+                        "Released local ASR model before TTS initialization for session=$sessionKey",
+                    )
+                }
+            }
+        }
+    }
+
     // ============ 管线入口 ============
     fun open(
         key: String,
@@ -2737,6 +2762,14 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 }
             }
 
+            // Drain any retired speech engine and unload the native ASR model before
+            // allocating the selected TTS runtime. Reopening a history item can reuse ASR and
+            // translation checkpoints, so it may arrive here quickly while memory is still high.
+            awaitProcessingResumed(key, pipelineGeneration)
+            awaitRetiredDubbingEngines()
+            releaseLocalAsrBeforeDubbing(key, pipelineGeneration)
+            awaitProcessingResumed(key, pipelineGeneration)
+
             // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
             if (finalLines.isNotEmpty()) {
                 val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
@@ -3104,6 +3137,45 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             } else {
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
             }
+            }
+        } catch (e: OutOfMemoryError) {
+            // Native ASR/TTS engines can exhaust the app heap/native budget when a history replay
+            // switches engines in the same service process. Prefer original-audio playback and an
+            // actionable warning over letting this recoverable initialization failure kill the app.
+            android.util.Log.e("PlaybackService", "Insufficient memory while preparing video/TTS for key=$key", e)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    localAsrMutex.withLock { releaseLocalAsr() }
+                }
+            }
+            runCatching { retireCurrentDubbing() }
+            runCatching { withContext(Dispatchers.IO) { awaitRetiredDubbingEngines() } }
+            System.gc()
+            val memoryMessage =
+                "设备可用内存不足，已停止生成中文配音并恢复视频原声。请稍后重试，或在设置中选择占用更低的配音引擎。"
+            if (ui.value.key == key && videoKey == key) {
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = if (it.lines.isNotEmpty()) Phase.READY else Phase.ERROR,
+                        progress = "",
+                        error = if (it.lines.isNotEmpty()) null else memoryMessage,
+                        noModelHint = memoryMessage,
+                        dubbingStatus = "内存不足，配音已暂停",
+                        muteOriginal = false,
+                        activeDubbingLine = -1,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                        dubbingHasErrors = true,
+                    )
+                }
+                runCatching {
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == key && ui.value.key == key && ::pm.isInitialized) {
+                            pm.originalVolume = 1f
+                            pm.play()
+                        }
+                    }
+                }
             }
         } catch (e: Throwable) {
             // A non-fatal Error (for example, an extractor/library linkage error) must be shown
@@ -4324,6 +4396,22 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             scope.launch(Dispatchers.Main) {
                 if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
                     runCatching { pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f }
+                }
+            }
+            if (detail.contains("设备内存不足")) {
+                // Retire the failed native TTS after its worker unwinds, so history replay and
+                // switching to another engine do not keep the failed runtime resident.
+                scope.launch(Dispatchers.IO) {
+                    if (isCurrentDubbingEngine(engine, sessionKey)) {
+                        retireDubbing(engine)
+                        runCatching { awaitRetiredDubbingEngines() }
+                            .onFailure { android.util.Log.w("PlaybackService", "TTS cleanup after memory failure did not finish cleanly", it) }
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (::pm.isInitialized && videoKey == sessionKey && ui.value.key == sessionKey) {
+                            runCatching { pm.originalVolume = 1f }
+                        }
+                    }
                 }
             }
         }
