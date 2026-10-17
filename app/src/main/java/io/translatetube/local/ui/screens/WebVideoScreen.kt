@@ -54,7 +54,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import io.translatetube.local.web.PikpakEntry
+import io.translatetube.local.web.PikpakShare.PikpakEntry
 import io.translatetube.local.web.PikpakShare
 import io.translatetube.local.web.WebMediaUrlPolicy
 import kotlinx.coroutines.CancellationException
