@@ -88,6 +88,38 @@ class TranslationBatchResultTest {
     }
 
     @Test
+    fun acceptsGoogleSourceEchoAsAnUntranslatedCueWithoutFailingOtherRows() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(1, 4, 7),
+            rawTranslations = listOf("你好世界", "J. K. Rowling", "正在翻译"),
+            sourceTexts = mapOf(
+                1 to "Hello world",
+                4 to "J. K. Rowling",
+                7 to "This row is still missing",
+            ),
+            sourceLanguage = "en",
+            sourceEchoAsUntranslatedFallback = true,
+        )
+
+        assertEquals(mapOf(1 to "你好世界", 4 to ""), result.translations)
+        assertEquals(listOf(7), result.missingIndices)
+    }
+
+    @Test
+    fun sourceEchoFallbackDoesNotAcceptActuallyMissingTranslations() {
+        val result = TranslationBatchResult.from(
+            indices = listOf(2, 3),
+            rawTranslations = listOf("", "SomeBrandName"),
+            sourceTexts = mapOf(2 to "Hello there", 3 to "SomeBrandName"),
+            sourceLanguage = "en",
+            sourceEchoAsUntranslatedFallback = true,
+        )
+
+        assertEquals(mapOf(3 to ""), result.translations)
+        assertEquals(listOf(2), result.missingIndices)
+    }
+
+    @Test
     fun allowsIdenticalChineseSourceTextWhenTheSourceIsAlreadyChinese() {
         val result = TranslationBatchResult.from(
             indices = listOf(1, 2),
