@@ -171,6 +171,19 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             throw IllegalStateException("系统 TTS 初始化失败")
         }
 
+        // Route live subtitle speech explicitly to media output. Some OEM Android 9 TTS engines
+        // acknowledge speak() but are silent when the app leaves audio attributes to the engine
+        // default; STREAM_MUSIC on each utterance remains as a compatibility fallback.
+        val liveSpeechAttributes = android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val liveSpeechAttributesReady =
+            tts.setAudioAttributes(liveSpeechAttributes) == TextToSpeech.SUCCESS
+        if (!liveSpeechAttributesReady) {
+            android.util.Log.w("SystemTts", "System TTS rejected media speech audio attributes; using STREAM_MUSIC parameters")
+        }
+
         val languageResult = tts.setLanguage(Locale.SIMPLIFIED_CHINESE)
         if (languageResult < TextToSpeech.LANG_AVAILABLE) {
             // This mode must remain the selected system TTS engine. Do not silently switch
@@ -324,11 +337,24 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             if (engine.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 无法设置朗读语速")
             }
-            val params = android.os.Bundle().apply {
-                putFloat(
-                    TextToSpeech.Engine.KEY_PARAM_VOLUME,
-                    volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f,
+            val spokenText = text.replace(Regex("""\s+"""), " ").trim()
+            TtsTextPolicy.validate(spokenText)
+            // Re-apply on the live path as well: a few OEM TTS services reset their routing when
+            // the selected voice changes. Keep the legacy stream hint for Android/OEM compatibility.
+            if (liveSpeechAttributesReady) {
+                val attrResult = engine.setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
                 )
+                if (attrResult != TextToSpeech.SUCCESS) {
+                    android.util.Log.w("SystemTts", "Could not re-apply media audio attributes for live subtitle speech")
+                }
+            }
+            val normalizedVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
+            val params = android.os.Bundle().apply {
+                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, normalizedVolume)
                 putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_MUSIC)
             }
             synchronized(lifecycleLock) {
@@ -337,7 +363,12 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
                 }
                 timelineCallbacks[utteranceId] = TimelineCallbacks(onStarted, onCompleted)
                 activeTimelineUtteranceId = utteranceId
-                val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+                val result = engine.speak(spokenText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+                android.util.Log.d(
+                    "SystemTts",
+                    "Queued live subtitle speech: utterance=$utteranceId chars=${spokenText.length} " +
+                        "voice=${targetVoice.name} volume=$normalizedVolume result=$result",
+                )
                 if (result != TextToSpeech.SUCCESS) {
                     timelineCallbacks.remove(utteranceId)
                     if (activeTimelineUtteranceId == utteranceId) activeTimelineUtteranceId = null
