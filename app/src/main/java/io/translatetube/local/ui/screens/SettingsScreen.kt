@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.translate.Crypto
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -146,6 +147,19 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             "kawa" -> "Kawa 云端识别"
             else -> "本地 Whisper"
         }
+        val apiProfiles by AppDatabase.get(ctx).apiProfileDao().all()
+            .collectAsState(initial = emptyList())
+        val activeApiId = prefs.getLong("active_api_id", -1L)
+        val translationLabel = apiProfiles
+            .firstOrNull { it.id == activeApiId && it.enabled }
+            ?.let { profile ->
+                listOf(profile.name.trim(), profile.model.trim())
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · ")
+            }
+            ?.takeIf { it.isNotBlank() }
+            ?: "Google 翻译"
+
         // Settings overview: surface the active engines before the detailed sections.
         Box(
             modifier = Modifier
@@ -161,19 +175,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("翻译工作台", color = Color.White, style = MaterialTheme.typography.titleLarge)
-                    }
-                    Surface(
-                        modifier = Modifier.clickable(onClick = onApiManager),
-                        color = Color.White.copy(alpha = 0.16f),
-                        shape = RoundedCornerShape(50),
-                    ) {
-                        Text(
-                            "设置",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        )
+                        Text("配音工作台", color = Color.White, style = MaterialTheme.typography.titleLarge)
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -212,6 +214,32 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                         Text(asrLabel, color = Color.White, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.14f))
+                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Translate,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("翻译引擎", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        translationLabel,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    )
+                }
             }
         }
 
@@ -220,20 +248,12 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
 Section("翻译引擎", onHeaderClick = onApiManager) {}
 
 Section("转写引擎") {
-    Text(
-        "没有现成字幕时使用。云端模式只上传提取后的音频，不上传视频画面。",
-        color = SubText,
-        style = MaterialTheme.typography.bodySmall,
-    )
-    Spacer(Modifier.height(10.dp))
-
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         AsrProviderCard(
             title = "本地 Whisper",
-            subtitle = "离线 · 无需密钥",
             selected = asrEngine == "local",
             modifier = Modifier.weight(1f),
             onClick = {
@@ -245,7 +265,6 @@ Section("转写引擎") {
         )
         AsrProviderCard(
             title = "ElevenLabs",
-            subtitle = "自动检测语种",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://elevenlabs.io/speech-to-text") },
             selected = asrEngine == "elevenlabs",
             modifier = Modifier.weight(1f),
@@ -264,7 +283,6 @@ Section("转写引擎") {
     ) {
         AsrProviderCard(
             title = "Cartesia Ink",
-            subtitle = "需指定原声语言",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://www.cartesia.ai/speech-to-text") },
             selected = asrEngine == "cartesia",
             modifier = Modifier.weight(1f),
@@ -277,7 +295,6 @@ Section("转写引擎") {
         )
         AsrProviderCard(
             title = "Kawa",
-            subtitle = "云端转写 · API Key",
             onWebsiteClick = { openOfficialWebsite(ctx, "https://docs.makimoto.ai/service/api-reference/") },
             selected = asrEngine == "kawa",
             modifier = Modifier.weight(1f),
@@ -292,12 +309,6 @@ Section("转写引擎") {
 
     Spacer(Modifier.height(12.dp))
     if (asrEngine == "local") {
-        Text(
-            "本地识别无需 API Key。首次使用前下载 Whisper 转写模型（约 198 MB）。",
-            color = SubText,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Spacer(Modifier.height(8.dp))
         ModelRow(
             title = "Whisper 转写模型",
             state = asrState,
@@ -333,12 +344,6 @@ Section("转写引擎") {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text("服务配置", color = OnBg, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (selectedApiKey.isBlank()) "填写 API Key 与识别语言"
-                            else "API Key 已输入 · 点击编辑",
-                            color = SubText,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
                     }
                     Icon(
                         imageVector = if (asrConfigExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
@@ -347,15 +352,6 @@ Section("转写引擎") {
                     )
                 }
                 if (asrConfigExpanded) {
-                    Text(
-                        when (asrEngine) {
-                            "elevenlabs" -> "使用 ElevenLabs Scribe 云端识别，自动检测语言。"
-                            "cartesia" -> "使用 Cartesia Ink 云端识别，需要填写 API Key 并选择原声语言。"
-                            else -> "使用 Kawa 云端识别，可选择自动检测或指定原声语言。"
-                        },
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                     OutlinedTextField(
                         value = selectedApiKey,
                         onValueChange = { value ->
@@ -371,12 +367,6 @@ Section("转写引擎") {
                         label = { Text("API Key") },
                         placeholder = { Text("粘贴服务商 API Key") },
                         visualTransformation = PasswordVisualTransformation(),
-                    )
-                    Text(
-                        if (selectedApiKey.isBlank()) "填写后点击保存配置"
-                        else "出于安全考虑，密钥在本机加密保存",
-                        color = if (selectedApiKey.isBlank()) SubText else BrandBright,
-                        style = MaterialTheme.typography.labelSmall,
                     )
 
                     if (asrEngine == "cartesia" || asrEngine == "kawa") {
@@ -463,12 +453,6 @@ Section("转写引擎") {
                 }
             }
         }
-        Text(
-            "云端转写需要网络，请妥善保管 API Key。",
-            color = SubText,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(start = 2.dp, top = 5.dp),
-        )
     }
 }
 
@@ -485,16 +469,6 @@ Section("配音设置") {
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            Text(
-                when (ttsEngine) {
-                    "system" -> "直接使用手机已安装的语音；不会要求下载 Kokoro 配音模型。"
-                    "piper" -> "Piper 补足 Kokoro 覆盖不到的语种（法/德/西/俄/意等）；可在此处选择并下载对应语种模型。"
-                    else -> "使用本地 Kokoro 模型生成配音；首次使用前需下载模型。"
-                },
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(start = 8.dp, top = 2.dp),
-            )
             if (ttsEngine == "kokoro") {
                 ModelRow(
                     title = "Kokoro 配音模型",
@@ -518,11 +492,10 @@ Section("配音设置") {
                     valueRange = 0f..53f,
                     colors = SliderDefaults.colors(thumbColor = BrandBright, activeTrackColor = Brand),
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "不同编号对应不同语种与音色，拖动后试听确定",
-                        color = SubText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
                     TextButton(
                         enabled = ttsReady && !previewing,
                         onClick = { previewing = true },
@@ -684,8 +657,6 @@ private fun Section(
     }
     val subtitle = when (title) {
         "翻译引擎", "翻译设置" -> "API 服务商、翻译模型与密钥"
-        "转写引擎" -> "本地离线识别或云端语音转写"
-        "配音设置" -> "选择发音引擎、模型和音色"
         "视频源（yt-dlp）" -> "更新网页视频解析规则"
         "播放体验" -> "悬浮窗和播放相关权限"
         "存储管理" -> "查看并清理临时文件"
@@ -728,12 +699,14 @@ private fun Section(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        subtitle,
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                    )
+                    if (title != "转写引擎" && title != "配音设置") {
+                        Text(
+                            subtitle,
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                        )
+                    }
                 }
                 if (onHeaderClick != null) {
                     Text("›", color = BrandBright, style = MaterialTheme.typography.headlineSmall)
@@ -1086,7 +1059,6 @@ private fun EngineOption(
 @Composable
 private fun AsrProviderCard(
     title: String,
-    subtitle: String,
     selected: Boolean,
     onWebsiteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -1115,16 +1087,6 @@ private fun AsrProviderCard(
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                 )
-                if (selected) Text("✓", color = BrandBright, style = MaterialTheme.typography.labelMedium)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    subtitle,
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    modifier = Modifier.weight(1f),
-                )
                 onWebsiteClick?.let { websiteClick ->
                     IconButton(
                         onClick = websiteClick,
@@ -1138,6 +1100,7 @@ private fun AsrProviderCard(
                         )
                     }
                 }
+                if (selected) Text("✓", color = BrandBright, style = MaterialTheme.typography.labelMedium)
             }
         }
     }
