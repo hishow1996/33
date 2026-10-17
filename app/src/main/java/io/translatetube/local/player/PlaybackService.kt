@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -133,6 +135,12 @@ private data class YouTubeStreamChoices(
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var pm: PlayerManager
+    // A seek can trigger transient buffering/state callbacks after the immediate play() call.
+    // Retry playback once on ExoPlayer's main looper, but cancel the retry on an explicit pause.
+    private val seekResumeHandler = Handler(Looper.getMainLooper())
+    private val seekResumeLock = Any()
+    private var seekResumeGeneration = 0L
+    private var pendingSeekResume: Runnable? = null
     @Volatile private var playerReady = false
     private var session: MediaSession? = null
     @Volatile private var dubbing: DubbingEngine? = null
@@ -5223,84 +5231,158 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, nowOnly)
             .build()
     }
-    /** Seek from the visible progress bar while preserving the user's intended play/pause state. */
-    fun seek(ms: Long) {
-        val liveService = instance
-        if (liveService !== this) {
-            liveService?.takeIf { it.isReady }?.seek(ms)
-            return
+    private fun cancelPendingSeekResume() {
+        synchronized(seekResumeLock) {
+            seekResumeGeneration += 1L
+            pendingSeekResume?.let(seekResumeHandler::removeCallbacks)
+            pendingSeekResume = null
         }
+    }
+
+    /**
+     * Reassert play intent once after Media3 has processed the seek discontinuity.
+     * Some web/segmented streams briefly leave isPlaying=false after seek even when play()
+     * was requested. An explicit play/pause tap invalidates this one-shot retry.
+     */
+    private fun scheduleSeekResume(sessionKey: String) {
+        val token = synchronized(seekResumeLock) {
+            seekResumeGeneration += 1L
+            pendingSeekResume?.let(seekResumeHandler::removeCallbacks)
+            pendingSeekResume = null
+            seekResumeGeneration
+        }
+        val retry = Runnable {
+            val stillCurrent = synchronized(seekResumeLock) { token == seekResumeGeneration }
+            if (!stillCurrent) return@Runnable
+            if (
+                !playerReady ||
+                !::pm.isInitialized ||
+                instance !== this@PlaybackService ||
+                videoKey != sessionKey ||
+                ui.value.key != sessionKey
+            ) {
+                synchronized(seekResumeLock) {
+                    if (token == seekResumeGeneration) pendingSeekResume = null
+                }
+                return@Runnable
+            }
+            try {
+                // Do not use isPlaying to decide whether the user wants playback: it is false
+                // while buffering. This is one final play() nudge after the seek transition.
+                if (!pm.player.playWhenReady || !pm.player.isPlaying) pm.play()
+            } catch (error: Exception) {
+                android.util.Log.w("PlaybackService", "Playback resume after seek did not complete", error)
+            } finally {
+                synchronized(seekResumeLock) {
+                    if (token == seekResumeGeneration) pendingSeekResume = null
+                }
+            }
+        }
+        synchronized(seekResumeLock) {
+            if (token == seekResumeGeneration) {
+                pendingSeekResume = retry
+                seekResumeHandler.postDelayed(retry, 180L)
+            }
+        }
+    }
+
+    private fun seekAndResumeInternal(ms: Long, reason: String, failureMessage: String) {
         if (!playerReady || !::pm.isInitialized || ui.value.key != videoKey) {
-            android.util.Log.w("PlaybackService", "Ignoring progress seek for an inactive playback service")
+            android.util.Log.w("PlaybackService", "Ignoring $reason for an inactive playback service")
             return
         }
+        val sessionKey = videoKey
+        cancelPendingSeekResume()
         try {
-            // Keep playWhenReady, not isPlaying: isPlaying becomes false during buffering.
-            val shouldResume = pm.player.playWhenReady
-            // TTS/AudioTrack teardown can race the Media3 discontinuity callback. A voice-side
-            // failure must not prevent the actual video seek from being applied.
-            safelyControlDubbing("progress seek") { dubbing?.stop() }
+            // Stop speech associated with the old timestamp before applying the seek.
+            safelyControlDubbing(reason) { dubbing?.stop() }
             lastLineIdx = Int.MIN_VALUE
             pm.seekTo(ms.coerceAtLeast(0L))
             if (
-                shouldResume &&
                 playerReady &&
                 ::pm.isInitialized &&
                 instance === this &&
-                ui.value.key == videoKey
+                videoKey == sessionKey &&
+                ui.value.key == sessionKey
             ) {
+                // Seeking from either the progress bar or a subtitle row should resume playback
+                // automatically in both original-audio and dubbing modes.
                 pm.play()
+                scheduleSeekResume(sessionKey)
             }
         } catch (error: Exception) {
-            android.util.Log.e("PlaybackService", "Progress-bar seek failed", error)
-            updateUiForSession(videoKey) { state ->
-                if (state.key == videoKey) {
+            android.util.Log.e("PlaybackService", "$reason failed", error)
+            updateUiForSession(sessionKey) { state ->
+                if (state.key == sessionKey) {
                     state.copy(
                         activeDubbingLine = -1,
-                        dubbingStatus = "进度跳转时正在恢复播放，请稍后再试",
+                        dubbingStatus = failureMessage,
                     )
                 } else state
             }
         }
     }
 
-    /** Jump to a subtitle and ensure playback starts, even when the player was paused. */
+    /** Progress-bar seeking always resumes playback at the selected timestamp. */
+    fun seek(ms: Long) {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.seek(ms)
+            return
+        }
+        seekAndResumeInternal(
+            ms = ms,
+            reason = "progress seek",
+            failureMessage = "进度跳转时正在恢复播放，请稍后再试",
+        )
+    }
+
+    /** Jump to a subtitle and start playback, even when the video was paused before the tap. */
     fun seekAndPlay(ms: Long) {
         val liveService = instance
         if (liveService !== this) {
-            // A Compose row can briefly retain a reference to a service being replaced.
             liveService?.takeIf { it.isReady }?.seekAndPlay(ms)
             return
         }
-        if (!playerReady || !::pm.isInitialized || ui.value.key != videoKey) {
-            android.util.Log.w("PlaybackService", "Ignoring subtitle seek for an inactive playback service")
+        seekAndResumeInternal(
+            ms = ms,
+            reason = "subtitle seek",
+            failureMessage = "跳转到字幕时间点失败",
+        )
+    }
+
+    /** Explicit play/pause actions cancel a delayed seek retry so it cannot override the user. */
+    fun playPlayback() {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.playPlayback()
             return
         }
-        try {
-            // Stop any utterance from the previous subtitle before moving the playhead.
-            safelyControlDubbing("subtitle seek") { dubbing?.stop() }
-            lastLineIdx = Int.MIN_VALUE
-            pm.seekTo(ms.coerceAtLeast(0L))
-            if (playerReady && ::pm.isInitialized && instance === this && ui.value.key == videoKey) {
-                pm.play()
-            }
-        } catch (error: Exception) {
-            android.util.Log.e("PlaybackService", "Subtitle seek failed", error)
-            updateUiForSession(videoKey) {
-                if (it.key == videoKey) {
-                    it.copy(
-                        activeDubbingLine = -1,
-                        dubbingStatus = "跳转到字幕时间点失败：${error.message ?: error.javaClass.simpleName}",
-                    )
-                } else it
-            }
+        if (!playerReady || !::pm.isInitialized) return
+        cancelPendingSeekResume()
+        pm.play()
+    }
+
+    fun pausePlayback() {
+        val liveService = instance
+        if (liveService !== this) {
+            liveService?.takeIf { it.isReady }?.pausePlayback()
+            return
         }
+        if (!playerReady || !::pm.isInitialized) return
+        cancelPendingSeekResume()
+        pm.pause()
     }
 
     fun playPause() {
-        // A player that is buffering can have isPlaying=false while playWhenReady=true.
-        // Toggle the intended state so the pause control still works during a slow network load.
-        if (pm.player.playWhenReady) pm.pause() else pm.play()
+        val liveService = instance
+        if (liveService != null && liveService !== this) {
+            liveService.takeIf { it.isReady }?.playPause()
+            return
+        }
+        if (!playerReady || !::pm.isInitialized) return
+        // When ExoPlayer is buffering, isPlaying can be false although playWhenReady is true.
+        if (pm.player.playWhenReady) pausePlayback() else playPlayback()
     }
 
     /** 记录观看进度（退出播放页时调用，历史列表续看用） */
