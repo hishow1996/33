@@ -8,29 +8,31 @@ import org.junit.Test
 class SystemTtsOutputAudioPolicyTest {
     @Test
     fun normalizesSystemWavDirectlyToThePlaybackRate() {
-        // Using a 48 kHz source makes every third source sample an exact 16 kHz output sample.
+        // Using a 48 kHz source makes every second source sample an exact 24 kHz output sample.
         val input = TtsAudio(
-            floatArrayOf(0f, 0f, 0f, 0.5f, 0f, 0f, 0f, 0f, 0f, -0.5f, 0f, 0f),
+            floatArrayOf(0f, 0f, 0.5f, 0f, 0f, 0f, -0.5f, 0f, 0f, 0f, 0.25f, 0f),
             48_000,
         )
 
         val result = SystemTtsOutputAudioPolicy.normalize(input)
 
-        assertEquals(16_000, result.sampleRate)
-        assertEquals(4, result.samples.size)
+        assertEquals(24_000, result.sampleRate)
+        assertEquals(6, result.samples.size)
         assertEquals(0f, result.samples[0], 0f)
         assertEquals(0.5f, result.samples[1], 0.001f)
         assertEquals(0f, result.samples[2], 0f)
         assertEquals(-0.5f, result.samples[3], 0.001f)
+        assertEquals(0f, result.samples[4], 0f)
+        assertEquals(0.25f, result.samples[5], 0.001f)
         assertTrue(result.samples.all { it.isFinite() && it in -1f..1f })
     }
 
     @Test
     fun leavesAlreadyNormalizedAndEmptyAudioUnchanged() {
-        val normalized = TtsAudio(floatArrayOf(0f, 0.25f), 16_000)
+        val normalized = TtsAudio(floatArrayOf(0f, 0.25f), 24_000)
         assertSame(normalized, SystemTtsOutputAudioPolicy.normalize(normalized))
 
-        val empty = TtsAudio(FloatArray(0), 16_000)
+        val empty = TtsAudio(FloatArray(0), 24_000)
         assertSame(empty, SystemTtsOutputAudioPolicy.normalize(empty))
     }
 
@@ -65,30 +67,30 @@ class SystemTtsOutputAudioPolicyTest {
 
     @Test
     fun trimsLeadingAndTrailingSilenceAfterRateNormalization() {
-        // 48 kHz input normalizes to 5,000 samples at 16 kHz before trimming.
+        // 48 kHz input normalizes to 7,500 samples at 24 kHz before trimming.
         val sourceSamples = FloatArray(15_000).apply {
             for (index in 6_000 until 9_000) this[index] = 0.25f
         }
         val result = SystemTtsOutputAudioPolicy.prepareForPlayback(TtsAudio(sourceSamples, 48_000))
 
         // 25 ms of padding on each side remains; long leading/trailing silence is removed.
-        assertEquals(16_000, result.sampleRate)
-        assertEquals(1_800, result.samples.size)
+        assertEquals(24_000, result.sampleRate)
+        assertEquals(2_700, result.samples.size)
         assertEquals(0f, result.samples[0], 0f)
-        assertEquals(0.25f, result.samples[400], 0f)
+        assertEquals(0.25f, result.samples[600], 0f)
         assertEquals(0f, result.samples.last(), 0f)
     }
 
     @Test
     fun preservesEntirelySilentSystemTtsAudio() {
-        val silent = TtsAudio(FloatArray(2_000), 16_000)
+        val silent = TtsAudio(FloatArray(2_000), 24_000)
         assertSame(silent, SystemTtsOutputAudioPolicy.prepareForPlayback(silent))
     }
 
 
 @Test
     fun sameRateNonFiniteOrOutOfRangePcmIsCopiedAndSanitized() {
-        val source = TtsAudio(floatArrayOf(2f, -2f, Float.NaN, Float.POSITIVE_INFINITY, 0.5f), 16_000)
+        val source = TtsAudio(floatArrayOf(2f, -2f, Float.NaN, Float.POSITIVE_INFINITY, 0.5f), 24_000)
         val normalized = SystemTtsOutputAudioPolicy.normalize(source)
         assertTrue(normalized !== source)
         assertEquals(16_000, normalized.sampleRate)
@@ -98,13 +100,13 @@ class SystemTtsOutputAudioPolicyTest {
 
     @Test
     fun alreadySafeSameRateAudioKeepsTheZeroCopyFastPath() {
-        val source = TtsAudio(floatArrayOf(-1f, 0f, 0.7f), 16_000)
+        val source = TtsAudio(floatArrayOf(-1f, 0f, 0.7f), 24_000)
         assertSame(source, SystemTtsOutputAudioPolicy.normalize(source))
     }
 
     @Test
     fun sameRateSanitizationCanBeCancelledBeforePublishingAudio() {
-        val source = TtsAudio(FloatArray(30_000) { 2f }, 16_000)
+        val source = TtsAudio(FloatArray(30_000) { 2f }, 24_000)
         var checks = 0
         val error = runCatching {
             SystemTtsOutputAudioPolicy.normalize(source) {
