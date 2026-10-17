@@ -160,6 +160,24 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
     )
     private val timelineCallbacks = HashMap<String, TimelineCallbacks>()
     @Volatile private var activeTimelineUtteranceId: String? = null
+    private val timelineCommandGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    private val timelineSpeechExecutor =
+        java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+            Thread(task, "SystemTtsTimeline").apply { isDaemon = true }
+        }
+
+    private fun isCurrentTimelineRequest(
+        utteranceId: String,
+        engine: TextToSpeech,
+        generation: Long,
+    ): Boolean = synchronized(lifecycleLock) {
+        !closed &&
+            ok &&
+            ttsRef.get() === engine &&
+            activeTimelineUtteranceId == utteranceId &&
+            timelineCommandGeneration.get() == generation &&
+            timelineCallbacks.containsKey(utteranceId)
+    }
 
     init {
         val tts = TextToSpeech(appCtx) { status ->
@@ -172,11 +190,12 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             throw IllegalStateException("系统 TTS 初始化失败")
         }
 
-        // Treat live caption narration as speech/accessibility output rather than another movie
-        // stream. Set the attributes once after initialization; older/OEM engines can fall back
-        // to the legacy STREAM_MUSIC hint if they reject modern audio attributes.
+        // Subtitle dubbing is part of the video mix, not TalkBack/accessibility narration.
+        // On Android 9/OEM ROMs, ACCESSIBILITY usage can follow a separate accessibility volume
+        // slider and appear silent even while media volume is audible. Use the same media route as
+        // the video, and also pass STREAM_MUSIC per utterance as an OEM compatibility hint below.
         val liveSpeechAttributes = android.media.AudioAttributes.Builder()
-            .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
             .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         liveSpeechAttributesReady =
@@ -306,7 +325,6 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         runCatching { callback?.invoke(error) }
     }
 
-    @Synchronized
     override fun speakOnTimeline(
         text: String,
         speed: Float,
@@ -326,73 +344,160 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             onCompleted("手机系统 TTS 尚未就绪")
             return false
         }
-        return try {
-            TtsTextPolicy.validate(text)
-            val voices = chineseVoiceCatalog
-            val voiceIndex = SystemTtsSpeakerVoicePolicy.indexForSpeaker(speakerId, voices.size)
-            val targetVoice = voices.getOrNull(voiceIndex) ?: defaultChineseVoice
-                ?: throw IllegalStateException("系统 TTS 没有可用的中文音色")
-            if (engine.voice?.name != targetVoice.name) {
-                val voiceResult = engine.setVoice(targetVoice)
-                if (voiceResult != TextToSpeech.SUCCESS) {
-                    throw IllegalStateException("系统 TTS 无法切换到中文音色：${targetVoice.name}")
-                }
-            }
-            val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
-            if (engine.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
-                throw IllegalStateException("系统 TTS 无法设置朗读语速")
-            }
-            val spokenText = text.replace(Regex("""\s+"""), " ").trim()
+
+        val spokenText = text.replace(Regex("""\s+"""), " ").trim()
+        try {
             TtsTextPolicy.validate(spokenText)
-            // Audio attributes are set once after initialization, following common Android TTS
-            // implementations. Re-setting them between utterances adds Binder work and can race
-            // with the engine's audio-thread startup on older OEM implementations.
-            val normalizedVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
-            val params = android.os.Bundle().apply {
-                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, normalizedVolume)
-                // KEY_PARAM_STREAM is deprecated on API 21+; use it only when the engine rejected
-                // setAudioAttributes(), as a legacy route fallback.
-                if (!liveSpeechAttributesReady) {
-                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_MUSIC)
-                }
-            }
-            synchronized(lifecycleLock) {
-                if (closed || ttsRef.get() !== engine) {
-                    throw IllegalStateException("系统 TTS 已关闭")
-                }
+        } catch (error: Exception) {
+            onCompleted(error.message ?: "字幕文本无法朗读")
+            return false
+        }
+        val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
+        val normalizedVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
+
+        // Publish the newest request before dispatch. Rapid seeks/subtitle changes invalidate
+        // earlier queued work, so a stale sentence can never start after a newer one.
+        val generation = synchronized(lifecycleLock) {
+            if (closed || !ok || ttsRef.get() !== engine) {
+                null
+            } else {
+                activeTimelineUtteranceId?.let(timelineCallbacks::remove)
                 timelineCallbacks[utteranceId] = TimelineCallbacks(onStarted, onCompleted)
                 activeTimelineUtteranceId = utteranceId
-                val result = engine.speak(spokenText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
-                android.util.Log.d(
-                    "SystemTts",
-                    "Queued live subtitle speech: utterance=$utteranceId chars=${spokenText.length} " +
-                        "voice=${targetVoice.name} volume=$normalizedVolume result=$result",
-                )
-                if (result != TextToSpeech.SUCCESS) {
-                    timelineCallbacks.remove(utteranceId)
-                    if (activeTimelineUtteranceId == utteranceId) activeTimelineUtteranceId = null
-                    throw IllegalStateException("手机系统 TTS 拒绝朗读本句（状态码 $result）")
+                timelineCommandGeneration.incrementAndGet()
+            }
+        } ?: run {
+            onCompleted("手机系统 TTS 已关闭或尚未就绪")
+            return false
+        }
+
+        return try {
+            timelineSpeechExecutor.execute {
+                try {
+                    // TextToSpeech is a Binder service. Do voice/rate/speak calls on a dedicated
+                    // serial worker rather than the player's 100 ms main-thread timeline ticker.
+                    // The same monitor serializes live speech against synthesizeToFile().
+                    synchronized(this@SystemTts) {
+                        if (isCurrentTimelineRequest(utteranceId, engine, generation)) {
+                            val voices = chineseVoiceCatalog
+                            val voiceIndex = SystemTtsSpeakerVoicePolicy.indexForSpeaker(speakerId, voices.size)
+                            val targetVoice = voices.getOrNull(voiceIndex) ?: defaultChineseVoice
+                                ?: throw IllegalStateException("系统 TTS 没有可用的中文音色")
+                            if (engine.voice?.name != targetVoice.name) {
+                                val voiceResult = engine.setVoice(targetVoice)
+                                if (voiceResult != TextToSpeech.SUCCESS) {
+                                    throw IllegalStateException("系统 TTS 无法切换到中文音色：${targetVoice.name}")
+                                }
+                            }
+                            if (engine.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
+                                throw IllegalStateException("系统 TTS 无法设置朗读语速")
+                            }
+
+                            val params = android.os.Bundle().apply {
+                                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, normalizedVolume)
+                                // Keep the legacy stream hint even when setAudioAttributes succeeds.
+                                // Some Android 9/OEM TTS services ignore the attributes set on init.
+                                putInt(
+                                    TextToSpeech.Engine.KEY_PARAM_STREAM,
+                                    android.media.AudioManager.STREAM_MUSIC,
+                                )
+                            }
+                            val result = synchronized(lifecycleLock) {
+                                if (
+                                    closed ||
+                                    ttsRef.get() !== engine ||
+                                    activeTimelineUtteranceId != utteranceId ||
+                                    timelineCommandGeneration.get() != generation ||
+                                    !timelineCallbacks.containsKey(utteranceId)
+                                ) {
+                                    null
+                                } else {
+                                    engine.speak(
+                                        spokenText,
+                                        TextToSpeech.QUEUE_FLUSH,
+                                        params,
+                                        utteranceId,
+                                    )
+                                }
+                            }
+                            if (result != null) {
+                                android.util.Log.d(
+                                    "SystemTts",
+                                    "Live subtitle request: id=$utteranceId chars=${spokenText.length} " +
+                                        "voice=${targetVoice.name} speed=$safeSpeed volume=$normalizedVolume " +
+                                        "attributes=$liveSpeechAttributesReady result=$result",
+                                )
+                                if (result != TextToSpeech.SUCCESS) {
+                                    throw IllegalStateException("手机系统 TTS 拒绝朗读本句（状态码 $result）")
+                                }
+                            }
+                        }
+                    }
+                } catch (error: Exception) {
+                    val stillCurrent = synchronized(lifecycleLock) {
+                        !closed &&
+                            activeTimelineUtteranceId == utteranceId &&
+                            timelineCommandGeneration.get() == generation &&
+                            timelineCallbacks.containsKey(utteranceId)
+                    }
+                    if (stillCurrent) {
+                        android.util.Log.e("SystemTts", "Unable to start live subtitle utterance $utteranceId", error)
+                        finishTimelineUtterance(
+                            utteranceId,
+                            error.message ?: error.javaClass.simpleName,
+                        )
+                    } else {
+                        android.util.Log.d("SystemTts", "Skipped stale subtitle utterance $utteranceId")
+                    }
                 }
             }
             true
-        } catch (error: Exception) {
-            onCompleted(error.message ?: error.javaClass.simpleName)
+        } catch (error: java.util.concurrent.RejectedExecutionException) {
+            finishTimelineUtterance(utteranceId, "系统 TTS 朗读队列已关闭")
             false
         }
     }
 
     override fun stopTimelineSpeech(utteranceId: String?) {
-        val engine = synchronized(lifecycleLock) {
-            if (utteranceId != null && activeTimelineUtteranceId != utteranceId) {
-                null
-            } else {
-                activeTimelineUtteranceId?.let(timelineCallbacks::remove)
-                activeTimelineUtteranceId = null
-                if (closed) null else ttsRef.get()
+        val stopRequest = synchronized(lifecycleLock) {
+            val activeId = activeTimelineUtteranceId
+            if (utteranceId != null && activeId != utteranceId) {
+                return
             }
+            if (utteranceId == null) {
+                timelineCallbacks.clear()
+            } else {
+                timelineCallbacks.remove(utteranceId)
+            }
+            activeTimelineUtteranceId = null
+            val generation = timelineCommandGeneration.incrementAndGet()
+            val engine = if (closed) null else ttsRef.get()
+            if (engine == null) null else engine to generation
+        } ?: return
+
+        val (engine, generation) = stopRequest
+        try {
+            timelineSpeechExecutor.execute {
+                // A seek/resume may enqueue a new line before this stop command runs. Let that
+                // newer QUEUE_FLUSH request replace the previous speech instead of stopping it.
+                val shouldStop = synchronized(lifecycleLock) {
+                    !closed &&
+                        ttsRef.get() === engine &&
+                        activeTimelineUtteranceId == null &&
+                        timelineCommandGeneration.get() == generation
+                }
+                if (shouldStop) {
+                    synchronized(this@SystemTts) {
+                        runCatching { engine.stop() }
+                            .onFailure {
+                                android.util.Log.w("SystemTts", "Could not stop live subtitle speech", it)
+                            }
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            runCatching { engine.stop() }
         }
-        if (utteranceId != null && engine == null) return
-        runCatching { engine?.stop() }
     }
 
     @Synchronized
@@ -526,6 +631,8 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
                 ttsRef.getAndSet(null)
             }
         }
+        timelineCommandGeneration.incrementAndGet()
+        timelineSpeechExecutor.shutdownNow()
         if (engine != null) {
             runCatching { engine.stop() }
             runCatching { engine.shutdown() }
