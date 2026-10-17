@@ -54,6 +54,9 @@ internal object TtsCpuThreadPolicy {
  * caching, sample normalization, timing, pause and cancellation behavior as local TTS models.
  */
 interface TimelineTtsPlayback {
+    /** True only when the user selected immediate, live Android TTS instead of generated PCM. */
+    val useDirectTimelinePlayback: Boolean get() = true
+
     fun speakOnTimeline(
         text: String,
         speed: Float,
@@ -137,8 +140,23 @@ class KokoroTts(
     override fun close() = tts.release()
 }
 
-/** 系统 TTS：逐句合成 WAV，再由时间轴配音引擎输出 PCM。 */
-class SystemTts(context: Context) : TtsEngine {
+enum class SystemTtsPlaybackMode {
+    GENERATED,
+    INSTANT;
+
+    companion object {
+        fun fromPreference(value: String?): SystemTtsPlaybackMode =
+            if (value.equals("instant", ignoreCase = true)) INSTANT else GENERATED
+    }
+}
+
+/** 系统 TTS：支持预生成 PCM 和即时朗读两种模式，复用同一个系统中文音色目录。 */
+class SystemTts(
+    context: Context,
+    private val playbackMode: SystemTtsPlaybackMode = SystemTtsPlaybackMode.GENERATED,
+) : TtsEngine, TimelineTtsPlayback {
+    override val useDirectTimelinePlayback: Boolean
+        get() = playbackMode == SystemTtsPlaybackMode.INSTANT
     private val appCtx = context.applicationContext
     override val name = "系统TTS"
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
@@ -146,7 +164,17 @@ class SystemTts(context: Context) : TtsEngine {
     @Volatile private var chineseVoiceCatalog: List<android.speech.tts.Voice> = emptyList()
 
     val chineseVoiceCount: Int get() = chineseVoiceCatalog.size
+    val chineseVoiceNames: List<String> get() = chineseVoiceCatalog.map { it.name }
     val supportsMultipleChineseVoices: Boolean get() = chineseVoiceCount > 1
+
+    private data class TimelineCallbacks(
+        val onStarted: () -> Unit,
+        val onCompleted: (String?) -> Unit,
+    )
+
+    private val timelineCallbacks =
+        java.util.concurrent.ConcurrentHashMap<String, TimelineCallbacks>()
+    @Volatile private var activeTimelineUtteranceId: String? = null
 
     // Keep this identity stable while synth() switches per-speaker voices. The selected default
     // voice and complete Chinese voice catalogue make PCM cache entries invalid when capabilities change.
@@ -213,14 +241,16 @@ class SystemTts(context: Context) : TtsEngine {
             .filter { it.locale.language.equals("zh", ignoreCase = true) }
             .distinctBy { it.name }
             .sortedBy { it.name }
-        val availableChineseVoices = SystemTtsSpeakerVoicePolicy
-            .preferOfflineVoices(allChineseVoices) { it.isNetworkConnectionRequired }
+        // Expose every installed Chinese voice, including network-backed voices, so the user can
+        // explicitly choose any voice supported by the currently selected system TTS engine.
+        val availableChineseVoices = allChineseVoices
         val currentChineseVoice = tts.voice?.takeIf {
             it.locale.language.equals("zh", ignoreCase = true)
         }
-        // Prefer a listed offline voice, but preserve the currently selected Chinese voice on
-        // engines whose voices catalogue is empty or incomplete (common on some older ROMs).
-        val defaultVoice = SystemTtsSpeakerVoicePolicy.chooseDefaultVoice(
+        val configuredVoiceName = appCtx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString("system_tts_voice_name", null)
+        val defaultVoice = SystemTtsSpeakerVoicePolicy.chooseConfiguredVoice(
+            configuredVoiceName,
             currentChineseVoice,
             availableChineseVoices,
         ) { it.name }
@@ -250,9 +280,14 @@ class SystemTts(context: Context) : TtsEngine {
             .apply()
 
         tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = Unit
+            override fun onStart(utteranceId: String?) {
+                val callbacks = utteranceId?.let { timelineCallbacks[it] } ?: return
+                runCatching { callbacks.onStarted() }
+                    .onFailure { android.util.Log.w("SystemTts", "Instant TTS start callback failed", it) }
+            }
 
             override fun onDone(utteranceId: String?) {
+                if (finishTimelineUtterance(utteranceId, null)) return
                 val elapsedMs = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeLatch?.countDown()
@@ -267,6 +302,7 @@ class SystemTts(context: Context) : TtsEngine {
             }
 
             override fun onError(utteranceId: String?) {
+                if (finishTimelineUtterance(utteranceId, "系统 TTS 即时朗读失败")) return
                 val matched = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = "系统 TTS 合成回调返回错误"
@@ -278,6 +314,7 @@ class SystemTts(context: Context) : TtsEngine {
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
+                if (finishTimelineUtterance(utteranceId, "系统 TTS 即时朗读失败（错误码 $errorCode）")) return
                 val matched = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = "系统 TTS 合成失败（错误码 $errorCode）"
@@ -289,6 +326,11 @@ class SystemTts(context: Context) : TtsEngine {
             }
 
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                if (finishTimelineUtterance(
+                        utteranceId,
+                        if (interrupted) "系统 TTS 即时朗读被中断" else "系统 TTS 即时朗读被队列取消",
+                    )
+                ) return
                 val matched = synchronized(lifecycleLock) {
                     if (utteranceId == activeUtteranceId) {
                         activeFailure = if (interrupted) {
@@ -308,6 +350,98 @@ class SystemTts(context: Context) : TtsEngine {
                 }
             }
         })
+    }
+
+    private fun finishTimelineUtterance(utteranceId: String?, error: String?): Boolean {
+        if (utteranceId.isNullOrBlank()) return false
+        val callbacks = timelineCallbacks.remove(utteranceId) ?: return false
+        synchronized(lifecycleLock) {
+            if (activeTimelineUtteranceId == utteranceId) activeTimelineUtteranceId = null
+        }
+        runCatching { callbacks.onCompleted(error) }
+            .onFailure { android.util.Log.w("SystemTts", "Instant TTS completion callback failed", it) }
+        return true
+    }
+
+    @Synchronized
+    override fun speakOnTimeline(
+        text: String,
+        speed: Float,
+        speakerId: Int,
+        volume: Float,
+        utteranceId: String,
+        onStarted: () -> Unit,
+        onCompleted: (String?) -> Unit,
+    ): Boolean {
+        if (!useDirectTimelinePlayback || text.isBlank() || utteranceId.isBlank()) return false
+        return try {
+            TtsTextPolicy.validate(text)
+            val normalizedText = text.replace(Regex("\\s+"), " ").trim()
+            if (normalizedText.isEmpty()) return false
+            val engine = synchronized(lifecycleLock) {
+                if (closed || !ok) return false
+                ttsRef.get() ?: return false
+            }
+            val voices = chineseVoiceCatalog
+            val voiceIndex = SystemTtsSpeakerVoicePolicy.indexForSpeaker(speakerId, voices.size)
+            val targetVoice = voices.getOrNull(voiceIndex) ?: defaultChineseVoice
+                ?: return false
+            if (engine.voice?.name != targetVoice.name && engine.setVoice(targetVoice) != TextToSpeech.SUCCESS) {
+                throw IllegalStateException("系统 TTS 无法切换到所选中文音色：${targetVoice.name}")
+            }
+            val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
+            if (engine.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
+                throw IllegalStateException("系统 TTS 无法设置即时朗读语速")
+            }
+            stopTimelineSpeech()
+            val safeVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
+            val params = android.os.Bundle().apply {
+                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, safeVolume)
+                putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+            }
+            synchronized(lifecycleLock) {
+                if (closed || ttsRef.get() !== engine) return false
+                activeTimelineUtteranceId = utteranceId
+                timelineCallbacks[utteranceId] = TimelineCallbacks(onStarted, onCompleted)
+            }
+            val result = engine.speak(
+                normalizedText,
+                TextToSpeech.QUEUE_FLUSH,
+                params,
+                utteranceId,
+            )
+            if (result != TextToSpeech.SUCCESS) {
+                finishTimelineUtterance(utteranceId, "系统 TTS 无法接受即时朗读请求（状态码 $result）")
+                false
+            } else {
+                android.util.Log.d(
+                    "SystemTts",
+                    "Instant speak queued: chars=${normalizedText.length} voice=${targetVoice.name} speed=$safeSpeed",
+                )
+                true
+            }
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.e("SystemTts", "Instant TTS request failed", error)
+            runCatching { onCompleted(error.message ?: error.javaClass.simpleName) }
+            false
+        }
+    }
+
+    override fun stopTimelineSpeech(utteranceId: String?) {
+        val engine = synchronized(lifecycleLock) {
+            val active = activeTimelineUtteranceId
+            if (active == null || (utteranceId != null && utteranceId != active)) {
+                null
+            } else {
+                timelineCallbacks.remove(active)
+                activeTimelineUtteranceId = null
+                ttsRef.get()
+            }
+        } ?: return
+        runCatching { engine.stop() }
+            .onFailure { android.util.Log.w("SystemTts", "Unable to stop instant TTS speech", it) }
     }
 
     @Synchronized
@@ -485,6 +619,8 @@ class SystemTts(context: Context) : TtsEngine {
             } else {
                 closed = true
                 activeLatch?.countDown()
+                timelineCallbacks.clear()
+                activeTimelineUtteranceId = null
                 ttsRef.getAndSet(null)
             }
         }
