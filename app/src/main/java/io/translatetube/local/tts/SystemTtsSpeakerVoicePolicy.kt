@@ -19,6 +19,19 @@ internal object SystemTtsSpeakerVoicePolicy {
         return if (offline.isNotEmpty()) offline else voices
     }
 
+    /** Honor an explicitly configured system voice before preserving the current OEM default. */
+    fun <T> chooseConfiguredVoice(
+        configuredName: String?,
+        current: T?,
+        available: List<T>,
+        name: (T) -> String,
+    ): T? {
+        val configured = configuredName?.takeIf { it.isNotBlank() }?.let { wanted ->
+            available.firstOrNull { name(it) == wanted }
+        }
+        return configured ?: chooseDefaultVoice(current, available, name)
+    }
+
     /**
      * Prefer the current voice if it is listed; otherwise choose a listed voice, and finally
      * fall back to the current voice when an OEM TTS engine omits it from getVoices().
