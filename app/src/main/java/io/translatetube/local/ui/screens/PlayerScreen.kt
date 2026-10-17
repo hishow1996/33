@@ -1879,11 +1879,8 @@ private fun SubtitleList(
                 ) {
                     Text(
                         translatedText,
-                        color = when {
-                            activeDub -> BrandBright
-                            active -> OnBg
-                            else -> SubText
-                        },
+                        // 所有字幕行统一使用蓝色；当前配音行继续通过字重、字号和轻微缩放突出。
+                        color = BrandBright,
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontSize = if (activeDub) 16.sp else if (active) 15.sp else 14.sp,
                             fontWeight = when {
@@ -1902,7 +1899,7 @@ private fun SubtitleList(
                         Spacer(Modifier.height(2.dp))
                         Text(
                             line.text,
-                            color = Color(0xFF626873),
+                            color = BrandBright,
                             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Normal),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
