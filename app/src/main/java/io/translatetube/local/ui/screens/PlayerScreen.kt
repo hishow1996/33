@@ -139,6 +139,19 @@ fun PlayerScreen(
         else -> "local:${localUri ?: ""}"
     }
 
+    // Keep this sticky for the current video. A subtitle seek can briefly set isPlaying=false
+    // while the stream buffers; that is not a reason to return to the parsing page.
+    var playbackHasStarted by remember(requestKey) { mutableStateOf(false) }
+    LaunchedEffect(requestKey, state.key, state.isPlaying, state.phase) {
+        if (
+            state.key == requestKey &&
+            state.isPlaying &&
+            state.phase in setOf(Phase.SYNTHESIZING, Phase.READY)
+        ) {
+            playbackHasStarted = true
+        }
+    }
+
     fun retryCurrentTask() {
         val key = requestKey
         val current = PlaybackService.ui.value
@@ -427,6 +440,7 @@ fun PlayerScreen(
         playerIsPlaying = state.isPlaying,
         progressiveTtsPlayback = progressiveTtsPlayback,
         dubbingPreparationIncomplete = dubbingPreparationIncomplete,
+        playbackHasStarted = playbackHasStarted,
     )
 
     Box(
