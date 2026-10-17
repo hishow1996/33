@@ -2869,8 +2869,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         indices.map { SubtitleParsers.cleanTranslatedText(updatedLines[it].zh).orEmpty() }
                 }
             }
-            // A model may return fewer rows than requested, or put UI/status text in a translation
-            // slot. Retry only missing rows once; never let a successful pipeline retain blanks.
+            // Retry missing rows once. For Google/ML Kit, keep an isolated still-missing cue
+            // on original audio if this batch or earlier rows already contain usable translations.
             var unresolvedIndices = batchIndices
             val resolvedBatch = linkedMapOf<Int, String>()
             var attempt = 0
@@ -2936,10 +2936,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 }
             }
 
+            val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() } ||
+                updatedLines.any { line ->
+                    line.text.isNotBlank() &&
+                        !needsSubtitleTranslation(line, srcLang) &&
+                        !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
+                }
             if (
                 unresolvedIndices.isNotEmpty() &&
                 sourceEchoAsUntranslatedFallback &&
-                resolvedBatch.values.any { it.isNotBlank() }
+                hasUsableTranslation
             ) {
                 // Google/ML Kit returned useful Chinese for this batch, but a small number of
                 // cues stayed empty/status-only after retry. Preserve those source subtitles
