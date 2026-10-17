@@ -140,89 +140,76 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
             "piper" -> "Piper 多语种"
             else -> "Kokoro 神经网络"
         }
-        val ttsSummary = when (ttsEngine) {
-            "system" -> "使用手机已安装语音 · 无需下载模型"
-            "piper" -> "按目标语种选择语音模型"
-            else -> if (ttsReady) "本地配音模型已就绪" else "首次使用需下载配音模型"
-        }
         val asrLabel = when (asrEngine) {
             "elevenlabs" -> "ElevenLabs"
             "cartesia" -> "Cartesia Ink"
             "kawa" -> "Kawa 云端识别"
             else -> "本地 Whisper"
         }
-        val asrSummary = when (asrEngine) {
-            "local" -> if (asrReady) "离线识别模型已就绪" else "首次使用需下载识别模型"
-            else -> "云端转写 · 需网络与 API 配置"
-        }
-
         // Settings overview: surface the active engines before the detailed sections.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(20.dp))
                 .background(
                     Brush.linearGradient(
                         listOf(Color(0xFF244DB5), Color(0xFF3978E8), Color(0xFF5A9BFA)),
                     ),
                 )
-                .padding(18.dp),
+                .padding(12.dp),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("翻译工作台", color = Color.White, style = MaterialTheme.typography.headlineSmall)
-                        Text(
-                            "管理识别、配音与播放体验",
-                            color = Color.White.copy(alpha = 0.82f),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                    Column(Modifier.weight(1f)) {
+                        Text("翻译工作台", color = Color.White, style = MaterialTheme.typography.titleLarge)
                     }
-                    Surface(color = Color.White.copy(alpha = 0.16f), shape = RoundedCornerShape(50)) {
+                    Surface(
+                        modifier = Modifier.clickable(onClick = onApiManager),
+                        color = Color.White.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(50),
+                    ) {
                         Text(
                             "设置",
                             color = Color.White,
                             style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column(
-                        Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
-                            .background(Color.White.copy(alpha = 0.14f)).padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                        Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
+                            .background(Color.White.copy(alpha = 0.14f)).padding(9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Filled.VolumeUp,
                                 contentDescription = null,
                                 tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(17.dp),
+                                modifier = Modifier.size(16.dp),
                             )
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(5.dp))
                             Text("配音引擎", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelMedium)
                         }
-                        Text(ttsLabel, color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                        Text(ttsSummary, color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                        Text(ttsLabel, color = Color.White, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                     }
                     Column(
-                        Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
-                            .background(Color.White.copy(alpha = 0.14f)).padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                        Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
+                            .background(Color.White.copy(alpha = 0.14f)).padding(9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Filled.Translate,
                                 contentDescription = null,
                                 tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(17.dp),
+                                modifier = Modifier.size(16.dp),
                             )
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(5.dp))
                             Text("转写方式", color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.labelMedium)
                         }
-                        Text(asrLabel, color = Color.White, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                        Text(asrSummary, color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                        Text(asrLabel, color = Color.White, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                     }
                 }
             }
