@@ -1761,9 +1761,9 @@ class PlaybackService : MediaSessionService() {
             ) "$baseTranslationCacheKey|local-asr-timeline-v2" else baseTranslationCacheKey
             updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                // YouTube's key also held previous ASR fallback results; bump it so old coarse captions
-                // are not mistaken for native subtitle tracks after this timeline upgrade.
-                videoId != null -> "$key|source|youtube-v2"
+                // Bump the source-caption cache after changing track ranking so a prior
+                // non-English manual track cannot shadow available English captions.
+                videoId != null -> "$key|source|youtube-v3"
                 remoteMediaUrl != null && asrProvider == "local" ->
                     "$cacheKeyBase|source|remote-asr-local-timed-v2"
                 remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
@@ -2597,10 +2597,10 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 }
                 // Chinese source material already speaks the target language. Do not require a
                 // TTS model just to show Chinese subtitles over the original Chinese audio.
-                if (isChineseLanguage(srcLang)) {
-                    // 中文源视频：字幕文本即中文，原声就是目标语言——
-                    // 只显示中文字幕、保留原声，跳过 TTS 配音（避免把中文再念一遍）。
-                    // startupDubbing 为 null 时首句等待逻辑自动跳过，公共尾部照常开播。
+                if (isChineseLanguage(srcLang) && selectedTts != "system") {
+                    // 默认本地模型模式下，中文源字幕直接显示原文并保留原声。
+                    // 用户明确选择系统 TTS 时仍按时间轴朗读中文字幕；这也覆盖 YouTube
+                    // 只有中文可用字幕轨、但用户仍需要中文语音播报的情况。
                     updateUiForSession(key) {
                         it.copy(
                             ttsEngineName = "",
@@ -2684,7 +2684,6 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             it.copy(
                                 ttsEngineName = selectedTtsName,
                                 dubbingStatus = "${selectedTtsName} 初始化失败",
-                                muteOriginal = false,
                                 noModelHint = when (selectedTts) {
                                     "system" -> "系统 TTS 初始化失败：$reason。当前严格使用手机系统 TTS，未切换本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色，然后重试。"
                                     "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
@@ -2696,7 +2695,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             )
                         }
                         withContext(Dispatchers.Main) {
-                            if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                            if (videoKey == key && ui.value.key == key) {
+                                pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+                            }
                         }
                     }
                 } else {
@@ -2719,14 +2720,15 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         it.copy(
                             ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
                             dubbingStatus = "${selectedTtsName} 尚未就绪",
-                            muteOriginal = false,
                             noModelHint = message,
                             waitingForTranscriptionEngine = false,
                             waitingForDubbingEngine = true,
                         )
                     }
                     withContext(Dispatchers.Main) {
-                            if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                            if (videoKey == key && ui.value.key == key) {
+                                pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+                            }
                         }
                 }
             }
@@ -2812,14 +2814,13 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
-                runCatching { pm.originalVolume = 1f }
+                runCatching { pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f }
                 updateUiForSession(key) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
                         error = e.message ?: "视频解析或配音初始化失败",
-                        muteOriginal = false,
-                        noModelHint = "配音初始化失败，已恢复视频原声。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro 请检查模型文件是否完整。"
+                        noModelHint = "配音初始化失败；音频状态保留用户设置。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro 请检查模型文件是否完整。"
                     )
                 }
             } else {
@@ -4024,14 +4025,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     } else {
                         "$activeName 合成或播放失败，已恢复原声"
                     },
-                    muteOriginal = false,
                     noModelHint = message,
                     dubbingHasErrors = true,
                 )
             }
             scope.launch(Dispatchers.Main) {
                 if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
-                    runCatching { pm.originalVolume = 1f }
+                    val preserveOriginalMute = ui.value.muteOriginal
+                    runCatching { pm.originalVolume = if (preserveOriginalMute) 0f else 1f }
                 }
             }
         }
@@ -4073,23 +4074,21 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         }
 
         if (d != null && st.dubbingOn) {
-            // Empty audio can mean translation is missing, synthesis failed, or an old
-            // cache has an empty marker. In every case preserve the source audio for this cue,
-            // including when the user has requested original-audio muting.
+            // The user's original-audio switch is authoritative even while a cue is preparing
+            // or a TTS line fails. Do not silently turn the original back on behind that switch.
             if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = 1f
-                if (st.muteOriginal || st.noModelHint == null) {
+                pm.originalVolume = if (st.muteOriginal) 0f else 1f
+                if (st.noModelHint == null) {
                     ui.update {
                         it.copy(
-                            muteOriginal = false,
                             noModelHint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(st.ttsEngineName)
                         )
                     }
                 }
             } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
                 if (!pm.player.isPlaying) {
-                    // seekTo() emits an immediate tick: don't start a detached AudioTrack while paused.
+                    // seekTo() emits an immediate tick: don't start speech while video is paused.
                     if (d.currentLineIdx() >= 0) d.stop()
                 } else if (d.currentLineIdx() != dubLine) {
                     d.playAt(
@@ -4110,41 +4109,31 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     d.updatePlayerSpeed(pm.playbackSpeed())
                     d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
                 }
-                // Synthesis readiness is not playback readiness: AudioTrack may still be
-                // loading PCM or initializing on older devices. Keep source audio audible until
-                // the dubbed track actually starts, then apply the user's mute/duck preference.
+                // Native system TTS can take a moment to emit onStart; keep the original muted
+                // when requested, otherwise retain source audio until speech actually begins.
                 val voiceStarted = d.hasStartedPlaybackFor(dubLine)
                 pm.originalVolume = when {
-                    !voiceStarted -> 1f
                     st.muteOriginal -> 0f
+                    !voiceStarted -> 1f
                     else -> 0.15f
                 }
             } else if (dubLine >= 0) {
-                // Prioritize the current cue after a seek or when synthesis is lagging.
                 d.prioritizeAround(dubLine)
-                // While TTS is preparing this line, preserve source audio; mute it only when dubbing is ready.
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = 1f
+                pm.originalVolume = if (st.muteOriginal) 0f else 1f
             } else {
-                // 字幕间隙不播放配音；按“原声静音”开关决定是否保留原音。
+                // 字幕间隙不播放配音；仍按用户开关决定是否保留原音。
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
         } else {
-            // If dubbing is enabled but the TTS engine could not be created, restore source audio
-            // rather than honoring the default mute and leaving the entire video silent.
-            if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty()) {
-                pm.originalVolume = 1f
-                if (st.noModelHint == null) {
-                    ui.update {
-                        it.copy(
-                            muteOriginal = false,
-                            noModelHint = "配音引擎未能启动，已恢复视频原声。系统 TTS 请检查手机的文字转语音服务与中文语音数据；Kokoro 请检查配音模型是否完整。"
-                        )
-                    }
+            pm.originalVolume = if (st.muteOriginal) 0f else 1f
+            if (st.dubbingOn && st.muteOriginal && st.lines.isNotEmpty() && st.noModelHint == null) {
+                ui.update {
+                    it.copy(
+                        noModelHint = "配音引擎尚未启动或未能创建。系统 TTS 请检查手机文字转语音服务与中文语音数据；其他引擎请检查模型是否就绪。"
+                    )
                 }
-            } else {
-                pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
         }
 
