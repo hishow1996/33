@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubLine
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -36,7 +37,7 @@ class DubbingStartupBufferPolicyTest {
         assertTrue(plan.lineIndices.size >= 3)
         assertTrue(plan.lineIndices.size <= 6)
         assertEquals(8_000L, plan.lookAheadMs)
-        assertEquals(15_000L, plan.waitTimeoutMs)
+        assertEquals(25_000L, plan.waitTimeoutMs)
     }
 
     @Test
@@ -52,8 +53,52 @@ class DubbingStartupBufferPolicyTest {
             synthesisRealtimeFactor = 1.8f,
         )
         assertEquals(8_000L, baseline.lookAheadMs)
-        assertEquals(12_000L, slow.lookAheadMs)
+        assertEquals(20_000L, slow.lookAheadMs)
+        assertEquals(8, slow.minimumCueCount)
+        assertFalse(slow.waitForAllBeforePlayback)
         assertTrue(slow.lineIndices.size >= baseline.lineIndices.size)
+    }
+
+    @Test
+    fun sustainedSevereSlowdownWaitsForAllGeneratedCues() {
+        val spoken = DubbingStartupBufferPolicy.spokenCueIndices(lines(16))
+        val plan = DubbingStartupBufferPolicy.plan(
+            lines = lines(16),
+            spokenCueIndices = spoken,
+            immediateMode = false,
+            synthesisRealtimeFactor = 2.2f,
+            synthesisSampleCount = 2,
+        )
+        assertTrue(plan.waitForAllBeforePlayback)
+        assertEquals(spoken, plan.lineIndices)
+        assertEquals(spoken.size, plan.minimumCueCount)
+        assertEquals(0L, plan.waitTimeoutMs)
+    }
+
+    @Test
+    fun oneSlowSynthesisSampleOnlyIncreasesBufferInsteadOfWaitingForEverything() {
+        val plan = DubbingStartupBufferPolicy.plan(
+            lines(16),
+            immediateMode = false,
+            synthesisRealtimeFactor = 2.2f,
+            synthesisSampleCount = 1,
+        )
+        assertFalse(plan.waitForAllBeforePlayback)
+        assertEquals(20_000L, plan.lookAheadMs)
+        assertEquals(8, plan.minimumCueCount)
+    }
+
+    @Test
+    fun immediateModeNeverEscalatesToFullGeneratedBuffer() {
+        val plan = DubbingStartupBufferPolicy.plan(
+            lines(16),
+            immediateMode = true,
+            synthesisRealtimeFactor = 5.0f,
+            synthesisSampleCount = 100,
+        )
+        assertFalse(plan.waitForAllBeforePlayback)
+        assertEquals(1, plan.minimumCueCount)
+        assertEquals(2_500L, plan.waitTimeoutMs)
     }
 
     @Test
