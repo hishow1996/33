@@ -3935,7 +3935,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         val selected = engineId ?: (prefs.getString("tts_engine", "kokoro") ?: "kokoro")
         return when (selected) {
-            "system" -> io.translatetube.local.tts.SystemTts(this)
+            "system" -> io.translatetube.local.tts.SystemTts(
+                this,
+                io.translatetube.local.tts.SystemTtsPlaybackMode.fromPreference(
+                    prefs.getString("system_tts_mode", "generated"),
+                ),
+            )
             "kokoro" -> {
                 if (!kokoroRuntimeReady()) {
                     throw IllegalStateException("已选择 Kokoro，但配音模型尚未就绪")
