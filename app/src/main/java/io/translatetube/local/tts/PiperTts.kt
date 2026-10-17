@@ -740,7 +740,9 @@ object PiperModels {
                 throw cancelled
             } catch (error: Exception) {
                 lastError = error
-                primarySourceWasSlow = sourceIndex == 0 && error is SlowDownloadSourceException
+                if (sourceIndex == 0) {
+                    primarySourceWasSlow = error is SlowDownloadSourceException
+                }
                 runCatching { archive.delete() }
             }
         }
