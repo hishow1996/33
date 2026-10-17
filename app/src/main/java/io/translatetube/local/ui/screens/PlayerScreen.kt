@@ -417,8 +417,9 @@ fun PlayerScreen(
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
-    val progressiveTtsPlayback = state.ttsEngineName.contains("系统", ignoreCase = true) &&
-        state.ttsEngineName.contains("TTS", ignoreCase = true)
+    // Every active TTS engine prepares the first usable subtitle cue before playback;
+    // later cues can continue generating PCM in the background for Kokoro, Piper and System TTS.
+    val progressiveTtsPlayback = state.ttsEngineName.isNotBlank()
     val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
         phase = state.phase,
         waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
