@@ -1444,7 +1444,6 @@ private fun CurrentSubtitleStrip(state: PlayerUiState) {
 }
 
 @Composable
-@Composable
 private fun PlaybackModeSelector(
     state: PlayerUiState,
     subtitlesVisible: Boolean,
