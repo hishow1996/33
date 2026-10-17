@@ -25,9 +25,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 行级预合成配音引擎：
- * 后台按字幕顺序逐行合成 PCM 并缓存（内存 LRU + 文件），
- * 播放侧 playAt(index) 用 AudioTrack 即时切行。
+ * 行级时间轴配音引擎：
+ * Kokoro/Piper 等引擎在后台逐行合成并缓存 PCM，由 AudioTrack 按时间轴切行；
+ * 系统 TTS 则在对应字幕时间点直接调用 Android 朗读服务，不再预合成 PCM。
  */
 private class DubbingPcmLimitException(message: String) : IllegalStateException(message)
 private class DubbingChunkBoundaryTimeoutException : IllegalStateException("等待配音分段结束超时")
