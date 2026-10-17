@@ -91,7 +91,8 @@ class ModelDownloadForegroundService : Service() {
                     ttsActive && tts.status == ModelStatus.DOWNLOADING -> ModelNotificationContent(
                         title = "正在下载配音模型",
                         detail = statusText(tts),
-                        progress = tts.progress.coerceIn(0, 99),
+                        progress = tts.progress.coerceIn(0, 99).takeIf { tts.totalMB > 0L },
+                        indeterminate = tts.totalMB <= 0L,
                     )
                     ttsActive && tts.status == ModelStatus.EXTRACTING -> ModelNotificationContent(
                         title = "正在安装配音模型",
@@ -106,7 +107,8 @@ class ModelDownloadForegroundService : Service() {
                     asrActive && asr.status == ModelStatus.DOWNLOADING -> ModelNotificationContent(
                         title = "正在下载转写模型",
                         detail = statusText(asr),
-                        progress = asr.progress.coerceIn(0, 99),
+                        progress = asr.progress.coerceIn(0, 99).takeIf { asr.totalMB > 0L },
+                        indeterminate = asr.totalMB <= 0L,
                     )
                     asrActive && asr.status == ModelStatus.EXTRACTING -> ModelNotificationContent(
                         title = "正在安装转写模型",
@@ -205,8 +207,11 @@ class ModelDownloadForegroundService : Service() {
 
     private fun statusText(state: ModelState): String = when (state.status) {
         ModelStatus.DOWNLOADING -> {
-            val size = if (state.totalMB > 0) " · ${state.downloadedMB}/${state.totalMB} MB" else ""
-            "下载中 ${state.progress.coerceIn(0, 99)}%$size"
+            if (state.totalMB > 0L) {
+                "下载中 ${state.progress.coerceIn(0, 99)}% · ${state.downloadedMB}/${state.totalMB} MB"
+            } else {
+                "正在下载 · 已下载 ${state.downloadedMB} MB（文件总大小未知）"
+            }
         }
         ModelStatus.EXTRACTING -> state.stageMessage
             ?.takeIf { it.isNotBlank() }
