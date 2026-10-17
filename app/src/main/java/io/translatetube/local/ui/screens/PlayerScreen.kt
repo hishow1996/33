@@ -1836,7 +1836,7 @@ private fun SubtitleList(
                         )
                         .clickable(
                             enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
-                        ) { svc?.seek(line.startMs) }
+                        ) { svc?.seekAndPlay(line.startMs) }
                         .padding(horizontal = 10.dp, vertical = if (activeDub) 6.dp else 5.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
