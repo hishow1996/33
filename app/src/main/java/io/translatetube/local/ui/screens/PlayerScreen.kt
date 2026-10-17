@@ -1821,7 +1821,6 @@ private fun SubtitleList(
                 // source text visible while System TTS is preparing/reading the Chinese line.
                 val showOriginalText = state.dubbingOn &&
                     (activeDub || active) &&
-                    translatedText != "中文字幕暂不可用" &&
                     line.text.isNotBlank() &&
                     sourceComparisonKey != translatedComparisonKey
 
