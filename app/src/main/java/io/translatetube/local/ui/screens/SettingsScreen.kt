@@ -44,6 +44,19 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
+    var systemTtsMode by remember { mutableStateOf(prefs.getString("system_tts_mode", "generated") ?: "generated") }
+    var systemTtsVoiceName by remember { mutableStateOf(prefs.getString("system_tts_voice_name", "").orEmpty()) }
+    var systemTtsVoiceCatalog by remember {
+        mutableStateOf(
+            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
+                prefs.getString(io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY, null),
+            ),
+        )
+    }
+    var systemTtsVoiceMenuExpanded by remember { mutableStateOf(false) }
+    var refreshingSystemTtsVoices by remember { mutableStateOf(false) }
+    var systemTtsVoiceStatus by remember { mutableStateOf<String?>(null) }
+    val systemTtsSettingsScope = androidx.compose.runtime.rememberCoroutineScope()
     var asrEngine by remember { mutableStateOf(prefs.getString("asr_provider", "local") ?: "local") }
     var elevenLabsKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_elevenlabs_key", "").orEmpty())) }
     var cartesiaKey by remember { mutableStateOf(Crypto.decrypt(prefs.getString("asr_cartesia_key", "").orEmpty())) }
@@ -57,6 +70,50 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
     val cartesiaLanguages = remember { listOf("en" to "英语", "zh" to "中文", "ja" to "日语", "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语", "pt" to "葡萄牙语", "ru" to "俄语", "it" to "意大利语", "hi" to "印地语", "ar" to "阿拉伯语", "nl" to "荷兰语", "tr" to "土耳其语", "pl" to "波兰语", "vi" to "越南语", "th" to "泰语", "id" to "印尼语", "fi" to "芬兰语", "uk" to "乌克兰语", "sv" to "瑞典语", "da" to "丹麦语", "no" to "挪威语", "nn" to "挪威语（新挪威语）") }
     val kawaLanguages = remember(cartesiaLanguages) { cartesiaLanguages.filterNot { it.first == "nn" } }
     var speaker by remember { mutableStateOf(prefs.getInt("kokoro_speaker", 14).toFloat()) }
+    fun refreshSystemTtsVoices() {
+        if (refreshingSystemTtsVoices) return
+        refreshingSystemTtsVoices = true
+        systemTtsVoiceStatus = "正在读取手机系统提供的中文音色…"
+        systemTtsSettingsScope.launch {
+            try {
+                val voices = withContext(Dispatchers.IO) {
+                    var engine: io.translatetube.local.tts.SystemTts? = null
+                    try {
+                        engine = io.translatetube.local.tts.SystemTts(ctx.applicationContext)
+                        engine.chineseVoiceNames
+                    } finally {
+                        runCatching { engine?.close() }
+                    }
+                }
+                if (voices.isEmpty()) {
+                    systemTtsVoiceStatus = "系统没有返回可用的中文音色，请检查手机的文字转语音设置。"
+                } else {
+                    systemTtsVoiceCatalog = voices
+                    val selected = systemTtsVoiceName.takeIf { it in voices } ?: voices.first()
+                    systemTtsVoiceName = selected
+                    prefs.edit()
+                        .putString("system_tts_voice_name", selected)
+                        .putString(
+                            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY,
+                            io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.encodeVoiceCatalog(voices),
+                        )
+                        .apply()
+                    systemTtsVoiceStatus = "已读取 \${voices.size} 个系统中文音色；选择会在下次打开视频时生效。"
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                systemTtsVoiceStatus = "读取系统音色失败：\${error.message ?: error.javaClass.simpleName}"
+            } finally {
+                refreshingSystemTtsVoices = false
+            }
+        }
+    }
+    LaunchedEffect(ttsEngine, systemTtsVoiceCatalog.isEmpty()) {
+        if (ttsEngine == "system" && systemTtsVoiceCatalog.isEmpty()) {
+            refreshSystemTtsVoices()
+        }
+    }
     val floatingManager = remember { FloatingManager(ctx) }
     var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -468,6 +525,101 @@ Section("配音设置") {
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
+            }
+            if (ttsEngine == "system") {
+                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+                Text("系统 TTS 配音模式", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White)
+                        .clickable {
+                            systemTtsMode = "generated"
+                            prefs.edit().putString("system_tts_mode", systemTtsMode).apply()
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = systemTtsMode == "generated",
+                        onClick = {
+                            systemTtsMode = "generated"
+                            prefs.edit().putString("system_tts_mode", systemTtsMode).apply()
+                        },
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("生成合成配音（边合成边播）", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text("先准备前面的语音缓冲，再边播放边生成后续字幕", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White)
+                        .clickable {
+                            systemTtsMode = "instant"
+                            prefs.edit().putString("system_tts_mode", systemTtsMode).apply()
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = systemTtsMode == "instant",
+                        onClick = {
+                            systemTtsMode = "instant"
+                            prefs.edit().putString("system_tts_mode", systemTtsMode).apply()
+                        },
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("即时朗读配音", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text("在字幕时间点调用系统 TTS 直接朗读，不先生成 WAV/PCM 文件", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Text("即时朗读不需要等待整段配音合成，但系统语音服务仍可能有启动延迟；模式和音色将在下次打开视频时生效。", color = SubText, style = MaterialTheme.typography.bodySmall)
+                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("系统中文音色", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            systemTtsVoiceName.ifBlank { "尚未选择；请读取系统音色" },
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                        )
+                    }
+                    Box {
+                        TextButton(
+                            onClick = { systemTtsVoiceMenuExpanded = true },
+                            enabled = systemTtsVoiceCatalog.isNotEmpty(),
+                        ) { Text("选择音色") }
+                        DropdownMenu(
+                            expanded = systemTtsVoiceMenuExpanded,
+                            onDismissRequest = { systemTtsVoiceMenuExpanded = false },
+                        ) {
+                            systemTtsVoiceCatalog.forEach { voiceName ->
+                                DropdownMenuItem(
+                                    text = { Text(voiceName, maxLines = 2) },
+                                    onClick = {
+                                        systemTtsVoiceName = voiceName
+                                        prefs.edit().putString("system_tts_voice_name", voiceName).apply()
+                                        systemTtsVoiceMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    TextButton(
+                        onClick = { refreshSystemTtsVoices() },
+                        enabled = !refreshingSystemTtsVoices,
+                    ) { Text(if (refreshingSystemTtsVoices) "读取中…" else "读取音色") }
+                }
+                systemTtsVoiceStatus?.let {
+                    Text(it, color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
             }
             if (ttsEngine == "kokoro") {
                 ModelRow(
