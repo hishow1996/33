@@ -205,6 +205,7 @@ class MainActivity : ComponentActivity() {
                                 mediaReferrer = req?.mediaReferrer.orEmpty(),
                                 mediaCookie = req?.mediaCookie,
                                 mediaUserAgent = req?.mediaUserAgent,
+                                requestToken = req?.ts ?: 0L,
                                 onBack = { screen = Screen.HOME },
                                 onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
                             )
