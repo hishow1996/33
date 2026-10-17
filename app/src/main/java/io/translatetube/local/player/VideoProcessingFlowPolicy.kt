@@ -221,9 +221,14 @@ object VideoProcessingFlowPolicy {
         phase: Phase,
         waitingForTranscriptionEngine: Boolean = false,
         waitingForDubbingEngine: Boolean = false,
-    ): Boolean = phase != Phase.READY ||
-        waitingForTranscriptionEngine ||
-        waitingForDubbingEngine
+        playerIsPlaying: Boolean = false,
+    ): Boolean = if (playerIsPlaying && phase in setOf(Phase.SYNTHESIZING, Phase.READY)) {
+        false
+    } else {
+        phase != Phase.READY ||
+            waitingForTranscriptionEngine ||
+            waitingForDubbingEngine
+    }
 
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
         if (dubbingHasErrors) "配音部分失败 · 失败字幕已恢复原声" else null
