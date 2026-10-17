@@ -30,15 +30,19 @@ class YtDlpVersionPolicyTest {
         assertEquals(
             "2026.10.10",
             YtDlpVersionPolicy.installedVersionFromOutput(
-                "Python 3.12.0\\n2026.10.10\\n",
+                """Python 3.12.0
+2026.10.10
+""",
             ),
         )
         assertNull(
             YtDlpVersionPolicy.installedVersionFromOutput(
-                "yt-dlp --version\\n2026.10.10.dev0\\n",
+                """yt-dlp --version
+2026.10.10.dev0
+""",
             ),
         )
-        assertNull(YtDlpVersionPolicy.installedVersionFromOutput("".trimIndent()))
+        assertNull(YtDlpVersionPolicy.installedVersionFromOutput(""))
     }
 
     @Test
