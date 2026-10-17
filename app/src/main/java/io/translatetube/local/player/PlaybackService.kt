@@ -2751,61 +2751,116 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     }
                 }
             }
-            // Generated mode waits for a measured startup buffer rather than just one or two
-            // lines. The target grows when early TTS calls prove slower than the video timeline.
-            // Immediate mode is different: its cues are marked available without PCM generation,
-            // so only the first real speech cue is needed before playback begins.
+            // Normal generated mode prepares a buffer, then continues synthesizing while playing.
+            // If multiple measurements show a severe bottleneck (RTF >= 2x), stay on this page until
+            // every speech cue is prepared; this avoids starting a video that will repeatedly outrun TTS.
+            // Immediate mode is untouched and only waits for a usable first cue.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 val immediateMode = startupDubbing.usesImmediateTimelinePlayback
-                // Subtitle count can be large. Reuse the valid speech-row index once instead of
-                // filtering every subtitle again on each 100 ms startup-buffer update.
                 val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
                 var startupBuffer = DubbingStartupBufferPolicy.plan(
                     lines = finalLines,
                     spokenCueIndices = startupSpeechCueIndices,
                     immediateMode = immediateMode,
                     synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
+                    synthesisSampleCount = startupDubbing.synthesisRealtimeSampleCount,
                 )
                 if (startupBuffer.lineIndices.isNotEmpty()) {
-                    startupDubbing.prioritizeAround(
-                        startupBuffer.lineIndices.first(),
-                        lookAhead = maxOf(2, startupBuffer.lineIndices.size - 1),
-                    )
-                    val deadlineNs = System.nanoTime() +
-                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
                     fun cueFinished(index: Int): Boolean =
                         startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
-                    while (System.nanoTime() < deadlineNs) {
+
+                    val waitStartedNs = System.nanoTime()
+                    var normalDeadlineNs = waitStartedNs +
+                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
+                    var waitForAllBeforePlayback = startupBuffer.waitForAllBeforePlayback
+                    var lastFullWaitPreparedCount = -1
+
+                    startupDubbing.prioritizeAround(
+                        startupBuffer.lineIndices.first(),
+                        lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
+                    )
+                    while (true) {
+                        ensureCurrentSession(key)
                         startupBuffer = DubbingStartupBufferPolicy.plan(
                             lines = finalLines,
                             spokenCueIndices = startupSpeechCueIndices,
                             immediateMode = immediateMode,
                             synthesisRealtimeFactor = startupDubbing.synthesisRealtimeFactor,
+                            synthesisSampleCount = startupDubbing.synthesisRealtimeSampleCount,
                         )
-                        if (!immediateMode && startupBuffer.lineIndices.isNotEmpty()) {
-                            // If the first synthesis proves slow, raise the queue priority for the
-                            // deeper plan while retaining future cues behind the active synthesis.
-                            startupDubbing.prioritizeAround(
-                                startupBuffer.lineIndices.first(),
-                                lookAhead = maxOf(2, startupBuffer.lineIndices.size - 1),
-                            )
+                        if (!immediateMode && startupBuffer.waitForAllBeforePlayback) {
+                            waitForAllBeforePlayback = true
                         }
-                        val minimumBufferReady = startupBuffer.lineIndices
+
+                        if (!waitForAllBeforePlayback && startupBuffer.waitTimeoutMs > 0L) {
+                            val updatedDeadline = waitStartedNs +
+                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
+                            normalDeadlineNs = maxOf(normalDeadlineNs, updatedDeadline)
+                        }
+
+                        if (waitForAllBeforePlayback) {
+                            // A severe slowdown was measured on more than one cue. Promote the
+                            // initial window, then let the single synthesis worker finish the rest
+                            // in order. Keep the processing page responsive with a real prepared count.
+                            startupDubbing.prioritizeAround(
+                                startupSpeechCueIndices.first(),
+                                lookAhead = minOf(12, maxOf(2, startupSpeechCueIndices.size - 1)),
+                            )
+                            val preparedNow = startupDubbing.preparedCount.value
+                                .coerceIn(0, finalLines.size)
+                            if (preparedNow != lastFullWaitPreparedCount) {
+                                lastFullWaitPreparedCount = preparedNow
+                                updateUiForSession(key) { state ->
+                                    if (state.key == key) {
+                                        state.copy(
+                                            progress = "检测到合成持续跟不上，先合成全部配音再播放（已准备 " +
+                                                preparedNow + "/" + finalLines.size + " 行）",
+                                        )
+                                    } else state
+                                }
+                            }
+                            if (startupSpeechCueIndices.all(::cueFinished)) break
+                        } else {
+                            val minimumBufferReady = startupBuffer.lineIndices
+                                .take(startupBuffer.minimumCueCount)
+                                .all(::cueFinished)
+                            if (minimumBufferReady) break
+                            if (System.nanoTime() >= normalDeadlineNs) break
+                            if (startupBuffer.lineIndices.isNotEmpty()) {
+                                // Raise the queue priority as a slow device asks for a deeper buffer.
+                                startupDubbing.prioritizeAround(
+                                    startupBuffer.lineIndices.first(),
+                                    lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
+                                )
+                            }
+                        }
+                        kotlinx.coroutines.delay(if (waitForAllBeforePlayback) 250 else 100)
+                    }
+
+                    val firstSpeech = startupSpeechCueIndices.first()
+                    val firstSpeechReady = cueFinished(firstSpeech)
+                    val allSpeechReady = startupSpeechCueIndices.all(::cueFinished)
+                    val minimumBufferReady = if (waitForAllBeforePlayback) {
+                        allSpeechReady
+                    } else {
+                        startupBuffer.lineIndices
                             .take(startupBuffer.minimumCueCount)
                             .all(::cueFinished)
-                        if (minimumBufferReady) break
-                        kotlinx.coroutines.delay(100)
                     }
-                    val firstSpeech = startupBuffer.lineIndices.first()
-                    val minimumBufferReady = startupBuffer.lineIndices
-                        .take(startupBuffer.minimumCueCount)
-                        .all(::cueFinished)
                     val bufferIncomplete = !minimumBufferReady
-                    val remainingBufferCues = startupBuffer.lineIndices.count { !cueFinished(it) }
                     val measuredRtf = startupDubbing.synthesisRealtimeFactor
                     when {
-                        !cueFinished(firstSpeech) -> {
+                        waitForAllBeforePlayback && allSpeechReady -> {
+                            android.util.Log.i(
+                                "PlaybackService",
+                                "Severe TTS slowdown detected; all speech cues are ready before video playback",
+                            )
+                            updateUiForSession(key) {
+                                it.copy(progress = "全部配音已合成，正在启动视频播放")
+                            }
+                        }
+                        !firstSpeechReady -> {
                             android.util.Log.w(
                                 "PlaybackService",
                                 "TTS startup timed out before the first cue; start with original audio audible",
@@ -2817,20 +2872,20 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         bufferIncomplete && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
                             android.util.Log.w(
                                 "PlaybackService",
-                                "TTS synthesis is slower than real time (rtf=$measuredRtf); minimum startup buffer incomplete",
+                                "TTS synthesis is slower than real time; buffer deadline reached",
                             )
                             updateUiForSession(key) {
-                                it.copy(progress = "配音生成速度偏慢，首段缓冲时间到后先开始播放；未就绪片段会保留原声，可改用即时朗读")
+                                it.copy(progress = "配音速度偏慢，已尽量增加首段缓冲；仍未就绪的片段会先保留原声")
                             }
                         }
                         bufferIncomplete -> {
                             updateUiForSession(key) {
-                                it.copy(progress = "首段最低配音缓冲未满，先开始播放；后续继续生成，未就绪时保留原声")
+                                it.copy(progress = "首段缓冲未完全就绪，先开始播放；后续配音继续生成")
                             }
                         }
-                        !immediateMode && remainingBufferCues > 0 && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
+                        !immediateMode && measuredRtf.isFinite() && measuredRtf >= 1.2f -> {
                             updateUiForSession(key) {
-                                it.copy(progress = "首段配音缓冲已就绪，额外缓冲与后续字幕继续在后台生成")
+                                it.copy(progress = "已准备较长的首段配音缓冲，播放期间继续合成后续字幕")
                             }
                         }
                     }
