@@ -172,6 +172,7 @@ class PlaybackService : MediaSessionService() {
     private var remoteMediaCookie: String? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
+    @Volatile private var activeOpenRequestToken: Long = 0L
     @Volatile private var qualityRecoveryAttempted = false
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
@@ -203,6 +204,17 @@ class PlaybackService : MediaSessionService() {
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
     val isReady: Boolean get() = playerReady && ::pm.isInitialized
+
+    /**
+     * A video key identifies media, not a particular user action. The same history row can be
+     * tapped again with different TTS settings, so compare the request token as well as the key.
+     * Returning from Settings with the same token must not restart the active playback session.
+     */
+    fun isOpenRequestActive(key: String, requestToken: Long): Boolean =
+        requestToken > 0L &&
+            activeOpenRequestToken == requestToken &&
+            videoKey == key &&
+            ui.value.key == key
 
     private suspend fun ensureCurrentSession(sessionKey: String) {
         // Extractor/JNI calls are sometimes synchronous. A canceled job may return from one
@@ -719,6 +731,7 @@ class PlaybackService : MediaSessionService() {
         remoteMediaReferrer: String = "",
         remoteMediaCookie: String? = null,
         remoteMediaUserAgent: String? = null,
+        requestToken: Long = 0L,
     ) {
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
@@ -735,6 +748,7 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
+        activeOpenRequestToken = requestToken
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
         this.remoteMediaUrl = remoteMediaUrl
         this.remoteMediaTitle = remoteMediaTitle
