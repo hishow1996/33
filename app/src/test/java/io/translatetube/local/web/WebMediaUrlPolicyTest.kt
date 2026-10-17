@@ -23,6 +23,23 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
+    fun acceptsCommonBrowserPastedUrlVariations() {
+        assertEquals(
+            "https://example.com/watch",
+            WebMediaUrlPolicy.normalizePageUrl("\u200B https://example.com/watch \uFEFF"),
+        )
+        assertEquals(
+            "https://example.com/a%20b?q=hello%20world",
+            WebMediaUrlPolicy.normalizePageUrl("https://example.com/a b?q=hello world"),
+        )
+        assertEquals(
+            "https://xn--fsqu00a.xn--0zwm56d/%E8%A7%86%E9%A2%91?q=%E4%BD%A0%E5%A5%BD",
+            WebMediaUrlPolicy.normalizePageUrl("https://例子.测试/视频?q=你好"),
+        )
+        assertNull(WebMediaUrlPolicy.normalizePageUrl("https://exa\u200Bmple.com/watch"))
+    }
+
+    @Test
     fun acceptsDirectHttpAndHlsMediaButRejectsTemporaryAndDashStreams() {
         assertEquals("https://cdn.example/video.mp4?token=abc",
             WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/video.mp4?token=abc"))

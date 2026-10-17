@@ -1,5 +1,6 @@
 package io.translatetube.local.web
 
+import java.net.IDN
 import java.net.URI
 import java.util.Locale
 
@@ -9,9 +10,23 @@ internal object WebMediaUrlPolicy {
     // IPv6 literals need brackets; accept only characters used by literal address/zone forms.
     private val hostPortPattern = Regex("""^(?:\[[0-9A-Fa-f:.%]+\]|[^:/?#]+):\d+(?:[/?#].*)?$""")
     private val blockedSchemes = setOf("javascript", "file", "data", "blob", "content", "intent", "mailto", "tel", "about")
+    // Some apps wrap copied links with zero-width formatting characters. Ignore them only at
+    // the edges; an embedded one remains suspicious and is rejected.
+    private val boundaryFormattingChars = setOf('\u200B', '\uFEFF', '\u2060', '\u00AD')
 
     private fun containsControlCharacters(value: String): Boolean =
         value.any { Character.isISOControl(it) }
+
+    private fun isBoundaryNoise(char: Char): Boolean =
+        char.isWhitespace() || Character.isSpaceChar(char) || char in boundaryFormattingChars
+
+    private fun trimUrlEdges(value: String): String {
+        var start = 0
+        var end = value.length
+        while (start < end && isBoundaryNoise(value[start])) start++
+        while (end > start && isBoundaryNoise(value[end - 1])) end--
+        return value.substring(start, end)
+    }
 
     /** Reject unusable authorities early; java.net.URI accepts out-of-range numeric ports. */
     private fun isValidHttpUri(uri: URI): Boolean {
@@ -24,11 +39,70 @@ internal object WebMediaUrlPolicy {
             !authority.endsWith(":") &&
             (port == -1 || port in 1..65535)
     }
+
+    /**
+     * Parse like a browser for ordinary pasted page URLs:
+     * - encode literal spaces outside the authority;
+     * - convert internationalized host names to IDN ASCII form when URI.host is unavailable.
+     * Scheme, authority, credentials and port are still validated strictly afterwards.
+     */
+    private fun parsePageUri(value: String): URI? {
+        val schemeDelimiter = value.indexOf("://")
+        if (schemeDelimiter <= 0) return null
+
+        val prefix = value.substring(0, schemeDelimiter + 3)
+        val remainder = value.substring(schemeDelimiter + 3)
+        val authorityEnd = remainder.indexOfAny(charArrayOf('/', '?', '#'))
+            .let { if (it < 0) remainder.length else it }
+        val authority = remainder.substring(0, authorityEnd)
+        if (authority.isBlank()) return null
+        val suffix = remainder.substring(authorityEnd).replace(" ", "%20")
+
+        val direct = runCatching { URI(prefix + authority + suffix) }.getOrNull()
+        if (direct != null && !direct.host.isNullOrBlank()) return direct
+        // Never allow a user-info component as a fallback for an otherwise malformed authority.
+        if (authority.contains('@')) return null
+
+        val asciiAuthority = normalizeAuthorityHost(authority) ?: return null
+        return runCatching { URI(prefix + asciiAuthority + suffix) }.getOrNull()
+    }
+
+    private fun normalizeAuthorityHost(authority: String): String? {
+        if (authority.startsWith("[")) {
+            // Preserve bracketed IPv6; URI performs the final syntax and port checks.
+            val closeBracket = authority.indexOf(']')
+            if (closeBracket <= 1) return null
+            val portSuffix = authority.substring(closeBracket + 1)
+            if (portSuffix.isNotEmpty() && !Regex("""^:\d+$""").matches(portSuffix)) return null
+            return authority
+        }
+
+        val colon = authority.lastIndexOf(':')
+        val host: String
+        val portSuffix: String
+        if (colon >= 0) {
+            // DNS names have at most one unbracketed colon, and it must introduce a numeric port.
+            if (authority.indexOf(':') != colon) return null
+            val port = authority.substring(colon + 1)
+            if (port.isEmpty() || !port.all { it in '0'..'9' }) return null
+            host = authority.substring(0, colon)
+            portSuffix = authority.substring(colon)
+        } else {
+            host = authority
+            portSuffix = ""
+        }
+        if (host.isBlank()) return null
+        val asciiHost = runCatching { IDN.toASCII(host, IDN.USE_STD3_ASCII_RULES) }.getOrNull()
+            ?: return null
+        if (asciiHost.isBlank() || asciiHost.length > 253) return null
+        return asciiHost + portSuffix
+    }
+
     fun normalizePageUrl(input: String): String? {
-        // Do not let trim() erase control characters and change the URL being validated.
+        // Reject embedded controls before trimming. Boundary spaces/format marks are handled below.
         if (containsControlCharacters(input)) return null
-        val raw = input.trim()
-        if (raw.isEmpty()) return null
+        val raw = trimUrlEdges(input)
+        if (raw.isEmpty() || raw.any { it in boundaryFormattingChars }) return null
         // Reject known non-web schemes before treating a colon and digits as a host port.
         // Otherwise e.g. javascript:8080/alert could be silently reinterpreted as an HTTPS host.
         val detectedScheme = explicitSchemePattern.find(raw)?.groupValues?.getOrNull(1)?.lowercase(Locale.ROOT)
@@ -43,7 +117,7 @@ internal object WebMediaUrlPolicy {
             raw.startsWith("//") -> "https:$raw"
             else -> "https://$raw"
         }
-        val uri = runCatching { URI(normalized) }.getOrNull() ?: return null
+        val uri = parsePageUri(normalized) ?: return null
         if (!isValidHttpUri(uri)) return null
         return uri.toASCIIString()
     }
