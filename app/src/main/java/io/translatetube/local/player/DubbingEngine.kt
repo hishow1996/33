@@ -458,10 +458,13 @@ class DubbingEngine(
                     // One cue must use one synthesis-rate snapshot for its primary attempt,
                     // adaptive retry and cache identity even if Settings changes mid-request.
                     val synthesisSpeed = speed
+                    val synthesisStartedAtNanos = System.nanoTime()
+                    var synthesisCallCount = 0
                     var audio: io.translatetube.local.tts.TtsAudio? = null
                     var lastFailure: Exception? = null
                     for (attempt in 0..1) {
                         try {
+                            synthesisCallCount++
                             val generated = tts!!.synthCancellable(text, synthesisSpeed, line.speakerId, ::checkSynthesisActive)
                             // TTS providers perform blocking work; observe cancellation as soon
                             // as the provider returns, before installing audio into the cache.
@@ -520,6 +523,7 @@ class DubbingEngine(
                     val readyAudio = if (fasterSpeed > synthesisSpeed + 0.05f) {
                         try {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            synthesisCallCount++
                             val faster = tts!!.synthCancellable(text, fasterSpeed, line.speakerId, ::checkSynthesisActive)
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             // Apply the same finite, audible-PCM validation to the adaptive
@@ -549,6 +553,15 @@ class DubbingEngine(
                             firstAudio
                         }
                     } else firstAudio
+                    val synthesisElapsedMs = (System.nanoTime() - synthesisStartedAtNanos)
+                        .coerceAtLeast(0L) / 1_000_000L
+                    if (synthesisElapsedMs >= 500L || synthesisCallCount > 1) {
+                        android.util.Log.d(
+                            "DubbingEngine",
+                            "TTS performance: engine=${tts?.name} line=${idx + 1}/${lines.size} " +
+                                "chars=${text.length} synthMs=${synthesisElapsedMs} calls=${synthesisCallCount}",
+                        )
+                    }
                     val maxUsefulSamples = DubbingSynthesisPolicy.maxUsefulSampleCount(
                         sampleRate = readyAudio.sampleRate,
                         cueDurationMs = cueDurationMs,
@@ -1074,8 +1087,10 @@ class DubbingEngine(
                 }
                 out.flush()
             }
-            // Flush PCM bytes and metadata before a same-directory rename makes this cache reusable.
-            java.io.RandomAccessFile(temp, "rw").use { it.fd.sync() }
+            // Subtitle PCM is a disposable derived cache, not user data. Closing the buffered
+            // stream above flushes the writes to the OS; forcing a storage fsync for every cue adds
+            // a costly flash-storage barrier on older phones. Publish atomically and validate the
+            // cache length on read; an interrupted/corrupt cache is discarded and synthesized again.
             checkActive()
             if (!validCache(temp) || temp.length() != 8L + samples.size.toLong() * 4L) {
                 throw java.io.IOException("PCM 缓存写入不完整")
