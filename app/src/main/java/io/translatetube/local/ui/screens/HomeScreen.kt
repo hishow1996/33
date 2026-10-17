@@ -48,6 +48,7 @@ import kotlinx.coroutines.withContext
 fun HomeScreen(
     onPlay: (PlayRequest) -> Unit,
     onSettings: () -> Unit,
+    pendingResumeTaskKey: String? = null,
     onResumeTask: (String) -> Unit = {},
 ) {
     val playback by PlaybackService.ui.collectAsState()
@@ -132,27 +133,48 @@ fun HomeScreen(
             }
         }
 
-        // 当前任务由播放服务持有。离开解析页后，主页仍提供一个明确入口返回该任务。
-        if (playback.key.isNotBlank() && playback.phase != Phase.IDLE) {
-            val taskTitle = when (playback.phase) {
-                Phase.ERROR -> "查看处理失败的任务"
-                Phase.READY -> "继续观看这个视频"
-                Phase.TRANSLATING -> "继续视频翻译"
-                Phase.SYNTHESIZING -> "继续生成中文配音"
-                Phase.TRANSCRIBING -> "继续识别视频语音"
-                Phase.DOWNLOADING_AUDIO -> "继续准备视频音轨"
-                else -> "继续解析视频"
+        // The service state covers an in-process task; the saved key restores the entry after force-stop.
+        val liveTaskKey = playback.key.takeIf { it.isNotBlank() && playback.phase != Phase.IDLE }
+        val resumeTaskKey = liveTaskKey ?: pendingResumeTaskKey?.takeIf { it.isNotBlank() }
+        if (resumeTaskKey != null) {
+            val hasLiveTask = liveTaskKey != null
+            val taskTitle = if (hasLiveTask) {
+                when (playback.phase) {
+                    Phase.ERROR -> "查看处理失败的任务"
+                    Phase.READY -> "继续观看这个视频"
+                    Phase.TRANSLATING -> "继续视频翻译"
+                    Phase.SYNTHESIZING -> "继续生成中文配音"
+                    Phase.TRANSCRIBING -> "继续识别视频语音"
+                    Phase.DOWNLOADING_AUDIO -> "继续准备视频音轨"
+                    else -> "继续解析视频"
+                }
+            } else {
+                when {
+                    resumeTaskKey.startsWith("youtube:") -> "重新解析 YouTube 视频"
+                    resumeTaskKey.startsWith("webpage:") -> "继续解析网页视频"
+                    resumeTaskKey.startsWith("remote:") -> "重新打开上次视频"
+                    else -> "继续上次视频"
+                }
             }
-            val taskDetail = when (playback.phase) {
-                Phase.ERROR -> playback.error?.takeIf { it.isNotBlank() } ?: "上次处理未完成，点击查看详情"
-                else -> playback.progress.takeIf { it.isNotBlank() } ?: when (playback.phase) {
-                    Phase.READY -> "视频与字幕已准备好"
-                    else -> "处理任务仍保存在播放服务中"
+            val taskDetail = if (hasLiveTask) {
+                when (playback.phase) {
+                    Phase.ERROR -> playback.error?.takeIf { it.isNotBlank() } ?: "上次处理未完成，点击查看详情"
+                    else -> playback.progress.takeIf { it.isNotBlank() } ?: when (playback.phase) {
+                        Phase.READY -> "视频与字幕已准备好"
+                        else -> "处理任务仍保存在播放服务中"
+                    }
+                }
+            } else {
+                when {
+                    resumeTaskKey.startsWith("webpage:") -> resumeTaskKey.removePrefix("webpage:")
+                    resumeTaskKey.startsWith("youtube:") -> "上次解析因应用退出而中断，点击后重新开始"
+                    resumeTaskKey.startsWith("remote:") -> "上次视频处理被中断，点击重新打开"
+                    else -> "上次视频处理被中断，点击继续"
                 }
             }
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
-                onClick = { onResumeTask(playback.key) },
+                onClick = { onResumeTask(resumeTaskKey) },
                 color = Color(0xFFE6EFFF),
                 shape = RoundedCornerShape(18.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFD4E2FA)),
@@ -178,7 +200,12 @@ fun HomeScreen(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Icon(Icons.Filled.ArrowForwardIos, contentDescription = "返回当前任务", tint = BrandBright, modifier = Modifier.size(16.dp))
+                    Icon(
+                        Icons.Filled.ArrowForwardIos,
+                        contentDescription = if (hasLiveTask) "返回当前任务" else "恢复上次任务",
+                        tint = BrandBright,
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
         }
