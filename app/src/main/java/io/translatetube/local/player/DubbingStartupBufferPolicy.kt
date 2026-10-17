@@ -84,9 +84,15 @@ internal object DubbingStartupBufferPolicy {
         }
 
         val firstStart = lines[spoken.first()].startMs
-        val inWindow = spoken
-            .filter { lines[it].startMs <= firstStart + tier.lookAheadMs }
-            .take(tier.maximumCues)
+        val windowEnd = firstStart + tier.lookAheadMs
+        val inWindow = ArrayList<Int>(tier.maximumCues)
+        // Subtitle rows are already timeline-ordered. Stop as soon as the window is full or passed;
+        // avoid allocating/filtering the entire subtitle list on every startup-buffer poll.
+        for (index in spoken) {
+            if (lines[index].startMs > windowEnd) break
+            inWindow.add(index)
+            if (inWindow.size >= tier.maximumCues) break
+        }
         val minimum = minOf(tier.minimumCues, spoken.size)
         val selected = if (inWindow.size >= minimum) {
             inWindow
