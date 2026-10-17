@@ -1228,12 +1228,25 @@ private fun ModelRow(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     CircularProgressIndicator(
+                        progress = { (state.progress / 100f).coerceIn(0f, 1f) },
                         modifier = Modifier.size(36.dp),
                         color = BrandBright,
                         trackColor = Color(0xFFE5EAF0),
                         strokeWidth = 3.dp,
                     )
-                    Text(state.stageMessage ?: "正在安装模型", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "解压安装 ${state.progress.coerceIn(0, 99)}%",
+                            color = BrandBright,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            state.stageMessage ?: "正在安装模型…",
+                            color = SubText,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                 }
             }
             state.status == io.translatetube.local.data.ModelStatus.FAILED -> {
