@@ -94,11 +94,14 @@ class MainActivity : ComponentActivity() {
 
     /** Keep the original web page as the recovery source if parsing resolves to a temporary media URL. */
     private fun advancePlayRequest(request: PlayRequest) {
+        val current = pendingResumeTaskState.value ?: loadPendingResumeTask()
         val tokenizedRequest = withFreshRequestToken(request)
         playReq.value = tokenizedRequest
-        val current = pendingResumeTaskState.value ?: loadPendingResumeTask()
         if (current == null) {
-            rememberPlayRequest(tokenizedRequest)
+            val generation = (resumePrefs.getLong(KEY_GENERATION, 0L) + 1L).coerceAtLeast(1L)
+            val task = PendingResumeTask(tokenizedRequest.key, tokenizedRequest.key, generation)
+            persistPendingResumeTask(task)
+            pendingResumeTaskState.value = task
             return
         }
         val updated = current.copy(activeKey = tokenizedRequest.key)
