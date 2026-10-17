@@ -302,6 +302,28 @@ class VideoProcessingFlowPolicyTest {
             ),
         )
 
+        // A failed YouTube subtitle seek can refresh its signed stream. Keep the already-open
+        // player visible during that bounded recovery instead of switching back to the parser.
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.PARSING,
+                playerIsPlaying = false,
+                progressiveTtsPlayback = true,
+                playbackHasStarted = true,
+                playbackRecoveryInProgress = true,
+            ),
+        )
+        // Normal parsing/import workflows must still show progress even if the prior player ran.
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.PARSING,
+                playerIsPlaying = false,
+                progressiveTtsPlayback = true,
+                playbackHasStarted = true,
+                playbackRecoveryInProgress = false,
+            ),
+        )
+
         // Engine startup waits and failures must not be skipped just because playback was requested.
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
