@@ -35,8 +35,9 @@ interface TtsEngine {
 }
 
 /**
- * Android's own live-speech route for subtitle-timed playback. This avoids relying on an OEM
- * AudioTrack accepting PCM written by synthesizeToFile on older Android devices.
+ * Optional direct timeline-speech contract for engines that explicitly support live utterances.
+ * The current SystemTts intentionally uses the WAV-to-PCM path below so it shares the same
+ * caching, sample normalization, timing, pause and cancellation behavior as local TTS models.
  */
 interface TimelineTtsPlayback {
     fun speakOnTimeline(
@@ -301,8 +302,15 @@ class SystemTts(context: Context) : TtsEngine {
 
     private fun synthInternal(text: String, speed: Float, speakerId: Int, checkActive: () -> Unit): TtsAudio {
         checkActive()
-        if (text.isBlank()) return TtsAudio(FloatArray(0), 16000)
+        if (text.isBlank()) return TtsAudio(FloatArray(0), SystemTtsOutputAudioPolicy.TARGET_SAMPLE_RATE)
+        // Validate the original payload before normalization so pathological input cannot allocate
+        // another large string. Collapse line breaks/repeated whitespace because system voices on
+        // some OEMs insert long pauses or produce unusable audio for raw multiline subtitle text.
         TtsTextPolicy.validate(text)
+        val normalizedText = text.replace(Regex("""\s+"""), " ").trim()
+        if (normalizedText.isEmpty()) {
+            return TtsAudio(FloatArray(0), SystemTtsOutputAudioPolicy.TARGET_SAMPLE_RATE)
+        }
 
         // Create the temporary file before publishing a request. If close() races with this
         // allocation, the closed check below prevents a request from waiting on an unobserved latch.
@@ -336,15 +344,15 @@ class SystemTts(context: Context) : TtsEngine {
             if (tts.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 无法设置配音语速（" + safeSpeed + "×）")
             }
-            val result = tts.synthesizeToFile(text, android.os.Bundle(), tmp, utteranceId)
+            val result = tts.synthesizeToFile(normalizedText, android.os.Bundle(), tmp, utteranceId)
             if (result != TextToSpeech.SUCCESS) {
                 android.util.Log.e(
                     "SystemTts",
-                    "synthesizeToFile rejected request: result=$result chars=${text.length} voice=${targetVoice.name}",
+                    "synthesizeToFile rejected request: result=$result chars=${normalizedText.length} voice=${targetVoice.name}",
                 )
                 throw IllegalStateException("系统 TTS 拒绝了本次合成（状态码 $result）")
             }
-            val timeoutMs = SystemTtsTimeoutPolicy.timeoutMs(text, safeSpeed)
+            val timeoutMs = SystemTtsTimeoutPolicy.timeoutMs(normalizedText, safeSpeed)
             val timeoutDeadlineNanos = System.nanoTime() +
                 java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs)
             try {
@@ -355,7 +363,7 @@ class SystemTts(context: Context) : TtsEngine {
                     if (remainingNanos <= 0L) {
                         android.util.Log.e(
                             "SystemTts",
-                            "WAV synthesis timed out after ${timeoutMs} ms; chars=${text.length} voice=${targetVoice.name}",
+                            "WAV synthesis timed out after ${timeoutMs} ms; chars=${normalizedText.length} voice=${targetVoice.name}",
                         )
                         runCatching { tts.stop() }
                         throw IllegalStateException("系统 TTS 合成超时（${timeoutMs / 1000} 秒）")
@@ -404,7 +412,7 @@ class SystemTts(context: Context) : TtsEngine {
             val elapsedMs = ((System.nanoTime() - activeSynthesisStartedAtNanos).coerceAtLeast(0L) / 1_000_000L)
             android.util.Log.d(
                 "SystemTts",
-                "PCM ready: chars=${text.length} voice=${targetVoice.name} speed=$safeSpeed " +
+                "PCM ready: chars=${normalizedText.length} voice=${targetVoice.name} speed=$safeSpeed " +
                     "elapsed=${elapsedMs}ms wav=${tmp.length()}B mediaVolume=$mediaVolume " +
                     "input=${audio.sampleRate}Hz/${audio.samples.size} samples, " +
                     "output=${normalized.sampleRate}Hz/${normalized.samples.size} samples",
@@ -416,13 +424,13 @@ class SystemTts(context: Context) : TtsEngine {
         } catch (cancelled: java.util.concurrent.CancellationException) {
             android.util.Log.d(
                 "SystemTts",
-                "WAV synthesis cancelled: chars=${text.length}",
+                "WAV synthesis cancelled: chars=${normalizedText.length}",
             )
             throw cancelled
         } catch (error: Exception) {
             android.util.Log.e(
                 "SystemTts",
-                "WAV synthesis failed: chars=${text.length} detail=${error.message ?: error.javaClass.simpleName}",
+                "WAV synthesis failed: chars=${normalizedText.length} detail=${error.message ?: error.javaClass.simpleName}",
                 error,
             )
             throw error
