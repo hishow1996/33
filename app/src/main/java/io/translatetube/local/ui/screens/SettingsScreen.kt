@@ -98,12 +98,12 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
                             io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.encodeVoiceCatalog(voices),
                         )
                         .apply()
-                    systemTtsVoiceStatus = "已读取 \${voices.size} 个系统中文音色；选择会在下次打开视频时生效。"
+                    systemTtsVoiceStatus = "已读取 ${voices.size} 个系统中文音色；选择会在下次打开视频时生效。"
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                systemTtsVoiceStatus = "读取系统音色失败：\${error.message ?: error.javaClass.simpleName}"
+                systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.javaClass.simpleName}"
             } finally {
                 refreshingSystemTtsVoices = false
             }
