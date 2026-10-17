@@ -417,14 +417,14 @@ fun PlayerScreen(
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
-    val systemTtsLivePlayback = state.ttsEngineName.contains("系统", ignoreCase = true) &&
+    val progressiveTtsPlayback = state.ttsEngineName.contains("系统", ignoreCase = true) &&
         state.ttsEngineName.contains("TTS", ignoreCase = true)
     val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
         phase = state.phase,
         waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
         waitingForDubbingEngine = state.waitingForDubbingEngine,
         playerIsPlaying = state.isPlaying,
-        systemTtsLivePlayback = systemTtsLivePlayback,
+        progressiveTtsPlayback = progressiveTtsPlayback,
         dubbingPreparationIncomplete = dubbingPreparationIncomplete,
     )
 
