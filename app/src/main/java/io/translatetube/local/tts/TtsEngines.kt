@@ -38,7 +38,7 @@ interface TtsEngine {
  * Android's own live-speech route for subtitle-timed playback. This avoids relying on an OEM
  * AudioTrack accepting PCM written by synthesizeToFile on older Android devices.
  */
-internal interface TimelineTtsPlayback {
+interface TimelineTtsPlayback {
     fun speakOnTimeline(
         text: String,
         speed: Float,
