@@ -1542,11 +1542,10 @@ class DubbingEngine(
                 }
                 return CreatedStaticChunk(createdTrack, startSample, endSample)
             } catch (error: Exception) {
-                if (lastError == null) {
-                    lastError = error
-                } else {
-                    lastError.addSuppressed(error)
-                }
+                // Report the actual final fallback attempt, not the first/largest-buffer
+                // failure. Keep earlier failures attached for log diagnostics.
+                lastError?.let(error::addSuppressed)
+                lastError = error
                 android.util.Log.w(
                     "DubbingEngine",
                     "Static AudioTrack failed for $count samples at ${sampleRate}Hz; trying smaller buffer",
@@ -1560,6 +1559,18 @@ class DubbingEngine(
         )
     }
 
+    private fun describeAudioTrackFailure(error: Throwable?): String {
+        if (error == null) return "系统未提供详细原因"
+        val main = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+        val cause = error.cause?.takeIf { it !== error }
+        val causeMessage = cause?.let { it.message?.takeIf(String::isNotBlank) ?: it.javaClass.simpleName }
+        return if (causeMessage == null || main.contains(causeMessage)) {
+            main.take(140)
+        } else {
+            "$main；原因：$causeMessage".take(140)
+        }
+    }
+
     private fun createFilledAudioTrack(samples: FloatArray, sampleRate: Int): AudioTrack {
         require(samples.isNotEmpty()) { "配音音频为空" }
         require(samples.size <= MAX_STATIC_TRACK_SAMPLES) {
@@ -1571,6 +1582,7 @@ class DubbingEngine(
             .build()
 
         var floatTrack: AudioTrack? = null
+        var floatFailure: Exception? = null
         try {
             floatTrack = AudioTrack.Builder()
                 .setAudioAttributes(attributes())
@@ -1585,22 +1597,26 @@ class DubbingEngine(
                 .setBufferSizeInBytes(samples.size * 4)
                 .build()
 
-            if (floatTrack.state == AudioTrack.STATE_INITIALIZED) {
-                val written = writeFully(floatTrack, samples)
-                if (written == samples.size) return floatTrack
-                android.util.Log.w(
-                    "DubbingEngine",
-                    "PCM_FLOAT AudioTrack wrote ${written}/${samples.size}; trying PCM_16BIT",
+            if (floatTrack.state != AudioTrack.STATE_INITIALIZED) {
+                throw IllegalStateException(
+                    "PCM_FLOAT AudioTrack 初始化失败，state=${floatTrack.state}"
                 )
-            } else {
-                android.util.Log.w("DubbingEngine", "PCM_FLOAT AudioTrack failed to initialize; trying PCM_16BIT")
             }
+            val written = writeFully(floatTrack, samples)
+            if (written != samples.size) {
+                throw IllegalStateException(
+                    "PCM_FLOAT AudioTrack 写入不完整：$written/${samples.size} 个采样点"
+                )
+            }
+            return floatTrack
         } catch (e: Exception) {
+            floatFailure = e
             android.util.Log.w("DubbingEngine", "PCM_FLOAT output unavailable; trying PCM_16BIT", e)
         }
         try { floatTrack?.release() } catch (_: Exception) {}
 
         var pcm16Track: AudioTrack? = null
+        var pcm16Failure: Exception? = null
         try {
             val pcm16 = DubbingPcm16Converter.convert(samples)
             pcm16Track = AudioTrack.Builder()
@@ -1616,11 +1632,15 @@ class DubbingEngine(
                 .setBufferSizeInBytes(pcm16.size * 2)
                 .build()
             if (pcm16Track.state != AudioTrack.STATE_INITIALIZED) {
-                throw IllegalStateException("PCM_16BIT AudioTrack 初始化失败")
+                throw IllegalStateException(
+                    "PCM_16BIT AudioTrack 初始化失败，state=${pcm16Track.state}"
+                )
             }
             val written = writeFully(pcm16Track, pcm16)
             if (written != pcm16.size) {
-                throw IllegalStateException("PCM_16BIT AudioTrack 写入不完整：${written}/${pcm16.size} 个采样点")
+                throw IllegalStateException(
+                    "PCM_16BIT AudioTrack 写入不完整：$written/${pcm16.size} 个采样点"
+                )
             }
             android.util.Log.i(
                 "DubbingEngine",
@@ -1628,10 +1648,10 @@ class DubbingEngine(
             )
             return pcm16Track
         } catch (pcm16Error: Exception) {
+            pcm16Failure = pcm16Error
             try { pcm16Track?.release() } catch (_: Exception) {}
             // Android 9/OEM audio stacks can reject Builder-configured static tracks even when
-            // the same PCM format is supported. Retry once via the legacy constructor before
-            // telling the user that the selected TTS engine failed.
+            // the same PCM format is supported. Retry through the legacy constructor as well.
             var legacyTrack: AudioTrack? = null
             try {
                 val pcm16 = DubbingPcm16Converter.convert(samples)
@@ -1644,19 +1664,26 @@ class DubbingEngine(
                     AudioTrack.MODE_STATIC,
                 )
                 if (legacyTrack.state != AudioTrack.STATE_INITIALIZED) {
-                    throw IllegalStateException("传统 PCM_16BIT AudioTrack 初始化失败")
+                    throw IllegalStateException(
+                        "传统 PCM_16BIT AudioTrack 初始化失败，state=${legacyTrack.state}"
+                    )
                 }
                 val written = writeFully(legacyTrack, pcm16)
                 if (written != pcm16.size) {
-                    throw IllegalStateException("传统 PCM_16BIT AudioTrack 写入不完整：${written}/${pcm16.size}")
+                    throw IllegalStateException(
+                        "传统 PCM_16BIT AudioTrack 写入不完整：$written/${pcm16.size} 个采样点"
+                    )
                 }
                 android.util.Log.i("DubbingEngine", "Using legacy PCM_16BIT AudioTrack fallback")
                 return legacyTrack
             } catch (legacyError: Exception) {
                 try { legacyTrack?.release() } catch (_: Exception) {}
                 legacyError.addSuppressed(pcm16Error)
+                val details = "legacy ${describeAudioTrackFailure(legacyError)}; " +
+                    "PCM_16BIT ${describeAudioTrackFailure(pcm16Failure)}; " +
+                    "PCM_FLOAT ${describeAudioTrackFailure(floatFailure)}"
                 throw IllegalStateException(
-                    "PCM_FLOAT、PCM_16BIT 和传统兼容音轨均无法输出中文配音；可能是设备音频缓冲区限制或系统 TTS 音频格式异常",
+                    "系统配音音轨创建失败：$details".take(480),
                     legacyError,
                 )
             }
