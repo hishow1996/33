@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.ui.theme.*
 import coil.ImageLoader
+import coil.compose.SubcomposeAsyncImageContent
 import coil.decode.SvgDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -55,7 +56,7 @@ fun GoogleTranslateIcon(imageLoader: ImageLoader? = null) {
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,
             loading = { GoogleTranslateLogoFallback() },
             error = { GoogleTranslateLogoFallback() },
-            success = { coil.compose.SubcomposeAsyncImageContent() },
+            success = { SubcomposeAsyncImageContent() },
         )
     }
 }
