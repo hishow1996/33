@@ -125,6 +125,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
     private val ttsRef = AtomicReference<TextToSpeech?>(null)
     @Volatile private var defaultChineseVoice: android.speech.tts.Voice? = null
     @Volatile private var chineseVoiceCatalog: List<android.speech.tts.Voice> = emptyList()
+    @Volatile private var liveSpeechAttributesReady: Boolean = false
 
     val chineseVoiceCount: Int get() = chineseVoiceCatalog.size
     val supportsMultipleChineseVoices: Boolean get() = chineseVoiceCount > 1
@@ -178,7 +179,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
             .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
-        val liveSpeechAttributesReady =
+        liveSpeechAttributesReady =
             tts.setAudioAttributes(liveSpeechAttributes) == TextToSpeech.SUCCESS
         if (!liveSpeechAttributesReady) {
             android.util.Log.w("SystemTts", "System TTS rejected media speech audio attributes; using STREAM_MUSIC parameters")
