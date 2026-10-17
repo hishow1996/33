@@ -417,7 +417,7 @@ fun PlayerScreen(
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
-    // Every active TTS engine prepares the first usable subtitle cue before playback;
+    // The service gives the first usable cue a short startup window; once playback starts,
     // later cues can continue generating PCM in the background for Kokoro, Piper and System TTS.
     val progressiveTtsPlayback = state.ttsEngineName.isNotBlank()
     val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
