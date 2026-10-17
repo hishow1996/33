@@ -406,11 +406,19 @@ fun PlayerScreen(
         }
     }
 
+    val dubbingPreparationIncomplete = VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(
+        dubbingOn = state.dubbingOn,
+        totalLines = state.totalLines,
+        preparedCount = state.preparedCount,
+    )
+    val systemTtsLivePlayback = state.ttsEngineName.contains("系统TTS", ignoreCase = true)
     val showProcessingPage = VideoProcessingFlowPolicy.shouldShowProcessingPage(
         phase = state.phase,
         waitingForTranscriptionEngine = state.waitingForTranscriptionEngine,
         waitingForDubbingEngine = state.waitingForDubbingEngine,
         playerIsPlaying = state.isPlaying,
+        systemTtsLivePlayback = systemTtsLivePlayback,
+        dubbingPreparationIncomplete = dubbingPreparationIncomplete,
     )
 
     Box(
