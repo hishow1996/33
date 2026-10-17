@@ -277,6 +277,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     fun cancelProcessing() {
+        beginPipelineGeneration()
         val current = ui.value
         if (!isProcessingPhase(current.phase)) {
             updateProcessingNotification(current)
@@ -679,6 +680,24 @@ class PlaybackService : MediaSessionService() {
     private fun isCurrentDubbingEngine(engine: DubbingEngine, sessionKey: String): Boolean =
         videoKey == sessionKey && ui.value.key == sessionKey && dubbing === engine
 
+    /** Publish an initialized engine only if the workflow still owns the active session. */
+    private fun publishDubbingEngine(
+        engine: DubbingEngine,
+        sessionKey: String,
+        pipelineGeneration: Long,
+    ): Boolean = synchronized(pipelineGenerationLock) {
+        if (
+            pipelineGeneration != activePipelineGeneration ||
+            videoKey != sessionKey ||
+            ui.value.key != sessionKey
+        ) {
+            false
+        } else {
+            dubbing = engine
+            true
+        }
+    }
+
     /** Ignore late callbacks from a replaced engine, including when the same video key is reused. */
     private fun updateUiForCurrentDubbingEngine(
         engine: DubbingEngine,
@@ -1018,6 +1037,7 @@ class PlaybackService : MediaSessionService() {
      * 支持 SRT/VTT/ASS；双语 cue 会优先取含中文的行作为译文。
      */
     fun importTranslatedSubtitles(uri: Uri) {
+        val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
@@ -1034,8 +1054,9 @@ class PlaybackService : MediaSessionService() {
         retireCurrentDubbing()
         lastLineIdx = Int.MIN_VALUE
         prepJob = scope.launch {
+            pipelineExecutionMutex.withLock {
             try {
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.PARSING,
                         progress = "正在读取已翻译字幕文件…",
@@ -1069,7 +1090,7 @@ class PlaybackService : MediaSessionService() {
                 val parsed = SubtitleParsers.parseAutoCancellable(text) {
                     importOwnerJob?.ensureActive()
                 }.filter { it.startMs >= 0L && it.endMs > it.startMs }
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (parsed.isEmpty()) throw IllegalStateException("字幕文件为空、时间轴无效或格式不支持")
                 val translatedLines = applySavedLineOverrides(parsed.mapIndexed { index, line ->
                     val cue = io.translatetube.local.subs.ImportedSubtitlePolicy.splitBilingualCue(line.text)
@@ -1079,9 +1100,9 @@ class PlaybackService : MediaSessionService() {
                         zh = cue.translationText,
                     )
                 })
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.SYNTHESIZING,
                         progress = "已载入 " + translatedLines.size + " 条已翻译字幕，正在准备中文配音…",
@@ -1101,10 +1122,10 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 awaitRetiredDubbingEngines()
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 val tts = makeTtsOffMainThread()
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     runCatching { tts.close() }
                     throw e
@@ -1116,13 +1137,17 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     runCatching { tts.close() }
                     throw e
                 }
-                dubbing = d
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw kotlinx.coroutines.CancellationException("已翻译字幕导入任务已过期")
+                }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
                     d.attach(tts, translatedLines)
@@ -1132,7 +1157,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
@@ -1151,12 +1176,12 @@ class PlaybackService : MediaSessionService() {
                         }
                 }
                 lastLineIdx = Int.MIN_VALUE
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 withContext(Dispatchers.Main) {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                     pm.play()
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.READY,
                         progress = "",
@@ -1174,7 +1199,7 @@ class PlaybackService : MediaSessionService() {
                 if (videoKey == sessionKey && ui.value.key == sessionKey) {
                     runCatching { pm.originalVolume = 1f }
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
@@ -1183,11 +1208,13 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
             }
+            }
         }
     }
 
     /** 导入外部字幕（SRT/VTT）：解析后重新走翻译+配音 */
     fun importSubtitles(uri: Uri) {
+        val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
@@ -1206,8 +1233,9 @@ class PlaybackService : MediaSessionService() {
         lastLineIdx = Int.MIN_VALUE
 
         prepJob = scope.launch {
+            pipelineExecutionMutex.withLock {
             try {
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.PARSING,
                         progress = "正在读取字幕文件…",
@@ -1243,12 +1271,12 @@ class PlaybackService : MediaSessionService() {
                     }.filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
                         .mapIndexed { index, line -> line.copy(index = index) }
                 }
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (parsedLines.isEmpty()) {
                     throw IllegalStateException("字幕文件为空或格式不支持")
                 }
 
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.TRANSLATING,
                         progress = "翻译导入的字幕（${parsedLines.size} 行）…",
@@ -1264,9 +1292,9 @@ class PlaybackService : MediaSessionService() {
                     parsedLines,
                     providerFingerprint,
                 )
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 // Preserve the imported source identity if this translation is later retried.
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     state.copy(
                         translationCacheKey = importedCacheKey,
                         lines = parsedLines,
@@ -1337,11 +1365,12 @@ class PlaybackService : MediaSessionService() {
                             srcLang,
                             importedCacheKey,
                             activeTranslationId,
+                            pipelineGeneration,
                         )
                     }
                 )
                 awaitRetiredDubbingEngines()
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 val selectedImportTts = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("tts_engine", "kokoro") ?: "kokoro"
                 if (isChineseLanguage(srcLang) && selectedImportTts != "system") {
@@ -1360,7 +1389,7 @@ class PlaybackService : MediaSessionService() {
                             .put("zh", line.zh ?: "")
                             .put("sp", line.speakerId)
                     )
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                     if (translatedCount > translatedLines.size / 2) {
                         AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                             io.translatetube.local.data.SubtitleCacheEntity(
@@ -1371,7 +1400,7 @@ class PlaybackService : MediaSessionService() {
                             )
                         )
                     }
-                    updateUiForSession(sessionKey) {
+                    updateUiForSession(sessionKey, pipelineGeneration) {
                         it.copy(
                             phase = Phase.READY,
                             progress = "",
@@ -1389,16 +1418,16 @@ class PlaybackService : MediaSessionService() {
                             error = null,
                         )
                     }
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                     withContext(Dispatchers.Main) {
-                        ensureCurrentSession(sessionKey)
+                        ensureCurrentSession(sessionKey, pipelineGeneration)
                         pm.play()
                     }
                     return@launch
                 }
                 val tts = makeTtsOffMainThread()
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     runCatching { tts.close() }
                     throw e
@@ -1410,13 +1439,17 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     runCatching { tts.close() }
                     throw e
                 }
-                dubbing = d
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
+                    retireDubbing(d)
+                    runCatching { tts.close() }
+                    throw kotlinx.coroutines.CancellationException("字幕导入任务已过期")
+                }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
                     d.attach(tts, translatedLines, sourceLanguage = srcLang)
@@ -1426,7 +1459,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 }
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
@@ -1455,7 +1488,7 @@ class PlaybackService : MediaSessionService() {
                         .put("zh", line.zh ?: "")
                         .put("sp", line.speakerId)
                 )
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (translatedLines.count { SubtitleParsers.cleanTranslatedText(it.zh) != null } >
                     translatedLines.size / 2
                 ) {
@@ -1468,7 +1501,7 @@ class PlaybackService : MediaSessionService() {
                         )
                     )
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         lines = translatedLines,
                         totalLines = translatedLines.size,
@@ -1477,19 +1510,20 @@ class PlaybackService : MediaSessionService() {
                         error = null,
                     )
                 }
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 lastLineIdx = Int.MIN_VALUE
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("PlaybackService", "Subtitle import failed", e)
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
                         error = "字幕导入失败: ${e.message ?: e.javaClass.simpleName}",
                     )
                 }
+            }
             }
         }
     }
@@ -2729,15 +2763,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             runCatching { tts.close() }
                             throw e
                         }
-                        val enginePublished = synchronized(pipelineGenerationLock) {
-                            if (pipelineGeneration != activePipelineGeneration) {
-                                false
-                            } else {
-                                dubbing = d
-                                registerDubbingFailureHandler(d, tts, key)
-                                true
-                            }
-                        }
+                        val enginePublished = publishDubbingEngine(d, key, pipelineGeneration)
+                        if (enginePublished) registerDubbingFailureHandler(d, tts, key)
                         if (!enginePublished) {
                             retireDubbing(d)
                             runCatching { tts.close() }
@@ -4532,19 +4559,21 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         }
         val sessionSourceLang = sessionState.sourceLang
         val preferredVoice = getSharedPreferences("settings", MODE_PRIVATE).getInt("kokoro_speaker", 14).coerceIn(0, 53)
+        val pipelineGeneration = beginPipelineGeneration()
         speakerJob = scope.launch {
+            pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null
             var oldEngineRetired = false
             try {
-                ensureCurrentSession(sessionKey)
-                updateUiForSession(sessionKey) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         error = null,
                         progress = if (selectedTts == "system") "检查手机可用的中文音色…" else "准备人物识别音频（为荣耀 10 限制为前 3 分钟）…",
                         phase = Phase.TRANSCRIBING,
                     )
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         progress = if (selectedTts == "system") "检查手机可用的中文音色…" else "初始化所选配音引擎…",
                     )
@@ -4565,7 +4594,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             "手机系统 TTS 只提供一个可用中文音色，无法为不同人物分配不同音色；普通系统配音仍可使用。"
                         else -> "当前选择的配音引擎不支持多人物音色分配。"
                     }
-                    updateUiForSession(sessionKey) {
+                    updateUiForSession(sessionKey, pipelineGeneration) {
                         it.copy(phase = Phase.READY, progress = "", error = message)
                     }
                     return@launch
@@ -4577,7 +4606,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
                         val audio = obtainAsrAudioFile(id, sessionKey, "复用已下载音频，正在分析人物声音…")
-                        updateUiForSession(sessionKey) { state ->
+                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
                             } else state
@@ -4594,7 +4623,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             sessionKey,
                             "复用网页视频音频，正在分析人物声音…",
                         )
-                        updateUiForSession(sessionKey) { state ->
+                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.TRANSCRIBING, progress = "解码网页音频，准备分析人物声音…")
                             } else state
@@ -4619,7 +4648,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     }
                 }
                 val segments = SpeakerDiarizer.diarize(this@PlaybackService, pcm.samples) { message ->
-                    updateUiForSession(sessionKey) { state ->
+                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
                         if (state.key == sessionKey) state.copy(progress = message) else state
                     }
                 }
@@ -4703,7 +4732,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
                 }
                 val distinctVoices = updated.map { it.speakerId }.distinct().size
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     if (state.key == sessionKey) {
                         state.copy(
                             lines = updated,
@@ -4731,7 +4760,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 val ttsWasPreflighted = pendingTts != null
                 val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     if (!ttsWasPreflighted) runCatching { tts.close() }
                     throw e
@@ -4746,16 +4775,14 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated, sourceLanguage = sessionSourceLang)
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
                 }
-                dubbing = d
-                if (videoKey != sessionKey || ui.value.key != sessionKey) {
-                    if (dubbing === d) dubbing = null
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
                     retireDubbing(d)
-                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
+                    throw kotlinx.coroutines.CancellationException("人物配音任务已过期")
                 }
                 dubCollectJob?.cancel()
                 dubCollectJob = scope.launch {
@@ -4773,7 +4800,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
                         .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
                 )
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
@@ -4783,7 +4810,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     )
                 }
                 lastLineIdx = Int.MIN_VALUE
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     if (state.key == sessionKey) {
                         state.copy(
                             phase = Phase.READY,
@@ -4794,7 +4821,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     if (state.key == sessionKey && videoKey == sessionKey) {
                         state.copy(
                             phase = Phase.READY,
@@ -4809,6 +4836,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 }
             } finally {
                 pendingTts?.close()
+            }
             }
         }
     }
@@ -4827,7 +4855,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
             .getString("tts_engine", "kokoro") ?: "kokoro"
         if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
-            updateUiForSession(sessionKey) {
+            updateUiForSession(sessionKey, pipelineGeneration) {
                 it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
             }
             return
@@ -4843,7 +4871,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         val selectedLineKey = SpeakerAssignmentCodec.lineKey(selectedLine.startMs, selectedLine.endMs)
         val personId = assignmentSnapshot.lineSpeakers[selectedLineKey]
         if (applyToPerson && personId == null) {
-            updateUiForSession(sessionKey) {
+            updateUiForSession(sessionKey, pipelineGeneration) {
                 it.copy(error = "当前字幕还没有可靠的人物编号，请先执行“识别并区分人物”，再应用到该人物的全部字幕。")
             }
             return
@@ -4870,15 +4898,17 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             )
         }
 
+        val pipelineGeneration = beginPipelineGeneration()
         speakerJob = scope.launch {
+            pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null
             var replacementDubbing: DubbingEngine? = null
             var previousDubbing: DubbingEngine? = null
             var oldEngineRetired = false
             var assignmentsSaved = false
             try {
-                ensureCurrentSession(sessionKey)
-                updateUiForSession(sessionKey) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(error = null, progress = "检查可用音色…")
                 }
 
@@ -4898,7 +4928,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             "手机系统 TTS 只提供一个可用中文音色，当前人物音色未更改；普通系统配音仍可使用。"
                         else -> "当前选择的配音引擎不支持多人物音色分配，人物音色未更改。"
                     }
-                    updateUiForSession(sessionKey) {
+                    updateUiForSession(sessionKey, pipelineGeneration) {
                         it.copy(progress = "", error = message)
                     }
                     return@launch
@@ -4906,7 +4936,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 if (selectedTts == "system" &&
                     selectedVoice >= (systemChineseVoiceCount - 1).coerceAtLeast(0)
                 ) {
-                    updateUiForSession(sessionKey) {
+                    updateUiForSession(sessionKey, pipelineGeneration) {
                         it.copy(
                             progress = "",
                             error = "所选系统音色在当前手机上不可用，请从现有中文音色列表中选择。",
@@ -4914,16 +4944,16 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     }
                     return@launch
                 }
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
 
                 previousDubbing = retireCurrentDubbing()
                 oldEngineRetired = previousDubbing != null
                 awaitRetiredDubbingEngines()
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
 
                 saveSpeakerAssignments(updatedAssignments, sessionKey, selectedTts)
                 assignmentsSaved = true
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         lines = updated,
                         preparedUntil = 0,
@@ -4947,17 +4977,16 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 registerDubbingFailureHandler(engine, tts, sessionKey)
                 engine.attach(tts, updated, sourceLanguage = sourceLang)
                 try {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(engine)
                     replacementDubbing = null
                     throw e
                 }
-                dubbing = engine
-                if (videoKey != sessionKey || ui.value.key != sessionKey) {
-                    if (dubbing === engine) dubbing = null
+                if (!publishDubbingEngine(engine, sessionKey, pipelineGeneration)) {
+                    replacementDubbing = null
                     retireDubbing(engine)
-                    throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的人物配音引擎")
+                    throw kotlinx.coroutines.CancellationException("人物音色修改任务已过期")
                 }
 
                 dubCollectJob?.cancel()
@@ -4986,7 +5015,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             .put("sp", line.speakerId)
                     )
                 }
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (updated.isNotEmpty() &&
                     updated.count { !it.zh.isNullOrBlank() } > updated.size / 2
                 ) {
@@ -5014,7 +5043,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 if (assignmentsSaved && videoKey == sessionKey && ui.value.key == sessionKey) {
                     runCatching { saveSpeakerAssignments(assignmentSnapshot, sessionKey, selectedTts) }
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         lines = oldLines,
                         totalLines = oldLines.size,
@@ -5030,6 +5059,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 }
             } finally {
                 pendingTts?.close()
+            }
             }
         }
     }
