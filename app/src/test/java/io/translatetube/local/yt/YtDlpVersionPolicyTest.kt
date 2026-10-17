@@ -35,12 +35,23 @@ class YtDlpVersionPolicyTest {
 """,
             ),
         )
+        assertEquals(
+            "2026.10.10",
+            YtDlpVersionPolicy.installedVersionFromOutput("yt-dlp version 2026.10.10"),
+        )
+        assertEquals(
+            "2026.10.10",
+            YtDlpVersionPolicy.installedVersionFromOutput("YT-DLP 2026.10.10"),
+        )
         assertNull(
             YtDlpVersionPolicy.installedVersionFromOutput(
                 """yt-dlp --version
 2026.10.10.dev0
 """,
             ),
+        )
+        assertNull(
+            YtDlpVersionPolicy.installedVersionFromOutput("yt-dlp version 2026.10.10.233141.dev0"),
         )
         assertNull(YtDlpVersionPolicy.installedVersionFromOutput(""))
     }

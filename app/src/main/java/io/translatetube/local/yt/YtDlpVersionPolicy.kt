@@ -21,6 +21,16 @@ internal object YtDlpVersionPolicy {
     fun installedVersionFromOutput(output: String): String? =
         output.lineSequence()
             .map { it.trim() }
+            .mapNotNull { line ->
+                when {
+                    isStableTag(line) -> line
+                    line.startsWith("yt-dlp version ", ignoreCase = true) ->
+                        line.substring("yt-dlp version ".length).trim()
+                    line.startsWith("yt-dlp ", ignoreCase = true) ->
+                        line.substring("yt-dlp ".length).trim()
+                    else -> null
+                }
+            }
             .firstOrNull { isStableTag(it) }
 
     fun latestStableFromPypiJson(json: String): String? = runCatching {
