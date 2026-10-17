@@ -665,7 +665,6 @@ object PiperModels {
                 }
             )
             runCatching { if (archive.exists()) archive.delete() }
-            val sourceStartedAtNanos = System.nanoTime()
             try {
                 val request = Request.Builder()
                     .url(url)
@@ -680,6 +679,7 @@ object PiperModels {
                         throw java.io.IOException("Piper 模型下载需要完整 HTTP 200 响应，收到 HTTP ${response.code}")
                     }
                     val body = response.body ?: throw java.io.IOException("模型下载失败：空响应")
+                    val sourceStartedAtNanos = System.nanoTime()
                     val total = body.contentLength()
                     if (!HttpDownloadResponsePolicy.isValidExpectedLength(total, MAX_ARCHIVE_BYTES)) {
                         throw java.io.IOException("Piper 模型压缩包响应声明的大小无效或超过 256 MB 安全上限")
