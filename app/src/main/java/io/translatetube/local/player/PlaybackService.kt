@@ -177,6 +177,11 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
     @Volatile private var activeOpenRequestToken: Long = 0L
+    // A media key can be reopened from History without changing the key. Give each open
+    // a unique generation so a cancelled previous pipeline cannot resume beside the new TTS engine.
+    private val pipelineGenerationLock = Any()
+    private var pipelineGenerationCounter = 0L
+    @Volatile private var activePipelineGeneration = 0L
     @Volatile private var qualityRecoveryAttempted = false
     private var qualityRecoveryJob: Job? = null
     private var qualityJob: Job? = null
@@ -220,7 +225,14 @@ class PlaybackService : MediaSessionService() {
             videoKey == key &&
             ui.value.key == key
 
-    private suspend fun ensureCurrentSession(sessionKey: String) {
+    private fun beginPipelineGeneration(): Long = synchronized(pipelineGenerationLock) {
+        (++pipelineGenerationCounter).also { activePipelineGeneration = it }
+    }
+
+    private suspend fun ensureCurrentSession(
+        sessionKey: String,
+        pipelineGeneration: Long? = null,
+    ) {
         // Extractor/JNI calls are sometimes synchronous. A canceled job may return from one
         // without suspending, so explicitly check before publishing results or opening engines.
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -228,6 +240,8 @@ class PlaybackService : MediaSessionService() {
             sessionKey = sessionKey,
             activeVideoKey = videoKey,
             activeUiKey = ui.value.key,
+            expectedPipelineGeneration = pipelineGeneration,
+            activePipelineGeneration = activePipelineGeneration,
         )
     }
 
@@ -237,9 +251,12 @@ class PlaybackService : MediaSessionService() {
     )
 
     /** Processing checkpoints wait here while paused. */
-    private suspend fun awaitProcessingResumed(sessionKey: String) {
+    private suspend fun awaitProcessingResumed(
+        sessionKey: String,
+        pipelineGeneration: Long? = null,
+    ) {
         if (processingPaused) processingPauseGate.withLock { /* resumes when unlocked */ }
-        ensureCurrentSession(sessionKey)
+        ensureCurrentSession(sessionKey, pipelineGeneration)
     }
 
     fun toggleProcessingPause() {
@@ -622,20 +639,36 @@ class PlaybackService : MediaSessionService() {
     /** Prevent a canceled pipeline from publishing progress/results into a newer video session. */
     private fun updateUiForSession(
         sessionKey: String,
+        pipelineGeneration: Long? = null,
         transform: (PlayerUiState) -> PlayerUiState,
     ) {
-        ui.update { current ->
-            if (current.key != sessionKey) {
-                current
-            } else {
-                val updated = transform(current)
-                when {
-                    updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
-                        updated.copy(failedPhase = current.phase, failedProgress = current.progress)
-                    updated.phase != Phase.ERROR ->
-                        updated.copy(failedPhase = null, failedProgress = "")
-                    else -> updated
+        val publish = {
+            ui.update { current ->
+                if (
+                    current.key != sessionKey ||
+                    (pipelineGeneration != null && activePipelineGeneration != pipelineGeneration)
+                ) {
+                    current
+                } else {
+                    val updated = transform(current)
+                    when {
+                        updated.phase == Phase.ERROR && current.phase != Phase.ERROR ->
+                            updated.copy(failedPhase = current.phase, failedProgress = current.progress)
+                        updated.phase != Phase.ERROR ->
+                            updated.copy(failedPhase = null, failedProgress = "")
+                        else -> updated
+                    }
                 }
+            }
+        }
+        if (pipelineGeneration == null) {
+            publish()
+        } else {
+            // Serialize generation changes with publication so an old same-key task cannot
+            // slip a final progress/error update into the newly opened session.
+            synchronized(pipelineGenerationLock) {
+                if (pipelineGeneration != activePipelineGeneration) return
+                publish()
             }
         }
     }
@@ -734,6 +767,8 @@ class PlaybackService : MediaSessionService() {
         remoteMediaUserAgent: String? = null,
         requestToken: Long = 0L,
     ) {
+        // Invalidate prior work even when the same History row reopens the same video key.
+        val pipelineGeneration = beginPipelineGeneration()
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
                 it.copy(phase = Phase.ERROR, progress = "", error = it.error ?: "播放器服务未初始化成功，请返回主页后重试")
@@ -818,7 +853,7 @@ class PlaybackService : MediaSessionService() {
         )
         pm.pause()
         prepJob = scope.launch {
-            runPipeline(key, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
+            runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
         }
     }
 
@@ -1548,6 +1583,7 @@ class PlaybackService : MediaSessionService() {
 
     private suspend fun runPipeline(
         key: String,
+        pipelineGeneration: Long,
         requestedVideoId: String?,
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
@@ -1569,9 +1605,9 @@ class PlaybackService : MediaSessionService() {
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
         try {
-            awaitProcessingResumed(key)
+            awaitProcessingResumed(key, pipelineGeneration)
             awaitRetiredDubbingEngines()
-            awaitProcessingResumed(key)
+            awaitProcessingResumed(key, pipelineGeneration)
             var meta = VideoEntity(
                 key = key, videoId = videoId, localUri = localUri?.toString() ?: remoteMediaUrl,
                 title = resumeState?.title.orEmpty(), channel = resumeState?.channel.orEmpty(),
@@ -1586,7 +1622,7 @@ class PlaybackService : MediaSessionService() {
             if (resumeState != null) {
                 // Video metadata and original subtitle rows already exist in memory; do not resolve
                 // the YouTube page or fetch subtitles again for a translation-only retry.
-                updateUiForSession(key) {
+                updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.TRANSLATING,
                         progress = "继续翻译尚未完成的字幕…",
@@ -1595,13 +1631,13 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
             } else if (videoId != null) {
-                awaitProcessingResumed(key)
+                awaitProcessingResumed(key, pipelineGeneration)
                 val requestedId = videoId
                 try {
                     val m = NewPipeRepo.resolve(requestedId)
-                    awaitProcessingResumed(key)
+                    awaitProcessingResumed(key, pipelineGeneration)
                     meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000)
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -1612,13 +1648,13 @@ class PlaybackService : MediaSessionService() {
                     }
 
                     val watchUrl = "https://www.youtube.com/watch?v=$requestedId"
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             progress = "YouTube 限制匿名访问，正在尝试 yt-dlp 备用解析…",
                             error = null,
                         )
                     }
-                    awaitProcessingResumed(key)
+                    awaitProcessingResumed(key, pipelineGeneration)
                     val cookieHeader = runCatching {
                         android.webkit.CookieManager.getInstance().getCookie(watchUrl)
                     }.getOrNull()
@@ -1643,7 +1679,7 @@ class PlaybackService : MediaSessionService() {
                             fallbackError,
                         ).also { it.addSuppressed(extractorError) }
                     }
-                    awaitProcessingResumed(key)
+                    awaitProcessingResumed(key, pipelineGeneration)
 
                     // From this point on, use the web-media branch: stream the resolved URL for
                     // playback and extract/cache its audio for ASR instead of calling NewPipe again.
@@ -1668,7 +1704,7 @@ class PlaybackService : MediaSessionService() {
                         localUri = fallback.mediaUrl,
                         sourceType = SourceType.YOUTUBE,
                     )
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             title = fallback.title,
                             channel = "",
@@ -1686,7 +1722,7 @@ class PlaybackService : MediaSessionService() {
                     ?: remoteUri.lastPathSegment?.substringBefore('?')?.takeIf { it.isNotBlank() }
                     ?: "网页视频"
                 meta = meta.copy(title = title, localUri = remoteMediaUrl)
-                updateUiForSession(key) { it.copy(title = title, durationMs = 0L) }
+                updateUiForSession(key, pipelineGeneration) { it.copy(title = title, durationMs = 0L) }
             } else if (resumeState == null) {
                 localUri?.let { u ->
                     // MetadataRetriever can perform blocking container I/O. Keep it off the main
@@ -1713,18 +1749,18 @@ class PlaybackService : MediaSessionService() {
                         resolvedTitle to durationMs
                     }
                     meta = meta.copy(title = title, durationSec = dur / 1000)
-                    updateUiForSession(key) { it.copy(title = title, durationMs = dur) }
+                    updateUiForSession(key, pipelineGeneration) { it.copy(title = title, durationMs = dur) }
                 }
             }
 
             // 解析视频时先列出所有字幕轨。下载是可选操作，不影响自动翻译/配音流程。
             if (videoId != null && resumeState == null) {
                 try {
-                    awaitProcessingResumed(key)
-                    updateUiForSession(key) { it.copy(progress = "正在查找可用字幕轨…") }
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    updateUiForSession(key, pipelineGeneration) { it.copy(progress = "正在查找可用字幕轨…") }
                     val tracks = NewPipeRepo.subtitleTracks(videoId)
-                    awaitProcessingResumed(key)
-                    updateUiForSession(key) {
+                    awaitProcessingResumed(key, pipelineGeneration)
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             availableSubtitleTracks = tracks,
                             subtitleTrackStatus = if (tracks.isEmpty()) {
@@ -1738,7 +1774,7 @@ class PlaybackService : MediaSessionService() {
                     throw e
                 } catch (e: Exception) {
                     android.util.Log.w("PlaybackService", "Could not list subtitle tracks", e)
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             availableSubtitleTracks = emptyList(),
                             subtitleTrackStatus = "暂时无法读取字幕列表，可稍后重试或导入本地字幕。",
@@ -1776,7 +1812,7 @@ class PlaybackService : MediaSessionService() {
             val translationCacheKey = if (
                 asrProvider == "local" && sourceImportedLines.isNullOrEmpty()
             ) "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3" else baseTranslationCacheKey
-            updateUiForSession(key) { it.copy(translationCacheKey = translationCacheKey) }
+            updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
                 // Keep local ASR transcript caches separate by model selection.
                 videoId != null -> "$key|source|youtube-v4" +
@@ -1790,9 +1826,9 @@ class PlaybackService : MediaSessionService() {
             }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
-                updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
             } else {
-                updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "继续翻译尚未完成的字幕…") }
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "继续翻译尚未完成的字幕…") }
             }
             // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
             val storedTranslationCache = if (resumeState == null) db.subtitleCacheDao().get(translationCacheKey) else null
@@ -1809,10 +1845,10 @@ class PlaybackService : MediaSessionService() {
             }
             suspend fun fetchAndCacheSourceLines(): Pair<List<SubLine>, String>? {
                 val id = videoId ?: return null
-                awaitProcessingResumed(key)
-                updateUiForSession(key) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
+                awaitProcessingResumed(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
                 val fetched = NewPipeRepo.subtitles(id) ?: return null
-                awaitProcessingResumed(key)
+                awaitProcessingResumed(key, pipelineGeneration)
                 val lang = fetched.second.takeIf { it.isNotBlank() } ?: "auto"
                 val fetchedLines = fetched.first
                     .filter { it.startMs >= 0L && it.endMs > it.startMs && it.text.isNotBlank() }
@@ -1832,7 +1868,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
                         sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
@@ -1960,7 +1996,7 @@ class PlaybackService : MediaSessionService() {
                 localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
                 else -> ProcessingFlow.AUTO
             }
-            updateUiForSession(key) { it.copy(processingFlow = resolvedProcessingFlow) }
+            updateUiForSession(key, pipelineGeneration) { it.copy(processingFlow = resolvedProcessingFlow) }
 
             if (lines == null && cached == null && sourceImportedLines.isNullOrEmpty()) {
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
@@ -1973,8 +2009,8 @@ class PlaybackService : MediaSessionService() {
                 // ---- 2b. 无字幕 → 先提取音频（落缓存），再判断转写引擎是否就绪 ----
                 // 音频提取无条件先执行：转写模型没装也要把音频准备好，这样用户装完
                 // 模型重新打开本视频时直接复用缓存开始转写，不需要再次联网提取。
-                awaitProcessingResumed(key)
-                updateUiForSession(key) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，正在提取视频音频…") }
+                awaitProcessingResumed(key, pipelineGeneration)
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，正在提取视频音频…") }
                 val audioFile: Any = when {
                     videoId != null -> obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
                     remoteMediaUrl != null -> obtainRemoteMediaAsrFile(
@@ -1999,7 +2035,7 @@ class PlaybackService : MediaSessionService() {
                         "cartesia" -> "视频音频已提取并缓存。已选择 Cartesia 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
                         else -> "视频音频已提取并缓存。已选择 Kawa 云端转写，请先在设置 → 转写引擎填写 API Key；填写后重新打开本视频自动转写。"
                     }
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             noModelHint = hint,
                             waitingForTranscriptionEngine = true,
@@ -2010,7 +2046,7 @@ class PlaybackService : MediaSessionService() {
                         )
                     }
                 } else {
-                updateUiForSession(key) {
+                updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.TRANSCRIBING,
                         progress = "解码音频…",
@@ -2032,7 +2068,7 @@ class PlaybackService : MediaSessionService() {
                                 this@PlaybackService, null, audioFile,
                                 checkActive = { pcmOwnerJob?.ensureActive() },
                                 onProgressPercent = { percent ->
-                                    updateUiForSession(key) { state ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
                                             state.copy(progress = "解码音频 ${percent}%")
                                         } else state
@@ -2044,7 +2080,7 @@ class PlaybackService : MediaSessionService() {
                                 this@PlaybackService, audioFile as Uri, null,
                                 checkActive = { pcmOwnerJob?.ensureActive() },
                                 onProgressPercent = { percent ->
-                                    updateUiForSession(key) { state ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
                                             state.copy(progress = "解码音频 ${percent}%")
                                         } else state
@@ -2106,20 +2142,20 @@ class PlaybackService : MediaSessionService() {
                         HlsAudioDownloader.cleanupSegmentCache(audioFile)
                     }
                 }
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
                 // The transcript clock must use the duration of the exact PCM file sent to ASR.
                 // Provider timestamps are relative to this full recording, not to each displayed line.
                 val asrTimelineDurationMs = pcmFile.durationMs
                 val (asrLines, detectedAsrLang) = if (asrProvider == "local") {
-updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
+updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0%") }
                 val segs = withContext(Dispatchers.IO) {
                     vadSegmentsFromFile(
                         this@PlaybackService,
                         pcmFile,
                         checkActive = { pcmOwnerJob?.ensureActive() },
                         onProgressPercent = { percent ->
-                            updateUiForSession(key) { state ->
+                            updateUiForSession(key, pipelineGeneration) { state ->
                                 if (state.key == key && state.phase == Phase.TRANSCRIBING) {
                                     state.copy(progress = "语音分段 ${percent}%")
                                 } else state
@@ -2127,7 +2163,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         },
                     )
                 }
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
                 // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
                 val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs) {
@@ -2205,7 +2241,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 }
 
                 val localAsrResult = localAsrMutex.withLock {
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     withContext(Dispatchers.IO) {
                         val selectedModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this@PlaybackService)
                         val engine = localAsrEngine?.takeIf { localAsrEngineModelId == selectedModelId }
@@ -2255,7 +2291,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 val progressMinutes = progressTimeMs / 60_000L
                                 val progressSeconds = (progressTimeMs / 1_000L) % 60L
                                 val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
-                                updateUiForSession(key) { state ->
+                                updateUiForSession(key, pipelineGeneration) { state ->
                                     if (state.key == key && state.phase == Phase.TRANSCRIBING) {
                                         state.copy(progress = progressLabel)
                                     } else state
@@ -2265,7 +2301,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             processed = chunkEnd
 
                             if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
-                                ensureCurrentSession(key)
+                                ensureCurrentSession(key, pipelineGeneration)
                                 val rowsJson = org.json.JSONArray()
                                 for ((rowIndex, row) in rows.withIndex()) {
                                     if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
@@ -2277,7 +2313,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                     )
                                 }
                                 ownerJob?.ensureActive()
-                                ensureCurrentSession(key)
+                                ensureCurrentSession(key, pipelineGeneration)
                                 val language = engine.lastLang.takeIf { it.isNotBlank() }
                                     ?: restoredAsrLanguage
                                 val checkpointJson = org.json.JSONObject()
@@ -2322,7 +2358,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     localAsrResult
                 } else {
                     val providerName = when (asrProvider) { "elevenlabs" -> "ElevenLabs"; "cartesia" -> "Cartesia"; else -> "Kawa" }
-                    updateUiForSession(key) { it.copy(progress = "正在准备 " + providerName + " 云端转写音频…") }
+                    updateUiForSession(key, pipelineGeneration) { it.copy(progress = "正在准备 " + providerName + " 云端转写音频…") }
                     val removedStaleCloudWavs = runCatching {
                         io.translatetube.local.asr.CloudTranscription.cleanupStaleWavStages(cacheDir)
                     }.onFailure {
@@ -2340,7 +2376,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 cloudWav,
                                 checkActive = { ownerJob?.ensureActive() },
                                 onProgressPercent = { percent ->
-                                    updateUiForSession(key) { state ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
                                             state.copy(progress = "封装云端音频 ${percent}%")
                                         } else state
@@ -2355,7 +2391,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 durationMs = pcmFile.durationMs,
                                 checkActive = { ownerJob?.ensureActive() },
                                 onProgress = { message ->
-                                    updateUiForSession(key) { state ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
                                         if (state.key == key && state.phase == Phase.TRANSCRIBING) {
                                             state.copy(progress = message)
                                         } else state
@@ -2363,7 +2399,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 },
                             )
                             ownerJob?.ensureActive()
-                            updateUiForSession(key) { it.copy(progress = "云端转写完成，正在整理字幕…") }
+                            updateUiForSession(key, pipelineGeneration) { it.copy(progress = "云端转写完成，正在整理字幕…") }
                             // Sample timed cues directly instead of allocating a concatenated transcript.
                             val language = io.translatetube.local.subs.SubtitleLanguageDetector
                                 .resolveTranscriptionLanguageFromCues(
@@ -2376,7 +2412,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         cloudWav.delete()
                     }
                 }
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
@@ -2422,7 +2458,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 // Keep the completed ASR transcript as an independent checkpoint. The bounded
                 // source-audio cache is retained for retries and later speaker diarization, while
                 // this subtitle cache lets translation retry without running ASR again.
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty() && transcribedLines.isNotEmpty()) {
                     val sourceArr = org.json.JSONArray()
                     for ((index, line) in transcribedLines.withIndex()) {
@@ -2437,7 +2473,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         )
                     }
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     db.subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             sourceSubtitleCacheKey,
@@ -2508,14 +2544,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 if (!isChineseLanguage(srcLang) && restored.any { line ->
                     needsSubtitleTranslation(line, srcLang)
                 }) {
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             phase = Phase.TRANSLATING,
                             sourceLang = srcLang,
                             progress = "继续翻译缓存中尚未完成的字幕…",
                         )
                     }
-                    lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId)
+                    lines = translateLines(key, restored, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
                 }
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
@@ -2528,8 +2564,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         translatedLines.asSequence().map { it.text }.asIterable(),
                     )
                 if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                    updateUiForSession(key) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
-                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId)
+                    updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
+                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
                 } else if (translatedLines.isNotEmpty()) {
                     // Source captions are not translator output: preserve repeated words and text that
                     // happens to resemble a progress label instead of running translation cleanup on it.
@@ -2537,7 +2573,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 }
                 lines = translatedLines
                 // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 var translatedRowCount = 0
                 for ((index, line) in translatedLines.withIndex()) {
                     if ((index and 0xff) == 0) {
@@ -2560,16 +2596,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         )
                     }
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     db.subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(translationCacheKey, srcLang, arr.toString(), System.currentTimeMillis())
                     )
                 }
             }
 
-            ensureCurrentSession(key)
+            ensureCurrentSession(key, pipelineGeneration)
             val finalLines = applySavedLineOverrides(lines ?: emptyList(), key)
-            updateUiForSession(key) {
+            updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
                     progress = "", phase = Phase.SYNTHESIZING,
@@ -2579,21 +2615,21 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             // ---- 4. 流装配 ----
             if (videoId != null) {
                 val streamInfo = NewPipeRepo.streams(videoId)
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 val choices = buildYouTubeStreamChoices(streamInfo)
                 val candidates = choices.sources
                 val audioUrl = choices.audioUrl
                 val defaultQuality = choices.defaultQuality
                 qualitySources = candidates
                 qualityAudioUrl = audioUrl
-                updateUiForSession(key) {
+                updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         qualityOptions = candidates.map { q -> q.label },
                     )
                 }
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     val accepted = pm.setYouTubeQuality(
                         videoUrl = defaultQuality.url,
                         audioUrl = audioUrl,
@@ -2605,12 +2641,12 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     if (!accepted) {
                         throw IllegalStateException(pm.errorSink.value ?: "YouTube 默认清晰度初始化失败")
                     }
-                    updateUiForSession(key) { it.copy(selectedQuality = defaultQuality.label) }
+                    updateUiForSession(key, pipelineGeneration) { it.copy(selectedQuality = defaultQuality.label) }
                 }
             } else {
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     val sourceUri = remoteMediaUrl?.let(Uri::parse) ?: localUri
                     ?: throw IllegalStateException("无可播放的视频地址")
                 val requestHeaders = buildMap {
@@ -2634,7 +2670,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("tts_engine", "kokoro") ?: "kokoro"
                 val selectedTtsName = ttsDisplayName(selectedTts)
-                updateUiForSession(key) { it.copy(ttsEngineName = selectedTtsName) }
+                updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
 
                 val selectedEngineReady = when (selectedTts) {
                     "system" -> true
@@ -2649,7 +2685,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     // 默认本地模型模式下，中文源字幕直接显示原文并保留原声。
                     // 用户明确选择系统 TTS 时仍按时间轴朗读中文字幕；这也覆盖 YouTube
                     // 只有中文可用字幕轨、但用户仍需要中文语音播报的情况。
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             ttsEngineName = "",
                             dubbingStatus = "中文视频：显示中文字幕，保留原声",
@@ -2668,7 +2704,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         // cannot cause the readiness check and actual engine to disagree.
                         val tts: TtsEngine = makeTtsOffMainThread(selectedTts)
                         try {
-                            ensureCurrentSession(key)
+                            ensureCurrentSession(key, pipelineGeneration)
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             runCatching { tts.close() }
                             throw e
@@ -2680,7 +2716,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             throw e
                         }
                         try {
-                            ensureCurrentSession(key)
+                            ensureCurrentSession(key, pipelineGeneration)
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             retireDubbing(d)
                             runCatching { tts.close() }
@@ -2688,7 +2724,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         }
                         dubbing = d
                         registerDubbingFailureHandler(d, tts, key)
-                        updateUiForSession(key) {
+                        updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 ttsEngineName = tts.name,
                                 dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
@@ -2705,7 +2741,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                             throw e
                         }
                         try {
-                            ensureCurrentSession(key)
+                            ensureCurrentSession(key, pipelineGeneration)
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             retireDubbing(d)
                             throw e
@@ -2728,7 +2764,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     } catch (e: Exception) {
                         android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
                         val reason = e.message ?: e.javaClass.simpleName
-                        updateUiForSession(key) {
+                        updateUiForSession(key, pipelineGeneration) {
                             it.copy(
                                 ttsEngineName = selectedTtsName,
                                 dubbingStatus = "${selectedTtsName} 初始化失败",
@@ -2765,7 +2801,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         }
                         else -> "设置中保存的配音引擎「$selectedTts」无效。请重新选择 Kokoro、Piper 或系统 TTS。应用不会擅自切换引擎。"
                     }
-                    updateUiForSession(key) {
+                    updateUiForSession(key, pipelineGeneration) {
                         it.copy(
                             ttsEngineName = if (selectedTts == "kokoro") "Kokoro（未就绪）" else selectedTtsName,
                             dubbingStatus = "${selectedTtsName} 尚未就绪",
@@ -2812,7 +2848,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
                     )
                     while (true) {
-                        ensureCurrentSession(key)
+                        ensureCurrentSession(key, pipelineGeneration)
                         startupBuffer = DubbingStartupBufferPolicy.plan(
                             lines = finalLines,
                             spokenCueIndices = startupSpeechCueIndices,
@@ -2842,7 +2878,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 .coerceIn(0, finalLines.size)
                             if (preparedNow != lastFullWaitPreparedCount) {
                                 lastFullWaitPreparedCount = preparedNow
-                                updateUiForSession(key) { state ->
+                                updateUiForSession(key, pipelineGeneration) { state ->
                                     if (state.key == key) {
                                         state.copy(
                                             progress = "检测到合成持续跟不上，先合成全部配音再播放（已准备 " +
@@ -2893,7 +2929,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 "PlaybackService",
                                 "Severe TTS slowdown detected; all speech cues are ready before video playback",
                             )
-                            updateUiForSession(key) {
+                            updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "全部配音已合成，正在启动视频播放")
                             }
                         }
@@ -2902,7 +2938,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 "PlaybackService",
                                 "TTS startup timed out before the first cue; start with original audio audible",
                             )
-                            updateUiForSession(key) {
+                            updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "首句配音仍在准备，先开始播放；配音就绪后继续生成")
                             }
                         }
@@ -2911,27 +2947,27 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                 "PlaybackService",
                                 "TTS synthesis is slower than real time; buffer deadline reached",
                             )
-                            updateUiForSession(key) {
+                            updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "配音速度偏慢，已尽量增加首段缓冲；仍未就绪的片段会先保留原声")
                             }
                         }
                         bufferIncomplete -> {
-                            updateUiForSession(key) {
+                            updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "首段缓冲未完全就绪，先开始播放；后续配音继续生成")
                             }
                         }
                         !immediateMode && measuredLag.isFinite() && measuredLag >= 1.2f -> {
-                            updateUiForSession(key) {
+                            updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "已准备较长的首段配音缓冲，播放期间继续合成后续字幕")
                             }
                         }
                     }
                 }
             }
-            ensureCurrentSession(key)
+            ensureCurrentSession(key, pipelineGeneration)
             saveHistory(meta)
-            ensureCurrentSession(key)
-            updateUiForSession(key) {
+            ensureCurrentSession(key, pipelineGeneration)
+            updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     phase = Phase.READY,
                     engineName = it.engineName.ifEmpty { "本地引擎" },
@@ -2947,16 +2983,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             } catch (_: Exception) { 0L }
             val totalMs = meta.durationSec * 1000
             if (resumeSec > 10 && (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)) {
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     pm.seekTo(resumeSec * 1000)
                     pm.play()
                 }
             } else {
-                ensureCurrentSession(key)
+                ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
-                    ensureCurrentSession(key)
+                    ensureCurrentSession(key, pipelineGeneration)
                     pm.play()
                 }
             }
@@ -2968,7 +3004,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 if (ui.value.key == key && videoKey == key) {
                     runCatching { pm.originalVolume = 1f }
                 }
-                updateUiForSession(key) {
+                updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
@@ -2984,7 +3020,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
                 runCatching { pm.originalVolume = 1f }
-                updateUiForSession(key) {
+                updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
@@ -2994,7 +3030,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                     )
                 }
             } else {
-                updateUiForSession(key) { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
             }
             }
         } catch (e: Throwable) {
@@ -3002,7 +3038,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             // as a playback failure rather than escaping a Dispatchers.Default coroutine.
             if (e is VirtualMachineError || e is ThreadDeath) throw e
             android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=$key", e)
-            updateUiForSession(key) {
+            updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     phase = Phase.ERROR,
                     progress = "",
@@ -3023,10 +3059,11 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         srcLang: String,
         cacheKeyOverride: String? = null,
         activeIdOverride: Long? = null,
+        pipelineGeneration: Long? = null,
     ): List<SubLine> {
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-        updateUiForSession(key) { state ->
+        updateUiForSession(key, pipelineGeneration) { state ->
             if (state.key == key && state.translatedLineCount != 0) {
                 state.copy(translatedLineCount = 0)
             } else state
@@ -3088,7 +3125,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 pendingIndices += index
             }
         }
-        updateUiForSession(key) {
+        updateUiForSession(key, pipelineGeneration) {
             it.copy(
                 engineName = engineName,
                 sourceLang = srcLang,
@@ -3107,7 +3144,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         // subtitle timeline to Room after every 10 translated cues.
         val translationBatches = pendingIndices.chunked(batchSize)
         for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
-            awaitProcessingResumed(key)
+            awaitProcessingResumed(key, pipelineGeneration)
             // The playback layer calls the engine once per small batch, so carry the previous
             // completed cues here; otherwise engine-local context resets at every boundary.
             val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
@@ -3234,7 +3271,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
             translationJob?.ensureActive()
             updatedLines = nextRows
             completed += batchIndices.size
-            updateUiForSession(key) {
+            updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     lines = updatedLines,
                     totalLines = updatedLines.size,
@@ -3269,7 +3306,7 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 )
             }
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            ensureCurrentSession(key)
+            ensureCurrentSession(key, pipelineGeneration)
             db.subtitleCacheDao().put(
                 io.translatetube.local.data.SubtitleCacheEntity(
                     translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis()
