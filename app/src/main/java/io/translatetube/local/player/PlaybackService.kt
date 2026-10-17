@@ -4867,6 +4867,16 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         lastLineIdx = Int.MIN_VALUE
         pm.seekTo(ms)
     }
+
+    /** Jump to a subtitle and ensure playback starts, even when the player was paused. */
+    fun seekAndPlay(ms: Long) {
+        // Stop any utterance from the previous subtitle before moving the playhead.
+        dubbing?.stop()
+        lastLineIdx = Int.MIN_VALUE
+        pm.seekTo(ms.coerceAtLeast(0L))
+        pm.play()
+    }
+
     fun playPause() {
         // A player that is buffering can have isPlaying=false while playWhenReady=true.
         // Toggle the intended state so the pause control still works during a slow network load.
