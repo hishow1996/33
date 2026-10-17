@@ -225,14 +225,25 @@ object VideoProcessingFlowPolicy {
         progressiveTtsPlayback: Boolean = false,
         dubbingPreparationIncomplete: Boolean = false,
         playbackHasStarted: Boolean = false,
+        playbackRecoveryInProgress: Boolean = false,
     ): Boolean {
+        // Remember that the player has already been shown after the first cue started. A seek
+        // can invalidate a YouTube signed URL, so the service refreshes the stream and temporarily
+        // marks its phase as PARSING. That is playback recovery, not a new video-processing run.
+        val playbackHasEnteredPlayer = playbackHasStarted || playerIsPlaying
+        if (
+            progressiveTtsPlayback &&
+            playbackHasEnteredPlayer &&
+            playbackRecoveryInProgress &&
+            phase == Phase.PARSING &&
+            !waitingForTranscriptionEngine &&
+            !waitingForDubbingEngine
+        ) {
+            return false
+        }
         if (phase == Phase.ERROR || waitingForTranscriptionEngine || waitingForDubbingEngine) {
             return true
         }
-        // Remember that the player has already been shown after the first cue started. A seek
-        // or network rebuffer may briefly make isPlaying=false; that must not send the user back
-        // to the parsing/progress page while playback is merely recovering.
-        val playbackHasEnteredPlayer = playbackHasStarted || playerIsPlaying
         if (
             progressiveTtsPlayback &&
             playbackHasEnteredPlayer &&
