@@ -14,14 +14,25 @@ class DubbingSynthesisPolicyTest {
     }
 
     @Test
-    fun recommendsBoundedRetryWhenSpeechIsTooLong() {
+    fun avoidsSecondSynthesisWhenTimelineCanFitSpeechAtTwoTimesSpeed() {
         val speed = DubbingSynthesisPolicy.recommendedSpeed(
             baseSpeed = 1.0f,
             sampleCount = 24_000,
             sampleRate = 16_000,
             cueDurationMs = 1_000,
         )
-        assertEquals(1.6667f, speed, 0.01f)
+        assertEquals(1.0f, speed, 0.001f)
+    }
+
+    @Test
+    fun recommendsBoundedRetryOnlyWhenSpeechExceedsMaximumTimelineSpeed() {
+        val speed = DubbingSynthesisPolicy.recommendedSpeed(
+            baseSpeed = 1.0f,
+            sampleCount = 40_000,
+            sampleRate = 16_000,
+            cueDurationMs = 1_000,
+        )
+        assertEquals(2.0f, speed, 0.001f)
     }
 
     @Test
