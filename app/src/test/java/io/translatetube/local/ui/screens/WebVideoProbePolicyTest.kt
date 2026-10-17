@@ -60,6 +60,7 @@ class WebVideoProbePolicyTest {
                 isPikPakShare = false,
                 isBusy = false,
                 autoAttempts = 0,
+                hasUsableCandidate = false,
             ),
         )
         assertFalse(
@@ -69,6 +70,7 @@ class WebVideoProbePolicyTest {
                 isPikPakShare = false,
                 isBusy = false,
                 autoAttempts = 0,
+                hasUsableCandidate = false,
             ),
         )
         assertFalse(
@@ -78,6 +80,7 @@ class WebVideoProbePolicyTest {
                 isPikPakShare = true,
                 isBusy = false,
                 autoAttempts = 0,
+                hasUsableCandidate = false,
             ),
         )
         assertFalse(
@@ -87,38 +90,21 @@ class WebVideoProbePolicyTest {
                 isPikPakShare = false,
                 isBusy = false,
                 autoAttempts = 1,
+                hasUsableCandidate = false,
             ),
         )
     }
 
     @Test
-    fun onlyUsesDetectedManifestAsFallbackAfterYtDlpHasFinished() {
+    fun doesNotRunYtDlpWhileExistingParserHasAUsableCandidate() {
         assertFalse(
-            WebVideoProbePolicy.shouldAutoPlayManifest(
-                manualChose = false,
-                alreadyAutoPlayed = false,
-                ytDlpAttemptCompleted = false,
-            ),
-        )
-        assertTrue(
-            WebVideoProbePolicy.shouldAutoPlayManifest(
-                manualChose = false,
-                alreadyAutoPlayed = false,
-                ytDlpAttemptCompleted = true,
-            ),
-        )
-        assertFalse(
-            WebVideoProbePolicy.shouldAutoPlayManifest(
-                manualChose = true,
-                alreadyAutoPlayed = false,
-                ytDlpAttemptCompleted = true,
-            ),
-        )
-        assertFalse(
-            WebVideoProbePolicy.shouldAutoPlayManifest(
-                manualChose = false,
-                alreadyAutoPlayed = true,
-                ytDlpAttemptCompleted = true,
+            WebVideoProbePolicy.shouldStartAutomaticYtDlp(
+                pageLoaded = true,
+                isEligible = true,
+                isPikPakShare = false,
+                isBusy = false,
+                autoAttempts = 0,
+                hasUsableCandidate = true,
             ),
         )
     }
