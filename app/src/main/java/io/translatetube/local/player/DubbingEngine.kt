@@ -221,9 +221,10 @@ class DubbingEngine(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
 
-                    // The Android system TTS path speaks each translated cue directly when its
-                    // timeline becomes active. It must not wait for PCM cache generation or route
-                    // the system voice through the OEM AudioTrack implementation.
+                    // Optional engines implementing TimelineTtsPlayback can speak directly on
+                    // the timeline without creating PCM cache files. SystemTts deliberately does not
+                    // implement this contract now: it uses the WAV/PCM path so timing, caching and
+                    // AudioTrack compatibility stay consistent with Kokoro and Piper.
                     if (tts is TimelineTtsPlayback) {
                         for (i in this@DubbingEngine.lines.indices) {
                             checkCacheInitActive()
