@@ -2925,16 +2925,6 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     withContext(Dispatchers.Main) {
                         if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
                     }
-                } else {
-                    // Non-Chinese source whose selected engine is not ready. This previously fell
-                    // through silently: no engine, no voice, and no hint about why. Surface it.
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            waitingForDubbingEngine = false,
-                            dubbingStatus = "$selectedTtsName 未就绪，配音暂不可用；可切换系统 TTS 或完成模型下载",
-                            noModelHint = io.translatetube.local.tts.TtsFailureAdvice.missingAudioHint(selectedTtsName),
-                        )
-                    }
                 }
             }
             // Normal generated mode prepares a buffer, then continues synthesizing while playing.
