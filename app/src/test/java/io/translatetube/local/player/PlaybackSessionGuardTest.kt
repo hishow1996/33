@@ -29,6 +29,23 @@ class PlaybackSessionGuardTest {
         assertTrue(failure is CancellationException)
     }
 
+
+    @Test
+    fun rejectsStalePipelineWhenTheSameHistoryVideoIsReopened() {
+        val failure = runCatching {
+            PlaybackSessionGuard.ensureCurrent(
+                sessionKey = "youtube:same",
+                activeVideoKey = "youtube:same",
+                activeUiKey = "youtube:same",
+                expectedPipelineGeneration = 41L,
+                activePipelineGeneration = 42L,
+            )
+        }.exceptionOrNull()
+
+        assertNotNull(failure)
+        assertTrue(failure is CancellationException)
+    }
+
     @Test
     fun rejectsSameVideoWhenItsUiSessionHasAlreadyBeenReplaced() {
         val failure = runCatching {
