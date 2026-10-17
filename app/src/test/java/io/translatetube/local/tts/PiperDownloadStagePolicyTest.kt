@@ -17,6 +17,14 @@ class PiperDownloadStagePolicyTest {
     }
 
     @Test
+    fun completedArchiveImmediatelyEntersExtractionPhase() {
+        assertEquals(
+            PiperModelDownloadStatus.EXTRACTING,
+            PiperDownloadStagePolicy.statusFor("模型包下载完成并通过校验，准备解压…"),
+        )
+    }
+
+    @Test
     fun extractingAndInstallValidationAreShownAsIndeterminateInstallStages() {
         assertEquals(
             PiperModelDownloadStatus.EXTRACTING,
