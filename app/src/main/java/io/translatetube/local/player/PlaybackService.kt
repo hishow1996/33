@@ -1284,9 +1284,11 @@ class PlaybackService : MediaSessionService() {
                 )
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey)
-                if (isChineseLanguage(srcLang)) {
-                    // 中文源字幕：字幕文本即中文，原声就是目标语言——
-                    // 只显示中文字幕、保留原声，跳过 TTS 配音；字幕缓存与开播照常。
+                val selectedImportTts = getSharedPreferences("settings", MODE_PRIVATE)
+                    .getString("tts_engine", "kokoro") ?: "kokoro"
+                if (isChineseLanguage(srcLang) && selectedImportTts != "system") {
+                    // 非系统 TTS 模式下，中文源字幕直接显示原文并保留原声。
+                    // 用户明确选择系统 TTS 时，仍朗读中文字幕。
                     pm.originalVolume = 1f
                     val translatedCount = translatedLines.count {
                         SubtitleParsers.cleanTranslatedText(it.zh) != null
@@ -2799,13 +2801,14 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
         } catch (e: Exception) {
             android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
-                if (ui.value.key == key && videoKey == key) runCatching { pm.originalVolume = 1f }
+                if (ui.value.key == key && videoKey == key) {
+                    runCatching { pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f }
+                }
                 updateUiForSession(key) {
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
                         error = e.message ?: "API 翻译失败",
-                        muteOriginal = false,
                         noModelHint = null,
                             waitingForTranscriptionEngine = false,
                             waitingForDubbingEngine = false,
