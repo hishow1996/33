@@ -12,8 +12,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.ui.theme.*
+import coil.ImageLoader
+import coil.decode.SvgDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -22,19 +25,61 @@ import kotlinx.coroutines.withContext
 private data class OfflineTranslationPack(val title: String, val source: String, val target: String, val badge: String)
 
 @Composable
-fun GoogleTranslateIcon() {
+fun GoogleTranslateIcon(imageLoader: ImageLoader? = null) {
+    val appContext = LocalContext.current.applicationContext
+    // SVG 解码器必须显式注册；默认 Coil 加载器会把 raw SVG 当成未知格式，
+    // 结果就是图标区域留白。API 管理页传入共享加载器，其他页面则创建独立加载器。
+    val effectiveImageLoader = remember(appContext, imageLoader) {
+        imageLoader ?: ImageLoader.Builder(appContext)
+            .components { add(SvgDecoder.Factory()) }
+            .build()
+    }
+    DisposableEffect(effectiveImageLoader, imageLoader) {
+        onDispose {
+            if (imageLoader == null) effectiveImageLoader.shutdown()
+        }
+    }
     Box(
         Modifier.size(44.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFFF8FAFF)),
         contentAlignment = Alignment.Center,
     ) {
-        coil.compose.AsyncImage(
+        coil.compose.SubcomposeAsyncImage(
             model = io.translatetube.local.R.raw.google_translate_logo,
-            contentDescription = "Google 翻译矢量图标",
+            imageLoader = effectiveImageLoader,
+            contentDescription = "Google 翻译官方矢量图标",
             modifier = Modifier.size(38.dp),
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+            loading = { GoogleTranslateLogoFallback() },
+            error = { GoogleTranslateLogoFallback() },
+            success = { coil.compose.SubcomposeAsyncImageContent() },
         )
+    }
+}
+
+@Composable
+private fun GoogleTranslateLogoFallback() {
+    // 即使资源损坏或 SVG 解码失败，也提供可辨认的翻译图标，不再出现空白区域。
+    Box(Modifier.size(34.dp)) {
+        Surface(
+            modifier = Modifier.align(Alignment.CenterStart).size(width = 23.dp, height = 28.dp),
+            color = Color(0xFF4285F4),
+            shape = RoundedCornerShape(4.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("文", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+        }
+        Surface(
+            modifier = Modifier.align(Alignment.CenterEnd).size(width = 19.dp, height = 24.dp),
+            color = Color(0xFF34A853),
+            shape = RoundedCornerShape(4.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("A", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+        }
     }
 }
 
