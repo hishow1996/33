@@ -17,6 +17,8 @@ internal data class TranslationBatchResult(
             rawTranslations: List<String>,
             sourceTexts: Map<Int, String> = emptyMap(),
             sourceLanguage: String = "auto",
+            /** Google/ML Kit may validly leave a name or untranslatable cue unchanged. */
+            sourceEchoAsUntranslatedFallback: Boolean = false,
         ): TranslationBatchResult {
             val translated = linkedMapOf<Int, String>()
             val missing = linkedSetOf<Int>()
@@ -26,15 +28,33 @@ internal data class TranslationBatchResult(
                 val sourceEcho = value?.let {
                     SubtitleTranslationQualityPolicy.isSourceEcho(sourceTexts[sourceIndex], it, sourceLanguage)
                 } == true
-                if (value.isNullOrBlank() || sourceEcho) {
-                    // Empty output, status text, and source text returned as its own "translation"
-                    // all need another attempt; never publish or cache these rows as Chinese.
-                    if (sourceIndex !in translated) missing += sourceIndex
-                } else {
-                    // Duplicate indices must not create duplicate retries or let a later blank
-                    // result erase a valid translation for the same source row.
-                    translated.putIfAbsent(sourceIndex, value)
-                    missing.remove(sourceIndex)
+                when {
+                    value.isNullOrBlank() -> {
+                        // Empty output and status text still need another attempt.
+                        if (sourceIndex !in translated) missing += sourceIndex
+                    }
+                    sourceEcho && sourceEchoAsUntranslatedFallback -> {
+                        // Keep an explicit empty translation for this cue: subtitles can still
+                        // show the original text and DubbingTranslationPolicy will preserve its
+                        // original audio rather than speaking the source with a Chinese voice.
+                        if (sourceIndex !in translated) translated[sourceIndex] = ""
+                        missing.remove(sourceIndex)
+                    }
+                    sourceEcho -> {
+                        // Other engines must retry an echoed source row instead of presenting it
+                        // as Chinese.
+                        if (sourceIndex !in translated) missing += sourceIndex
+                    }
+                    else -> {
+                        // A real translation should replace a previous empty echo fallback, while
+                        // duplicate indices must never let a later blank erase a valid translation.
+                        if (translated[sourceIndex].isNullOrEmpty()) {
+                            translated[sourceIndex] = value
+                        } else {
+                            translated.putIfAbsent(sourceIndex, value)
+                        }
+                        missing.remove(sourceIndex)
+                    }
                 }
             }
             return TranslationBatchResult(translated, missing.toList())
