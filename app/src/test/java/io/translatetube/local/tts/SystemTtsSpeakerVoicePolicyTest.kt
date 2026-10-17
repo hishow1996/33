@@ -31,6 +31,22 @@ class SystemTtsSpeakerVoicePolicyTest {
     }
 
     @Test
+    fun configuredSystemVoiceTakesPriorityOverCurrentDefault() {
+        data class Voice(val name: String)
+        val configured = Voice("chosen-voice")
+        val current = Voice("rom-default")
+        val catalog = listOf(current, configured)
+        assertEquals(
+            configured,
+            SystemTtsSpeakerVoicePolicy.chooseConfiguredVoice("chosen-voice", current, catalog) { it.name },
+        )
+        assertEquals(
+            current,
+            SystemTtsSpeakerVoicePolicy.chooseConfiguredVoice("missing-voice", current, catalog) { it.name },
+        )
+    }
+
+    @Test
     fun defaultVoiceSurvivesAnEmptyOrIncompleteOemCatalog() {
         data class Voice(val name: String)
         val current = Voice("rom-current-zh")
