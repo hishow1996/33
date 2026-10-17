@@ -241,6 +241,7 @@ class PlaybackService : MediaSessionService() {
     private suspend fun ensureCurrentSession(
         sessionKey: String,
         pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
     ) {
         // Extractor/JNI calls are sometimes synchronous. A canceled job may return from one
         // without suspending, so explicitly check before publishing results or opening engines.
@@ -251,6 +252,8 @@ class PlaybackService : MediaSessionService() {
             activeUiKey = ui.value.key,
             expectedPipelineGeneration = pipelineGeneration,
             activePipelineGeneration = activePipelineGeneration,
+            expectedDubbingMutationGeneration = dubbingMutationGeneration,
+            activeDubbingMutationGeneration = activeDubbingMutationGeneration,
         )
     }
 
@@ -656,10 +659,15 @@ class PlaybackService : MediaSessionService() {
         val publish = {
             ui.update { current ->
                 if (
-                    current.key != sessionKey ||
-                    (pipelineGeneration != null && activePipelineGeneration != pipelineGeneration) ||
-                    (dubbingMutationGeneration != null &&
-                        activeDubbingMutationGeneration != dubbingMutationGeneration)
+                    !PlaybackSessionGuard.isCurrent(
+                        sessionKey = sessionKey,
+                        activeVideoKey = videoKey,
+                        activeUiKey = current.key,
+                        expectedPipelineGeneration = pipelineGeneration,
+                        activePipelineGeneration = activePipelineGeneration,
+                        expectedDubbingMutationGeneration = dubbingMutationGeneration,
+                        activeDubbingMutationGeneration = activeDubbingMutationGeneration,
+                    )
                 ) {
                     current
                 } else {
@@ -697,10 +705,15 @@ class PlaybackService : MediaSessionService() {
         mutationGeneration: Long? = null,
     ): Boolean = synchronized(pipelineGenerationLock) {
         if (
-            pipelineGeneration != activePipelineGeneration ||
-            (mutationGeneration != null && mutationGeneration != activeDubbingMutationGeneration) ||
-            videoKey != sessionKey ||
-            ui.value.key != sessionKey
+            !PlaybackSessionGuard.isCurrent(
+                sessionKey = sessionKey,
+                activeVideoKey = videoKey,
+                activeUiKey = ui.value.key,
+                expectedPipelineGeneration = pipelineGeneration,
+                activePipelineGeneration = activePipelineGeneration,
+                expectedDubbingMutationGeneration = mutationGeneration,
+                activeDubbingMutationGeneration = activeDubbingMutationGeneration,
+            )
         ) {
             false
         } else {
@@ -4577,7 +4590,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             var pendingTts: TtsEngine? = null
             var oldEngineRetired = false
             try {
-                ensureCurrentSession(sessionKey, pipelineGeneration)
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(
                         error = null,
@@ -4772,7 +4785,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 val ttsWasPreflighted = pendingTts != null
                 val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
                 try {
-                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     if (!ttsWasPreflighted) runCatching { tts.close() }
                     throw e
@@ -4787,7 +4800,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 d.attach(tts, updated, sourceLanguage = sessionSourceLang)
                 try {
-                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
@@ -4812,7 +4825,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     org.json.JSONObject().put("s", line.startMs).put("e", line.endMs)
                         .put("t", line.text).put("zh", line.zh ?: "").put("sp", line.speakerId)
                 )
-                ensureCurrentSession(sessionKey, pipelineGeneration)
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 if (updated.count { !it.zh.isNullOrEmpty() } > updated.size / 2) {
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
@@ -4920,7 +4933,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             var oldEngineRetired = false
             var assignmentsSaved = false
             try {
-                ensureCurrentSession(sessionKey, pipelineGeneration)
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
                     it.copy(error = null, progress = "检查可用音色…")
                 }
@@ -4957,12 +4970,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     }
                     return@launch
                 }
-                ensureCurrentSession(sessionKey, pipelineGeneration)
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
 
                 previousDubbing = retireCurrentDubbing()
                 oldEngineRetired = previousDubbing != null
                 awaitRetiredDubbingEngines()
-                ensureCurrentSession(sessionKey, pipelineGeneration)
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
 
                 saveSpeakerAssignments(updatedAssignments, sessionKey, selectedTts)
                 assignmentsSaved = true
@@ -4990,7 +5003,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 registerDubbingFailureHandler(engine, tts, sessionKey)
                 engine.attach(tts, updated, sourceLanguage = sourceLang)
                 try {
-                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(engine)
                     replacementDubbing = null
@@ -5028,7 +5041,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             .put("sp", line.speakerId)
                     )
                 }
-                ensureCurrentSession(sessionKey, pipelineGeneration)
+                ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 if (updated.isNotEmpty() &&
                     updated.count { !it.zh.isNullOrBlank() } > updated.size / 2
                 ) {
