@@ -9,9 +9,18 @@ internal object PlaybackSessionGuard {
         sessionKey: String,
         activeVideoKey: String,
         activeUiKey: String,
+        expectedPipelineGeneration: Long? = null,
+        activePipelineGeneration: Long? = null,
     ) {
-        if (sessionKey != activeVideoKey || sessionKey != activeUiKey) {
-            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频处理任务")
+        if (
+            sessionKey != activeVideoKey ||
+            sessionKey != activeUiKey ||
+            (expectedPipelineGeneration != null &&
+                expectedPipelineGeneration != activePipelineGeneration)
+        ) {
+            throw kotlinx.coroutines.CancellationException(
+                "视频处理任务已被新的打开请求替代，取消旧任务",
+            )
         }
     }
 }
