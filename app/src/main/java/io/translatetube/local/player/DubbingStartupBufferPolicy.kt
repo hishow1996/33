@@ -11,15 +11,30 @@ internal object DubbingStartupBufferPolicy {
         val waitTimeoutMs: Long,
     )
 
+    fun spokenCueIndices(lines: List<SubLine>): List<Int> =
+        lines.indices.filter { index ->
+            val line = lines[index]
+            line.startMs >= 0L && line.endMs > line.startMs && !line.zh.isNullOrBlank()
+        }
+
     fun plan(
         lines: List<SubLine>,
         immediateMode: Boolean,
         synthesisRealtimeFactor: Float = Float.NaN,
+    ): Plan = plan(
+        lines = lines,
+        spokenCueIndices = spokenCueIndices(lines),
+        immediateMode = immediateMode,
+        synthesisRealtimeFactor = synthesisRealtimeFactor,
+    )
+
+    fun plan(
+        lines: List<SubLine>,
+        spokenCueIndices: List<Int>,
+        immediateMode: Boolean,
+        synthesisRealtimeFactor: Float = Float.NaN,
     ): Plan {
-        val spoken = lines.indices.filter { index ->
-            val line = lines[index]
-            line.startMs >= 0L && line.endMs > line.startMs && !line.zh.isNullOrBlank()
-        }
+        val spoken = spokenCueIndices
         if (spoken.isEmpty()) return Plan(emptyList(), 0L, 0, 0L)
         if (immediateMode) {
             // Direct TTS has no PCM backlog to fill. The first usable cue is enough to start.
