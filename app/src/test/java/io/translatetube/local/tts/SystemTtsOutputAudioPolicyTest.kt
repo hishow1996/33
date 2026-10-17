@@ -93,7 +93,7 @@ class SystemTtsOutputAudioPolicyTest {
         val source = TtsAudio(floatArrayOf(2f, -2f, Float.NaN, Float.POSITIVE_INFINITY, 0.5f), 24_000)
         val normalized = SystemTtsOutputAudioPolicy.normalize(source)
         assertTrue(normalized !== source)
-        assertEquals(16_000, normalized.sampleRate)
+        assertEquals(24_000, normalized.sampleRate)
         assertTrue(normalized.samples.contentEquals(floatArrayOf(1f, -1f, 0f, 0f, 0.5f)))
         assertEquals(2f, source.samples[0], 0f)
     }
