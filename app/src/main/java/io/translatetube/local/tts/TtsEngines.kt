@@ -354,6 +354,14 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         }
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val normalizedVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
+        val mediaStreamVolume = runCatching {
+            (appCtx.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager)
+                ?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+        }.getOrNull()
+        if (mediaStreamVolume == 0) {
+            onCompleted("手机媒体音量为 0；系统 TTS 跟随视频媒体音量，请调高媒体音量后重试。")
+            return false
+        }
 
         // Publish the newest request before dispatch. Rapid seeks/subtitle changes invalidate
         // earlier queued work, so a stale sentence can never start after a newer one.
@@ -425,7 +433,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
                                     "SystemTts",
                                     "Live subtitle request: id=$utteranceId chars=${spokenText.length} " +
                                         "voice=${targetVoice.name} speed=$safeSpeed volume=$normalizedVolume " +
-                                        "attributes=$liveSpeechAttributesReady result=$result",
+                                        "mediaStreamVolume=$mediaStreamVolume attributes=$liveSpeechAttributesReady result=$result",
                                 )
                                 if (result != TextToSpeech.SUCCESS) {
                                     throw IllegalStateException("手机系统 TTS 拒绝朗读本句（状态码 $result）")
@@ -462,17 +470,18 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         val stopRequest = synchronized(lifecycleLock) {
             val activeId = activeTimelineUtteranceId
             if (utteranceId != null && activeId != utteranceId) {
-                return
-            }
-            if (utteranceId == null) {
-                timelineCallbacks.clear()
+                null
             } else {
-                timelineCallbacks.remove(utteranceId)
+                if (utteranceId == null) {
+                    timelineCallbacks.clear()
+                } else {
+                    timelineCallbacks.remove(utteranceId)
+                }
+                activeTimelineUtteranceId = null
+                val generation = timelineCommandGeneration.incrementAndGet()
+                val engine = if (closed) null else ttsRef.get()
+                if (engine == null) null else engine to generation
             }
-            activeTimelineUtteranceId = null
-            val generation = timelineCommandGeneration.incrementAndGet()
-            val engine = if (closed) null else ttsRef.get()
-            if (engine == null) null else engine to generation
         } ?: return
 
         val (engine, generation) = stopRequest
