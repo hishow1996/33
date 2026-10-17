@@ -490,12 +490,10 @@ Section("配音设置") {
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
             EngineOption("piper", "Piper 多语种 · 按语种下载", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            HorizontalDivider(color = androidx.compose.ui.graphics.Color(0xFFE8EDF5), thickness = 1.dp)
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
