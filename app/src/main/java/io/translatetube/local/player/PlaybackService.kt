@@ -184,8 +184,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var activePipelineGeneration = 0L
     private var dubbingMutationGenerationCounter = 0L
     @Volatile private var activeDubbingMutationGeneration = 0L
-    // Do not let an older same-video pipeline finish a blocking TTS/native operation while the
-    // replacement pipeline initializes another engine. Cancellation alone cannot stop JNI calls.
+    // Serialize every flow that creates/replaces a DubbingEngine. YouTube, remote web media,
+    // local video and imported subtitles must not initialize a new TTS engine while a cancelled
+    // pipeline is still unwinding a blocking Android TTS/JNI call.
     private val pipelineExecutionMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile private var qualityRecoveryAttempted = false
     private var qualityRecoveryJob: Job? = null
@@ -286,12 +287,12 @@ class PlaybackService : MediaSessionService() {
     }
 
     fun cancelProcessing() {
-        beginPipelineGeneration()
         val current = ui.value
         if (!isProcessingPhase(current.phase)) {
             updateProcessingNotification(current)
             return
         }
+        beginPipelineGeneration()
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         prepJob?.cancel(kotlinx.coroutines.CancellationException("用户取消视频处理"))
