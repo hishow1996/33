@@ -1,11 +1,13 @@
 package io.translatetube.local.player
 
 /**
- * Chooses one bounded TTS retry when generated speech is materially longer than its subtitle cue.
- * This keeps timing policy independent of Android classes so it can be unit tested.
+ * Only pay for a second full TTS pass when the audio cannot reasonably fit inside its subtitle
+ * window at the playback engine's maximum synchronization rate. This policy is shared by
+ * Kokoro, Piper and System TTS, so ordinary overlong cues are sped up on the playback timeline
+ * instead of being synthesized twice.
  */
 internal object DubbingSynthesisPolicy {
-    private const val LONG_CUE_RATIO = 1.15
+    private const val LONG_CUE_RATIO = 2.0
     private const val TARGET_CUE_FILL = 0.90
 
     /**
