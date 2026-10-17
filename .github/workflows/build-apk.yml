@@ -5,8 +5,14 @@ name: Build Android APK
 # Explicit trigger for the user's yt-dlp local-version detection fix.
 # User-requested workflow-only trigger commits are the fallback when manual dispatch is unavailable.
 on:
-  # Build only when the user explicitly asks for an APK.
+  # Preferred path: run only after a manual user request.
   workflow_dispatch:
+  # Connector fallback: allow a workflow-only trigger commit, never ordinary source pushes.
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
