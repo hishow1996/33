@@ -195,11 +195,11 @@ fun HomeScreen(
                     value = link,
                     onValueChange = { link = it; linkError = false },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("YouTube 链接或网页视频地址", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    placeholder = { Text("YouTube、网页视频地址或视频直链", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, tint = SubText) },
                     isError = linkError,
                     supportingText = if (linkError) {
-                        { Text("请输入有效的 YouTube 链接或 HTTP/HTTPS 网页地址") }
+                        { Text("请输入有效的 YouTube、HTTP/HTTPS 网页地址或视频直链") }
                     } else null,
                     singleLine = true,
                     shape = RoundedCornerShape(17.dp),
@@ -224,13 +224,26 @@ fun HomeScreen(
                             onPlay(PlayRequest(videoId = id))
                             link = ""
                         } else {
-                            val pageUrl = WebMediaUrlPolicy.normalizePageUrl(input)
-                            if (pageUrl != null) {
-                                linkError = false
-                                onPlay(PlayRequest(webPageUrl = pageUrl))
-                                link = ""
+                            // Direct MP4/HLS/audio links should enter playback directly; pages
+                            // still go through WebView probing and yt-dlp fallback.
+                            val mediaUrl = WebMediaUrlPolicy.normalizeDirectMediaUrl(input)
+                            val pageUrl = if (mediaUrl == null) {
+                                WebMediaUrlPolicy.normalizePageUrl(input)
                             } else {
-                                linkError = true
+                                null
+                            }
+                            when {
+                                mediaUrl != null -> {
+                                    linkError = false
+                                    onPlay(PlayRequest(mediaUrl = mediaUrl))
+                                    link = ""
+                                }
+                                pageUrl != null -> {
+                                    linkError = false
+                                    onPlay(PlayRequest(webPageUrl = pageUrl))
+                                    link = ""
+                                }
+                                else -> linkError = true
                             }
                         }
                     },

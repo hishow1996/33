@@ -40,6 +40,34 @@ class WebMediaUrlPolicyTest {
     }
 
     @Test
+    fun identifiesDirectMediaUrlsButLeavesOrdinaryPagesForWebView() {
+        assertEquals(
+            "https://cdn.example/video.mp4?token=abc",
+            WebMediaUrlPolicy.normalizeDirectMediaUrl("https://cdn.example/video.mp4?token=abc"),
+        )
+        assertEquals(
+            "https://cdn.example/master.m3u8?token=abc",
+            WebMediaUrlPolicy.normalizeDirectMediaUrl("https://cdn.example/master.m3u8?token=abc"),
+        )
+        assertEquals(
+            null,
+            WebMediaUrlPolicy.normalizeDirectMediaUrl("https://example.com/watch?id=123"),
+        )
+        assertEquals(
+            null,
+            WebMediaUrlPolicy.normalizeDirectMediaUrl("https://cdn.example/stream.mpd"),
+        )
+        assertEquals(
+            null,
+            WebMediaUrlPolicy.normalizeDirectMediaUrl("https://m.yfsp.tv/static/media/test.mp4"),
+        )
+        assertEquals(
+            null,
+            WebMediaUrlPolicy.normalizeDirectMediaUrl("javascript:alert(1)"),
+        )
+    }
+
+    @Test
     fun acceptsDirectHttpAndHlsMediaButRejectsTemporaryAndDashStreams() {
         assertEquals("https://cdn.example/video.mp4?token=abc",
             WebMediaUrlPolicy.normalizeMediaUrl("https://cdn.example/video.mp4?token=abc"))

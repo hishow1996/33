@@ -142,6 +142,15 @@ internal object WebMediaUrlPolicy {
     }
 
     /**
+     * Returns a normalized direct media URL only when the URL path clearly identifies a
+     * media resource. Ordinary pages must keep using WebView probing rather than bypassing it.
+     */
+    fun normalizeDirectMediaUrl(input: String): String? {
+        val normalized = normalizeMediaUrl(input) ?: return null
+        return normalized.takeIf { looksLikeMediaRequest(it) }
+    }
+
+    /**
      * Only explicit audio-file extensions may use a full-response fallback. Video containers
      * must never silently fall back to downloading an entire video just to obtain its soundtrack.
      */
