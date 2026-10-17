@@ -1386,39 +1386,47 @@ private fun CurrentSubtitleStrip(state: PlayerUiState) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(30.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .height(46.dp)
+            .clip(RoundedCornerShape(9.dp))
             .background(Color(0xFFE8EFFF))
-            .padding(horizontal = 6.dp),
+            .padding(horizontal = 8.dp),
         contentAlignment = androidx.compose.ui.Alignment.Center,
     ) {
         if (currentText.isNotBlank()) {
             val textMeasurer = rememberTextMeasurer()
-            val widthPx = with(LocalDensity.current) { maxWidth.roundToPx() }
-            val baseStyle = MaterialTheme.typography.bodySmall.copy(
+            val density = LocalDensity.current
+            val widthPx = with(density) { maxWidth.roundToPx() }
+            val heightPx = with(density) { maxHeight.roundToPx() }
+            val baseStyle = MaterialTheme.typography.bodyMedium.copy(
                 color = BrandBright,
                 fontWeight = FontWeight.Medium,
             )
-            // Fit the entire cue to one physical line. Very long captions automatically
-            // reduce the font instead of wrapping or being truncated with an ellipsis.
-            val fontSizeSp = remember(currentText, widthPx, baseStyle.fontSize) {
-                var low = 1f
-                var high = 12f
+            // Allow two readable lines. Longer cues scale down only as much as needed
+            // to fit in this compact region, rather than being clipped with an ellipsis.
+            val fontSizeSp = remember(currentText, widthPx, heightPx, baseStyle.fontSize) {
+                var low = 8.5f
+                var high = 15.5f
                 var best = low
-                repeat(14) {
+                repeat(16) {
                     val candidate = (low + high) / 2f
                     val measured = textMeasurer.measure(
                         text = currentText,
                         style = baseStyle.copy(
                             fontSize = candidate.sp,
-                            lineHeight = (candidate * 1.2f).sp,
+                            lineHeight = (candidate * 1.22f).sp,
                         ),
-                        softWrap = false,
-                        maxLines = 1,
+                        softWrap = true,
+                        maxLines = 2,
                         overflow = TextOverflow.Clip,
-                        constraints = Constraints(maxWidth = widthPx),
+                        constraints = Constraints(
+                            maxWidth = widthPx,
+                            maxHeight = heightPx,
+                        ),
                     )
-                    if (!measured.didOverflowWidth) {
+                    if (!measured.didOverflowWidth &&
+                        !measured.didOverflowHeight &&
+                        measured.lineCount <= 2
+                    ) {
                         best = candidate
                         low = candidate
                     } else {
@@ -1432,11 +1440,12 @@ private fun CurrentSubtitleStrip(state: PlayerUiState) {
                 color = BrandBright,
                 style = baseStyle.copy(
                     fontSize = fontSizeSp.sp,
-                    lineHeight = (fontSizeSp * 1.2f).sp,
+                    lineHeight = (fontSizeSp * 1.22f).sp,
                 ),
                 modifier = Modifier.fillMaxWidth(),
-                maxLines = 1,
-                softWrap = false,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                maxLines = 2,
+                softWrap = true,
                 overflow = TextOverflow.Clip,
             )
         }
