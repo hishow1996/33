@@ -228,10 +228,9 @@ class DubbingEngine(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
 
-                    // Optional engines implementing TimelineTtsPlayback can speak directly on
-                    // the timeline without creating PCM cache files. SystemTts deliberately does not
-                    // implement this contract now: it uses the WAV/PCM path so timing, caching and
-                    // AudioTrack compatibility stay consistent with Kokoro and Piper.
+                    // In immediate mode, system TTS speaks directly on the subtitle timeline
+                    // without PCM cache files. Generated mode intentionally follows the common
+                    // WAV/PCM path so timing, reusable cache and AudioTrack behavior match Kokoro/Piper.
                     if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
                         for (i in this@DubbingEngine.lines.indices) {
                             checkCacheInitActive()
