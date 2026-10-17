@@ -687,9 +687,10 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean, imageLoader:
  */
 private val providerLogoHttpClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS)
-        .callTimeout(6, TimeUnit.SECONDS)
+        // Logos are small optional assets; bound each failed endpoint so API setup stays responsive.
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(2500, TimeUnit.MILLISECONDS)
+        .callTimeout(3, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 }
@@ -707,25 +708,33 @@ private fun resolveAndCacheProviderLogo(context: android.content.Context, host: 
             val discovered = extractWebsiteLogoCandidates(html.first, html.second)
             branded.addAll(discovered)
         }
-        // Common paths are a fallback after the site's declared metadata.
-        fallbacks.add("https://$siteHost/apple-touch-icon.png")
-        fallbacks.add("https://$siteHost/apple-touch-icon-precomposed.png")
-        fallbacks.add("https://$siteHost/favicon.png")
-        fallbacks.add("https://$siteHost/favicon.ico")
-        fallbacks.add("https://$siteHost/favicon.svg")
     }
 
-    // Aggregators frequently have a higher-resolution favicon than the default /favicon.ico.
+    // Prefer declared brand/apple assets, then the site's own favicon endpoints.
+    for (siteHost in siteHosts) {
+        fallbacks.add("https://$siteHost/apple-touch-icon.png")
+        fallbacks.add("https://$siteHost/favicon.svg")
+        fallbacks.add("https://$siteHost/favicon.ico")
+    }
+
+    // If the site blocks direct icon access, public favicon services provide a second route.
     for (siteHost in siteHosts) {
         fallbacks.add("https://www.google.com/s2/favicons?domain=$siteHost&sz=128")
         fallbacks.add("https://icons.duckduckgo.com/ip3/$siteHost.ico")
+    }
+
+    // Lower-priority paths are still available, but do not let broken hosts cause an
+    // unbounded chain of serial network requests when many providers are listed.
+    for (siteHost in siteHosts) {
+        fallbacks.add("https://$siteHost/apple-touch-icon-precomposed.png")
+        fallbacks.add("https://$siteHost/favicon.png")
         fallbacks.add("https://favicon.im/$siteHost?larger=true")
         fallbacks.add("https://icon.horse/icon/$siteHost")
     }
 
     val candidates = LinkedHashSet<String>().apply {
-        addAll(branded)
-        addAll(fallbacks)
+        addAll(branded.take(4))
+        addAll(fallbacks.take(8))
     }
     for (url in candidates) {
         val logo = downloadAndCacheProviderImage(context, host, url)
@@ -857,8 +866,18 @@ private fun downloadAndCacheProviderImage(context: android.content.Context, prov
             if (!folder.exists() && !folder.mkdirs()) return null
             val hash = sha256(providerHost)
             val file = File(folder, "$hash.$extension")
-            file.outputStream().use { it.write(bytes) }
-            file
+            val temp = File(folder, "$hash.$extension.part")
+            temp.outputStream().use { it.write(bytes) }
+            // Write to a temporary file first so interrupted downloads cannot poison the cache.
+            if (file.exists() && !file.delete()) {
+                temp.delete()
+                return null
+            }
+            if (!temp.renameTo(file)) {
+                temp.delete()
+                return null
+            }
+            file.takeIf { it.isFile && it.length() == bytes.size.toLong() }
         }
     } catch (_: Exception) {
         null
@@ -883,7 +902,8 @@ private fun readBounded(input: java.io.InputStream, maxBytes: Int): ByteArray? {
 
 private fun providerImageExtension(bytes: ByteArray): String? {
     if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return null
-    val prefix = bytes.toString(Charsets.UTF_8).take(2048)
+    // Some first-party SVG files have an XML/doctype header before the actual root element.
+    val prefix = bytes.toString(Charsets.UTF_8).take(16 * 1024)
         .trimStart('\uFEFF', ' ', '\n', '\r', '\t')
     if (prefix.contains("<!doctype html", ignoreCase = true) ||
         Regex("""(?is)<html\b""").containsMatchIn(prefix)
