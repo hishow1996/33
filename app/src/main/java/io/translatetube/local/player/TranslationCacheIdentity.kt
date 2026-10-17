@@ -39,15 +39,9 @@ internal object TranslationCacheIdentity {
         lines: List<SubLine>,
         providerFingerprint: String? = null,
     ): String {
-        val canonical = buildString {
-            lines.forEach { line ->
-                append(line.startMs).append(':')
-                    .append(line.endMs).append(':')
-                    .append(line.text.length).append(':')
-                    .append(line.text).append('\n')
-            }
-        }
-        val signature = sha256(canonical).take(IMPORTED_HASH_LENGTH)
+        // Hash cue-by-cue instead of building a second copy of the entire subtitle file in RAM.
+        // Keep the exact canonical byte sequence so existing persisted cache keys remain compatible.
+        val signature = importedLinesSignature(lines).take(IMPORTED_HASH_LENGTH)
         return "$key|zh|$activeId${providerSuffix(providerFingerprint)}|imported-$signature"
     }
 
@@ -84,6 +78,27 @@ internal object TranslationCacheIdentity {
         }
         val stableSourceKey = previous.substring(0, zhIndex)
         return "$stableSourceKey|zh|$activeId$suffix|imported-$hash"
+    }
+
+    /**
+     * Produces the same digest as hashing "$start:$end:$textLength:$text\\n" for every cue,
+     * while avoiding one huge StringBuilder and matching toByteArray() allocation for long files.
+     */
+    private fun importedLinesSignature(lines: List<SubLine>): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val colon = byteArrayOf(':'.code.toByte())
+        val newline = byteArrayOf('\\n'.code.toByte())
+        for (line in lines) {
+            digest.update(line.startMs.toString().toByteArray(Charsets.UTF_8))
+            digest.update(colon)
+            digest.update(line.endMs.toString().toByteArray(Charsets.UTF_8))
+            digest.update(colon)
+            digest.update(line.text.length.toString().toByteArray(Charsets.UTF_8))
+            digest.update(colon)
+            digest.update(line.text.toByteArray(Charsets.UTF_8))
+            digest.update(newline)
+        }
+        return digest.digest().joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
     }
 
     private fun providerSuffix(value: String?): String {

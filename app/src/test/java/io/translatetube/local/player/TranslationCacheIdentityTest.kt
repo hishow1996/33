@@ -21,6 +21,14 @@ class TranslationCacheIdentityTest {
     }
 
     @Test
+    fun streamingImportedFingerprintPreservesTheLegacyCacheKeyFormat() {
+        assertEquals(
+            "video-key|zh|42|imported-9da69ad2b4f33432cd74f96c",
+            TranslationCacheIdentity.importedKey("video-key", 42L, source),
+        )
+    }
+
+    @Test
     fun changedTextOrTimingGetsDifferentCacheKey() {
         val changedText = source.mapIndexed { i, line ->
             if (i == 1) line.copy(text = "How is it going?") else line
