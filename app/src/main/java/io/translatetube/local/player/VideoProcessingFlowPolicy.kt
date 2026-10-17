@@ -252,9 +252,11 @@ object VideoProcessingFlowPolicy {
             // Remaining PCM cues may continue synthesizing while the player stays visible.
             return false
         }
-        if (progressiveTtsPlayback && phase == Phase.READY && !playbackHasEnteredPlayer) {
-            // Avoid a one-frame flash of the player before ExoPlayer actually starts for the first time.
-            return true
+        if (progressiveTtsPlayback && phase == Phase.READY) {
+            // READY means the first usable speech buffer has been handled. Render the player
+            // before asking ExoPlayer to begin so the first short subtitle cue is not spoken
+            // entirely behind the processing screen before its active-row effect can appear.
+            return false
         }
         // In non-progressive mode, all speech cues must be prepared before leaving this page.
         return phase != Phase.READY || (!progressiveTtsPlayback && dubbingPreparationIncomplete)
