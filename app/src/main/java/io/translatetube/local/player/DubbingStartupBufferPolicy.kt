@@ -28,7 +28,7 @@ internal object DubbingStartupBufferPolicy {
         lines = lines,
         spokenCueIndices = spokenCueIndices(lines),
         immediateMode = immediateMode,
-        synthesisRealtimeFactor = synthesisRealtimeFactor,
+        synthesisTimelineLagFactor = synthesisTimelineLagFactor,
         synthesisSampleCount = synthesisSampleCount,
     )
 
@@ -36,7 +36,7 @@ internal object DubbingStartupBufferPolicy {
         lines: List<SubLine>,
         spokenCueIndices: List<Int>,
         immediateMode: Boolean,
-        synthesisRealtimeFactor: Float = Float.NaN,
+        synthesisTimelineLagFactor: Float = Float.NaN,
         synthesisSampleCount: Int = 0,
     ): Plan {
         val spoken = spokenCueIndices
@@ -51,8 +51,8 @@ internal object DubbingStartupBufferPolicy {
         // finish the generated dub first. The service keeps this decision sticky for the session.
         if (
             synthesisSampleCount >= 2 &&
-            synthesisRealtimeFactor.isFinite() &&
-            synthesisRealtimeFactor >= 2.0f
+            synthesisTimelineLagFactor.isFinite() &&
+            synthesisTimelineLagFactor >= 2.0f
         ) {
             return Plan(
                 lineIndices = spoken,
@@ -66,11 +66,11 @@ internal object DubbingStartupBufferPolicy {
         // Escalate the lead buffer as measured synthesis falls behind. The moderate/slow tiers wait
         // for more ready cues before starting; only a sustained severe lag escalates to full synthesis.
         val (lookAheadMs, minCues, maxCues, timeoutMs) = when {
-            synthesisRealtimeFactor.isFinite() && synthesisRealtimeFactor >= 1.6f ->
+            synthesisTimelineLagFactor.isFinite() && synthesisTimelineLagFactor >= 1.6f ->
                 Quadruple(20_000L, 8, 12, 45_000L)
-            synthesisRealtimeFactor.isFinite() && synthesisRealtimeFactor >= 1.2f ->
+            synthesisTimelineLagFactor.isFinite() && synthesisTimelineLagFactor >= 1.2f ->
                 Quadruple(15_000L, 6, 10, 35_000L)
-            synthesisRealtimeFactor.isFinite() && synthesisRealtimeFactor < 0.75f ->
+            synthesisTimelineLagFactor.isFinite() && synthesisTimelineLagFactor < 0.75f ->
                 Quadruple(5_000L, 2, 4, 20_000L)
             else -> Quadruple(8_000L, 3, 6, 25_000L)
         }
