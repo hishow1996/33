@@ -1530,15 +1530,23 @@ class PlaybackService : MediaSessionService() {
 
     private suspend fun runPipeline(
         key: String,
-        videoId: String?,
+        requestedVideoId: String?,
         localUri: Uri?,
         resumeState: PlayerUiState? = null,
         sourceImportedLines: List<SubLine>? = null,
-        remoteMediaUrl: String? = null,
-        remoteMediaTitle: String = "",
-        remoteMediaReferrer: String = "",
-        remoteMediaCookie: String? = null,
+        requestedRemoteMediaUrl: String? = null,
+        requestedRemoteMediaTitle: String = "",
+        requestedRemoteMediaReferrer: String = "",
+        requestedRemoteMediaCookie: String? = null,
     ) {
+        // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
+        // switch this session to the existing yt-dlp media URL pipeline and continue with audio ASR.
+        var videoId = requestedVideoId
+        var remoteMediaUrl = requestedRemoteMediaUrl
+        var remoteMediaTitle = requestedRemoteMediaTitle
+        var remoteMediaReferrer = requestedRemoteMediaReferrer
+        var remoteMediaCookie = requestedRemoteMediaCookie
+
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
@@ -1570,10 +1578,90 @@ class PlaybackService : MediaSessionService() {
                 }
             } else if (videoId != null) {
                 awaitProcessingResumed(key)
-                val m = NewPipeRepo.resolve(videoId)
-                awaitProcessingResumed(key)
-                meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
-                updateUiForSession(key) { it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000) }
+                val requestedId = videoId
+                try {
+                    val m = NewPipeRepo.resolve(requestedId)
+                    awaitProcessingResumed(key)
+                    meta = meta.copy(title = m.title, channel = m.channel, durationSec = m.durationSec, thumbUrl = m.thumbUrl)
+                    updateUiForSession(key) {
+                        it.copy(title = m.title, channel = m.channel, thumbUrl = m.thumbUrl, durationMs = m.durationSec * 1000)
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (extractorError: Exception) {
+                    if (!io.translatetube.local.yt.YouTubeAccessFallbackPolicy.shouldTryYtDlp(extractorError)) {
+                        throw extractorError
+                    }
+
+                    val watchUrl = "https://www.youtube.com/watch?v=$requestedId"
+                    updateUiForSession(key) {
+                        it.copy(
+                            progress = "YouTube 限制匿名访问，正在尝试 yt-dlp 备用解析…",
+                            error = null,
+                        )
+                    }
+                    awaitProcessingResumed(key)
+                    val cookieHeader = runCatching {
+                        android.webkit.CookieManager.getInstance().getCookie(watchUrl)
+                    }.getOrNull()
+                    val fallback = try {
+                        io.translatetube.local.yt.YtDlpRepo.resolve(
+                            this@PlaybackService,
+                            watchUrl,
+                            cookieHeader,
+                        )
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (fallbackError: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "YouTube anonymous-access fallback via yt-dlp failed",
+                            fallbackError,
+                        )
+                        throw IllegalStateException(
+                            "YouTube 拒绝当前网络的匿名访问，已自动尝试 yt-dlp 备用解析但仍失败。" +
+                                "请稍后重试，或在应用网页视频页打开 YouTube 并登录后再解析。" +
+                                "备用解析错误：${fallbackError.message ?: fallbackError.javaClass.simpleName}",
+                            fallbackError,
+                        ).also { it.addSuppressed(extractorError) }
+                    }
+                    awaitProcessingResumed(key)
+
+                    // From this point on, use the web-media branch: stream the resolved URL for
+                    // playback and extract/cache its audio for ASR instead of calling NewPipe again.
+                    videoId = null
+                    this.videoId = null
+                    remoteMediaUrl = fallback.mediaUrl
+                    remoteMediaTitle = fallback.title
+                    remoteMediaReferrer = fallback.referrer
+                    remoteMediaCookie = fallback.cookie.takeIf { it.isNotBlank() }
+                    this.remoteMediaUrl = remoteMediaUrl
+                    this.remoteMediaTitle = remoteMediaTitle
+                    this.remoteMediaReferrer = remoteMediaReferrer
+                    this.remoteMediaCookie = remoteMediaCookie
+                    this.remoteMediaUserAgent = io.translatetube.local.yt.YtDlpRepo.BROWSER_UA
+
+                    val thumbnail = "https://i.ytimg.com/vi/$requestedId/hqdefault.jpg"
+                    meta = meta.copy(
+                        title = fallback.title,
+                        channel = "",
+                        durationSec = fallback.durationSec.toLong(),
+                        thumbUrl = thumbnail,
+                        localUri = fallback.mediaUrl,
+                        sourceType = SourceType.YOUTUBE,
+                    )
+                    updateUiForSession(key) {
+                        it.copy(
+                            title = fallback.title,
+                            channel = "",
+                            thumbUrl = thumbnail,
+                            durationMs = fallback.durationSec * 1000L,
+                            processingFlow = ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                            progress = "备用解析成功，正在继续处理视频音频…",
+                            error = null,
+                        )
+                    }
+                }
             } else if (remoteMediaUrl != null && resumeState == null) {
                 val remoteUri = Uri.parse(remoteMediaUrl)
                 val title = remoteMediaTitle.takeIf { it.isNotBlank() }
