@@ -59,6 +59,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
@@ -688,9 +691,9 @@ fun PlayerScreen(
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
-            // 模型未下载引导条（点击跳设置）
+            // 模型尚未就绪时保留可操作的错误提示；正常播放时字幕条只显示当前字幕文本。
             state.noModelHint?.let { hint ->
                 Surface(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onGoSettings() },
@@ -703,8 +706,11 @@ fun PlayerScreen(
                         Text("去设置 →", color = AccentBlue, style = MaterialTheme.typography.labelLarge)
                     }
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(5.dp))
             }
+
+            CurrentSubtitleStrip(state = state)
+            Spacer(Modifier.height(5.dp))
 
             PlaybackModeSelector(
                 state = state,
@@ -713,28 +719,9 @@ fun PlayerScreen(
                 onDub = { PlaybackService.instance?.toggleDub() },
                 onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
             )
-            if (state.dubbingOn && state.dubbingStatus.isNotBlank() && state.noModelHint == null) {
-                Text(
-                    state.dubbingStatus,
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                )
-            }
-            if (state.subtitleTrackStatus.isNotBlank()) {
-                Text(
-                    state.subtitleTrackStatus,
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 3.dp),
-                )
-            }
 
-            Spacer(Modifier.height(10.dp))
+            // 配音/字幕轨的状态提示不再挤占播放控制栏与完整字幕列表之间的空间。
+            Spacer(Modifier.height(6.dp))
 
             if (subtitlesVisible) {
                 Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -1376,6 +1363,87 @@ private fun VideoParsingPage(
     }
 }
 
+@Composable
+private fun CurrentSubtitleStrip(state: PlayerUiState) {
+    // Prefer the subtitle currently being spoken by the dubbing engine; otherwise follow
+    // the video playhead. Both indexes refer to the same subtitle timeline.
+    val index = when {
+        state.dubbingOn && state.activeDubbingLine in state.lines.indices -> state.activeDubbingLine
+        state.currentLine in state.lines.indices -> state.currentLine
+        else -> -1
+    }
+    val currentLine = state.lines.getOrNull(index)
+    val currentText = remember(currentLine?.text, currentLine?.zh) {
+        currentLine?.let { line ->
+            (SubtitleParsers.preferredTranslationText(line)
+                ?.takeIf { it.isNotBlank() }
+                ?: line.text)
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        }.orEmpty()
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(30.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFFE8EFFF))
+            .padding(horizontal = 6.dp),
+        contentAlignment = androidx.compose.ui.Alignment.Center,
+    ) {
+        if (currentText.isNotBlank()) {
+            val textMeasurer = rememberTextMeasurer()
+            val widthPx = with(LocalDensity.current) { maxWidth.roundToPx() }
+            val baseStyle = MaterialTheme.typography.bodySmall.copy(
+                color = BrandBright,
+                fontWeight = FontWeight.Medium,
+            )
+            // Fit the entire cue to one physical line. Very long captions automatically
+            // reduce the font instead of wrapping or being truncated with an ellipsis.
+            val fontSizeSp = remember(currentText, widthPx, baseStyle.fontSize) {
+                var low = 1f
+                var high = 12f
+                var best = low
+                repeat(14) {
+                    val candidate = (low + high) / 2f
+                    val measured = textMeasurer.measure(
+                        text = currentText,
+                        style = baseStyle.copy(
+                            fontSize = candidate.sp,
+                            lineHeight = (candidate * 1.2f).sp,
+                        ),
+                        softWrap = false,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                        constraints = Constraints(maxWidth = widthPx),
+                    )
+                    if (!measured.didOverflowWidth) {
+                        best = candidate
+                        low = candidate
+                    } else {
+                        high = candidate
+                    }
+                }
+                best
+            }
+            Text(
+                text = currentText,
+                color = BrandBright,
+                style = baseStyle.copy(
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = (fontSizeSp * 1.2f).sp,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+            )
+        }
+    }
+}
+
+@Composable
 @Composable
 private fun PlaybackModeSelector(
     state: PlayerUiState,
