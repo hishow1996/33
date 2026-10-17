@@ -22,7 +22,7 @@ internal object DubbingStartupBufferPolicy {
     fun plan(
         lines: List<SubLine>,
         immediateMode: Boolean,
-        synthesisRealtimeFactor: Float = Float.NaN,
+        synthesisTimelineLagFactor: Float = Float.NaN,
         synthesisSampleCount: Int = 0,
     ): Plan = plan(
         lines = lines,
@@ -46,8 +46,8 @@ internal object DubbingStartupBufferPolicy {
             return Plan(spoken.take(1), 0L, 1, 2_500L)
         }
 
-        // Two or more measured cues whose synthesis takes >=2x their produced-audio duration
-        // indicate a sustained bottleneck. In that case, don't launch video into recurring gaps:
+        // Two or more measured cues whose synthesis consumes >=2x the interval until the next
+        // speech cue indicate a sustained timeline bottleneck. In that case, don't launch video into recurring gaps:
         // finish the generated dub first. The service keeps this decision sticky for the session.
         if (
             synthesisSampleCount >= 2 &&
