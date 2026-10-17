@@ -109,10 +109,12 @@ object YtDlpRepo {
 
         _updateState.value = _updateState.value.copy(checking = true, error = null)
         try {
-            // 本机版本和上游版本是两个独立问题：不能因为首次解包/运行时初始化失败，
-            // 就跳过网络版本检测。优先读内存或持久化版本，最后才尝试初始化运行时。
-            var currentVersion = if (inited) {
-                runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+            // YoutubeDL.version() returns the updater's private SharedPreferences value,
+            // not the version of the yt-dlp executable bundled in a fresh APK. Query the binary
+            // directly when the runtime is already initialized; use our persisted version only
+            // as a temporary value for automatic checks that should not initialize the runtime.
+            var currentVersion = if (inited && !force) {
+                readInstalledBinaryVersion()
             } else null
             currentVersion = currentVersion?.takeIf { it.isNotBlank() }
                 ?: prefs.getString("current_version", null)?.takeIf { it.isNotBlank() }
@@ -131,14 +133,21 @@ object YtDlpRepo {
             }
 
             var localVersionError: String? = null
-            if (currentVersion == null && force) {
+            if (force) {
                 try {
+                    // A manual check must verify the real installed executable even if a stale
+                    // or updater-only version string is already present in app preferences.
                     ensureReady(appCtx)
-                    currentVersion = runCatching { YoutubeDL.version(appCtx) }
-                        .getOrNull()?.takeIf { it.isNotBlank() }
+                    currentVersion = readInstalledBinaryVersion()
+                    if (currentVersion == null) {
+                        localVersionError =
+                            "已获取上游最新版，但本机 yt-dlp --version 未返回可识别的稳定版号"
+                        Log.w(TAG, "Latest yt-dlp version fetched, but the installed binary version could not be parsed")
+                    }
                 } catch (initError: kotlinx.coroutines.CancellationException) {
                     throw initError
                 } catch (initError: Exception) {
+                    currentVersion = null
                     localVersionError =
                         "已获取上游最新版，但读取本机版本失败：${initError.message ?: "运行时初始化失败"}"
                     Log.w(TAG, "Latest yt-dlp version fetched, but local runtime version is unavailable", initError)
@@ -330,6 +339,22 @@ object YtDlpRepo {
         null
     }
 
+    /**
+     * Read the installed yt-dlp executable itself. YoutubeDL.version() is backed by the
+     * dependency's updater metadata and stays null on fresh installs until an in-app update.
+     */
+    private fun readInstalledBinaryVersion(): String? = try {
+        val response = YoutubeDL.execute(YoutubeDLRequest("--version"))
+        YtDlpVersionPolicy.installedVersionFromOutput(response.out).also { version ->
+            if (version == null) {
+                Log.w(TAG, "yt-dlp --version returned no recognizable stable tag: ${response.out.take(120)}")
+            }
+        }
+    } catch (error: Exception) {
+        Log.w(TAG, "Could not execute the installed yt-dlp --version command", error)
+        null
+    }
+
     /** 懒初始化（线程安全）。 */
     suspend fun ensureReady(ctx: Context): Unit = withContext(Dispatchers.IO) {
         if (inited) return@withContext
@@ -337,15 +362,19 @@ object YtDlpRepo {
             if (inited) return@synchronized
             YoutubeDL.init(ctx.applicationContext)
             inited = true
-            // 记录「已使用」+ 当前版本，供启动时的每日自动检查使用
+            // Record first use and the actual version of the installed executable.
+            // YoutubeDL.version() alone can be null until its own updater has run once.
             val appCtx = ctx.applicationContext
-            val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
-            appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE).edit()
-                .putBoolean("used", true)
-                .putString("current_version", currentVersion)
-                .apply()
-            _updateState.value = _updateState.value.copy(current = currentVersion)
-            Log.i(TAG, "yt-dlp runtime ready, version=$currentVersion")
+            val currentVersion = readInstalledBinaryVersion()
+                ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()?.takeIf { it.isNotBlank() }
+            val prefs = appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE)
+            val editor = prefs.edit().putBoolean("used", true)
+            if (currentVersion != null) editor.putString("current_version", currentVersion)
+            editor.apply()
+            _updateState.value = _updateState.value.copy(
+                current = currentVersion ?: _updateState.value.current,
+            )
+            Log.i(TAG, "yt-dlp runtime ready, version=${currentVersion ?: "unknown"}")
         }
     }
 
@@ -482,17 +511,20 @@ object YtDlpRepo {
             YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> "yt-dlp 解析规则已是最新版；失败可能是站点限制或网络问题"
             null -> "yt-dlp 更新失败：没有返回更新状态，请稍后重试"
         }
-        // 更新后刷新版本检测结论（清掉「有新版本」标记）
-        val currentVersion = runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+        // Re-read the binary after the updater finishes; its metadata API can be null/stale
+        // when the bundled version has never been changed by the dependency's update method.
+        val currentVersion = readInstalledBinaryVersion()
+            ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()?.takeIf { it.isNotBlank() }
         val latestKnown = _updateState.value.latest
-        appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE).edit()
-            .putString("current_version", currentVersion)
-            .putBoolean("has_update", false)
-            .apply()
+        val hasUpdate = currentVersion != null && latestKnown != null && currentVersion != latestKnown
+        val prefs = appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE)
+        val editor = prefs.edit().putBoolean("has_update", hasUpdate)
+        if (currentVersion != null) editor.putString("current_version", currentVersion)
+        editor.apply()
         _updateState.value = UpdateState(
             current = currentVersion,
             latest = latestKnown,
-            hasUpdate = false,
+            hasUpdate = hasUpdate,
             lastCheckMs = _updateState.value.lastCheckMs,
         )
         message
