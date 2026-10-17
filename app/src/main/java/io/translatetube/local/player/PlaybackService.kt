@@ -2732,8 +2732,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                         }
                 }
             }
-            // TTS 在后台按字幕顺序预合成。预热最前面的可朗读行后再启动视频，
-            // 避免原声已被静音、系统 TTS 却还没合成出第一句时出现长时间无声。
+            // 其他配音引擎会在后台预合成 PCM；系统 TTS 已按时间轴就绪，首句会在
+            // 播放头进入字幕区间时直接调用 Android 朗读服务，不再等待整段音频合成。
+            // 只短暂等待首句可用状态，避免配音队列尚未初始化就开始处理时间轴。
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 // Wait for actual speech cues, not the contiguous prepared-row counter. Empty or
