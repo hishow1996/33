@@ -71,6 +71,8 @@ class DubbingEngine(
     /** Smoothed synthesis-time / produced-audio-time ratio; >1 means generation is slower than real time. */
     @Volatile private var synthesisRealtimeFactorValue: Float = Float.NaN
     val synthesisRealtimeFactor: Float get() = synthesisRealtimeFactorValue
+    @Volatile private var synthesisRealtimeSampleCountValue: Int = 0
+    val synthesisRealtimeSampleCount: Int get() = synthesisRealtimeSampleCountValue
     /** Diagnostic callback: the first successful PCM result for this session. */
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
@@ -204,6 +206,7 @@ class DubbingEngine(
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
             synthesisRealtimeFactorValue = Float.NaN
+            synthesisRealtimeSampleCountValue = 0
             _totalLines.value = this.lines.size
             readinessProgress.clear(this.lines.size, ::publishReadinessProgress)
             pending.clear()
@@ -583,6 +586,7 @@ class DubbingEngine(
                             synthesisRealtimeFactorValue = if (previousRtf.isFinite()) {
                                 previousRtf * 0.65f + measuredRtf * 0.35f
                             } else measuredRtf
+                            synthesisRealtimeSampleCountValue += 1
                         }
                     }
                     if (synthesisElapsedMs >= 500L || synthesisCallCount > 1) {
@@ -2249,6 +2253,7 @@ class DubbingEngine(
             priorityLookAhead = 2
         }
         synthesisRealtimeFactorValue = Float.NaN
+        synthesisRealtimeSampleCountValue = 0
 
         scope.launch {
             oldCacheInit?.join()
