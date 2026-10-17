@@ -818,6 +818,9 @@ class DubbingEngine(
                         "Stopping selected TTS engine after out-of-memory during synthesis",
                         memoryError,
                     )
+                    // OOM must replace any earlier one-time synthesis warning so the service
+                    // receives the memory-specific signal and can dispose this native runtime.
+                    synthesisErrorReported.set(false)
                     runCatching {
                         reportSynthesisError(
                             "设备内存不足，已停止继续生成中文配音并恢复视频原声；请重新打开视频或选择占用更低的配音引擎后重试。"
