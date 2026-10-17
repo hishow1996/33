@@ -1742,7 +1742,7 @@ class PlaybackService : MediaSessionService() {
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
             } else null
-            var restoredSourceLines = sourceCached?.let { source ->
+            var restoredSourceLines: List<SubLine>? = sourceCached?.let { source ->
                 runCatching {
                     val sourceArr = org.json.JSONArray(source.linesJson)
                     val restored = ArrayList<SubLine>(sourceArr.length())
