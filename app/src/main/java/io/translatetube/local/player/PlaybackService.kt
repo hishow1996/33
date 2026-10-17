@@ -1167,11 +1167,6 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
-                    retireDubbing(d)
-                    runCatching { tts.close() }
-                    throw kotlinx.coroutines.CancellationException("已翻译字幕导入任务已过期")
-                }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
                     d.attach(tts, translatedLines)
@@ -1185,6 +1180,10 @@ class PlaybackService : MediaSessionService() {
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
+                }
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("已翻译字幕导入任务已过期")
                 }
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
@@ -1469,11 +1468,6 @@ class PlaybackService : MediaSessionService() {
                     runCatching { tts.close() }
                     throw e
                 }
-                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
-                    retireDubbing(d)
-                    runCatching { tts.close() }
-                    throw kotlinx.coroutines.CancellationException("字幕导入任务已过期")
-                }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
                     d.attach(tts, translatedLines, sourceLanguage = srcLang)
@@ -1487,6 +1481,10 @@ class PlaybackService : MediaSessionService() {
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     retireDubbing(d)
                     throw e
+                }
+                if (!publishDubbingEngine(d, sessionKey, pipelineGeneration)) {
+                    retireDubbing(d)
+                    throw kotlinx.coroutines.CancellationException("字幕导入任务已过期")
                 }
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     if (dubbing === d) dubbing = null
@@ -2787,24 +2785,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             runCatching { tts.close() }
                             throw e
                         }
-                        val enginePublished = publishDubbingEngine(d, key, pipelineGeneration)
-                        if (enginePublished) registerDubbingFailureHandler(d, tts, key)
-                        if (!enginePublished) {
-                            retireDubbing(d)
-                            runCatching { tts.close() }
-                            throw kotlinx.coroutines.CancellationException(
-                                "视频处理任务已被新的打开请求替代，取消旧的配音引擎初始化",
-                            )
-                        }
-                        updateUiForSession(key, pipelineGeneration) {
-                            it.copy(
-                                ttsEngineName = tts.name,
-                                dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
-                                noModelHint = null,
-                                waitingForTranscriptionEngine = false,
-                                waitingForDubbingEngine = false,
-                            )
-                        }
+                        registerDubbingFailureHandler(d, tts, key)
                         try {
                             d.attach(tts, finalLines, sourceLanguage = srcLang)
                         } catch (e: Exception) {
@@ -2818,10 +2799,20 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             retireDubbing(d)
                             throw e
                         }
-                        if (videoKey != key || ui.value.key != key) {
-                            if (dubbing === d) dubbing = null
+                        if (!publishDubbingEngine(d, key, pipelineGeneration)) {
                             retireDubbing(d)
-                            throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频配音引擎")
+                            throw kotlinx.coroutines.CancellationException(
+                                "视频处理任务已被新的打开请求替代，取消旧的配音引擎初始化",
+                            )
+                        }
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                ttsEngineName = tts.name,
+                                dubbingStatus = "${tts.name} 已初始化，正在准备首句配音",
+                                noModelHint = null,
+                                waitingForTranscriptionEngine = false,
+                                waitingForDubbingEngine = false,
+                            )
                         }
                         dubCollectJob = scope.launch {
                             kotlinx.coroutines.flow.combine(d.preparedUntil, d.preparedCount) { prefix, readyCount -> prefix to readyCount }
