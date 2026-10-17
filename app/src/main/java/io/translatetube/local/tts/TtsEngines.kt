@@ -176,7 +176,7 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
         // acknowledge speak() but are silent when the app leaves audio attributes to the engine
         // default; STREAM_MUSIC on each utterance remains as a compatibility fallback.
         val liveSpeechAttributes = android.media.AudioAttributes.Builder()
-            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
             .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         liveSpeechAttributesReady =
@@ -340,23 +340,17 @@ class SystemTts(context: Context) : TtsEngine, TimelineTtsPlayback {
             }
             val spokenText = text.replace(Regex("""\s+"""), " ").trim()
             TtsTextPolicy.validate(spokenText)
-            // Re-apply on the live path as well: a few OEM TTS services reset their routing when
-            // the selected voice changes. Keep the legacy stream hint for Android/OEM compatibility.
-            if (liveSpeechAttributesReady) {
-                val attrResult = engine.setAudioAttributes(
-                    android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build(),
-                )
-                if (attrResult != TextToSpeech.SUCCESS) {
-                    android.util.Log.w("SystemTts", "Could not re-apply media audio attributes for live subtitle speech")
-                }
-            }
+            // Audio attributes are set once after initialization, following common Android TTS
+            // implementations. Re-setting them between utterances adds Binder work and can race
+            // with the engine's audio-thread startup on older OEM implementations.
             val normalizedVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
             val params = android.os.Bundle().apply {
                 putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, normalizedVolume)
-                putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_MUSIC)
+                // KEY_PARAM_STREAM is deprecated on API 21+; use it only when the engine rejected
+                // setAudioAttributes(), as a legacy route fallback.
+                if (!liveSpeechAttributesReady) {
+                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_MUSIC)
+                }
             }
             synchronized(lifecycleLock) {
                 if (closed || ttsRef.get() !== engine) {
