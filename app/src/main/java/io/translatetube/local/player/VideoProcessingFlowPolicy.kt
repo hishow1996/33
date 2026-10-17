@@ -213,36 +213,35 @@ object VideoProcessingFlowPolicy {
     ): Boolean = dubbingOn && totalLines > 0 && preparedCount.coerceAtLeast(0) < totalLines
 
     /**
-     * Live Android System TTS speaks directly on the subtitle timeline and does not need a PCM
-     * generation queue. Other TTS engines must keep the preparation page visible until their
-     * subtitle cues are ready, even if the video surface has already started playing.
+     * Progressive TTS mode: once video playback starts, show the player while later subtitle
+     * cues continue generating PCM in the background. Startup still waits briefly for the first
+     * usable cue; failures and unavailable engines keep the processing page visible.
      */
     fun shouldShowProcessingPage(
         phase: Phase,
         waitingForTranscriptionEngine: Boolean = false,
         waitingForDubbingEngine: Boolean = false,
         playerIsPlaying: Boolean = false,
-        systemTtsLivePlayback: Boolean = false,
+        progressiveTtsPlayback: Boolean = false,
         dubbingPreparationIncomplete: Boolean = false,
     ): Boolean {
         if (phase == Phase.ERROR || waitingForTranscriptionEngine || waitingForDubbingEngine) {
             return true
         }
         if (
-            systemTtsLivePlayback &&
+            progressiveTtsPlayback &&
             playerIsPlaying &&
             phase in setOf(Phase.SYNTHESIZING, Phase.READY)
         ) {
-            // Keep the page until playback really starts, then show the player without waiting
-            // for a PCM queue that Android System TTS never creates.
+            // The first cue has allowed playback to start; remaining PCM cues may finish later.
             return false
         }
-        if (systemTtsLivePlayback && phase == Phase.READY && !playerIsPlaying) {
+        if (progressiveTtsPlayback && phase == Phase.READY && !playerIsPlaying) {
             // Avoid a one-frame flash of the player between READY and ExoPlayer actually starting.
             return true
         }
-        // Kokoro/Piper and other synthesis engines need their speech cues prepared first.
-        return phase != Phase.READY || (!systemTtsLivePlayback && dubbingPreparationIncomplete)
+        // In non-progressive mode, all speech cues must be prepared before leaving this page.
+        return phase != Phase.READY || (!progressiveTtsPlayback && dubbingPreparationIncomplete)
     }
 
     fun readyNotificationFailureTitle(dubbingHasErrors: Boolean): String? =
