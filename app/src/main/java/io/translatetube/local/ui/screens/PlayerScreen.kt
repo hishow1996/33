@@ -1879,8 +1879,11 @@ private fun SubtitleList(
                 ) {
                     Text(
                         translatedText,
-                        // 所有字幕行统一使用蓝色；当前配音行继续通过字重、字号和轻微缩放突出。
-                        color = BrandBright,
+                        // 仅当前配音行和原视频时间轴对应行显示蓝色，其余字幕保持辅助文字色。
+                        color = when {
+                            activeDub || active -> BrandBright
+                            else -> SubText
+                        },
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontSize = if (activeDub) 16.sp else if (active) 15.sp else 14.sp,
                             fontWeight = when {
