@@ -249,6 +249,27 @@ class VideoProcessingFlowPolicyTest {
                 waitingForTranscriptionEngine = true,
             ),
         )
+        // Once the video is actually playing, the final dubbing-preparation page must not
+        // cover the player. Earlier subtitle/translation phases remain visible.
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.SYNTHESIZING,
+                playerIsPlaying = true,
+            ),
+        )
+        assertFalse(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.READY,
+                waitingForDubbingEngine = true,
+                playerIsPlaying = true,
+            ),
+        )
+        assertTrue(
+            VideoProcessingFlowPolicy.shouldShowProcessingPage(
+                phase = Phase.TRANSLATING,
+                playerIsPlaying = true,
+            ),
+        )
         assertTrue(
             VideoProcessingFlowPolicy.shouldShowProcessingPage(
                 phase = Phase.ERROR,
