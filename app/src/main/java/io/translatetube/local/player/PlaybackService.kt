@@ -2752,8 +2752,8 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                 }
             }
             // Normal generated mode prepares a buffer, then continues synthesizing while playing.
-            // If multiple measurements show a severe bottleneck (RTF >= 2x), stay on this page until
-            // every speech cue is prepared; this avoids starting a video that will repeatedly outrun TTS.
+            // If repeated measurements show synthesis taking >=2x the timeline gap to the next
+            // speech cue, stay on this page until all rows are prepared rather than start repeated gaps.
             // Immediate mode is untouched and only waits for a usable first cue.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
@@ -2820,7 +2820,9 @@ updateUiForSession(key) { it.copy(progress = "语音分段 0%") }
                                     } else state
                                 }
                             }
-                            if (startupSpeechCueIndices.all(::cueFinished)) break
+                            // preparedCount is a constant-time terminal-row count. Avoid scanning
+                            // every subtitle repeatedly on older phones while a long video is synthesizing.
+                            if (startupDubbing.preparedCount.value >= finalLines.size) break
                         } else {
                             val minimumBufferReady = startupBuffer.lineIndices
                                 .take(startupBuffer.minimumCueCount)
