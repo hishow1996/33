@@ -225,7 +225,7 @@ class DubbingEngine(
                     // the timeline without creating PCM cache files. SystemTts deliberately does not
                     // implement this contract now: it uses the WAV/PCM path so timing, caching and
                     // AudioTrack compatibility stay consistent with Kokoro and Piper.
-                    if (tts is TimelineTtsPlayback) {
+                    if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
                         for (i in this@DubbingEngine.lines.indices) {
                             checkCacheInitActive()
                             val cue = this@DubbingEngine.lines[i]
@@ -1766,7 +1766,7 @@ class DubbingEngine(
             playbackGeneration.incrementAndGet()
         }
 
-        val timelineTts = tts as? TimelineTtsPlayback
+        val timelineTts = (tts as? TimelineTtsPlayback)?.takeIf { it.useDirectTimelinePlayback }
         if (timelineTts != null) {
             val spokenText = line.zh?.trim().orEmpty()
             if (spokenText.isBlank()) {
@@ -2109,6 +2109,11 @@ class DubbingEngine(
         // PlaybackService reselects the active cue and calls playAt() when ExoPlayer resumes, so
         // retaining a static AudioTrack here only holds native buffer memory while the user pauses.
         invalidatePlayback()
+        // Immediate Android TTS has no AudioTrack to pause; stop its active utterance so the
+        // system voice cannot continue reading after the video itself has paused.
+        (tts as? TimelineTtsPlayback)
+            ?.takeIf { it.useDirectTimelinePlayback }
+            ?.stopTimelineSpeech()
         val active = track ?: return
         try {
             audioExec.execute {
@@ -2222,7 +2227,7 @@ class DubbingEngine(
             synchronized(mem) { mem.clear() }
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
-            if (tts is TimelineTtsPlayback) {
+            if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
                 lines.indices.forEach { index ->
                     val cue = lines[index]
                     markCuePrepared(
@@ -2262,7 +2267,7 @@ class DubbingEngine(
         activeVolume = normalized
         // Live Android TTS takes its volume in the utterance Bundle; the next cue uses this
         // value. AudioTrack-backed engines can update the already-running track immediately.
-        if (tts is TimelineTtsPlayback) return
+        if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) return
         val active = track ?: return
         try {
             audioExec.execute {
