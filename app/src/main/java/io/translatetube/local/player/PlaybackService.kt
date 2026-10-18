@@ -931,6 +931,30 @@ class PlaybackService : MediaSessionService() {
             translationCacheKey = effectiveTranslationCacheKey,
             ttsEngineName = configuredTtsName,
         )
+        io.translatetube.local.util.AppLogStore.info(
+            this@PlaybackService,
+            "PlaybackFlow",
+            if (resumeState != null) "恢复历史任务并重新进入处理管线" else "开始新的视频处理任务",
+            diagnosticContext = mapOf(
+                "视频来源" to when {
+                    !importedLinesSnapshot.isNullOrEmpty() -> "导入字幕"
+                    videoId != null -> "YouTube"
+                    remoteMediaUrl != null -> "网页视频/远程媒体"
+                    localUri != null -> "本地视频"
+                    else -> "未知来源"
+                },
+                "初始阶段" to if (resumeState != null) Phase.TRANSLATING.name else Phase.PARSING.name,
+                "处理流程" to ui.value.processingFlow.name,
+                "本次处理代数" to pipelineGeneration.toString(),
+                "播放请求标记" to requestToken.toString(),
+                "是否使用历史结果恢复" to (resumeState != null).toString(),
+                "恢复前字幕行数" to (resumeState?.lines?.size ?: 0).toString(),
+                "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
+                "恢复的源语言" to resumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
+                "本次选择的配音引擎" to configuredTtsName,
+                "翻译服务配置编号" to activeTranslationId.toString(),
+            ),
+        )
         pm.pause()
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
@@ -2891,12 +2915,31 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        val failureState = ui.value
                         io.translatetube.local.util.AppLogStore.error(
-    this@PlaybackService,
-    "TTS",
-    "所选配音引擎初始化失败：$selectedTtsName",
-    e,
-)
+                            this@PlaybackService,
+                            "TTS",
+                            "所选配音引擎初始化失败：$selectedTtsName",
+                            e,
+                            diagnosticContext = mapOf(
+                                "视频来源" to when {
+                                    videoId != null -> "YouTube"
+                                    remoteMediaUrl != null -> "网页视频/远程媒体"
+                                    localUri != null -> "本地视频"
+                                    else -> "本地或已导入字幕任务"
+                                },
+                                "配音引擎 ID" to selectedTts,
+                                "配音引擎名称" to selectedTtsName,
+                                "系统 TTS 合成模式" to getSharedPreferences("settings", MODE_PRIVATE).getString("system_tts_mode", "generated").orEmpty(),
+                                "Piper 模型 ID" to getSharedPreferences("settings", MODE_PRIVATE).getString("piper_model", "未选择").orEmpty(),
+                                "当前处理阶段" to failureState.phase.name,
+                                "当前处理进度" to failureState.progress.take(180),
+                                "字幕总数" to failureState.totalLines.toString(),
+                                "当前已发布字幕行数" to failureState.lines.size.toString(),
+                                "已准备配音行数" to failureState.preparedCount.toString(),
+                                "处理代数" to pipelineGeneration.toString(),
+                            ),
+                        )
 android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
                         val reason = e.message ?: e.javaClass.simpleName
                         updateUiForSession(key, pipelineGeneration) {
@@ -3134,12 +3177,35 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            val failureState = ui.value
             io.translatetube.local.util.AppLogStore.error(
-    this@PlaybackService,
-    "PlaybackPipeline",
-    "视频解析、转写、翻译或配音流程失败",
-    e,
-)
+                this@PlaybackService,
+                "PlaybackPipeline",
+                "视频解析、转写、翻译或配音流程失败",
+                e,
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        key.startsWith("youtube:") -> "YouTube"
+                        key.startsWith("remote:") -> "网页视频/远程媒体"
+                        key.startsWith("webpage:") -> "网页链接"
+                        key.startsWith("local:") -> "本地视频"
+                        else -> "未知来源"
+                    },
+                    "当前阶段" to failureState.phase.name,
+                    "当前处理进度/子步骤" to failureState.progress.take(240),
+                    "当前错误状态" to failureState.error.orEmpty().take(240),
+                    "当前转写引擎" to failureState.asrEngineName.ifBlank { "未确定" },
+                    "当前翻译引擎" to failureState.engineName.ifBlank { "未确定" },
+                    "当前配音引擎" to failureState.ttsEngineName.ifBlank { "未确定" },
+                    "字幕源语言" to failureState.sourceLang.ifBlank { "未确定" },
+                    "字幕已发布行数" to failureState.lines.size.toString(),
+                    "字幕总行数" to failureState.totalLines.toString(),
+                    "已准备配音行数" to failureState.preparedCount.toString(),
+                    "当前字幕索引" to failureState.currentLine.toString(),
+                    "原声是否静音" to failureState.muteOriginal.toString(),
+                    "处理代数" to pipelineGeneration.toString(),
+                ),
+            )
 android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
                 if (ui.value.key == key && videoKey == key) {
@@ -3360,7 +3426,28 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     io.translatetube.local.util.AppLogStore.warning(
-                        this@PlaybackService, "Translation", "字幕翻译批次失败，正在执行恢复处理", e,
+                        this@PlaybackService,
+                        "Translation",
+                        "字幕翻译批次失败，正在执行恢复处理",
+                        e,
+                        diagnosticContext = mapOf(
+                            "翻译引擎 ID" to engine?.id.orEmpty(),
+                            "翻译服务商名称" to active?.name.orEmpty().ifBlank { "本地/Google" },
+                            "模型 ID" to active?.model.orEmpty().ifBlank { "未提供" },
+                            "源语言代码" to src,
+                            "目标语言代码" to tgt,
+                            "本次翻译批次大小" to batch.size.toString(),
+                            "本批起始字幕索引" to unresolvedIndices.firstOrNull().toString(),
+                            "本批结束字幕索引" to unresolvedIndices.lastOrNull().toString(),
+                            "当前重试次数" to attempt.toString(),
+                            "已成功翻译行数" to completed.toString(),
+                            "当前任务键类型" to when {
+                                ui.value.key.startsWith("youtube:") -> "YouTube"
+                                ui.value.key.startsWith("remote:") -> "网页视频/远程媒体"
+                                ui.value.key.startsWith("local:") -> "本地视频"
+                                else -> "其他"
+                            },
+                        ),
                     )
                     android.util.Log.w(
                         "PlaybackService",
