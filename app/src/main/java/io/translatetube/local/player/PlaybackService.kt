@@ -141,6 +141,16 @@ class PlaybackService : MediaSessionService() {
     private val seekResumeLock = Any()
     private var seekResumeGeneration = 0L
     private var pendingSeekResume: Runnable? = null
+    private val dubbingSyncHoldHandler = Handler(Looper.getMainLooper())
+    private val dubbingSyncHoldLock = Any()
+    @Volatile private var dubbingSyncHoldLine = -1
+    @Volatile private var dubbingSyncHoldSessionKey: String? = null
+    @Volatile private var dubbingSyncHoldEngine: DubbingEngine? = null
+    @Volatile private var dubbingSyncHoldWasPlaying = false
+    @Volatile private var dubbingSyncHoldStartedAtMs = 0L
+    @Volatile private var dubbingSyncHoldPoll: Runnable? = null
+    /** Prevent the ordinary resume listener from restarting the sentence that just completed. */
+    @Volatile private var resumeAfterDubbingSyncHold = false
     @Volatile private var playerReady = false
     private var session: MediaSession? = null
     @Volatile private var dubbing: DubbingEngine? = null
@@ -389,6 +399,7 @@ class PlaybackService : MediaSessionService() {
             pm = PlayerManager(this)
             pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
             pm.onEnded = {
+            cancelDubbingSyncHold(resumePlayer = false, reason = "player ended")
             // AudioTrack is independent from ExoPlayer. Once the player reaches STATE_ENDED its
             // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
             safelyControlDubbing("player ended") { dubbing?.stop() }
@@ -402,17 +413,30 @@ class PlaybackService : MediaSessionService() {
             // resumes from the paused sample position instead of finishing the current line.
             pm.player.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady) {
+                        resumeAfterDubbingSyncHold = false
+                    }
+                    if (isPlaying && dubbingSyncHoldEngine != null) {
+                        // A user play action overrides the automatic hold; normal playback
+                        // startup below will select the line at the current timestamp.
+                        cancelDubbingSyncHold(resumePlayer = false, reason = "player resumed manually")
+                    }
+                    val resumedAfterSyncHold = isPlaying && resumeAfterDubbingSyncHold
+                    if (resumedAfterSyncHold) resumeAfterDubbingSyncHold = false
                     if (isPlaying && ui.value.dubbingOn) {
-                        // Re-select the cue for the exact resumed video timestamp. Do not resume
-                        // a stale AudioTrack if a seek or a disabled dubbing state changed meanwhile.
-                        safelyControlDubbing("player resumed") { dubbing?.stop() }
+                        // A held sentence has already completed; keep its line selected so the
+                        // current subtitle cannot immediately synthesize and replay that sentence.
+                        if (!resumedAfterSyncHold) safelyControlDubbing("player resumed") { dubbing?.stop() }
                         lastLineIdx = Int.MIN_VALUE
                         if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
                     } else {
-                        safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
-                        ui.update { state ->
-                            if (state.activeDubbingLine == -1) state
-                            else state.copy(activeDubbingLine = -1)
+                        val syncHeld = dubbingSyncHoldEngine != null
+                        if (!syncHeld) {
+                            safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
+                            ui.update { state ->
+                                if (state.activeDubbingLine == -1) state
+                                else state.copy(activeDubbingLine = -1)
+                            }
                         }
                     }
                 }
@@ -422,6 +446,7 @@ class PlaybackService : MediaSessionService() {
                     newPosition: androidx.media3.common.Player.PositionInfo,
                     reason: Int,
                 ) {
+                    cancelDubbingSyncHold(resumePlayer = true, reason = "position discontinuity")
                     // A seek can land inside the same subtitle cue, so comparing line indexes
                     // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
                     // Media3's new playhead immediately; this also covers seeks from media controls.
@@ -809,6 +834,144 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun isDubbingSyncHoldFor(engine: DubbingEngine? = dubbing, lineIndex: Int = engine?.currentLineIdx() ?: -1): Boolean =
+        engine != null &&
+            dubbingSyncHoldEngine === engine &&
+            dubbingSyncHoldLine == lineIndex &&
+            dubbingSyncHoldSessionKey == ui.value.key
+
+    private fun beginDubbingSyncHold(engine: DubbingEngine, sessionKey: String, lineIndex: Int) {
+        if (!::pm.isInitialized || !isCurrentDubbingEngine(engine, sessionKey) ||
+            !ui.value.dubbingOn || !pm.player.isPlaying || !engine.isSyncHoldActiveFor(lineIndex)
+        ) return
+
+        lateinit var poll: Runnable
+        synchronized(dubbingSyncHoldLock) {
+            if (dubbingSyncHoldLine == lineIndex &&
+                dubbingSyncHoldSessionKey == sessionKey &&
+                dubbingSyncHoldEngine === engine
+            ) return
+            if (dubbingSyncHoldLine >= 0) return
+            dubbingSyncHoldLine = lineIndex
+            dubbingSyncHoldSessionKey = sessionKey
+            dubbingSyncHoldEngine = engine
+            dubbingSyncHoldWasPlaying = pm.player.isPlaying
+            dubbingSyncHoldStartedAtMs = android.os.SystemClock.elapsedRealtime()
+            poll = object : Runnable {
+                override fun run() {
+                    if (dubbingSyncHoldEngine !== engine || dubbingSyncHoldLine != lineIndex ||
+                        dubbingSyncHoldSessionKey != sessionKey
+                    ) return
+                    val state = ui.value
+                    val sameSession = playerReady && videoKey == sessionKey && state.key == sessionKey
+                    if (!sameSession) {
+                        finishDubbingSyncHold(engine, sessionKey, lineIndex, resumePlayer = false)
+                        return
+                    }
+                    if (!state.dubbingOn || dubbing !== engine) {
+                        val releaseStatus = if (!state.dubbingOn) {
+                            "配音已关闭，继续播放视频"
+                        } else {
+                            "配音引擎已更新，继续播放视频"
+                        }
+                        finishDubbingSyncHold(
+                            engine, sessionKey, lineIndex, resumePlayer = true, statusMessage = releaseStatus,
+                        )
+                        return
+                    }
+                    val heldForMs = android.os.SystemClock.elapsedRealtime() - dubbingSyncHoldStartedAtMs
+                    if (!engine.isSyncHoldActiveFor(lineIndex)) {
+                        finishDubbingSyncHold(engine, sessionKey, lineIndex, resumePlayer = true)
+                        return
+                    }
+                    if (heldForMs >= 45_000L) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Long dubbing sync hold timed out: line=${lineIndex + 1}, heldMs=$heldForMs",
+                        )
+                        finishDubbingSyncHold(engine, sessionKey, lineIndex, resumePlayer = true, timedOut = true)
+                        return
+                    }
+                    dubbingSyncHoldHandler.postDelayed(this, 100L)
+                }
+            }
+            dubbingSyncHoldPoll = poll
+        }
+
+        updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+            state.copy(
+                dubbingStatus = "第 ${lineIndex + 1} 句配音较长，视频暂时暂停，等待本句读完后继续",
+                activeDubbingLine = lineIndex,
+            )
+        }
+        try {
+            // Publish the hold before pause(): the player listener must not cancel the live utterance.
+            pm.player.pause()
+            dubbingSyncHoldHandler.postDelayed(poll, 100L)
+        } catch (error: Exception) {
+            android.util.Log.w("PlaybackService", "Could not pause video for a long dubbing cue", error)
+            finishDubbingSyncHold(engine, sessionKey, lineIndex, resumePlayer = false)
+        }
+    }
+
+    private fun finishDubbingSyncHold(
+        engine: DubbingEngine,
+        sessionKey: String,
+        lineIndex: Int,
+        resumePlayer: Boolean,
+        timedOut: Boolean = false,
+        statusMessage: String? = null,
+    ) {
+        var shouldResume = false
+        var poll: Runnable? = null
+        synchronized(dubbingSyncHoldLock) {
+            if (dubbingSyncHoldEngine !== engine ||
+                dubbingSyncHoldSessionKey != sessionKey ||
+                dubbingSyncHoldLine != lineIndex
+            ) return
+            shouldResume = dubbingSyncHoldWasPlaying
+            poll = dubbingSyncHoldPoll
+            dubbingSyncHoldLine = -1
+            dubbingSyncHoldSessionKey = null
+            dubbingSyncHoldEngine = null
+            dubbingSyncHoldWasPlaying = false
+            dubbingSyncHoldStartedAtMs = 0L
+            dubbingSyncHoldPoll = null
+        }
+        poll?.let(dubbingSyncHoldHandler::removeCallbacks)
+        if (timedOut) runCatching { engine.abortSyncHoldCue(lineIndex) }
+        if (!::pm.isInitialized || videoKey != sessionKey || ui.value.key != sessionKey) return
+        val visibleStatus = statusMessage ?: when {
+            timedOut -> "长句配音等待超时，已跳过该句并恢复视频"
+            resumePlayer && shouldResume -> "长句配音完成，继续播放视频"
+            else -> null
+        }
+        if (visibleStatus != null) {
+            updateUiForCurrentDubbingEngine(engine, sessionKey) { state -> state.copy(dubbingStatus = visibleStatus) }
+        }
+        if (resumePlayer && shouldResume && !pm.player.isPlaying) {
+            resumeAfterDubbingSyncHold = true
+            runCatching { pm.player.play() }
+                .onFailure {
+                    resumeAfterDubbingSyncHold = false
+                    android.util.Log.w("PlaybackService", "Could not resume video after long dubbing cue", it)
+                }
+        }
+    }
+
+    private fun cancelDubbingSyncHold(resumePlayer: Boolean, reason: String) {
+        val engine = dubbingSyncHoldEngine ?: return
+        val key = dubbingSyncHoldSessionKey ?: return
+        val line = dubbingSyncHoldLine
+        android.util.Log.d("PlaybackService", "Cancel dubbing sync hold: reason=$reason, line=${line + 1}")
+        val statusMessage = when (reason) {
+            "player resumed manually" -> "已手动继续播放视频"
+            "position discontinuity" -> "已跳转视频，取消长句同步等待"
+            else -> null
+        }
+        finishDubbingSyncHold(engine, key, line, resumePlayer = resumePlayer, statusMessage = statusMessage)
+    }
+
     /** Ignore late callbacks from a replaced engine, including when the same video key is reused. */
     private fun updateUiForCurrentDubbingEngine(
         engine: DubbingEngine,
@@ -827,6 +990,7 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         // Cancel work before releasing services it may still be using. In particular, the
         // local ASR JNI recognizer must not be released while a synchronous decode call is active.
+        cancelDubbingSyncHold(resumePlayer = false, reason = "service destroyed")
         val activePipeline = prepJob
         prepJob?.cancel()
         speakerJob?.cancel()
@@ -4544,6 +4708,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
         }
         engine.onPlaybackStarted = { index ->
+            if (engine.isSyncHoldActiveFor(index)) {
+                scope.launch(Dispatchers.Main) { beginDubbingSyncHold(engine, sessionKey, index) }
+            }
             // Highlight the actual spoken cue, not just the video-time subtitle. AudioTrack
             // startup is asynchronous, so the first cue can otherwise miss its visual emphasis.
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
@@ -4730,7 +4897,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
                 if (!pm.player.isPlaying) {
                     // seekTo() emits an immediate tick: don't start speech while video is paused.
-                    if (d.currentLineIdx() >= 0) d.stop()
+                    // Exception: an automatic sync hold pauses video intentionally while this cue continues.
+                    if (d.currentLineIdx() >= 0 && !isDubbingSyncHoldFor(d, d.currentLineIdx())) d.stop()
                 } else if (d.currentLineIdx() != dubLine) {
                     d.playAt(
                         dubLine,
@@ -4740,7 +4908,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         playbackAllowed = {
                             val latest = ui.value
                             ::pm.isInitialized &&
-                                pm.isPlaying.value &&
+                                (pm.isPlaying.value || isDubbingSyncHoldFor(d, dubLine)) &&
                                 latest.key == st.key &&
                                 latest.dubbingOn &&
                                 dubbing === d
@@ -4818,7 +4986,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             DubbingPlaybackOwnerPolicy.shouldStop(
                 hasSelectedLine = d.currentLineIdx() >= 0,
                 dubbingEnabled = latestState.dubbingOn,
-                playerIsPlaying = ::pm.isInitialized && pm.player.isPlaying,
+                playerIsPlaying = ::pm.isInitialized &&
+                    (pm.player.isPlaying || isDubbingSyncHoldFor(d, d.currentLineIdx())),
                 engineIsCurrent = dubbing === d,
             )
         ) {
