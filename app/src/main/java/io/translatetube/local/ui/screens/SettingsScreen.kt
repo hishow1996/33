@@ -106,7 +106,10 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.javaClass.simpleName}"
+                io.translatetube.local.util.AppLogStore.error(
+    ctx.applicationContext, "SystemTTS", "读取系统中文音色列表失败", error,
+)
+systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.javaClass.simpleName}"
             } finally {
                 refreshingSystemTtsVoices = false
             }
@@ -1010,7 +1013,10 @@ private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                android.util.Log.w("SettingsScreen", "音色试听失败", e)
+                io.translatetube.local.util.AppLogStore.warning(
+    ctx.applicationContext, "TTSPreview", "配音音色试听失败", e,
+)
+android.util.Log.w("SettingsScreen", "音色试听失败", e)
             } finally {
                 try { track?.stop() } catch (_: Exception) {}
                 try { track?.release() } catch (_: Exception) {}
@@ -1206,7 +1212,10 @@ private fun YtDlpUpdateSection() {
                         try {
                             message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
                         } catch (e: Exception) {
-                            message = "更新失败：${e.message ?: "网络错误"}"
+                            io.translatetube.local.util.AppLogStore.error(
+    ctx.applicationContext, "YtDlp", "更新网页视频解析规则失败", e,
+)
+message = "更新失败：${e.message ?: "网络错误"}"
                         } finally {
                             updating = false
                         }
@@ -1237,7 +1246,10 @@ private fun YtDlpUpdateSection() {
                                     ?: "检查失败：无法获取上游版本信息，请检查网络后重试"
                             }
                         } catch (e: Exception) {
-                            message = "检查失败：${e.message ?: "网络错误"}"
+                            io.translatetube.local.util.AppLogStore.warning(
+    ctx.applicationContext, "YtDlp", "检查网页视频解析规则更新失败", e,
+)
+message = "检查失败：${e.message ?: "网络错误"}"
                         }
                     }
                 },
