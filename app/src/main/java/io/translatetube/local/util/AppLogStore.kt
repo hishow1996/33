@@ -44,7 +44,10 @@ object AppLogStore {
         message: String,
         failure: Throwable? = null,
         diagnosticContext: Map<String, String> = emptyMap(),
-    ) = append(context, "WARN", tag, message, failureDetails(failure), diagnosticContext)
+    ) = append(
+        context, "WARN", tag, messageWithRootCause(message, failure),
+        failureDetails(failure), diagnosticContext,
+    )
 
     fun error(
         context: Context,
@@ -52,7 +55,10 @@ object AppLogStore {
         message: String,
         failure: Throwable? = null,
         diagnosticContext: Map<String, String> = emptyMap(),
-    ) = append(context, "ERROR", tag, message, failureDetails(failure), diagnosticContext)
+    ) = append(
+        context, "ERROR", tag, messageWithRootCause(message, failure),
+        failureDetails(failure), diagnosticContext,
+    )
 
     fun recordUncaught(
         context: Context,
@@ -283,6 +289,33 @@ object AppLogStore {
     private fun pruneOldFiles(directory: File) {
         val cutoff = System.currentTimeMillis() - RETENTION_MS
         directory.listFiles()?.filter { it.isFile && it.lastModified() < cutoff }?.forEach { it.delete() }
+    }
+
+    private fun messageWithRootCause(message: String, failure: Throwable?): String {
+        if (failure == null) return message
+        val root = rootCause(failure)
+        val summary = buildString {
+            append(failure.javaClass.simpleName)
+            failure.message?.takeIf { it.isNotBlank() }?.let { append(": ").append(it) }
+            if (root !== failure) {
+                append("；根因=").append(root.javaClass.simpleName)
+                root.message?.takeIf { it.isNotBlank() }?.let { append(": ").append(it) }
+            }
+        }
+        return (message + " | " + summary).take(1_000)
+    }
+
+    private fun rootCause(failure: Throwable): Throwable {
+        val seen = java.util.Collections.newSetFromMap(
+            java.util.IdentityHashMap<Throwable, Boolean>(),
+        )
+        var current = failure
+        while (seen.add(current)) {
+            val next = current.cause ?: break
+            if (next === current || next in seen) break
+            current = next
+        }
+        return current
     }
 
     private fun failureDetails(failure: Throwable?): String {
