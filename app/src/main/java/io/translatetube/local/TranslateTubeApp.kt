@@ -5,11 +5,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import io.translatetube.local.util.CrashGuard
 
 class TranslateTubeApp : Application() {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
+        CrashGuard.install(this)
         super.onCreate()
         // Image loading is initialized lazily by the screens that need it.
         // Avoid building Coil's HTTP/cache/component pipeline on the cold-start main thread.
