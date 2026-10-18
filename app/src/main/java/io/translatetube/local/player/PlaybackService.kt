@@ -413,7 +413,9 @@ class PlaybackService : MediaSessionService() {
             // resumes from the paused sample position instead of finishing the current line.
             pm.player.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (!isPlaying) resumeAfterDubbingSyncHold = false
+                    if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady) {
+                        resumeAfterDubbingSyncHold = false
+                    }
                     if (isPlaying && dubbingSyncHoldEngine != null) {
                         // A user play action overrides the automatic hold; normal playback
                         // startup below will select the line at the current timestamp.
@@ -857,7 +859,9 @@ class PlaybackService : MediaSessionService() {
             dubbingSyncHoldStartedAtMs = android.os.SystemClock.elapsedRealtime()
             poll = object : Runnable {
                 override fun run() {
-                    if (!isDubbingSyncHoldFor(engine, lineIndex)) return
+                    if (dubbingSyncHoldEngine !== engine || dubbingSyncHoldLine != lineIndex ||
+                        dubbingSyncHoldSessionKey != sessionKey
+                    ) return
                     val state = ui.value
                     val sameSession = playerReady && videoKey == sessionKey && state.key == sessionKey
                     if (!sameSession) {
@@ -865,7 +869,14 @@ class PlaybackService : MediaSessionService() {
                         return
                     }
                     if (!state.dubbingOn || dubbing !== engine) {
-                        finishDubbingSyncHold(engine, sessionKey, lineIndex, resumePlayer = true)
+                        val releaseStatus = if (!state.dubbingOn) {
+                            "配音已关闭，继续播放视频"
+                        } else {
+                            "配音引擎已更新，继续播放视频"
+                        }
+                        finishDubbingSyncHold(
+                            engine, sessionKey, lineIndex, resumePlayer = true, statusMessage = releaseStatus,
+                        )
                         return
                     }
                     val heldForMs = android.os.SystemClock.elapsedRealtime() - dubbingSyncHoldStartedAtMs
