@@ -292,8 +292,8 @@ class DubbingTimingTest {
             maxSyncRate = 10.0f,
         )
 
-        assertEquals(3.0f, plan.syncRate, 0.001f)
-        assertEquals(6.0f, plan.playbackRate, 0.001f)
+        assertEquals(1.35f, plan.syncRate, 0.001f)
+        assertEquals(2.7f, plan.playbackRate, 0.001f)
         assertEquals(10_000, plan.sampleCount)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
@@ -391,7 +391,7 @@ class DubbingTimingTest {
 
     @Test
     fun borrowedGapAvoidsSpeedUpAndTruncationForALongTranslation() {
-        // A 2.4 s cue now fits within the 3x sync ceiling; borrowing a silent gap still lets it sound more natural.
+        // A 2.4 s cue exceeds the natural 1.35x limit; borrowing a silent gap can avoid a video hold.
         val sampleRate = 16_000
         val sampleCount = 2_400 * sampleRate / 1_000
         val original = DubbingTiming.createPlan(
@@ -405,7 +405,8 @@ class DubbingTimingTest {
         )
 
         assertFalse(original.truncated)
-        assertEquals(2.4f, original.syncRate, 0.001f)
+        assertEquals(1.35f, original.syncRate, 0.001f)
+        assertTrue(original.overrunsWindow)
         assertEquals(sampleCount, original.sampleCount)
         assertFalse(borrowed.truncated)
         assertEquals(1.0f, borrowed.syncRate, 0.001f)
