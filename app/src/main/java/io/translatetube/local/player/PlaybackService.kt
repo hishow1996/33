@@ -3194,7 +3194,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     "当前阶段" to failureState.phase.name,
                     "当前处理进度/子步骤" to failureState.progress.take(240),
                     "当前错误状态" to failureState.error.orEmpty().take(240),
-                    "当前转写引擎" to failureState.asrEngineName.ifBlank { "未确定" },
+                    "当前转写引擎是否等待就绪" to failureState.waitingForTranscriptionEngine.toString(),
                     "当前翻译引擎" to failureState.engineName.ifBlank { "未确定" },
                     "当前配音引擎" to failureState.ttsEngineName.ifBlank { "未确定" },
                     "字幕源语言" to failureState.sourceLang.ifBlank { "未确定" },
