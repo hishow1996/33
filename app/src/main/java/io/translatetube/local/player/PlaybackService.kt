@@ -982,7 +982,10 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
+                io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "PlaybackQuality", "切换 YouTube 清晰度失败", e,
+)
+android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
                 // setYouTubeQuality can reject a stream without throwing. Restore the last known
                 // working stream and playback position rather than leaving a half-switched player.
                 if (previousSource != null) {
@@ -1077,7 +1080,10 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                android.util.Log.w("PlaybackService", "Subtitle download failed", e)
+                io.translatetube.local.util.AppLogStore.warning(
+    this@PlaybackService, "Subtitles", "下载原字幕失败", e,
+)
+android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 updateUiForSession(sessionKey) {
                     it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
                 }
@@ -3353,6 +3359,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService, "Translation", "字幕翻译批次失败，正在执行恢复处理", e,
+                    )
                     android.util.Log.w(
                         "PlaybackService",
                         "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
