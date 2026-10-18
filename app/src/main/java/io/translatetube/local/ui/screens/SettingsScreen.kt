@@ -1014,7 +1014,7 @@ private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
                 throw cancelled
             } catch (e: Exception) {
                 io.translatetube.local.util.AppLogStore.warning(
-    ctx.applicationContext, "TTSPreview", "配音音色试听失败", e,
+    appCtx, "TTSPreview", "配音音色试听失败", e,
 )
 android.util.Log.w("SettingsScreen", "音色试听失败", e)
             } finally {
