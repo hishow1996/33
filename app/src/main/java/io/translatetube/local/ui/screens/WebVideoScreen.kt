@@ -265,7 +265,10 @@ fun WebVideoScreen(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
+                io.translatetube.local.util.AppLogStore.error(
+    ctx.applicationContext, "WebVideoParse", "网页视频解析失败", e,
+)
+Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
                 mainHandler.post {
                     if (!screenActive.get() || pageGeneration.get() != requestGeneration ||
                         ytDlpRunGeneration.get() != runGeneration || currentPage != target
@@ -284,7 +287,10 @@ fun WebVideoScreen(
                                 io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
                             } catch (updateError: Exception) {
                                 mainHandler.post {
-                                    status = "解析规则自动更新失败，可稍后在设置里手动更新后重试。"
+                                    io.translatetube.local.util.AppLogStore.error(
+    appCtx, "YtDlp", "解析失败后自动更新规则失败", updateError,
+)
+status = "解析规则自动更新失败，可稍后在设置里手动更新后重试。"
                                 }
                                 return@launch
                             }
@@ -833,7 +839,10 @@ fun WebVideoScreen(
                                 } catch (e: Exception) {
                                     mainHandler.post {
                                         updatingRules = false
-                                        ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
+                                        io.translatetube.local.util.AppLogStore.error(
+    appCtx, "YtDlp", "手动更新网页视频解析规则失败", e,
+)
+ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
                                         status = "规则更新失败，可稍后重试。"
                                     }
                                 }
