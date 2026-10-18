@@ -320,7 +320,7 @@ internal fun isRetryableTranslationFailure(error: Throwable): Boolean {
  * Retry a small, fixed number of times on temporary network/provider failures. The backoff is
  * cancellable and permanent failures such as invalid API keys are surfaced immediately.
  */
-private suspend fun <T> withBoundedTranslationRetries(
+internal suspend fun <T> withBoundedTranslationRetries(
     ownerJob: Job?,
     request: () -> T,
 ): T {
@@ -346,7 +346,7 @@ private suspend fun <T> withBoundedTranslationRetries(
 
 private const val MAX_TRANSLATION_RESPONSE_BYTES = 16L * 1024L * 1024L
 
-private fun readTranslationResponse(
+internal fun readTranslationResponse(
     response: okhttp3.Response,
     ownerJob: Job?,
 ): String {
@@ -875,6 +875,9 @@ object FreeModelDefaults {
 object EngineFactory {
     const val ID_GOOGLE = -1L
     const val ID_GOOGLE_ALT = -2L
+    /** 免密钥在线引擎：微软翻译（Edge 接口）、百度翻译（网页接口）。 */
+    const val ID_MICROSOFT = -3L
+    const val ID_BAIDU = -4L
     const val ID_FREE_GEMINI = -10L
     const val ID_FREE_DEEPSEEK = -11L
 
@@ -882,6 +885,8 @@ object EngineFactory {
         val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         return when (activeId) {
             ID_GOOGLE, ID_GOOGLE_ALT -> GoogleHybridEngine(context)
+            ID_MICROSOFT -> MicrosoftWebEngine()
+            ID_BAIDU -> BaiduWebEngine()
             ID_FREE_GEMINI -> {
                 val encKey = prefs.getString("free_gemini_key", "").orEmpty()
                 val key = if (encKey.isNotBlank()) Crypto.decrypt(encKey) else FreeModelDefaults.DEFAULT_GEMINI_KEY

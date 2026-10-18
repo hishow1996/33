@@ -1872,6 +1872,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         val active = profiles.firstOrNull { it.id == activeId }
         val providerKind = when (activeId) {
             -1L, -2L -> "google-hybrid"
+            EngineFactory.ID_MICROSOFT -> "microsoft-web"
+            EngineFactory.ID_BAIDU -> "baidu-web"
             EngineFactory.ID_FREE_GEMINI -> "free-gemini"
             EngineFactory.ID_FREE_DEEPSEEK -> "free-deepseek"
             else -> if (active != null) "api-profile" else "local-fallback"
@@ -3585,6 +3587,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         } else if (activeId == EngineFactory.ID_FREE_GEMINI || activeId == EngineFactory.ID_FREE_DEEPSEEK) {
             engine = EngineFactory.getBuiltinEngine(activeId, this)
             engineName = if (activeId == EngineFactory.ID_FREE_GEMINI) "Google Gemini (免费)" else "DeepSeek (免费)"
+        } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU) {
+            engine = EngineFactory.getBuiltinEngine(activeId, this)
+            engineName = engine?.displayName.orEmpty()
         }
         val active = profiles.firstOrNull { it.id == activeId }
         if (engine == null && active != null) {
@@ -3601,7 +3606,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
         // to abort every subtitle and prevent the video from playing.
         val sourceEchoAsUntranslatedFallback =
-            engine!!.id == "local" || engine!!.id == "google-hybrid"
+            engine!!.id == "local" || engine!!.id == "google-hybrid" ||
+                engine!!.id == "microsoft-web" || engine!!.id == "baidu-web"
         val pendingIndices = ArrayList<Int>()
         var completed = 0
         for (index in lines.indices) {
@@ -3719,6 +3725,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         } else {
                             "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
                         }
+                    } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU) {
+                        val name = if (activeId == EngineFactory.ID_MICROSOFT) "微软翻译" else "百度翻译"
+                        name + "失败：" + detail + "。这是免密钥的网页接口，可能被限流或已调整，请稍后重试，或在 API 管理中换用其他翻译引擎。"
                     } else {
                         "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
                     }

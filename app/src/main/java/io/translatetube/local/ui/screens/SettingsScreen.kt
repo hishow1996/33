@@ -231,7 +231,11 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                     .joinToString(" · ")
             }
             ?.takeIf { it.isNotBlank() }
-            ?: "Google 翻译"
+            ?: when (activeApiId) {
+                io.translatetube.local.translate.EngineFactory.ID_MICROSOFT -> "微软翻译"
+                io.translatetube.local.translate.EngineFactory.ID_BAIDU -> "百度翻译"
+                else -> "Google 翻译"
+            }
 
         // Settings overview: surface the active engines before the detailed sections.
         Box(
