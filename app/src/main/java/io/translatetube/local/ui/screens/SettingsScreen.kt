@@ -558,14 +558,35 @@ Section("转写引擎") {
 
 Section("配音设置") {
             EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
             EngineOption("piper", "Piper 多语种 · 按语种下载", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
