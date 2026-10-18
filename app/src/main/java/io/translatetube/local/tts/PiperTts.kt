@@ -62,8 +62,12 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         }
 
     private val tts: OfflineTts
+    private val guard: NativeResourceGuard
 
     init {
+        if (!NativeTtsRuntimeGate.awaitDeferredReleases()) {
+            android.util.Log.w("PiperTts", "Timed out waiting for retired native TTS releases")
+        }
         val tokens = File(dir, "tokens.txt")
         val dataDir = File(dir, "espeak-ng-data")
         require(model.isFile) { "Piper 模型文件缺失：${model.absolutePath}" }
@@ -96,7 +100,9 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
             maxNumSentences = 2,
         )
         // assets=null → use absolute filesystem paths just like Kokoro.
-        tts = OfflineTts(null, config)
+        val nativeTts = OfflineTts(null, config)
+        tts = nativeTts
+        guard = NativeResourceGuard("Piper") { nativeTts.release() }
     }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
@@ -113,7 +119,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 22050)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
         val sid = 0
-        val audio = tts.generate(normalizedText, sid, safeSpeed)
+        val audio = guard.use { tts.generate(normalizedText, sid, safeSpeed) }
         checkActive()
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
@@ -126,7 +132,7 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         return TtsAudio(trimmed, sampleRate)
     }
 
-    override fun close() = tts.release()
+    override fun close() = guard.close()
 }
 
 /** Piper 模型定义（k2-fsa 官方 release 直链）。 */

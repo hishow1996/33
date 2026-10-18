@@ -83,8 +83,12 @@ class KokoroTts(
     override val cacheKey: String
         get() = "$name-default-${speakerId.coerceIn(0, 53)}-$runtimeSignature"
     private val tts: OfflineTts
+    private val guard: NativeResourceGuard
 
     init {
+        if (!NativeTtsRuntimeGate.awaitDeferredReleases()) {
+            android.util.Log.w("KokoroTts", "Timed out waiting for retired native TTS releases")
+        }
         io.translatetube.local.data.ModelFiles.ensureTtsRuntimeFiles(ctx)
         val m = io.translatetube.local.data.ModelFiles.ttsDir(ctx).absolutePath + "/"
         val config = OfflineTtsConfig(
@@ -105,7 +109,9 @@ class KokoroTts(
             maxNumSentences = 2,
         )
         // assets=null → sherpa-onnx 走文件系统绝对路径加载（方案 B）
-        tts = OfflineTts(null, config)
+        val nativeTts = OfflineTts(null, config)
+        tts = nativeTts
+        guard = NativeResourceGuard("Kokoro") { nativeTts.release() }
     }
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio =
@@ -124,7 +130,7 @@ class KokoroTts(
         if (normalizedText.isEmpty()) return TtsAudio(FloatArray(0), 24000)
         val selectedSpeaker = (if (speakerId >= 0) speakerId else this.speakerId).coerceIn(0, 53)
         val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
-        val audio = tts.generate(normalizedText, selectedSpeaker, safeSpeed)
+        val audio = guard.use { tts.generate(normalizedText, selectedSpeaker, safeSpeed) }
         checkActive()
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
@@ -137,7 +143,7 @@ class KokoroTts(
         return TtsAudio(trimmed, sampleRate)
     }
 
-    override fun close() = tts.release()
+    override fun close() = guard.close()
 }
 
 enum class SystemTtsPlaybackMode {
