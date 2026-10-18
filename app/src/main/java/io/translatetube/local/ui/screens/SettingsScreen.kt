@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -> Unit) {
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
@@ -828,6 +828,30 @@ Section("视频源（yt-dlp）") {
                 Text("大象翻译", color = OnBg, style = MaterialTheme.typography.bodyLarge)
                 Spacer(Modifier.weight(1f))
                 Text("v" + io.translatetube.local.BuildConfig.VERSION_NAME, color = SubText, style = MaterialTheme.typography.bodyMedium)
+            }
+            HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 3.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable(onClick = onAppLogs)
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color(0xFFEAF1FF),
+                    modifier = Modifier.size(38.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Info, contentDescription = null, tint = BrandBright)
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("应用日志", color = OnBg, style = MaterialTheme.typography.bodyLarge)
+                    Text("查看运行异常、闪退原因和诊断记录", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("›", color = SubText, style = MaterialTheme.typography.headlineMedium)
             }
         }
     }
