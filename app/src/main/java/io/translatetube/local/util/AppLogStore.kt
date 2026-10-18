@@ -21,6 +21,12 @@ data class AppLogRecord(
     val message: String,
     val details: String,
     val thread: String,
+    /** Stable, privacy-safe key tying an error to its recovery event. */
+    val issueKey: String = "",
+    /** On recovery events, references the original issue key. */
+    val resolvesIssueKey: String = "",
+    /** Derived while reading logs; the original error row is never overwritten. */
+    val recoveredAtMs: Long? = null,
 )
 
 object AppLogStore {
@@ -55,9 +61,11 @@ object AppLogStore {
         message: String,
         failure: Throwable? = null,
         diagnosticContext: Map<String, String> = emptyMap(),
+        issueKey: String? = null,
     ) = append(
         context, "WARN", tag, messageWithRootCause(message, failure),
         failureDetails(failure), diagnosticContext,
+        issueKey = issueKey ?: stableIssueKey(tag, message),
     )
 
     fun error(
@@ -66,9 +74,11 @@ object AppLogStore {
         message: String,
         failure: Throwable? = null,
         diagnosticContext: Map<String, String> = emptyMap(),
+        issueKey: String? = null,
     ) = append(
         context, "ERROR", tag, messageWithRootCause(message, failure),
         failureDetails(failure), diagnosticContext,
+        issueKey = issueKey ?: stableIssueKey(tag, message),
     )
 
     fun recordUncaught(
@@ -324,6 +334,53 @@ object AppLogStore {
             "系统没有给出足够具体的根因。先对照退出时间附近的操作轨迹、同一会话的错误日志和设备状态，再结合复现步骤定位。"
     }
 
+    /**
+     * A stable, non-reversible key associates failure and recovery without storing a raw URL/session key.
+     */
+    fun stableIssueKey(category: String, identity: String): String {
+        val safeCategory = category.filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+            .take(40).ifBlank { "issue" }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("$category\u0000$identity".toByteArray(Charsets.UTF_8))
+            .take(10)
+            .joinToString("") { byte -> "%02x".format(Locale.US, byte.toInt() and 0xff) }
+        return "$safeCategory:$digest"
+    }
+
+    /** Persist recovery only after the caller has observed a matching successful operation. */
+    fun resolveIssue(
+        context: Context,
+        issueKey: String,
+        message: String,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ): Boolean = synchronized(lock) {
+        val key = issueKey.trim()
+        if (key.isBlank()) return@synchronized false
+        val now = System.currentTimeMillis()
+        val unresolved = readRecent(context, MAX_READ_RECORDS).any { record ->
+            record.issueKey == key &&
+                isIssueLevel(record.level) &&
+                record.timestampMs < now &&
+                record.recoveredAtMs == null
+        }
+        if (!unresolved) return@synchronized false
+        appendAt(
+            context = context,
+            timestampMs = now,
+            level = "INFO",
+            tag = "LogRecovery",
+            message = "故障已恢复：$message",
+            details = "关联故障编号：$key\n恢复依据：调用方已确认对应操作成功完成。",
+            threadName = Thread.currentThread().name,
+            diagnosticContext = diagnosticContext,
+            resolvesIssueKey = key,
+        )
+        true
+    }
+
+    private fun isIssueLevel(level: String): Boolean =
+        level == "WARN" || level == "ERROR" || level == "FATAL"
+
     fun readRecent(context: Context, limit: Int = 500): List<AppLogRecord> = synchronized(lock) {
         val directory = logDirectory(context)
         pruneOldFiles(directory)
@@ -346,7 +403,24 @@ object AppLogStore {
             if (!duplicate) parsed.add(legacy)
         }
 
-        parsed.sortedByDescending { it.timestampMs }.take(limit.coerceIn(1, MAX_READ_RECORDS))
+        // Deduplicate only completely identical rows; repeated failures with the same message
+        // but different time/context must remain independently diagnosable.
+        val unique = parsed.distinctBy {
+            listOf(it.timestampMs, it.level, it.tag, it.message, it.details, it.thread, it.issueKey, it.resolvesIssueKey)
+        }
+        val recoveryTimesByIssue = unique.asSequence()
+            .filter { it.resolvesIssueKey.isNotBlank() }
+            .groupBy { it.resolvesIssueKey }
+            .mapValues { (_, events) -> events.map { it.timestampMs }.distinct().sorted() }
+
+        // Status is derived from a later recovery event. The historical failure stays intact.
+        unique.map { record ->
+            val recoveredAt = if (record.issueKey.isNotBlank() && isIssueLevel(record.level)) {
+                recoveryTimesByIssue[record.issueKey]?.firstOrNull { it > record.timestampMs }
+            } else null
+            record.copy(recoveredAtMs = recoveredAt)
+        }.sortedByDescending { it.timestampMs }
+            .take(limit.coerceIn(1, MAX_READ_RECORDS))
     }
 
     fun exportText(context: Context): String {
@@ -363,6 +437,11 @@ object AppLogStore {
             records.forEach { record ->
                 append(formatTime(record.timestampMs)).append(" [").append(record.level).append("] ")
                     .append(record.tag).append(" · ").append(record.message).append('\n')
+                if (isIssueLevel(record.level) && record.issueKey.isNotBlank()) {
+                    append("故障状态：")
+                        .append(record.recoveredAtMs?.let { "已恢复（${formatTime(it)}）" } ?: "尚无恢复成功记录")
+                        .append('\n')
+                }
                 if (record.thread.isNotBlank()) append("线程：").append(record.thread).append('\n')
                 if (record.details.isNotBlank()) append(record.details.trimEnd()).append('\n')
                 append("-".repeat(56)).append('\n')
@@ -392,6 +471,8 @@ object AppLogStore {
         message: String,
         details: String,
         diagnosticContext: Map<String, String> = emptyMap(),
+        issueKey: String? = null,
+        resolvesIssueKey: String = "",
     ) = appendAt(
         context = context,
         timestampMs = System.currentTimeMillis(),
@@ -401,6 +482,8 @@ object AppLogStore {
         details = details,
         threadName = Thread.currentThread().name,
         diagnosticContext = diagnosticContext,
+        issueKey = issueKey,
+        resolvesIssueKey = resolvesIssueKey,
     )
 
     private fun appendAt(
@@ -412,6 +495,8 @@ object AppLogStore {
         details: String,
         threadName: String,
         diagnosticContext: Map<String, String> = emptyMap(),
+        issueKey: String? = null,
+        resolvesIssueKey: String = "",
     ) {
         synchronized(lock) {
             try {
@@ -426,6 +511,8 @@ object AppLogStore {
                 val safeDetails = redact(
                     enrichDetails(context, level, details, threadName, diagnosticContext, trail),
                 ).take(MAX_DETAIL_CHARS)
+                val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
+                    ?: if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
                 val row = JSONObject()
                     .put("timestampMs", timestampMs)
                     .put("level", redact(level).take(12))
@@ -433,6 +520,8 @@ object AppLogStore {
                     .put("message", redact(message).take(1_000))
                     .put("details", safeDetails)
                     .put("thread", redact(threadName).take(120))
+                    .put("issueKey", effectiveIssueKey.take(100))
+                    .put("resolvesIssueKey", resolvesIssueKey.take(100))
                     .toString()
                 if (file.exists() && file.length() + row.toByteArray(Charsets.UTF_8).size + 1 > MAX_FILE_BYTES) {
                     rotate(directory)
@@ -508,13 +597,20 @@ object AppLogStore {
 
     private fun parseLine(line: String): AppLogRecord? = runCatching {
         val json = JSONObject(line)
+        val level = json.optString("level", "INFO")
+        val tag = json.optString("tag", "App")
+        val message = json.optString("message", "")
         AppLogRecord(
             timestampMs = json.optLong("timestampMs", 0L),
-            level = json.optString("level", "INFO"),
-            tag = json.optString("tag", "App"),
-            message = json.optString("message", ""),
+            level = level,
+            tag = tag,
+            message = message,
             details = json.optString("details", ""),
             thread = json.optString("thread", ""),
+            issueKey = json.optString("issueKey", "").ifBlank {
+                if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
+            },
+            resolvesIssueKey = json.optString("resolvesIssueKey", ""),
         ).takeIf { it.timestampMs > 0L && (it.message.isNotBlank() || it.details.isNotBlank()) }
     }.getOrNull()
 
@@ -533,6 +629,7 @@ object AppLogStore {
             message = exception,
             details = content,
             thread = lines.firstOrNull { it.startsWith("thread=") }?.substringAfter("thread=").orEmpty(),
+            issueKey = stableIssueKey("PreviousCrash", exception),
         )
     }
 
