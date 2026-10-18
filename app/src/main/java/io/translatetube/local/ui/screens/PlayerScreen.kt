@@ -254,6 +254,39 @@ fun PlayerScreen(
     val tv = remember { TextureView(ctx) }
     val frame = remember { FrameLayout(ctx) }
 
+    // Reparse switches between the processing UI and player UI. AndroidView can be
+    // recreated while this remembered FrameLayout still owns the TextureView.
+    // Move the surface only when needed; never add the same child twice.
+    fun moveTextureViewTo(target: FrameLayout) {
+        if (tv.parent === target) {
+            val lp = tv.layoutParams as? FrameLayout.LayoutParams
+            if (lp == null || lp.width != ViewGroup.LayoutParams.MATCH_PARENT ||
+                lp.height != ViewGroup.LayoutParams.MATCH_PARENT
+            ) {
+                tv.layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+            }
+            return
+        }
+        (tv.parent as? ViewGroup)?.removeView(tv)
+        if (tv.parent == null) {
+            target.addView(
+                tv,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        } else {
+            android.util.Log.w(
+                "PlayerScreen",
+                "Skip TextureView reparent: current parent=" + tv.parent?.javaClass?.simpleName,
+            )
+        }
+    }
+
     // 服务就绪后挂画面（等 instance 出现，时序安全）
     LaunchedEffect(Unit) {
         var tries = 0
@@ -272,8 +305,7 @@ fun PlayerScreen(
     fun exitFloating() {
         if (isFloating) {
             floating.hide()
-            (tv.parent as? ViewGroup)?.removeView(tv)
-            frame.addView(tv, FrameLayout.LayoutParams(-1, -1))
+            moveTextureViewTo(frame)
             isFloating = false
         }
     }
@@ -291,18 +323,15 @@ fun PlayerScreen(
             }
             return
         }
-        (tv.parent as? ViewGroup)?.removeView(tv)
-        val host = FrameLayout(ctx).apply {
-            addView(tv, FrameLayout.LayoutParams(-1, -1))
-        }
+        val host = FrameLayout(ctx)
+        moveTextureViewTo(host)
         val shown = floating.show(host, 640, 360)
         if (shown && floating.isShowing()) {
             isFloating = true
         } else {
             // WindowManager can reject an overlay even after permission was granted. Never leave
             // the TextureView parented to a detached host or the player turns black.
-            host.removeView(tv)
-            frame.addView(tv, FrameLayout.LayoutParams(-1, -1))
+            moveTextureViewTo(frame)
             isFloating = false
             android.widget.Toast.makeText(
                 ctx,
@@ -656,7 +685,10 @@ fun PlayerScreen(
             ) {
                 AndroidView(
                     factory = {
-                        frame.addView(tv, FrameLayout.LayoutParams(-1, -1))
+                        // While floating, the TextureView belongs to the overlay host.
+                        // Otherwise the player may have just returned from the processing page,
+                        // where this remembered frame can still contain tv.
+                        if (!isFloating) moveTextureViewTo(frame)
                         PlaybackService.instance?.attachSurface(tv)
                         frame
                     },
