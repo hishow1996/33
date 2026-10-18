@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.ui.theme.*
@@ -208,21 +209,44 @@ fun AppLogsScreen(onBack: () -> Unit) {
             },
             text = {
                 Column(
-                    Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                    Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(AppLogStore.formatTime(record.timestampMs), color = SubText, style = MaterialTheme.typography.bodySmall)
                     Text(record.message.ifBlank { "（无错误摘要）" }, color = OnBg, style = MaterialTheme.typography.bodyMedium)
                     if (record.thread.isNotBlank()) {
-                        Text("线程：${record.thread}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                        Text("异常发生线程：${record.thread}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    }
+                    val causeChain = record.details.lineSequence()
+                        .map { it.trim() }
+                        .filter { it.matches(Regex("#\\d+ .+")) }
+                        .take(12)
+                        .toList()
+                    if (causeChain.isNotEmpty()) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFFFFF7E6),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Column(
+                                Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text("异常根因链（从外层异常到最深层原因）", color = Color(0xFF8A4B08), style = MaterialTheme.typography.labelLarge)
+                                causeChain.forEach { cause ->
+                                    Text(cause, color = Color(0xFF59380B), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                                }
+                            }
+                        }
                     }
                     if (record.details.isNotBlank()) {
                         HorizontalDivider(color = OutlineSoft)
-                        Text("详细信息 / 调用堆栈", color = OnBg, style = MaterialTheme.typography.labelLarge)
+                        Text("运行上下文、设备信息与完整堆栈", color = OnBg, style = MaterialTheme.typography.labelLarge)
                         Text(
                             record.details,
                             color = SubText,
                             style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
                         )
                     }
                 }
@@ -332,9 +356,13 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (record.details.isNotBlank()) {
+                    val rootCause = record.details.lineSequence()
+                        .map { it.trim() }
+                        .filter { it.matches(Regex("#\\d+ .+")) }
+                        .lastOrNull()
                     Text(
-                        record.details.lineSequence().firstOrNull()?.take(160).orEmpty(),
-                        color = SubText,
+                        rootCause ?: record.details.lineSequence().firstOrNull { it.startsWith("- ") }?.take(160).orEmpty(),
+                        color = if (record.level == "ERROR" || record.level == "FATAL") DangerRed else SubText,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
