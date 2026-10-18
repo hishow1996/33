@@ -1,6 +1,7 @@
 package io.translatetube.local.subs
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -802,16 +803,22 @@ class SubtitleParsersTest {
 
         val parsed = SubtitleParsers.parseAuto(source)
 
+        // 去重之后，被屏幕宽度切成半截的句子会按句末标点重新合成整句。
         assertEquals(
             listOf(
-                Triple(1_870L, 4_550L, "Everybody, Peter Zeihan here, coming to you from Colorado. It's a nice fall day."),
-                Triple(4_560L, 5_710L, "Figured I'd get out and stretch the"),
-                Triple(5_720L, 8_270L, "legs. today we're going to talk about"),
-                Triple(8_280L, 10_230L, "new developments in Southeast Asia."),
+                "Everybody, Peter Zeihan here, coming to you from Colorado.",
+                "It's a nice fall day.",
+                "Figured I'd get out and stretch the legs.",
+                "today we're going to talk about new developments in Southeast Asia.",
             ),
-            parsed.map { Triple(it.startMs, it.endMs, it.text) },
+            parsed.map { it.text },
         )
         assertEquals(listOf(0, 1, 2, 3), parsed.map { it.index })
+        // 每句的时间按字符位置在原时间轴上插值：整体范围不变，句与句之间单调不重叠。
+        assertEquals(1_870L, parsed.first().startMs)
+        assertEquals(10_230L, parsed.last().endMs)
+        assertTrue(parsed.all { it.endMs > it.startMs })
+        assertTrue(parsed.zipWithNext().all { (a, b) -> b.startMs >= a.endMs })
     }
 
     @Test
@@ -840,10 +847,13 @@ class SubtitleParsersTest {
 
         val parsed = SubtitleParsers.parseAuto(source)
 
+        // "uh" 和 [snorts] 被清掉；中间的停顿没说完就接上了，三段并成一句。
         assertEquals(
-            listOf("more under the Chinese thumb than, say,", "Belarus is under Russia's thumb, for", "example."),
+            listOf("more under the Chinese thumb than, say, Belarus is under Russia's thumb, for example."),
             parsed.map { it.text },
         )
+        assertEquals(1_000L, parsed.single().startMs)
+        assertEquals(7_000L, parsed.single().endMs)
     }
 
     @Test
@@ -873,6 +883,94 @@ class SubtitleParsersTest {
     }
 
     @Test
+    fun sentenceMergeSplitsAtSentenceEndsButNotAtAbbreviationsOrDecimals() {
+        val lines = listOf(
+            SubLine(0, 0L, 2_000L, "I went to see Mr. Smith about the 3.5 percent"),
+            SubLine(1, 2_010L, 4_000L, "increase. He said no. Then we left."),
+        )
+
+        val merged = SubtitleParsers.mergeSentenceFragments(lines)
+
+        assertEquals(
+            listOf("I went to see Mr. Smith about the 3.5 percent increase.", "He said no.", "Then we left."),
+            merged.map { it.text },
+        )
+        assertEquals(0L, merged.first().startMs)
+        assertEquals(4_000L, merged.last().endMs)
+        assertEquals(listOf(0, 1, 2), merged.map { it.index })
+        assertTrue(merged.zipWithNext().all { (a, b) -> b.startMs >= a.endMs })
+    }
+
+    @Test
+    fun sentenceMergeLeavesCaptionsWithoutPunctuationAlone() {
+        val lines = listOf(
+            SubLine(0, 0L, 1_000L, "so we went to the"),
+            SubLine(1, 1_010L, 2_000L, "store and bought some"),
+            SubLine(2, 2_010L, 3_000L, "milk and then left"),
+        )
+
+        assertSame(lines, SubtitleParsers.mergeSentenceFragments(lines))
+    }
+
+    @Test
+    fun sentenceMergeOnlyCrossesLongPausesInTheMiddleOfASentence() {
+        // 上一句已说完 + 停顿 900ms：不跨过去
+        val finished = listOf(
+            SubLine(0, 0L, 1_000L, "That was the end."),
+            SubLine(1, 1_900L, 2_500L, "Next topic is"),
+            SubLine(2, 2_510L, 3_500L, "something else."),
+        )
+        assertEquals(
+            listOf("That was the end.", "Next topic is something else."),
+            SubtitleParsers.mergeSentenceFragments(finished).map { it.text },
+        )
+
+        // 话没说完 + 停顿 1.3 秒（说话人迟疑）：接上
+        val hesitation = listOf(
+            SubLine(0, 0L, 1_000L, "more under the Chinese thumb than, say,"),
+            SubLine(1, 2_300L, 3_500L, "Belarus is under Russia's thumb."),
+        )
+        val merged = SubtitleParsers.mergeSentenceFragments(hesitation).single()
+        assertEquals("more under the Chinese thumb than, say, Belarus is under Russia's thumb.", merged.text)
+        assertEquals(0L, merged.startMs)
+        assertEquals(3_500L, merged.endMs)
+    }
+
+    @Test
+    fun sentenceMergeSplitsVeryLongSentencesAtClauseBreaksWithoutLosingText() {
+        val clause = "this is a fairly long clause with several words in it"
+        val first = "$clause, $clause,"
+        val second = "$clause, $clause, the end."
+        val lines = listOf(
+            SubLine(0, 0L, 6_000L, first),
+            SubLine(1, 6_010L, 12_000L, second),
+        )
+
+        val merged = SubtitleParsers.mergeSentenceFragments(lines)
+
+        assertEquals(2, merged.size)
+        assertEquals("$first $second", merged.joinToString(" ") { it.text })
+        assertTrue(merged.all { it.text.length <= 160 && it.text.length >= 40 })
+        assertTrue(merged.first().text.endsWith(","))
+        assertTrue(merged.zipWithNext().all { (a, b) -> b.startMs >= a.endMs })
+    }
+
+    @Test
+    fun sentenceMergeJoinsStutterFragmentsAcrossCues() {
+        val lines = listOf(
+            SubLine(0, 0L, 2_000L, "allowing their navy to operate un-"),
+            SubLine(1, 2_010L, 4_000L, "unfettered, and the United States even facilitating supply lines."),
+        )
+
+        val merged = SubtitleParsers.mergeSentenceFragments(lines).single()
+
+        assertEquals(
+            "allowing their navy to operate unfettered, and the United States even facilitating supply lines.",
+            merged.text,
+        )
+    }
+
+    @Test
     fun cleanSpokenTextRemovesFillersAndSoundAnnotationsOnly() {
         assertEquals("the new one is in Laos", SubtitleParsers.cleanSpokenText("Um [snorts] the new one is in Laos"))
         assertEquals("to be, kind", SubtitleParsers.cleanSpokenText("to be, um, kind"))
@@ -882,6 +980,10 @@ class SubtitleParsersTest {
         // 带连字符的肯定回答、以及恰好以 um 开头的普通单词不能被误删。
         assertEquals("uh-huh, sure", SubtitleParsers.cleanSpokenText("uh-huh, sure"))
         assertEquals("an umbrella", SubtitleParsers.cleanSpokenText("an umbrella"))
+        // 口吃片段只去掉前面没说完的半个词；普通连字符词不受影响。
+        assertEquals("to operate unfettered", SubtitleParsers.cleanSpokenText("to operate un- unfettered"))
+        assertEquals("to the store", SubtitleParsers.cleanSpokenText("to- to the store"))
+        assertEquals("pre- and post-war, well-known", SubtitleParsers.cleanSpokenText("pre- and post-war, well-known"))
     }
 
 }

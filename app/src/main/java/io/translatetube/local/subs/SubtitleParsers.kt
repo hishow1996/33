@@ -591,6 +591,8 @@ object SubtitleParsers {
     private val rollingSoundAnnotationRegex = Regex("""\[[^\[\]]{1,40}]|[♪♫]+""")
     /** 口头语 uh / um / uhm（不含 uh-huh 这类带连字符的肯定回答）。 */
     private val rollingFillerRegex = Regex("""(?<![\w'-])(?:uh+|um+|uhm+)(?![\w'-])\s*,?""", RegexOption.IGNORE_CASE)
+    /** 口吃片段："un- unfettered" / "to- to the" → 去掉前面没说完的半个词。 */
+    private val rollingStutterRegex = Regex("""(?<![\w'-])(\w{1,6})-\s+(?=\1)""", RegexOption.IGNORE_CASE)
     private val spaceBeforePunctuationRegex = Regex("""\s+([,.!?;:])""")
     private val repeatedCommaRegex = Regex(""",(?:\s*,)+""")
 
@@ -672,7 +674,215 @@ object SubtitleParsers {
             emit(start, cue.endMs, text)
         }
         flushHeld(Long.MAX_VALUE)
-        return out
+        return mergeSentenceFragments(out, checkActive)
+    }
+
+    /** 上一句已说完时，相邻片段停顿超过该值就认为换了话题，不跨过去合并。 */
+    private const val SENTENCE_MAX_GAP_MS = 700L
+    /** 上一句还没说完（没有句末标点）时允许跨过更长的停顿，例如说话人中途的迟疑。 */
+    private const val SENTENCE_MAX_GAP_MID_SENTENCE_MS = 2_000L
+    /** 整句最长字数；只有超过"上限 + 余量"才再切开，且尽量在逗号处切，避免切出过短的尾巴。 */
+    private const val SENTENCE_MAX_CHARS = 160
+    private const val SENTENCE_TAIL_SLACK_CHARS = 30
+    /** 整句最短显示时长，避免极短的句子一闪而过。 */
+    private const val SENTENCE_MIN_DURATION_MS = 250L
+    private const val SENTENCE_PUNCTUATION_MIN_PERCENT = 15
+    private val sentenceTerminators = setOf('.', '!', '?', '…', '。', '！', '？')
+    private val sentenceCjkTerminators = setOf('。', '！', '？')
+    private val sentenceClosers = setOf('"', '\'', '”', '’', ')', ']')
+    private val sentenceNonFinalWords = setOf(
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "mt", "approx",
+    )
+
+    /**
+     * YouTube 自动字幕按屏幕宽度断行，常把一句话切成两三段，句子结尾又常落在片段中间
+     * （"…stretch the" / "legs. today we're…"），逐段翻译和配音都很别扭。
+     * 这里把时间上连续的片段拼成文字，按句末标点重新切成整句，再按字符位置在原片段的
+     * 时间轴上插值出每句的起止时间。字幕里几乎没有标点（含句末标点的片段不到 15%）时
+     * 无法判断句子边界，原样返回；停顿超过 [SENTENCE_MAX_GAP_MS] 的地方不跨过去合并。
+     */
+    internal fun mergeSentenceFragments(
+        lines: List<SubLine>,
+        checkActive: () -> Unit = {},
+    ): List<SubLine> {
+        if (lines.size < 2) return lines
+        val withPunctuation = lines.count { hasSentenceBoundary(it.text) }
+        if (withPunctuation * 100 < lines.size * SENTENCE_PUNCTUATION_MIN_PERCENT) return lines
+
+        val out = ArrayList<SubLine>(lines.size)
+        var runStart = 0
+        for (index in 1..lines.size) {
+            if ((index and 0xff) == 0) checkActive()
+            val breaksRun = index == lines.size || run {
+                val previous = lines[index - 1]
+                val maxGap = if (endsSentence(previous.text)) SENTENCE_MAX_GAP_MS
+                else SENTENCE_MAX_GAP_MID_SENTENCE_MS
+                lines[index].startMs - previous.endMs !in 0..maxGap
+            }
+            if (breaksRun) {
+                resegmentRun(lines.subList(runStart, index), out, checkActive)
+                runStart = index
+            }
+        }
+        return out.mapIndexed { index, line -> if (line.index == index) line else line.copy(index = index) }
+    }
+
+    private fun hasSentenceBoundary(text: String): Boolean = sentenceBoundaryEnds(text).isNotEmpty()
+
+    /** 文字是否以句末标点（可跟引号/括号）结尾。 */
+    private fun endsSentence(text: String): Boolean =
+        text.trimEnd().trimEnd { it in sentenceClosers }.lastOrNull()?.let { it in sentenceTerminators } == true
+
+    /** 一段连续片段 → 按整句重新切分并插值时间，结果追加到 [out]。 */
+    private fun resegmentRun(run: List<SubLine>, out: MutableList<SubLine>, checkActive: () -> Unit) {
+        if (run.size == 1) {
+            out += run[0]
+            return
+        }
+        val text = StringBuilder()
+        val segmentStart = IntArray(run.size)
+        val segmentEnd = IntArray(run.size)
+        for ((i, cue) in run.withIndex()) {
+            if (text.isNotEmpty()) text.append(' ')
+            segmentStart[i] = text.length
+            text.append(cue.text)
+            segmentEnd[i] = text.length
+        }
+        val full = text.toString()
+
+        // 句子范围（[from, to)，已去掉首尾空白）；过长的句子在逗号/空格处再切开。
+        val ranges = ArrayList<IntRange>()
+        var from = 0
+        val ends = sentenceBoundaryEnds(full) + full.length
+        var previousEnd = -1
+        for (end in ends) {
+            if (end <= previousEnd || end <= from) continue
+            previousEnd = end
+            splitLongSentence(full, from, end, ranges)
+            from = end
+        }
+
+        /** 把文字偏移换算成时间：在所属片段内按字符比例插值。 */
+        fun timeAt(offset: Int, isEnd: Boolean): Long {
+            // 片段结束偏移单调递增：二分找到第一个覆盖该偏移的片段（长视频里一整段可达上千个片段）。
+            var low = 0
+            var high = run.lastIndex
+            var k = run.lastIndex
+            while (low <= high) {
+                val middle = (low + high) ushr 1
+                val inside = if (isEnd) offset <= segmentEnd[middle] else offset < segmentEnd[middle]
+                if (inside) { k = middle; high = middle - 1 } else low = middle + 1
+            }
+            val cue = run[k]
+            val length = (segmentEnd[k] - segmentStart[k]).coerceAtLeast(1)
+            val fraction = ((offset - segmentStart[k]).toDouble() / length).coerceIn(0.0, 1.0)
+            return cue.startMs + ((cue.endMs - cue.startMs) * fraction).toLong()
+        }
+
+        val runEnd = run.maxOf { it.endMs }
+        var previousEndMs = run[0].startMs
+        for ((i, range) in ranges.withIndex()) {
+            if ((i and 0xff) == 0) checkActive()
+            // 口吃片段可能横跨两个片段（"un-" / "unfettered"），拼成整句后才看得见。
+            val sentence = full.substring(range.first, range.last + 1).trim().replace(rollingStutterRegex, "")
+            if (sentence.isEmpty()) continue
+            val leading = full.substring(range.first, range.last + 1).takeWhile { it.isWhitespace() }.length
+            var startMs = maxOf(timeAt(range.first + leading, isEnd = false), previousEndMs)
+            var endMs = timeAt(range.last + 1, isEnd = true)
+            if (endMs - startMs < SENTENCE_MIN_DURATION_MS) {
+                endMs = minOf(startMs + SENTENCE_MIN_DURATION_MS, runEnd)
+            }
+            if (endMs <= startMs) {
+                // 实在挤不出时间：并入上一句，而不是丢字或制造非法时间窗。
+                val last = out.lastOrNull()
+                if (last != null) out[out.lastIndex] = last.copy(text = last.text + " " + sentence)
+                continue
+            }
+            out += SubLine(out.size, startMs, endMs, sentence)
+            previousEndMs = endMs
+        }
+    }
+
+    /** 句末位置（句末标点及其后的引号/括号之后的偏移）；小数点、常见缩写、人名缩写不算句末。 */
+    private fun sentenceBoundaryEnds(text: String): List<Int> {
+        val result = ArrayList<Int>()
+        var i = 0
+        while (i < text.length) {
+            val ch = text[i]
+            if (ch !in sentenceTerminators) { i++; continue }
+            var j = i + 1
+            while (j < text.length && text[j] in sentenceClosers) j++
+            val atEnd = j >= text.length
+            val followedBySpace = !atEnd && text[j].isWhitespace()
+            val boundary = ch in sentenceCjkTerminators || atEnd || (followedBySpace && !isNonFinalPeriod(text, i, j))
+            if (boundary) result += j
+            i = j
+        }
+        return result
+    }
+
+    /** "Mr." / "U.S." / "J. Smith" 这类句点后面还要继续，不是句子结尾。 */
+    private fun isNonFinalPeriod(text: String, periodIndex: Int, afterIndex: Int): Boolean {
+        if (text[periodIndex] != '.') return false
+        var start = periodIndex
+        while (start > 0 && !text[start - 1].isWhitespace()) start--
+        val word = text.substring(start, periodIndex).trimStart('"', '\'', '“', '‘', '(', '[')
+        if (word.isEmpty()) return false
+        if (word.lowercase(Locale.ROOT) in sentenceNonFinalWords) return true
+        if (word.length == 1 && word[0].isLetter() && word != "I") return true
+        // U.S. / e.g. / i.e.：词内还有句点，且后面的词以小写开头
+        if (word.contains('.')) {
+            var next = afterIndex
+            while (next < text.length && text[next].isWhitespace()) next++
+            return next < text.length && text[next].isLowerCase()
+        }
+        return false
+    }
+
+    /** 切长句时优先在这些连词前断开。 */
+    private val sentenceClauseWords = listOf(
+        "and", "but", "because", "which", "that", "when", "while", "although", "so", "who", "where", "or", "if",
+    )
+
+    /**
+     * 过长的句子（超过上限 + 余量）按"尽量均匀"切成几段：优先在逗号后、连词前断开，
+     * 选最接近均分点的位置；找不到就退而求其次在空格处断开。永远不在没说完的半个词（以 - 结尾）后断开。
+     */
+    private fun splitLongSentence(text: String, from: Int, to: Int, out: MutableList<IntRange>) {
+        var position = from
+        while (to - position > SENTENCE_MAX_CHARS + SENTENCE_TAIL_SLACK_CHARS) {
+            val remaining = to - position
+            val pieces = (remaining + SENTENCE_MAX_CHARS - 1) / SENTENCE_MAX_CHARS
+            val target = position + remaining / pieces
+            val low = position + SENTENCE_MAX_CHARS / 3
+            val high = minOf(position + SENTENCE_MAX_CHARS, to - 1)
+            var bestClause = -1
+            var bestSpace = -1
+            for (index in low..high) {
+                if (text[index] != ' ' || text[index - 1] == '-') continue
+                if (bestSpace < 0 || kotlin.math.abs(index - target) < kotlin.math.abs(bestSpace - target)) {
+                    bestSpace = index
+                }
+                val clauseBreak = text[index - 1] == ',' ||
+                    sentenceClauseWords.any { word ->
+                        text.regionMatches(index + 1, word, 0, word.length, ignoreCase = true) &&
+                            index + 1 + word.length < text.length && text[index + 1 + word.length] == ' '
+                    }
+                if (clauseBreak &&
+                    (bestClause < 0 || kotlin.math.abs(index - target) < kotlin.math.abs(bestClause - target))
+                ) {
+                    bestClause = index
+                }
+            }
+            val cut = when {
+                bestClause >= 0 -> bestClause
+                bestSpace >= 0 -> bestSpace
+                else -> high + 1
+            }.coerceIn(position + 1, to - 1)
+            out += position until cut
+            position = cut
+        }
+        if (position < to) out += position until to
     }
 
     /** 至少出现几处"新 cue 第一行 = 上一 cue 最后一行，且还带着新的一行"，才认定为滚动字幕。 */
@@ -700,12 +910,13 @@ object SubtitleParsers {
     }
 
     /**
-     * 去掉音效标注（[Music]、♪）和英文口头语（uh/um）；清理后什么都不剩就返回空串，调用方应丢弃该条字幕。
+     * 去掉音效标注（[Music]、♪）、英文口头语（uh/um）和口吃片段（un- unfettered）；清理后什么都不剩就返回空串，调用方应丢弃该条字幕。
      * 自动字幕和语音转写（网页视频、本地视频）共用，保证翻译和配音只处理真正的说话内容。
      */
     fun cleanSpokenText(text: String): String = text
         .replace(rollingSoundAnnotationRegex, " ")
         .replace(rollingFillerRegex, " ")
+        .replace(rollingStutterRegex, "")
         .replace(repeatedCommaRegex, ",")
         .replace(whitespaceRegex, " ")
         .replace(spaceBeforePunctuationRegex, "$1")

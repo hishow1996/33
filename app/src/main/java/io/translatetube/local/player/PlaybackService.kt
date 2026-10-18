@@ -1916,8 +1916,8 @@ class PlaybackService : MediaSessionService() {
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
                 // Keep local ASR transcript caches separate by model selection.
-                // v5: YouTube 滚动字幕已整理为一句一条；旧 v4 缓存里是重复行，不能再用。
-                videoId != null -> "$key|source|youtube-v5" +
+                // v6: YouTube 滚动字幕已去重，并把半截句子合并成整句；v4/v5 缓存里是重复行或碎片，不能再用。
+                videoId != null -> "$key|source|youtube-v6" +
                     if (asrProvider == "local") "|asr-$localAsrModelId" else ""
                 remoteMediaUrl != null && asrProvider == "local" ->
                     "$cacheKeyBase|source|remote-asr-$localAsrModelId-timed-v3"
