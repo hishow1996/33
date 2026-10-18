@@ -1,3 +1,4 @@
+# User-requested build of the latest main source (2026-10-19).
 name: Build Android APK
 
 # Explicit APK build retry after fixing the storage-management icon compile error.
