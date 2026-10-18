@@ -1251,7 +1251,10 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
+                io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "Subtitles", "导入已翻译字幕失败", e,
+)
+android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (videoKey == sessionKey && ui.value.key == sessionKey) {
                     runCatching { pm.originalVolume = 1f }
                 }
@@ -1575,7 +1578,10 @@ class PlaybackService : MediaSessionService() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                android.util.Log.e("PlaybackService", "Subtitle import failed", e)
+                io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "Subtitles", "导入字幕并启动处理流程失败", e,
+)
+android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -2879,7 +2885,13 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
+                        io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService,
+    "TTS",
+    "所选配音引擎初始化失败：$selectedTtsName",
+    e,
+)
+android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine $selectedTts", e)
                         val reason = e.message ?: e.javaClass.simpleName
                         updateUiForSession(key, pipelineGeneration) {
                             it.copy(
@@ -3116,7 +3128,13 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
+            io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService,
+    "PlaybackPipeline",
+    "视频解析、转写、翻译或配音流程失败",
+    e,
+)
+android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
                 if (ui.value.key == key && videoKey == key) {
                     runCatching { pm.originalVolume = 1f }
@@ -3601,7 +3619,10 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
+            io.translatetube.local.util.AppLogStore.error(
+    this@PlaybackService, "YouTubePlayback", "刷新 YouTube 播放资源失败", e,
+)
+android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             withContext(Dispatchers.Main) {
                 if (ui.value.key == sessionKey && videoId == failedVideoId) {
                     pm.errorSink.value = null
