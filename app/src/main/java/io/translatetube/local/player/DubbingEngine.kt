@@ -2619,6 +2619,14 @@ class DubbingEngine(
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
     fun isPrepared(idx: Int): Boolean = readiness.isPrepared(idx)
     fun isSilent(idx: Int): Boolean = readiness.isSilent(idx)
+
+    /** Mark a sync-held sentence unavailable after a watchdog timeout so it cannot restart forever. */
+    fun abortSyncHoldCue(idx: Int) {
+        if (idx !in lines.indices) return
+        markCuePrepared(idx, hasAudio = false)
+        if (_currentLine.value == idx) stop()
+    }
+
     /** 正在播放的行（-1=无） */
     fun currentLineIdx(): Int = _currentLine.value
 
