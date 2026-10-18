@@ -191,6 +191,27 @@ class DubbingEngine(
     /** Sample count of the current static buffer when it is the final buffer of an overrun cue. */
     @Volatile private var activeTrackFinalChunkSampleCount = -1
 
+    /** True only while this overlong line still owns live TTS/PCM output. */
+    fun isSyncHoldActiveFor(index: Int): Boolean {
+        if (released || _currentLine.value != index || !activeCueOverrunsWindow) return false
+        if ((tts as? TimelineTtsPlayback)?.useDirectTimelinePlayback == true) {
+            return activeTimelineUtteranceId != null
+        }
+        val activeTrack = track ?: return false
+        val finalSamples = activeTrackFinalChunkSampleCount
+        if (finalSamples <= 0) return true
+        val played = activeTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
+        val finished = activeTrack.playState == AudioTrack.PLAYSTATE_STOPPED || played >= finalSamples.toLong()
+        if (!finished) return true
+        synchronized(playbackControlLock) {
+            if (_currentLine.value == index && track === activeTrack && activeCueOverrunsWindow) {
+                activeCueOverrunsWindow = false
+                activeTrackFinalChunkSampleCount = -1
+            }
+        }
+        return false
+    }
+
     fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
         // Validate every incoming resource and timeline before publishing state. Even an over-limit
         // import must release the TTS instance it handed to this engine.
@@ -1996,6 +2017,11 @@ class DubbingEngine(
             val estimatedSpeechMs = spokenText.codePointCount(0, spokenText.length) * 220L
             val timingRate = (estimatedSpeechMs.toFloat() / cueDurationMs.toFloat())
                 .coerceIn(0.75f, DubbingTiming.MAX_SYNC_RATE)
+            val requiresVideoHold = DubbingSyncHoldPolicy.requiresVideoHold(
+                estimatedSpeechMs = estimatedSpeechMs,
+                cueDurationMs = cueDurationMs,
+                baseSpeechRate = speed,
+            )
             if (estimatedSpeechMs > cueDurationMs * DubbingTiming.MAX_SYNC_RATE.toLong()) {
                 android.util.Log.w(
                     "DubbingEngine",
@@ -2004,8 +2030,9 @@ class DubbingEngine(
                 )
             }
             val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
+            val speechTimelineSpeed = if (requiresVideoHold) 1.0f else timelineSpeed
             val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalizeTimeline(
-                speed * timingRate * timelineSpeed,
+                speed * timingRate * speechTimelineSpeed,
             )
             val utteranceId = "timeline-${System.nanoTime()}-$idx-$generation"
             val ownsCue = synchronized(playbackControlLock) {
@@ -2016,6 +2043,8 @@ class DubbingEngine(
                     isActivePlaybackAllowedLocked()
                 ) {
                     activeTimelineUtteranceId = utteranceId
+                    activeCueOverrunsWindow = requiresVideoHold
+                    activeTrackFinalChunkSampleCount = -1
                     true
                 } else false
             }
@@ -2267,9 +2296,11 @@ class DubbingEngine(
 
                     // Playback speed may have changed while PCM was loading. Combine the cue's
                     // synchronization rate with the newest player speed instead of a stale value.
-                    val playbackRate = (
-                        plan.syncRate * DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
-                    ).coerceIn(0.5f, DubbingTiming.MAX_OUTPUT_RATE)
+                    val playbackRate = DubbingSyncHoldPolicy.playbackRate(
+                        syncRate = plan.syncRate,
+                        playerSpeed = activePlayerSpeed,
+                        willHoldVideo = plan.overrunsWindow,
+                    )
                     runCatching {
                         newTrack.setPlaybackParams(
                             PlaybackParams().setSpeed(playbackRate).setPitch(1.0f)
