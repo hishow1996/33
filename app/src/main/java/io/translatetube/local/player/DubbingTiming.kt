@@ -17,6 +17,8 @@ internal data class DubbingPlaybackPlan(
     val syncRate: Float,
     val playbackRate: Float,
     val truncated: Boolean,
+    /** Audio is longer than the safe timeline rate; preserve its tail and defer the next cue. */
+    val overrunsWindow: Boolean = false,
 )
 
 internal object DubbingTiming {
@@ -115,18 +117,23 @@ internal object DubbingTiming {
             .takeIf { it.isFinite() && it >= 1.0f }
             ?.coerceAtMost(MAX_SYNC_RATE)
             ?: MAX_SYNC_RATE
-        val syncRate = maxOf(1.0, audioDurationMs / lineDurationMs.toDouble())
+        val desiredSyncRate = audioDurationMs / lineDurationMs.toDouble()
+        val syncRate = maxOf(1.0, desiredSyncRate)
             .coerceAtMost(safeMaxRate.toDouble()).toFloat()
 
-        // Skip speech that belongs to elapsed video time (for late TTS or a seek into a cue).
+        // Skip elapsed speech for late starts, then determine whether the remaining tail can fit
+        // in the remaining media window at the safe rate. If it cannot, preserve that tail and
+        // let the playback scheduler finish this sentence before advancing to another cue.
         val offset = floor(elapsedMs.toDouble() * syncRate * sampleRate / 1000.0)
             .toInt().coerceIn(0, sampleCount)
         val budget = ceil(remainingMs.toDouble() * syncRate * sampleRate / 1000.0)
             .toInt().coerceAtLeast(0)
-        val count = min(sampleCount - offset, budget).coerceAtLeast(0)
+        val availableSamples = (sampleCount - offset).coerceAtLeast(0)
+        val overrunsWindow = desiredSyncRate > safeMaxRate.toDouble() && availableSamples > budget
+        val count = if (overrunsWindow) availableSamples else min(availableSamples, budget).coerceAtLeast(0)
         val truncated = offset + count < sampleCount
         val outputRate = (syncRate * safePlayerSpeed).coerceIn(0.5f, MAX_OUTPUT_RATE)
-        return DubbingPlaybackPlan(offset, count, syncRate, outputRate, truncated)
+        return DubbingPlaybackPlan(offset, count, syncRate, outputRate, truncated, overrunsWindow)
     }
 
     /**

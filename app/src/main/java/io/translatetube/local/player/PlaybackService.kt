@@ -4697,7 +4697,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         val dubLine = if (d != null) d.lineAt(ms) else -1
         // AudioTrack startup is asynchronous; publish the newest media playhead even while PCM
         // is loading so the audio executor can skip elapsed speech instead of starting late.
+        val previousDubbingLine = d?.currentLineIdx() ?: -1
         d?.updateTimelinePosition(dubLine, ms)
+        val keepingPreviousDubbingCue = d?.shouldContinueCurrentCue(dubLine) == true
         // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
         // index uses the same overlap/time-window rules as dubbing, without depending on an engine
         // that may be between old and replacement subtitle sessions.
@@ -4708,9 +4710,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
 
         if (d != null && st.dubbingOn) {
-            // A silent/failed cue has no dubbed audio to mask the source. Restore the source track
-            // and clear the mute preference so subsequent timeline ticks cannot silence it again.
-            if (dubLine >= 0 && d.isSilent(dubLine)) {
+            if (keepingPreviousDubbingCue) {
+                // A live/overrun sentence owns the output until its completion marker fires. Do
+                // not interrupt it at a subtitle boundary or unmute the source under its tail.
+                d.updatePlayerSpeed(pm.playbackSpeed())
+                d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
+            } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
                 ui.update { state ->
@@ -4747,7 +4752,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 // Do not silence the video during asynchronous TTS/AudioTrack startup. The
                 // original is muted only after the dubbed voice has actually started.
-                val voiceStarted = d.hasStartedPlaybackFor(dubLine)
+                val voiceStarted = d.hasStartedPlaybackFor(dubLine) ||
+                    (keepingPreviousDubbingCue && d.hasStartedPlaybackFor(previousDubbingLine))
                 pm.originalVolume = when {
                     st.muteOriginal -> 0f
                     !voiceStarted -> 1f
