@@ -160,6 +160,8 @@ class DubbingEngine(
         activePlaybackGuard = null
         val staleUtteranceId = activeTimelineUtteranceId
         activeTimelineUtteranceId = null
+        activeCueOverrunsWindow = false
+        activeTrackFinalChunkSampleCount = -1
         playbackGeneration.incrementAndGet() to staleUtteranceId
     }
 
@@ -184,6 +186,10 @@ class DubbingEngine(
     @Volatile private var playbackStartedLine = -1
     /** Exact direct-TTS utterance owned by the current playback generation. */
     @Volatile private var activeTimelineUtteranceId: String? = null
+    /** A too-long PCM cue must finish its remaining samples before another cue can replace it. */
+    @Volatile private var activeCueOverrunsWindow = false
+    /** Sample count of the current static buffer when it is the final buffer of an overrun cue. */
+    @Volatile private var activeTrackFinalChunkSampleCount = -1
 
     fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
         // Validate every incoming resource and timeline before publishing state. Even an over-limit
@@ -1406,8 +1412,43 @@ class DubbingEngine(
         lineEndMs: Long,
         initialHeadPosition: Int = 0,
     ) {
-        if (chunkEndSample >= samples.size || chunkEndSample <= chunkStartSample) return
+        if (chunkEndSample <= chunkStartSample) return
         val chunkSampleCount = chunkEndSample - chunkStartSample
+        if (chunkEndSample >= samples.size) {
+            sourceTrack.setPlaybackPositionUpdateListener(
+                object : AudioTrack.OnPlaybackPositionUpdateListener {
+                    override fun onMarkerReached(callbackTrack: AudioTrack) {
+                        if (callbackTrack !== sourceTrack) return
+                        try {
+                            audioExec.execute {
+                                if (released || playbackGeneration.get() != generation || track !== sourceTrack) {
+                                    return@execute
+                                }
+                                synchronized(playbackControlLock) {
+                                    if (playbackGeneration.get() == generation && _currentLine.value == lineIndex) {
+                                        activeCueOverrunsWindow = false
+                                        activeTrackFinalChunkSampleCount = -1
+                                    }
+                                }
+                            }
+                        } catch (_: java.util.concurrent.RejectedExecutionException) {
+                            // The next player tick also checks the final static buffer's playback head.
+                        }
+                    }
+
+                    override fun onPeriodicNotification(callbackTrack: AudioTrack) = Unit
+                },
+                Handler(Looper.getMainLooper()),
+            )
+            val result = sourceTrack.setNotificationMarkerPosition(chunkSampleCount)
+            if (result != AudioTrack.SUCCESS) {
+                android.util.Log.w(
+                    "DubbingEngine",
+                    "OEM rejected final cue completion marker (status=$result); playback-head polling remains enabled",
+                )
+            }
+            return
+        }
         val markerCandidates = DubbingChunkTransitionPolicy.markerPositionCandidates(
             chunkSampleCount = chunkSampleCount,
             sampleRate = sampleRate,
@@ -1563,6 +1604,9 @@ class DubbingEngine(
                                     initialHeadPosition = headOffset,
                                 )
                                 track = nextTrack
+                                activeTrackFinalChunkSampleCount = if (nextChunk.endSample >= samples.size) {
+                                    nextChunk.endSample - nextChunk.startSample
+                                } else -1
                                 runCatching { sourceTrack.release() }
                                 if (!startTrackIfCurrent(nextTrack, generation)) {
                                     throw kotlinx.coroutines.CancellationException(
@@ -1609,6 +1653,8 @@ class DubbingEngine(
                                 if (released || playbackGeneration.get() != generation ||
                                     error is kotlinx.coroutines.CancellationException
                                 ) return@execute
+                                activeCueOverrunsWindow = false
+                                activeTrackFinalChunkSampleCount = -1
                                 android.util.Log.w("DubbingEngine", "Unable to advance long dubbing cue", error)
                                 val detail = error.message ?: error.javaClass.simpleName
                                 markCuePrepared(lineIndex, hasAudio = false)
@@ -1851,6 +1897,57 @@ class DubbingEngine(
         latestTimelineCursor = DubbingTimelineCursor(lineIndex, positionMs.coerceAtLeast(0L))
     }
 
+    /**
+     * Keep a live System TTS utterance or an overlong PCM tail alive across normal subtitle
+     * boundaries. The next tick will start the newest still-current cue after this sentence ends.
+     */
+    fun shouldContinueCurrentCue(nextLineIndex: Int): Boolean {
+        if (released) return false
+        val currentIndex = _currentLine.value
+        if (currentIndex < 0 || currentIndex == nextLineIndex) return false
+
+        val directTtsActive =
+            (tts as? TimelineTtsPlayback)?.useDirectTimelinePlayback == true &&
+                activeTimelineUtteranceId != null
+
+        var audioFinished = false
+        if (activeCueOverrunsWindow) {
+            val activeTrack = track
+            if (activeTrack != null) {
+                val finalChunkSamples = activeTrackFinalChunkSampleCount
+                val playedSamples = activeTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
+                // A stopped intermediate chunk may be about to transition to another chunk.
+                // Only the final chunk's end, or an explicit stop after playback began, completes a cue.
+                audioFinished = playbackStartedLine == currentIndex && finalChunkSamples > 0 &&
+                    (activeTrack.playState == AudioTrack.PLAYSTATE_STOPPED ||
+                        playedSamples >= finalChunkSamples.toLong())
+            }
+            if (audioFinished) {
+                synchronized(playbackControlLock) {
+                    val latestTrack = track
+                    val latestFinalChunkSamples = activeTrackFinalChunkSampleCount
+                    val finalChunkReached = playbackStartedLine == currentIndex && latestTrack != null &&
+                        latestFinalChunkSamples > 0 &&
+                        (latestTrack.playbackHeadPosition.toLong() and 0xffff_ffffL) >= latestFinalChunkSamples.toLong()
+                    val finalChunkStopped = playbackStartedLine == currentIndex && latestTrack != null &&
+                        latestFinalChunkSamples > 0 && latestTrack.playState == AudioTrack.PLAYSTATE_STOPPED
+                    if (track == null || finalChunkReached || finalChunkStopped) {
+                        activeCueOverrunsWindow = false
+                        activeTrackFinalChunkSampleCount = -1
+                    }
+                }
+            }
+        }
+
+        return DubbingOverrunPolicy.shouldHold(
+            currentLineIndex = currentIndex,
+            nextLineIndex = nextLineIndex,
+            liveUtteranceActive = directTtsActive,
+            pcmOverrunActive = activeCueOverrunsWindow,
+            currentAudioFinished = audioFinished,
+        )
+    }
+
     /** 播放某一行（先停上一行）。
      *  AudioTrack 创建/写入/播放（含文件 load IO）全部在专用线程，不阻塞调用方（主线程 tick）。 */
     fun playAt(
@@ -1863,6 +1960,13 @@ class DubbingEngine(
         if (released) return
         val line = lines.getOrNull(idx) ?: return
         if (!DubbingTimeline.isPlayableCue(line)) return
+        if (shouldContinueCurrentCue(idx)) {
+            android.util.Log.d(
+                "DubbingEngine",
+                "Keep sentence ${_currentLine.value + 1} playing until completion before cue ${idx + 1}",
+            )
+            return
+        }
         stop()
         activeVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
         // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
@@ -1948,6 +2052,7 @@ class DubbingEngine(
                     val stillCurrent = synchronized(playbackControlLock) {
                         if (activeTimelineUtteranceId == utteranceId) {
                             activeTimelineUtteranceId = null
+                            activeCueOverrunsWindow = false
                         }
                         !released &&
                             playbackGeneration.get() == generation &&
@@ -1972,6 +2077,7 @@ class DubbingEngine(
                 synchronized(playbackControlLock) {
                     if (activeTimelineUtteranceId == utteranceId) {
                         activeTimelineUtteranceId = null
+                        activeCueOverrunsWindow = false
                     }
                     if (playbackGeneration.get() == generation && _currentLine.value == idx) {
                         playbackStartedLine = -1
@@ -2034,7 +2140,20 @@ class DubbingEngine(
                         positionMs = position,
                         playerSpeed = currentSpeed,
                     )
-                    if (plan.truncated) {
+                    synchronized(playbackControlLock) {
+                        if (playbackGeneration.get() == generation && _currentLine.value == idx) {
+                            activeCueOverrunsWindow = plan.overrunsWindow
+                            activeTrackFinalChunkSampleCount = -1
+                        }
+                    }
+                    if (plan.overrunsWindow) {
+                        android.util.Log.w(
+                            "DubbingEngine",
+                            "长句超过安全同步倍率，保留剩余完整音频并等待本句结束：line=${idx + 1}, " +
+                                "sourceSamples=${samples.size}, remainingSamples=${samples.size - plan.startSample}, " +
+                                "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, windowMs=${line.endMs - line.startMs}",
+                        )
+                    } else if (plan.truncated) {
                         android.util.Log.w(
                             "DubbingEngine",
                             "长句配音超出可同步时间窗，按最高同步倍率截取尾部：line=${idx + 1}, " +
@@ -2091,7 +2210,12 @@ class DubbingEngine(
                         newTrack = createdChunk.track
                         chunkEnd = createdChunk.endSample
                         created = newTrack
-                        if (track === oldTrack) track = newTrack
+                        if (track === oldTrack) {
+                            track = newTrack
+                            activeTrackFinalChunkSampleCount = if (chunkEnd >= playbackSamples.size) {
+                                chunkEnd - chunkStart
+                            } else -1
+                        }
                         newTrack.setVolume(activeVolume.coerceIn(0.0f, 1.0f))
                         runCatching {
                             newTrack.setPlaybackParams(
@@ -2160,6 +2284,9 @@ class DubbingEngine(
                         }
                     }
                     track = newTrack
+                    activeTrackFinalChunkSampleCount = if (chunkEnd >= playbackSamples.size) {
+                        chunkEnd - chunkStart
+                    } else -1
                     activeSyncRate = plan.syncRate
                     activePlaybackRate = playbackRate
                     if (released || playbackGeneration.get() != generation) {
@@ -2229,6 +2356,8 @@ class DubbingEngine(
                     if (released || playbackGeneration.get() != generation ||
                         e is kotlinx.coroutines.CancellationException
                     ) return@execute
+                    activeCueOverrunsWindow = false
+                    activeTrackFinalChunkSampleCount = -1
                     // Avoid an endless 100 ms retry loop after an AudioTrack output failure.
                     // The service sees this marker and restores original video audio.
                     markCuePrepared(idx, hasAudio = false)

@@ -88,7 +88,7 @@ class DubbingTimingTest {
     }
 
     @Test
-    fun overlongSpeechIsBoundedToCueWindowAndFaded() {
+    fun speechBeyondSafeSyncRateIsPreservedAndMarkedAsTimelineOverrun() {
         val samples = FloatArray(5_000) { 1.0f }
         val plan = DubbingTiming.createPlan(
             sampleCount = samples.size, sampleRate = 1_000,
@@ -96,10 +96,30 @@ class DubbingTimingTest {
             positionMs = 0, playerSpeed = 1.0f,
         )
         val playable = DubbingTiming.slice(samples, plan, 1_000)
-        assertEquals(3_000, plan.sampleCount)
-        assertEquals(3_000, playable.size)
-        assertTrue(plan.truncated)
-        assertEquals(0.0f, playable.last(), 0.0001f)
+        assertEquals(samples.size, plan.sampleCount)
+        assertEquals(samples.size, playable.size)
+        assertFalse(plan.truncated)
+        assertTrue(plan.overrunsWindow)
+        assertEquals(1.0f, playable.last(), 0.0001f)
+    }
+
+    @Test
+    fun lateStartingOverlongSpeechKeepsItsRemainingTail() {
+        val samples = FloatArray(5_000) { 0.25f }
+        val plan = DubbingTiming.createPlan(
+            sampleCount = samples.size,
+            sampleRate = 1_000,
+            lineStartMs = 0L,
+            lineEndMs = 1_000L,
+            positionMs = 200L,
+            playerSpeed = 1.0f,
+        )
+        val playable = DubbingTiming.slice(samples, plan, 1_000)
+        assertEquals(600, plan.startSample)
+        assertEquals(4_400, plan.sampleCount)
+        assertTrue(plan.overrunsWindow)
+        assertFalse(plan.truncated)
+        assertEquals(4_400, playable.size)
     }
 
     @Test
