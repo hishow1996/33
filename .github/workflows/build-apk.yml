@@ -1,5 +1,7 @@
 name: Build Android APK
 
+# Explicit APK build trigger for the dedicated storage-management screen.
+
 # User-requested rebuild trigger for latest main commit 3ceecff (2026-10-18).
 
 # Explicit rebuild request after hardening subtitle-seek recovery and direct System TTS utterance lifecycle.
