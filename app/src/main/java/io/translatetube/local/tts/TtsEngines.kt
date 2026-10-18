@@ -395,7 +395,7 @@ class SystemTts(
             if (engine.voice?.name != targetVoice.name && engine.setVoice(targetVoice) != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 无法切换到所选中文音色：${targetVoice.name}")
             }
-            val safeSpeed = TtsSpeechRatePolicy.normalize(speed)
+            val safeSpeed = TtsSpeechRatePolicy.normalizeTimeline(speed)
             if (engine.setSpeechRate(safeSpeed) != TextToSpeech.SUCCESS) {
                 throw IllegalStateException("系统 TTS 无法设置即时朗读语速")
             }

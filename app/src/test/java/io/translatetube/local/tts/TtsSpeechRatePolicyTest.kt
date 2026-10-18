@@ -8,7 +8,14 @@ class TtsSpeechRatePolicyTest {
     fun normalizesFiniteRatesToSupportedRange() {
         assertEquals(0.5f, TtsSpeechRatePolicy.normalize(0.1f), 0.001f)
         assertEquals(1.5f, TtsSpeechRatePolicy.normalize(1.5f), 0.001f)
-        assertEquals(2.0f, TtsSpeechRatePolicy.normalize(4.0f), 0.001f)
+        assertEquals(3.0f, TtsSpeechRatePolicy.normalize(4.0f), 0.001f)
+    }
+
+    @Test
+    fun timelineSpeechCanScaleForFastVideoWithoutChangingNormalSynthesisBounds() {
+        assertEquals(4.0f, TtsSpeechRatePolicy.normalizeTimeline(4.0f), 0.001f)
+        assertEquals(6.0f, TtsSpeechRatePolicy.normalizeTimeline(9.0f), 0.001f)
+        assertEquals(3.0f, TtsSpeechRatePolicy.normalize(9.0f), 0.001f)
     }
 
     @Test

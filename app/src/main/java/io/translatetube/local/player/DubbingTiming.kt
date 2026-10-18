@@ -20,8 +20,8 @@ internal data class DubbingPlaybackPlan(
 )
 
 internal object DubbingTiming {
-    const val MAX_SYNC_RATE = 2.0f
-    private const val MAX_OUTPUT_RATE = 4.0f
+    const val MAX_SYNC_RATE = 3.0f
+    const val MAX_OUTPUT_RATE = 6.0f
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L
@@ -109,9 +109,8 @@ internal object DubbingTiming {
         }
 
         val audioDurationMs = sampleCount.toDouble() * 1000.0 / sampleRate
-        // The actual AudioTrack rate is capped at MAX_OUTPUT_RATE and player speed can reach
-        // 2x. Keep this synchronization component bounded too, or math would assume faster
-        // playback than the audio sink can deliver and subtitle timing would drift.
+        // The output rate includes both subtitle-window synchronization and the user's video speed.
+        // Cap the components together so a fast video does not silently clip a long utterance.
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
             ?.coerceAtMost(MAX_SYNC_RATE)
