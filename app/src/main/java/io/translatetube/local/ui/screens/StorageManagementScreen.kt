@@ -13,7 +13,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Database
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
@@ -325,7 +324,7 @@ private fun StorageRow(category: StorageCategory, value: String, onClick: () -> 
         StorageCategory.SUBTITLES -> Icons.Filled.Subtitles
         StorageCategory.MODELS -> Icons.Filled.Memory
         StorageCategory.HISTORY -> Icons.Filled.History
-        StorageCategory.DATABASE -> Icons.Filled.Database
+        StorageCategory.DATABASE -> Icons.Filled.FolderOpen
         StorageCategory.LOGS -> Icons.Filled.Description
     }
     Surface(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).clickable(onClick = onClick), color = Color.White, shape = RoundedCornerShape(15.dp), border = BorderStroke(1.dp, OutlineSoft)) {
