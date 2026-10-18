@@ -229,8 +229,8 @@ object AppLogStore {
             }
         }
         if (recentTrail.isNotBlank() && (level == "WARN" || level == "ERROR" || level == "FATAL")) {
-            append("出错前最近操作/异常轨迹（最多 16 条，按先后顺序）：\\n")
-            append(recentTrail).append('\\n')
+            append("出错前最近操作/异常轨迹（最多 16 条，按先后顺序）：\n")
+            append(recentTrail).append('\n')
         }
         if (level == "WARN" || level == "ERROR" || level == "FATAL") {
             val runtime = Runtime.getRuntime()
