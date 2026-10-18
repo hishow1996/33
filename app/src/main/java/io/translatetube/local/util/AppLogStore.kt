@@ -30,14 +30,29 @@ object AppLogStore {
     private const val MAX_READ_RECORDS = 800
     private val lock = Any()
 
-    fun info(context: Context, tag: String, message: String, details: String = "") =
-        append(context, "INFO", tag, message, details)
+    fun info(
+        context: Context,
+        tag: String,
+        message: String,
+        details: String = "",
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ) = append(context, "INFO", tag, message, details, diagnosticContext)
 
-    fun warning(context: Context, tag: String, message: String, failure: Throwable? = null) =
-        append(context, "WARN", tag, message, failure?.let(::stackTrace).orEmpty())
+    fun warning(
+        context: Context,
+        tag: String,
+        message: String,
+        failure: Throwable? = null,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ) = append(context, "WARN", tag, message, failureDetails(failure), diagnosticContext)
 
-    fun error(context: Context, tag: String, message: String, failure: Throwable? = null) =
-        append(context, "ERROR", tag, message, failure?.let(::stackTrace).orEmpty())
+    fun error(
+        context: Context,
+        tag: String,
+        message: String,
+        failure: Throwable? = null,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ) = append(context, "ERROR", tag, message, failureDetails(failure), diagnosticContext)
 
     fun recordUncaught(
         context: Context,
@@ -54,11 +69,15 @@ object AppLogStore {
             tag = "UncaughtException",
             message = failure.javaClass.name + failure.message?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty(),
             details = buildString {
-                append("status=").append(status).append('\n')
-                append("thread=").append(threadName).append('\n')
-                append(stackTrace(failure))
+                append("崩溃类型：").append(status).append('\n')
+                append(failureDetails(failure))
             },
             threadName = threadName,
+            diagnosticContext = mapOf(
+                "异常线程" to threadName,
+                "处理方式" to if (status == "FATAL") "交由 Android 默认崩溃处理器，进程退出" else "后台异常被保护，进程继续运行",
+                "异常类" to failure.javaClass.name,
+            ),
         )
     }
 
@@ -129,7 +148,17 @@ object AppLogStore {
         tag: String,
         message: String,
         details: String,
-    ) = appendAt(context, System.currentTimeMillis(), level, tag, message, details, Thread.currentThread().name)
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ) = appendAt(
+        context = context,
+        timestampMs = System.currentTimeMillis(),
+        level = level,
+        tag = tag,
+        message = message,
+        details = details,
+        threadName = Thread.currentThread().name,
+        diagnosticContext = diagnosticContext,
+    )
 
     private fun appendAt(
         context: Context,
@@ -139,6 +168,7 @@ object AppLogStore {
         message: String,
         details: String,
         threadName: String,
+        diagnosticContext: Map<String, String> = emptyMap(),
     ) {
         synchronized(lock) {
             try {
@@ -146,7 +176,9 @@ object AppLogStore {
                 if (!directory.exists() && !directory.mkdirs()) return
                 pruneOldFiles(directory)
                 val file = File(directory, LOG_NAME)
-                val safeDetails = redact(details).take(MAX_DETAIL_CHARS)
+                val safeDetails = redact(
+                    enrichDetails(context, level, details, threadName, diagnosticContext),
+                ).take(MAX_DETAIL_CHARS)
                 val row = JSONObject()
                     .put("timestampMs", timestampMs)
                     .put("level", redact(level).take(12))
@@ -158,10 +190,46 @@ object AppLogStore {
                 if (file.exists() && file.length() + row.toByteArray(Charsets.UTF_8).size + 1 > MAX_FILE_BYTES) {
                     rotate(directory)
                 }
-                File(File(directory, LOG_NAME).absolutePath).appendText(row + "\n", Charsets.UTF_8)
+                File(directory, LOG_NAME).appendText(row + "\n", Charsets.UTF_8)
             } catch (_: Throwable) {
                 // Diagnostics must never cause or amplify an application crash.
             }
+        }
+    }
+
+    private fun enrichDetails(
+        context: Context,
+        level: String,
+        details: String,
+        threadName: String,
+        diagnosticContext: Map<String, String>,
+    ): String = buildString {
+        if (diagnosticContext.isNotEmpty()) {
+            append("故障上下文（用于定位发生时的状态）：\n")
+            diagnosticContext.toSortedMap().forEach { (key, value) ->
+                append("- ").append(key).append("：").append(value).append('\n')
+            }
+        }
+        if (level == "WARN" || level == "ERROR" || level == "FATAL") {
+            val runtime = Runtime.getRuntime()
+            append("运行环境：\n")
+            append("- 应用版本：")
+                .append(runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"))
+                .append('\n')
+            append("- 设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
+            append("- Android：").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
+            append("- CPU ABI：").append(Build.SUPPORTED_ABIS.firstOrNull().orEmpty()).append('\n')
+            append("- 线程：").append(threadName).append('\n')
+            append("- Java 堆内存：已用约 ")
+                .append(((runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L) / (1024L * 1024L)))
+                .append(" MB / 最大 ")
+                .append((runtime.maxMemory() / (1024L * 1024L)))
+                .append(" MB\n")
+        }
+        if (details.isNotBlank()) {
+            append("异常详情与调用堆栈：\n")
+            append(details)
+            if (!details.endsWith('\n')) append('\n')
         }
     }
 
@@ -217,8 +285,35 @@ object AppLogStore {
         directory.listFiles()?.filter { it.isFile && it.lastModified() < cutoff }?.forEach { it.delete() }
     }
 
-    private fun stackTrace(failure: Throwable): String =
-        StringWriter().also { writer -> PrintWriter(writer).use { failure.printStackTrace(it) } }.toString()
+    private fun failureDetails(failure: Throwable?): String {
+        if (failure == null) return ""
+        return buildString {
+            append("异常根因链：\n")
+            val seen = java.util.Collections.newSetFromMap(
+                java.util.IdentityHashMap<Throwable, Boolean>(),
+            )
+            var current: Throwable? = failure
+            var depth = 0
+            while (current != null && seen.add(current) && depth < 12) {
+                append("#").append(depth).append(' ')
+                    .append(current.javaClass.name)
+                current.message?.takeIf { it.isNotBlank() }?.let { append(": ").append(it) }
+                append('\n')
+                current.suppressed.take(4).forEach { suppressed ->
+                    append("  附加异常：").append(suppressed.javaClass.name)
+                    suppressed.message?.takeIf { it.isNotBlank() }?.let { append(": ").append(it) }
+                    append('\n')
+                }
+                current = current.cause
+                depth++
+            }
+            if (current != null) append("根因链已截断或存在循环引用。\n")
+            append("\n完整调用堆栈（包括 Caused by / Suppressed）：\n")
+            append(StringWriter().also { writer ->
+                PrintWriter(writer).use { failure.printStackTrace(it) }
+            }.toString())
+        }
+    }
 
     /** Redact common credential fields and signed query parameters before writing or exporting. */
     private fun redact(input: String): String {
