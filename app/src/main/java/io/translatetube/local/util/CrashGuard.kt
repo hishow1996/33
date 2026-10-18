@@ -57,7 +57,8 @@ internal object CrashGuard {
             }
         }
 
-        AppLogStore.info(application, "Application", "应用启动，崩溃监控已启用")
+        AppLogStore.beginProcessSession(application)
+        AppLogStore.info(application, "Application", "全局异常捕获器已安装")
         showPreviousFatalIfPresent(application)
     }
 
