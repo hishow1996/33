@@ -57,6 +57,7 @@ internal object CrashGuard {
             }
         }
 
+        AppLogStore.info(application, "Application", "应用启动，崩溃监控已启用")
         showPreviousFatalIfPresent(application)
     }
 
@@ -106,12 +107,19 @@ internal object CrashGuard {
                 val directory = File(application.filesDir, "crash")
                 if (!directory.exists() && !directory.mkdirs()) {
                     Log.w(TAG, "Unable to create crash log directory: ${directory.absolutePath}")
-                    return
+                } else {
+                    File(directory, "last_exception.txt").writeText(record, Charsets.UTF_8)
                 }
-                File(directory, "last_exception.txt").writeText(record, Charsets.UTF_8)
             } catch (writeFailure: Throwable) {
                 Log.w(TAG, "Unable to write last exception record", writeFailure)
             }
+        }
+        // Keep the existing last-crash file and also append this failure to the unified
+        // local log so earlier context and the full stack can be inspected in-app.
+        runCatching {
+            AppLogStore.recordUncaught(application, status, thread.name, failure, timestampMs)
+        }.onFailure { loggingFailure ->
+            Log.w(TAG, "Unable to append uncaught exception to application log", loggingFailure)
         }
     }
 
