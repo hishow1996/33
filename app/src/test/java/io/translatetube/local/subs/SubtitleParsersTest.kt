@@ -765,4 +765,123 @@ class SubtitleParsersTest {
         )
     }
 
+    @Test
+    fun youtubeRollingCaptionsKeepEachSpokenLineOnlyOnce() {
+        // YouTube 自动字幕：每个 cue 带着上一行，中间夹着 10ms 的闪烁段。
+        val source = """
+            WEBVTT
+
+            00:00:01.870 --> 00:00:01.880
+            Everybody, Peter Zeihan here, coming to
+
+            00:00:01.880 --> 00:00:04.550
+            Everybody, Peter Zeihan here, coming to
+            you from Colorado. It's a nice fall day.
+
+            00:00:04.550 --> 00:00:04.560
+            you from Colorado. It's a nice fall day.
+
+            00:00:04.560 --> 00:00:05.710
+            you from Colorado. It's a nice fall day.
+            Figured I'd get out and stretch the
+
+            00:00:05.710 --> 00:00:05.720
+            Figured I'd get out and stretch the
+
+            00:00:05.720 --> 00:00:08.270
+            Figured I'd get out and stretch the
+            legs. Uh today we're going to talk about
+
+            00:00:08.270 --> 00:00:08.280
+            legs. Uh today we're going to talk about
+
+            00:00:08.280 --> 00:00:10.230
+            legs. Uh today we're going to talk about
+            um new developments in Southeast Asia.
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAuto(source)
+
+        assertEquals(
+            listOf(
+                Triple(1_870L, 4_550L, "Everybody, Peter Zeihan here, coming to you from Colorado. It's a nice fall day."),
+                Triple(4_560L, 5_710L, "Figured I'd get out and stretch the"),
+                Triple(5_720L, 8_270L, "legs. today we're going to talk about"),
+                Triple(8_280L, 10_230L, "new developments in Southeast Asia."),
+            ),
+            parsed.map { Triple(it.startMs, it.endMs, it.text) },
+        )
+        assertEquals(listOf(0, 1, 2, 3), parsed.map { it.index })
+    }
+
+    @Test
+    fun rollingCaptionsDropLinesThatOnlyContainFillersOrSoundAnnotations() {
+        val source = """
+            WEBVTT
+
+            00:00:01.000 --> 00:00:03.000
+            more under the Chinese thumb than, say,
+            uh
+
+            00:00:03.000 --> 00:00:03.010
+            uh
+
+            00:00:03.010 --> 00:00:05.000
+            uh
+            Belarus is under Russia's thumb, for
+
+            00:00:05.000 --> 00:00:05.010
+            Belarus is under Russia's thumb, for
+
+            00:00:05.010 --> 00:00:07.000
+            Belarus is under Russia's thumb, for
+            [snorts] example.
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAuto(source)
+
+        assertEquals(
+            listOf("more under the Chinese thumb than, say,", "Belarus is under Russia's thumb, for", "example."),
+            parsed.map { it.text },
+        )
+    }
+
+    @Test
+    fun ordinaryMultiLineCuesAreNotTreatedAsRollingCaptions() {
+        val source = """
+            WEBVTT
+
+            00:00:00.000 --> 00:00:02.000
+            Hello there.
+            How are you?
+
+            00:00:02.000 --> 00:00:04.000
+            Fine, thanks.
+            And you?
+
+            00:00:04.000 --> 00:00:06.000
+            Good.
+            Great.
+        """.trimIndent()
+
+        val parsed = SubtitleParsers.parseAuto(source)
+
+        assertEquals(
+            listOf("Hello there.\nHow are you?", "Fine, thanks.\nAnd you?", "Good.\nGreat."),
+            parsed.map { it.text },
+        )
+    }
+
+    @Test
+    fun cleanSpokenTextRemovesFillersAndSoundAnnotationsOnly() {
+        assertEquals("the new one is in Laos", SubtitleParsers.cleanSpokenText("Um [snorts] the new one is in Laos"))
+        assertEquals("to be, kind", SubtitleParsers.cleanSpokenText("to be, um, kind"))
+        assertEquals("la la", SubtitleParsers.cleanSpokenText("♪ la la ♪"))
+        assertEquals("", SubtitleParsers.cleanSpokenText("[Music]"))
+        assertEquals("", SubtitleParsers.cleanSpokenText("uh"))
+        // 带连字符的肯定回答、以及恰好以 um 开头的普通单词不能被误删。
+        assertEquals("uh-huh, sure", SubtitleParsers.cleanSpokenText("uh-huh, sure"))
+        assertEquals("an umbrella", SubtitleParsers.cleanSpokenText("an umbrella"))
+    }
+
 }
