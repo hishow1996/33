@@ -225,7 +225,10 @@ fun PlayerScreen(
                 // Do not let a non-fatal runtime/linkage error in service startup terminate the
                 // Compose coroutine and process. VM-fatal conditions must still propagate.
                 if (e is VirtualMachineError || e is ThreadDeath) throw e
-                android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
+                io.translatetube.local.util.AppLogStore.error(
+    ctx.applicationContext, "PlayerScreen", "启动播放器服务或恢复播放任务失败", e,
+)
+android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 PlaybackService.ui.update {
                     it.copy(
                         phase = Phase.ERROR,
