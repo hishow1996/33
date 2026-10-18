@@ -194,9 +194,14 @@ object AppLogStore {
         }
         val advice = exitReasonAdvice(exitInfo.reason)
         val trace = readExitTrace(exitInfo)
+        val processStateSummary = runCatching {
+            exitInfo.processStateSummary?.toString(Charsets.UTF_8).orEmpty()
+        }.getOrDefault("")
         val details = buildString {
             append("Android 系统进程退出诊断：\n")
             append("- 系统退出原因：").append(reasonName).append('\n')
+            append("- 应用退出前阶段摘要：")
+                .append(processStateSummary.ifBlank { "系统没有保存可用的阶段摘要" }).append('\n')
             append("- 系统状态码：").append(exitInfo.status).append('\n')
             append("- 系统描述：").append(exitInfo.description.orEmpty().ifBlank { "系统未提供描述" }).append('\n')
             append("- 进程名称：").append(exitInfo.processName.orEmpty()).append('\n')
@@ -229,6 +234,7 @@ object AppLogStore {
                 "退出时 RSS KB" to exitInfo.rss.toString(),
                 "退出时间" to formatTime(exitInfo.timestamp),
                 "可能原因及建议" to advice,
+                "应用退出前阶段摘要" to processStateSummary.ifBlank { "不可用" },
                 "是否包含系统跟踪" to trace.isNotBlank().toString(),
             ),
         )
@@ -236,6 +242,25 @@ object AppLogStore {
         return true
     }
 
+    /**
+     * Preserve a compact, non-sensitive snapshot in ActivityManager process-state metadata.
+     * Android may attach it to ApplicationExitInfo even if queued file logs were not flushed.
+     * The platform limit is 128 bytes; this payload is deliberately ASCII-only and <= 120 bytes.
+     */
+    fun updateProcessStateSummary(context: Context, summary: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        runCatching {
+            val safe = summary
+                .map { if (it.code in 32..126) it else '_' }
+                .joinToString("")
+                .take(120)
+            if (safe.isBlank()) return
+            val manager = context.applicationContext
+                .getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                ?: return
+            manager.setProcessStateSummary(safe.toByteArray(Charsets.US_ASCII))
+        }
+    }
     private fun readExitTrace(exitInfo: ApplicationExitInfo): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return ""
         return runCatching {
