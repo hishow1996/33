@@ -1,19 +1,20 @@
 package io.translatetube.local.player
 
 /**
- * Only pay for a second full TTS pass when the audio cannot reasonably fit inside its subtitle
- * window at the playback engine's maximum synchronization rate. This policy is shared by
- * Kokoro, Piper and System TTS, so ordinary overlong cues are sped up on the playback timeline
- * instead of being synthesized twice.
+ * Keep adaptive synthesis retry limited to extreme cues. Ordinary synchronization stays within a
+ * natural playback-rate bound; if the sentence still cannot fit, the service holds the video until
+ * playback finishes instead of stretching the voice to an unintelligible speed.
  */
 internal object DubbingSynthesisPolicy {
     private const val LONG_CUE_RATIO = 3.0
     private const val TARGET_CUE_FILL = 0.90
+    // This is a storage/PCM safety bound, not the normal synchronization playback rate. A cue that
+    // exceeds 1.35x is allowed to finish while video is held, so preserve a larger bounded tail.
+    private const val MAX_CACHED_CUE_DURATION_RATIO = 6.0
 
     /**
-     * Audio beyond the subtitle window multiplied by the maximum sync rate can never be played.
-     * Avoid caching that unused tail on long videos; a caller still keeps the original if the
-     * bounded prefix is not valid audible PCM.
+     * Retain long-cue tails that may finish while the video is held. Bound the cache payload to a
+     * multiple of the subtitle window and the global PCM sample ceiling to protect device memory.
      */
     fun maxUsefulSampleCount(
         sampleRate: Int,
@@ -23,7 +24,7 @@ internal object DubbingSynthesisPolicy {
         if (sampleRate !in 8_000..192_000 || cueDurationMs <= 0L || maxSamples <= 0) return 0
         val useful = kotlin.math.ceil(
             cueDurationMs.toDouble() * sampleRate.toDouble() *
-                DubbingTiming.MAX_SYNC_RATE.toDouble() / 1_000.0
+                MAX_CACHED_CUE_DURATION_RATIO / 1_000.0
         )
         if (!useful.isFinite() || useful >= maxSamples.toDouble()) return maxSamples
         return useful.toInt().coerceIn(1, maxSamples)

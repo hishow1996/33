@@ -47,9 +47,10 @@ class DubbingTimingTest {
             lineStartMs = 0, lineEndMs = 2_000,
             positionMs = 500, playerSpeed = 1.0f,
         )
-        assertEquals(1_000, plan.startSample)
-        assertEquals(3_000, plan.sampleCount)
-        assertEquals(2.0f, plan.syncRate, 0.001f)
+        assertEquals(675, plan.startSample)
+        assertEquals(3_325, plan.sampleCount)
+        assertEquals(1.35f, plan.syncRate, 0.001f)
+        assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
     }
 
@@ -115,15 +116,15 @@ class DubbingTimingTest {
             playerSpeed = 1.0f,
         )
         val playable = DubbingTiming.slice(samples, plan, 1_000)
-        assertEquals(600, plan.startSample)
-        assertEquals(4_400, plan.sampleCount)
+        assertEquals(270, plan.startSample)
+        assertEquals(4_730, plan.sampleCount)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
-        assertEquals(4_400, playable.size)
+        assertEquals(4_730, playable.size)
     }
 
     @Test
-    fun longUtteranceFitsWithinCueAtThreeTimesSyncRate() {
+    fun longUtteranceBeyondNaturalRateIsPreservedForVideoHold() {
         val samples = FloatArray(3_000) { 0.2f }
         val plan = DubbingTiming.createPlan(
             sampleCount = samples.size,
@@ -134,8 +135,9 @@ class DubbingTimingTest {
             playerSpeed = 1.0f,
         )
 
-        assertEquals(3.0f, plan.syncRate, 0.001f)
+        assertEquals(1.35f, plan.syncRate, 0.001f)
         assertEquals(samples.size, plan.sampleCount)
+        assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
         assertSame(samples, DubbingTiming.slice(samples, plan, 1_000))
     }
@@ -147,8 +149,10 @@ class DubbingTimingTest {
             lineStartMs = 0, lineEndMs = 2_000,
             positionMs = 500, playerSpeed = 1.5f,
         )
-        assertEquals(1_000, plan.startSample)
-        assertEquals(3.0f, plan.playbackRate, 0.001f)
+        assertEquals(675, plan.startSample)
+        assertEquals(1.35f, plan.syncRate, 0.001f)
+        assertEquals(2.025f, plan.playbackRate, 0.001f)
+        assertTrue(plan.overrunsWindow)
     }
 
     @Test

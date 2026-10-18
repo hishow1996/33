@@ -2015,8 +2015,7 @@ class DubbingEngine(
             }
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
             val estimatedSpeechMs = spokenText.codePointCount(0, spokenText.length) * 220L
-            val timingRate = (estimatedSpeechMs.toFloat() / cueDurationMs.toFloat())
-                .coerceIn(0.75f, DubbingTiming.MAX_SYNC_RATE)
+            val timingRate = DubbingSyncHoldPolicy.timelineRate(estimatedSpeechMs, cueDurationMs)
             val requiresVideoHold = DubbingSyncHoldPolicy.requiresVideoHold(
                 estimatedSpeechMs = estimatedSpeechMs,
                 cueDurationMs = cueDurationMs,
@@ -2598,7 +2597,11 @@ class DubbingEngine(
         val normalized = DubbingTiming.normalizePlayerSpeed(speed)
         if (kotlin.math.abs(normalized - activePlayerSpeed) < 0.01f) return
         activePlayerSpeed = normalized
-        val rate = (activeSyncRate * normalized).coerceIn(0.5f, DubbingTiming.MAX_OUTPUT_RATE)
+        val rate = DubbingSyncHoldPolicy.playbackRate(
+            syncRate = activeSyncRate,
+            playerSpeed = normalized,
+            willHoldVideo = activeCueOverrunsWindow,
+        )
         if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
         activePlaybackRate = rate
         val active = track ?: return
