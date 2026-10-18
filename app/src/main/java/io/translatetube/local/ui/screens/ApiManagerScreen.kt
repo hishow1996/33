@@ -65,6 +65,72 @@ import android.widget.Toast
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.withContext
 
+/** 内置的免密钥在线翻译引擎卡片：点选即切换，右侧可测试连通性。 */
+@Composable
+private fun BuiltinWebEngineCard(
+    title: String,
+    subtitle: String,
+    initial: String,
+    selected: Boolean,
+    testing: Boolean,
+    onSelect: () -> Unit,
+    onTest: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (selected) Color(0xFFEAF1FF) else Color.White)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (selected) Color(0xFF3569D4) else Color(0xFFE3E9F2),
+                shape = RoundedCornerShape(18.dp),
+            )
+            .clickable { onSelect() }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(52.dp).clip(RoundedCornerShape(15.dp))
+                .background(if (selected) Color(0xFFEAF1FF) else Color(0xFFF7F9FC)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                initial,
+                color = Color(0xFF3569D4),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            )
+        }
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(
+                title,
+                color = OnBg,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            )
+            Text(subtitle, color = SubText, style = MaterialTheme.typography.bodySmall)
+        }
+        if (selected) {
+            Surface(
+                color = Color(0xFF3569D4),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    "正在使用",
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+        }
+        TextButton(onClick = onTest, enabled = !testing) {
+            Text(if (testing) "测试中…" else "测试")
+        }
+    }
+}
+
 @Composable
 fun ApiManagerScreen(onBack: () -> Unit) {
     androidx.activity.compose.BackHandler { onBack() }
@@ -263,6 +329,30 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
             if (googleExpanded) item(key = "google_section") {
                 GoogleTranslateSection()
+            }
+
+            // 免密钥在线引擎：微软翻译、百度翻译（非正式网页接口，可能被限流或调整）
+            item(key = "builtin_microsoft") {
+                BuiltinWebEngineCard(
+                    title = "微软翻译",
+                    subtitle = "免费在线 · 无需 Key",
+                    initial = "微",
+                    selected = activeId == EngineFactory.ID_MICROSOFT,
+                    testing = testingFreeModel == "微软翻译",
+                    onSelect = { setActive(EngineFactory.ID_MICROSOFT) },
+                    onTest = { testFreeModel(EngineFactory.ID_MICROSOFT, "微软翻译") },
+                )
+            }
+            item(key = "builtin_baidu") {
+                BuiltinWebEngineCard(
+                    title = "百度翻译",
+                    subtitle = "免费在线 · 无需 Key · 逐句翻译较慢",
+                    initial = "百",
+                    selected = activeId == EngineFactory.ID_BAIDU,
+                    testing = testingFreeModel == "百度翻译",
+                    onSelect = { setActive(EngineFactory.ID_BAIDU) },
+                    onTest = { testFreeModel(EngineFactory.ID_BAIDU, "百度翻译") },
+                )
             }
 
             // 2. 用户自定义添加的 API 列表
