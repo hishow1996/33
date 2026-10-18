@@ -226,8 +226,26 @@ fun PlayerScreen(
                 // Compose coroutine and process. VM-fatal conditions must still propagate.
                 if (e is VirtualMachineError || e is ThreadDeath) throw e
                 io.translatetube.local.util.AppLogStore.error(
-    ctx.applicationContext, "PlayerScreen", "启动播放器服务或恢复播放任务失败", e,
-)
+                    ctx.applicationContext,
+                    "PlayerScreen",
+                    "启动播放器服务或恢复播放任务失败",
+                    e,
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            videoId != null -> "YouTube"
+                            !mediaUrl.isNullOrBlank() -> "网页视频/远程媒体"
+                            localUri != null -> "本地视频"
+                            else -> "未知来源"
+                        },
+                        "当前处理阶段" to PlaybackService.ui.value.phase.name,
+                        "当前处理进度" to PlaybackService.ui.value.progress.take(200),
+                        "当前翻译引擎" to PlaybackService.ui.value.engineName.ifBlank { "未确定" },
+                        "当前配音引擎配置" to selectedTtsEngine,
+                        "本次播放请求标记" to requestToken.toString(),
+                        "重试计数" to retryNonce.toString(),
+                        "播放器服务是否存在" to (PlaybackService.instance != null).toString(),
+                    ),
+                )
 android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 PlaybackService.ui.update {
                     it.copy(
