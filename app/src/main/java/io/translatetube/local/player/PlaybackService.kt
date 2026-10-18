@@ -726,7 +726,8 @@ class PlaybackService : MediaSessionService() {
                 val contextSnapshot = mapOf(
                     "前一阶段" to before.phase.name,
                     "当前阶段" to after.phase.name,
-                    "当前处理步骤" to after.progress.take(200),
+                    "当前处理步骤" to after.progress.ifBlank { after.failedProgress }.take(200),
+                    "出错前阶段" to after.failedPhase?.name.orEmpty().ifBlank { "未记录" },
                     "当前错误提示" to after.error.orEmpty().take(200),
                     "翻译引擎" to after.engineName.ifBlank { "未确定" },
                     "配音引擎" to after.ttsEngineName.ifBlank { "未确定" },
@@ -741,6 +742,29 @@ class PlaybackService : MediaSessionService() {
                 )
                 // File I/O must not run on the UI thread; the event is queued on the service scope.
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    val statePrefs = getSharedPreferences("settings", MODE_PRIVATE)
+                    val sourceKind = when {
+                        after.key.startsWith("youtube:") -> "youtube"
+                        after.key.startsWith("remote:") -> "web"
+                        after.key.startsWith("local:") -> "local"
+                        after.key.startsWith("webpage:") -> "webpage"
+                        else -> "other"
+                    }
+                    val compactProcessState = listOf(
+                        "p=${after.phase.name}",
+                        "src=$sourceKind",
+                        "tts=${statePrefs.getString("tts_engine", "unknown") ?: "unknown"}",
+                        "api=${statePrefs.getLong("active_api_id", -1L)}",
+                        "tr=${after.translatedLineCount}/${after.totalLines}",
+                        "dub=${after.preparedCount}",
+                        "pause=${if (after.isProcessingPaused) 1 else 0}",
+                        "play=${if (after.isPlaying) 1 else 0}",
+                        "err=${if (after.phase == Phase.ERROR) 1 else 0}",
+                    ).joinToString(";")
+                    io.translatetube.local.util.AppLogStore.updateProcessStateSummary(
+                        this@PlaybackService,
+                        compactProcessState,
+                    )
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
                         "PlaybackTrace",
