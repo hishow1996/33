@@ -1,5 +1,7 @@
 name: Build Android APK
 
+# User-requested rebuild trigger for latest main commit 3ceecff (2026-10-18).
+
 # Explicit rebuild request after hardening subtitle-seek recovery and direct System TTS utterance lifecycle.
 # Explicit rebuild request after keeping the player page visible during subtitle-seek buffering.
 # Explicit retry trigger after fixing the VideoSourceKind import in subtitle processing UI.
