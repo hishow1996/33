@@ -266,7 +266,20 @@ fun WebVideoScreen(
                 throw e
             } catch (e: Exception) {
                 io.translatetube.local.util.AppLogStore.error(
-                    appCtx, "WebVideoParse", "网页视频解析失败", e,
+                    appCtx,
+                    "WebVideoParse",
+                    "网页视频解析失败",
+                    e,
+                    diagnosticContext = mapOf(
+                        "页面主机名" to (runCatching { android.net.Uri.parse(target).host }.getOrNull() ?: "未知"),
+                        "解析器" to "yt-dlp",
+                        "页面标题" to pageTitle.take(120),
+                        "解析运行代数" to runGeneration.toString(),
+                        "页面导航代数" to requestGeneration.toString(),
+                        "规则更新后是否已自动重试" to rulesUpdatedForRetry.toString(),
+                        "当前页面是否仍活跃" to screenActive.get().toString(),
+                        "候选视频数量" to candidatesState.value.size.toString(),
+                    ),
                 )
                 Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
                 mainHandler.post {
@@ -287,7 +300,16 @@ fun WebVideoScreen(
                                 io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
                             } catch (updateError: Exception) {
                                 io.translatetube.local.util.AppLogStore.error(
-                                    appCtx, "YtDlp", "解析失败后自动更新规则失败", updateError,
+                                    appCtx,
+                                    "YtDlp",
+                                    "网页视频解析失败后自动更新规则也失败",
+                                    updateError,
+                                    diagnosticContext = mapOf(
+                                        "页面主机名" to (runCatching { android.net.Uri.parse(target).host }.getOrNull() ?: "未知"),
+                                        "解析运行代数" to runGeneration.toString(),
+                                        "页面导航代数" to requestGeneration.toString(),
+                                        "自动更新规则" to "已尝试",
+                                    ),
                                 )
                                 mainHandler.post {
                                     status = "解析规则自动更新失败，可稍后在设置里手动更新后重试。"
@@ -838,7 +860,15 @@ fun WebVideoScreen(
                                     throw e
                                 } catch (e: Exception) {
                                     io.translatetube.local.util.AppLogStore.error(
-                                        appCtx, "YtDlp", "手动更新网页视频解析规则失败", e,
+                                        appCtx,
+                                        "YtDlp",
+                                        "手动更新网页视频解析规则失败",
+                                        e,
+                                        diagnosticContext = mapOf(
+                                            "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
+                                            "操作" to "用户从网页视频页手动更新规则",
+                                            "当前页面是否仍活跃" to screenActive.get().toString(),
+                                        ),
                                     )
                                     mainHandler.post {
                                         updatingRules = false
