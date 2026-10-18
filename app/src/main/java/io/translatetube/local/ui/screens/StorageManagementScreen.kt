@@ -178,8 +178,15 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
                 Text(it, Modifier.padding(11.dp), color = if (messageError) DangerRed else Color(0xFF216E39), style = MaterialTheme.typography.bodySmall)
             }
         }
-        if (category == null) StorageHome(data, scanning) { category = it; message = null }
-        else StorageDetail(category!!, data, scanning, destructiveBusy, actionBusy, ::requestClear, onOpenLogs)
+        if (category == null) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                StorageHome(data, scanning) { category = it; message = null }
+            }
+        } else {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                StorageDetail(category!!, data, scanning, destructiveBusy, actionBusy, ::requestClear, onOpenLogs)
+            }
+        }
     }
 
     pending?.let { action ->
