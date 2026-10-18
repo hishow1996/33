@@ -29,6 +29,8 @@ object AppLogStore {
     private const val MAX_DETAIL_CHARS = 24_000
     private const val MAX_READ_RECORDS = 800
     private val lock = Any()
+    private val recentEvents = java.util.ArrayDeque<String>()
+    private const val MAX_RECENT_EVENTS = 16
 
     fun info(
         context: Context,
@@ -182,8 +184,12 @@ object AppLogStore {
                 if (!directory.exists() && !directory.mkdirs()) return
                 pruneOldFiles(directory)
                 val file = File(directory, LOG_NAME)
+                val shouldIncludeTrail = level == "WARN" || level == "ERROR" || level == "FATAL"
+                val trail = if (shouldIncludeTrail && recentEvents.isNotEmpty()) {
+                    recentEvents.joinToString(separator = "\n")
+                } else ""
                 val safeDetails = redact(
-                    enrichDetails(context, level, details, threadName, diagnosticContext),
+                    enrichDetails(context, level, details, threadName, diagnosticContext, trail),
                 ).take(MAX_DETAIL_CHARS)
                 val row = JSONObject()
                     .put("timestampMs", timestampMs)
@@ -197,6 +203,11 @@ object AppLogStore {
                     rotate(directory)
                 }
                 File(directory, LOG_NAME).appendText(row + "\n", Charsets.UTF_8)
+                val crumb = "${formatTime(timestampMs)} [${redact(level)}] ${redact(tag)} · ${redact(message)}"
+                    .replace(Regex("\\s+"), " ")
+                    .take(600)
+                recentEvents.addLast(crumb)
+                while (recentEvents.size > MAX_RECENT_EVENTS) recentEvents.removeFirst()
             } catch (_: Throwable) {
                 // Diagnostics must never cause or amplify an application crash.
             }
@@ -209,12 +220,17 @@ object AppLogStore {
         details: String,
         threadName: String,
         diagnosticContext: Map<String, String>,
+        recentTrail: String,
     ): String = buildString {
         if (diagnosticContext.isNotEmpty()) {
             append("故障上下文（用于定位发生时的状态）：\n")
             diagnosticContext.toSortedMap().forEach { (key, value) ->
                 append("- ").append(key).append("：").append(value).append('\n')
             }
+        }
+        if (recentTrail.isNotBlank() && (level == "WARN" || level == "ERROR" || level == "FATAL")) {
+            append("出错前最近操作/异常轨迹（最多 16 条，按先后顺序）：\\n")
+            append(recentTrail).append('\\n')
         }
         if (level == "WARN" || level == "ERROR" || level == "FATAL") {
             val runtime = Runtime.getRuntime()
