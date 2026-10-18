@@ -96,10 +96,28 @@ class DubbingTimingTest {
             positionMs = 0, playerSpeed = 1.0f,
         )
         val playable = DubbingTiming.slice(samples, plan, 1_000)
-        assertEquals(2_000, plan.sampleCount)
-        assertEquals(2_000, playable.size)
+        assertEquals(3_000, plan.sampleCount)
+        assertEquals(3_000, playable.size)
         assertTrue(plan.truncated)
         assertEquals(0.0f, playable.last(), 0.0001f)
+    }
+
+    @Test
+    fun longUtteranceFitsWithinCueAtThreeTimesSyncRate() {
+        val samples = FloatArray(3_000) { 0.2f }
+        val plan = DubbingTiming.createPlan(
+            sampleCount = samples.size,
+            sampleRate = 1_000,
+            lineStartMs = 0L,
+            lineEndMs = 1_000L,
+            positionMs = 0L,
+            playerSpeed = 1.0f,
+        )
+
+        assertEquals(3.0f, plan.syncRate, 0.001f)
+        assertEquals(samples.size, plan.sampleCount)
+        assertFalse(plan.truncated)
+        assertSame(samples, DubbingTiming.slice(samples, plan, 1_000))
     }
 
     @Test

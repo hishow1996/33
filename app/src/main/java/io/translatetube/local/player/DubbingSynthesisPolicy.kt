@@ -7,7 +7,7 @@ package io.translatetube.local.player
  * instead of being synthesized twice.
  */
 internal object DubbingSynthesisPolicy {
-    private const val LONG_CUE_RATIO = 2.0
+    private const val LONG_CUE_RATIO = 3.0
     private const val TARGET_CUE_FILL = 0.90
 
     /**
@@ -35,7 +35,7 @@ internal object DubbingSynthesisPolicy {
         sampleRate: Int,
         cueDurationMs: Long,
     ): Float {
-        val base = baseSpeed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val base = baseSpeed.takeIf { it.isFinite() }?.coerceIn(0.5f, 3.0f) ?: 1.0f
         if (sampleCount <= 0 || sampleRate !in 8_000..192_000 || cueDurationMs <= 0L) return base
 
         val audioDurationMs = sampleCount.toDouble() * 1_000.0 / sampleRate
@@ -45,6 +45,6 @@ internal object DubbingSynthesisPolicy {
         // Estimate a useful retry rate, leaving a little room for natural pauses. Provider output
         // may not scale linearly, so the caller accepts the retry only if it really is shorter.
         val estimate = base.toDouble() * audioDurationMs / (cueMs * TARGET_CUE_FILL)
-        return estimate.coerceIn(base.toDouble(), 2.0).toFloat()
+        return estimate.coerceIn(base.toDouble(), 3.0).toFloat()
     }
 }

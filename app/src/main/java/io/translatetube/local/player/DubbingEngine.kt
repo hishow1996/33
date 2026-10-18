@@ -1889,11 +1889,18 @@ class DubbingEngine(
                 return
             }
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
-            val estimatedSpeechMs = spokenText.length * 180L
+            val estimatedSpeechMs = spokenText.codePointCount(0, spokenText.length) * 220L
             val timingRate = (estimatedSpeechMs.toFloat() / cueDurationMs.toFloat())
-                .coerceIn(0.75f, 2.2f)
+                .coerceIn(0.75f, DubbingTiming.MAX_SYNC_RATE)
+            if (estimatedSpeechMs > cueDurationMs * DubbingTiming.MAX_SYNC_RATE.toLong()) {
+                android.util.Log.w(
+                    "DubbingEngine",
+                    "系统 TTS 长句预计仍超过字幕时间窗：line=${idx + 1}, estimatedMs=$estimatedSpeechMs, " +
+                        "windowMs=$cueDurationMs, maxRate=${DubbingTiming.MAX_SYNC_RATE}",
+                )
+            }
             val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
-            val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(
+            val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalizeTimeline(
                 speed * timingRate * timelineSpeed,
             )
             val utteranceId = "timeline-${System.nanoTime()}-$idx-$generation"
@@ -2027,6 +2034,14 @@ class DubbingEngine(
                         positionMs = position,
                         playerSpeed = currentSpeed,
                     )
+                    if (plan.truncated) {
+                        android.util.Log.w(
+                            "DubbingEngine",
+                            "长句配音超出可同步时间窗，按最高同步倍率截取尾部：line=${idx + 1}, " +
+                                "sourceSamples=${samples.size}, playableSamples=${plan.sampleCount}, " +
+                                "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed",
+                        )
+                    }
                     val playbackSamples = DubbingTiming.slice(samples, plan, sr) {
                         if (released || playbackGeneration.get() != generation) {
                             throw kotlinx.coroutines.CancellationException("配音切片已过期")
@@ -2130,7 +2145,7 @@ class DubbingEngine(
                     // synchronization rate with the newest player speed instead of a stale value.
                     val playbackRate = (
                         plan.syncRate * DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
-                    ).coerceIn(0.5f, 4.0f)
+                    ).coerceIn(0.5f, DubbingTiming.MAX_OUTPUT_RATE)
                     runCatching {
                         newTrack.setPlaybackParams(
                             PlaybackParams().setSpeed(playbackRate).setPitch(1.0f)
@@ -2423,7 +2438,7 @@ class DubbingEngine(
         val normalized = DubbingTiming.normalizePlayerSpeed(speed)
         if (kotlin.math.abs(normalized - activePlayerSpeed) < 0.01f) return
         activePlayerSpeed = normalized
-        val rate = (activeSyncRate * normalized).coerceIn(0.5f, 4.0f)
+        val rate = (activeSyncRate * normalized).coerceIn(0.5f, DubbingTiming.MAX_OUTPUT_RATE)
         if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
         activePlaybackRate = rate
         val active = track ?: return
