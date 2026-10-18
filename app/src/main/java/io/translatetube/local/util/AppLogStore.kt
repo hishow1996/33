@@ -1,8 +1,10 @@
 package io.translatetube.local.util
 
 import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
+import android.os.Process
 import org.json.JSONObject
 import java.io.File
 import java.io.PrintWriter
@@ -29,6 +31,12 @@ object AppLogStore {
     private const val RETENTION_MS = 7L * 24L * 60L * 60L * 1000L
     private const val MAX_DETAIL_CHARS = 24_000
     private const val MAX_READ_RECORDS = 800
+    private const val MAX_EXIT_TRACE_BYTES = 48 * 1024
+    private const val SESSION_PREFS = "app_log_process_session"
+    private const val KEY_SESSION_START_MS = "session_start_ms"
+    private const val KEY_SESSION_PID = "session_pid"
+    private const val KEY_LAST_EXIT_TIMESTAMP = "last_system_exit_timestamp"
+    private const val KEY_LAST_UNKNOWN_SESSION_START = "last_unknown_session_start"
     private val lock = Any()
     private val recentEvents = java.util.ArrayDeque<String>()
     private const val MAX_RECENT_EVENTS = 16
@@ -88,6 +96,207 @@ object AppLogStore {
                 "异常类" to failure.javaClass.name,
             ),
         )
+    }
+
+    /**
+     * Start a new process session and inspect the previous session's system exit report when
+     * Android provides one. Android 9 and older do not expose ApplicationExitInfo, so absence of
+     * a fatal Java exception is recorded only as "unknown", never mislabeled as a confirmed crash.
+     */
+    fun beginProcessSession(context: Context) {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val previousStart = prefs.getLong(KEY_SESSION_START_MS, 0L)
+        val previousPid = prefs.getInt(KEY_SESSION_PID, 0)
+        var capturedExit = false
+
+        if (previousStart > 0L && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            capturedExit = runCatching {
+                recordHistoricalProcessExit(app, prefs, previousStart)
+            }.getOrElse { failure ->
+                warning(app, "ProcessExitInfo", "读取 Android 历史进程退出记录失败", failure)
+                false
+            }
+        }
+
+        if (previousStart > 0L && !capturedExit) {
+            val lastUnknown = prefs.getLong(KEY_LAST_UNKNOWN_SESSION_START, 0L)
+            if (lastUnknown != previousStart) {
+                info(
+                    app,
+                    "ProcessLifecycle",
+                    "上次进程会话没有可用的系统退出报告；退出原因未知，不能单凭此记录认定为闪退",
+                    diagnosticContext = mapOf(
+                        "上次进程启动时间" to formatTime(previousStart),
+                        "上次进程 PID" to previousPid.toString(),
+                        "本次进程 PID" to Process.myPid().toString(),
+                        "系统版本是否支持进程退出报告" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R).toString(),
+                        "解释" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            "系统没有返回与上次会话匹配的新退出记录，或记录暂不可用"
+                        } else {
+                            "Android 9 及更低版本不提供 ApplicationExitInfo；可能是正常回收、用户强停、系统低内存、ANR 或原生层退出，无法仅由应用内标记区分"
+                        },
+                    ),
+                )
+                prefs.edit().putLong(KEY_LAST_UNKNOWN_SESSION_START, previousStart).apply()
+            }
+        }
+
+        // Synchronous commit is intentional: if the process dies immediately after startup, the
+        // next launch should still have a reliable reference timestamp for system exit reports.
+        prefs.edit()
+            .putLong(KEY_SESSION_START_MS, now)
+            .putInt(KEY_SESSION_PID, Process.myPid())
+            .commit()
+
+        info(
+            app,
+            "ProcessSession",
+            "应用进程会话启动",
+            diagnosticContext = mapOf(
+                "进程 PID" to Process.myPid().toString(),
+                "进程名称" to app.applicationInfo.processName.orEmpty().ifBlank { app.packageName },
+                "Android 版本" to Build.VERSION.RELEASE.orEmpty(),
+                "SDK 版本" to Build.VERSION.SDK_INT.toString(),
+                "会话启动时间" to formatTime(now),
+            ),
+        )
+    }
+
+    private fun recordHistoricalProcessExit(
+        context: Context,
+        prefs: android.content.SharedPreferences,
+        previousSessionStartMs: Long,
+    ): Boolean {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return false
+        val lastRecordedTimestamp = prefs.getLong(KEY_LAST_EXIT_TIMESTAMP, 0L)
+        val exitInfo = activityManager.getHistoricalProcessExitReasons(context.packageName, 0, 12)
+            .orEmpty()
+            .asSequence()
+            .filter { it.timestamp >= previousSessionStartMs }
+            .filter { it.timestamp > lastRecordedTimestamp }
+            .maxByOrNull { it.timestamp }
+            ?: return false
+
+        val reasonName = exitReasonName(exitInfo.reason)
+        val level = when (exitInfo.reason) {
+            ApplicationExitInfo.REASON_CRASH,
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "FATAL"
+            ApplicationExitInfo.REASON_ANR,
+            ApplicationExitInfo.REASON_LOW_MEMORY,
+            ApplicationExitInfo.REASON_SIGNALED,
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,
+            ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "ERROR"
+            else -> "INFO"
+        }
+        val advice = exitReasonAdvice(exitInfo.reason)
+        val trace = readExitTrace(exitInfo)
+        val details = buildString {
+            append("Android 系统进程退出诊断：\n")
+            append("- 系统退出原因：").append(reasonName).append('\n')
+            append("- 系统状态码：").append(exitInfo.status).append('\n')
+            append("- 系统描述：").append(exitInfo.description.orEmpty().ifBlank { "系统未提供描述" }).append('\n')
+            append("- 进程名称：").append(exitInfo.processName.orEmpty()).append('\n')
+            append("- 进程重要性：").append(exitInfo.importance).append('\n')
+            append("- 退出时 PSS：").append(exitInfo.pss).append(" KB\n")
+            append("- 退出时 RSS：").append(exitInfo.rss).append(" KB\n")
+            append("- 系统记录时间：").append(formatTime(exitInfo.timestamp)).append('\n')
+            append("- 诊断解释：").append(advice).append('\n')
+            if (trace.isNotBlank()) {
+                append("\n系统提供的退出跟踪（截取前 ").append(MAX_EXIT_TRACE_BYTES / 1024).append(" KB）：\n")
+                append(trace)
+            } else {
+                append("- 系统未提供可读取的 ANR/原生退出跟踪。\n")
+            }
+        }
+        appendAt(
+            context = context,
+            timestampMs = exitInfo.timestamp,
+            level = level,
+            tag = "ProcessExitInfo",
+            message = "上次进程退出：$reasonName；$advice",
+            details = details,
+            threadName = exitInfo.processName.orEmpty().ifBlank { "系统报告的已退出进程" },
+            diagnosticContext = mapOf(
+                "系统退出原因" to reasonName,
+                "系统退出状态码" to exitInfo.status.toString(),
+                "退出进程名称" to exitInfo.processName.orEmpty(),
+                "退出时进程重要性" to exitInfo.importance.toString(),
+                "退出时 PSS KB" to exitInfo.pss.toString(),
+                "退出时 RSS KB" to exitInfo.rss.toString(),
+                "退出时间" to formatTime(exitInfo.timestamp),
+                "可能原因及建议" to advice,
+                "是否包含系统跟踪" to trace.isNotBlank().toString(),
+            ),
+        )
+        prefs.edit().putLong(KEY_LAST_EXIT_TIMESTAMP, exitInfo.timestamp).commit()
+        return true
+    }
+
+    private fun readExitTrace(exitInfo: ApplicationExitInfo): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return ""
+        return runCatching {
+            val input = exitInfo.traceInputStream ?: return@runCatching ""
+            input.use { stream ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(4096)
+                var remaining = MAX_EXIT_TRACE_BYTES
+                while (remaining > 0) {
+                    val read = stream.read(buffer, 0, minOf(buffer.size, remaining))
+                    if (read <= 0) break
+                    output.write(buffer, 0, read)
+                    remaining -= read
+                }
+                output.toByteArray().toString(Charsets.UTF_8)
+                    .replace("\u0000", "")
+                    .take(12_000)
+            }
+        }.getOrDefault("")
+    }
+
+    private fun exitReasonName(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_EXIT_SELF -> "应用自行结束（REASON_EXIT_SELF）"
+        ApplicationExitInfo.REASON_SIGNALED -> "进程收到系统信号（REASON_SIGNALED）"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "系统因内存压力结束进程（REASON_LOW_MEMORY）"
+        ApplicationExitInfo.REASON_CRASH -> "Java/Kotlin 未捕获异常导致进程崩溃（REASON_CRASH）"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "原生层崩溃（JNI/C/C++/音视频或 ASR 本地库，REASON_CRASH_NATIVE）"
+        ApplicationExitInfo.REASON_ANR -> "应用无响应（ANR）"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "应用初始化失败"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "权限或系统策略变更导致进程结束"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "进程资源使用超出系统限制"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "系统记录为用户请求结束进程"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "用户从系统界面停止应用"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "依赖的系统进程或服务已退出"
+        ApplicationExitInfo.REASON_OTHER -> "系统记录的其他退出原因"
+        else -> "未识别的系统退出原因（代码 $reason）"
+    }
+
+    private fun exitReasonAdvice(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_CRASH ->
+            "系统确认发生 Java 崩溃。优先查看同一时间附近的 UncaughtException 日志和完整根因链；若缺少对应堆栈，可能崩溃记录写入前进程已终止。"
+        ApplicationExitInfo.REASON_CRASH_NATIVE ->
+            "系统判定为原生层崩溃，Java 异常捕获器可能收不到原因。查看附带的系统跟踪、JNI/native 库调用链、CPU ABI 与崩溃前的 ASR/音视频操作。"
+        ApplicationExitInfo.REASON_ANR ->
+            "系统判定应用无响应。检查退出跟踪中主线程在等待什么；重点排查主线程同步 I/O、长时间计算、锁等待和音视频/模型初始化是否阻塞界面。"
+        ApplicationExitInfo.REASON_LOW_MEMORY ->
+            "系统因内存压力结束进程。对照 PSS/RSS、Java 堆和最近操作，检查是否同时加载转写与配音模型、缓存完整音频/字幕或保留过多播放器资源。"
+        ApplicationExitInfo.REASON_SIGNALED ->
+            "进程由信号结束。检查系统状态码、退出跟踪与当时操作；可能涉及系统强制终止、原生崩溃信号或外部结束，不能仅靠信号类别断言具体代码缺陷。"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ->
+            "系统判定进程资源使用过高。检查退出前模型加载、音频缓存、后台解码和任务并发情况。"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE ->
+            "系统记录为进程初始化失败。优先查看启动阶段日志、Application 初始化、原生库加载和设备兼容性错误。"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED ->
+            "依赖的系统进程或服务退出。检查相邻时间的播放器、系统 TTS 服务、WebView 或媒体服务日志，并确认相关系统服务可用。"
+        ApplicationExitInfo.REASON_USER_REQUESTED,
+        ApplicationExitInfo.REASON_USER_STOPPED,
+        ApplicationExitInfo.REASON_EXIT_SELF ->
+            "系统把本次退出归类为用户请求或应用自行结束，通常不应单凭此原因判断为程序缺陷；对照操作轨迹确认是否主动退出或重启。"
+        else ->
+            "系统没有给出足够具体的根因。先对照退出时间附近的操作轨迹、同一会话的错误日志和设备状态，再结合复现步骤定位。"
     }
 
     fun readRecent(context: Context, limit: Int = 500): List<AppLogRecord> = synchronized(lock) {
