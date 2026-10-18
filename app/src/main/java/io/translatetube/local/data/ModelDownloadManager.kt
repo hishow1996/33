@@ -358,6 +358,20 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (e: Exception) {
+                            io.translatetube.local.util.AppLogStore.error(
+                                ctx.applicationContext,
+                                "ModelDownload",
+                                "配音模型下载或安装任务失败",
+                                e,
+                                diagnosticContext = mapOf(
+                                    "模型类别" to "TTS",
+                                    "下载阶段" to _tts.value.stageMessage.orEmpty().ifBlank { _tts.value.status.name },
+                                    "下载进度百分比" to _tts.value.progress.toString(),
+                                    "已下载 MB" to _tts.value.downloadedMB.toString(),
+                                    "模型总大小 MB" to _tts.value.totalMB.toString(),
+                                    "目标模型目录类型" to "TTS",
+                                ),
+                            )
                             Log.e("ModelDL", "TTS 下载任务异常", e)
                             _tts.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
                         } finally {
@@ -394,6 +408,20 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (e: Exception) {
+                            io.translatetube.local.util.AppLogStore.error(
+                                ctx.applicationContext,
+                                "ModelDownload",
+                                "转写模型下载或安装任务失败",
+                                e,
+                                diagnosticContext = mapOf(
+                                    "模型类别" to "ASR",
+                                    "当前选择的本地转写模型" to ModelFiles.selectedLocalAsrModelId(ctx),
+                                    "下载阶段" to _asr.value.stageMessage.orEmpty().ifBlank { _asr.value.status.name },
+                                    "下载进度百分比" to _asr.value.progress.toString(),
+                                    "已下载 MB" to _asr.value.downloadedMB.toString(),
+                                    "模型总大小 MB" to _asr.value.totalMB.toString(),
+                                ),
+                            )
                             Log.e("ModelDL", "ASR 下载任务异常", e)
                             _asr.value = ModelState(status = ModelStatus.FAILED, error = e.message ?: "下载任务异常")
                         } finally {
@@ -766,6 +794,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 throw e
                             } catch (e: Exception) {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    ctx.applicationContext,
+                                    "VADDownload",
+                                    "语音检测 VAD 模型下载源失败",
+                                    e,
+                                    diagnosticContext = mapOf(
+                                        "VAD 下载源序号" to (index + 1).toString(),
+                                        "VAD 下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                                        "目标文件名" to vad.name,
+                                        "当前完整性状态" to ModelFiles.isValidVadModel(vad).toString(),
+                                    ),
+                                )
                                 Log.w("ModelDL", "VAD 下载源失败: ${e.message}")
                             }
                         }
@@ -802,6 +842,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (sourceIndex == 0) {
                     primarySourceWasSlow = e is SlowDownloadSourceException
                 }
+                io.translatetube.local.util.AppLogStore.warning(
+                    ctx.applicationContext,
+                    "ModelDownload",
+                    "$kind 模型下载源失败，正在尝试下一源",
+                    e,
+                    diagnosticContext = mapOf(
+                        "模型类别" to kind.name,
+                        "下载源序号" to (sourceIndex + 1).toString(),
+                        "下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                        "目标目录类型" to destDir.name,
+                        "当前阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
+                        "下载进度百分比" to state.value.progress.toString(),
+                        "本次失败是否属于主下载源慢响应" to (e is SlowDownloadSourceException).toString(),
+                    ),
+                )
                 Log.w("ModelDL", "$kind 源失败: $lastError，尝试下一源")
             }
         }
