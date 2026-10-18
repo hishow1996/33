@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -> Unit, onStorageManagement: () -> Unit) {
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
@@ -764,97 +764,7 @@ Section("视频源（yt-dlp）") {
             }
         }
 
-        Section("存储管理") {
-            // Cache trees can contain large audio segments. Never scan them synchronously during
-            // composition; the first frame should remain responsive even when the cache is large.
-            var cacheSize by remember { mutableStateOf("计算中…") }
-            var showClearConfirm by remember { mutableStateOf(false) }
-            var cacheClearMessage by remember { mutableStateOf<String?>(null) }
-            var cacheClearing by remember { mutableStateOf(false) }
-            val cacheScope = rememberCoroutineScope()
-            LaunchedEffect(ctx) {
-                cacheSize = withContext(Dispatchers.IO) { formatCacheSize(ctx) }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("临时缓存", color = OnBg, style = MaterialTheme.typography.bodyLarge)
-                    Spacer(Modifier.height(3.dp))
-                    Text("当前占用 $cacheSize", color = SubText, style = MaterialTheme.typography.bodySmall)
-                }
-                OutlinedButton(
-                    enabled = !cacheBusy && !cacheClearing,
-                    onClick = {
-                        cacheClearMessage = null
-                        showClearConfirm = true
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
-                ) { Text("清理缓存") }
-            }
-            if (cacheBusy) {
-                Text(
-                    "视频播放、转写、配音或语音模型下载处理中，暂不能清理缓存，以免中断当前任务。",
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else if (cacheClearing) {
-                Text("正在清理临时缓存…", color = SubText, style = MaterialTheme.typography.bodySmall)
-            }
-            cacheClearMessage?.let {
-                Text(it, color = SubText, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(5.dp))
-            if (showClearConfirm) {
-                AlertDialog(
-                    onDismissRequest = { showClearConfirm = false },
-                    title = { Text("清理临时缓存？", color = OnBg) },
-                    text = {
-                        Text(
-                            if (cacheBusy) "当前仍有播放、处理或模型下载任务使用这些缓存。请先等待任务结束，再清理缓存。"
-                            else "将清理配音 PCM、系统 TTS 临时 WAV、转写音频和 HLS 分段缓存。历史记录、字幕缓存和已下载模型不会删除。",
-                            color = SubText,
-                        )
-                    },
-                    confirmButton = {
-                        TextButton(
-                            enabled = !cacheBusy && !cacheClearing,
-                            onClick = {
-                                if (!cacheBusy && !cacheClearing) {
-                                    showClearConfirm = false
-                                    cacheClearing = true
-                                    cacheClearMessage = null
-                                    cacheScope.launch {
-                                        try {
-                                            val result = withContext(Dispatchers.IO) {
-                                                val cleared = clearAppCache(ctx)
-                                                cleared to formatCacheSize(ctx)
-                                            }
-                                            cacheSize = result.second
-                                            cacheClearMessage = if (result.first) {
-                                                "临时缓存已清理。"
-                                            } else {
-                                                "部分缓存仍被占用，未能完全清理；请稍后重试。"
-                                            }
-                                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                            throw cancelled
-                                        } catch (error: Exception) {
-                                            android.util.Log.w("SettingsScreen", "清理临时缓存失败", error)
-                                            cacheClearMessage = "清理缓存失败；请检查存储空间后重试。"
-                                        } finally {
-                                            cacheClearing = false
-                                        }
-                                    }
-                                }
-                            },
-                        ) { Text(if (cacheClearing) "清理中…" else "确认清理", color = if (cacheBusy || cacheClearing) SubText else DangerRed) }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showClearConfirm = false }) { Text("取消", color = SubText) }
-                    },
-                    containerColor = SurfaceDark,
-                )
-            }
-        }
+        Section("存储管理", onHeaderClick = onStorageManagement) { }
 
         Section("关于应用") {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -908,7 +818,7 @@ private fun Section(
         "翻译引擎", "翻译设置" -> "API 服务商、翻译模型与密钥"
         "视频源（yt-dlp）" -> "更新网页视频解析规则"
         "播放体验" -> "悬浮窗和播放相关权限"
-        "存储管理" -> "查看并清理临时文件"
+        "存储管理" -> "查看占用、管理缓存和本地数据"
         "关于应用" -> "版本信息与应用说明"
         else -> "查看与管理相关选项"
     }
