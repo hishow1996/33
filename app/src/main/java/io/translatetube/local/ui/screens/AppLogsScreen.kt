@@ -79,13 +79,23 @@ fun AppLogsScreen(onBack: () -> Unit) {
     val visibleRecords = remember(records, filter) {
         when (filter) {
             "错误" -> records.filter { it.level == "ERROR" || it.level == "FATAL" }
-            "闪退" -> records.filter { it.level == "FATAL" || it.tag.contains("Crash", ignoreCase = true) || it.tag == "PreviousCrash" }
+            "闪退" -> records.filter {
+                it.level == "FATAL" ||
+                    it.tag.contains("Crash", ignoreCase = true) ||
+                    it.tag == "PreviousCrash" ||
+                    (it.tag == "ProcessExitInfo" && (it.level == "ERROR" || it.level == "FATAL"))
+            }
             "警告" -> records.filter { it.level == "WARN" }
             else -> records
         }
     }
     val errorCount = records.count { it.level == "ERROR" || it.level == "FATAL" }
-    val crashCount = records.count { it.level == "FATAL" || it.tag.contains("Crash", ignoreCase = true) || it.tag == "PreviousCrash" }
+    val crashCount = records.count {
+        it.level == "FATAL" ||
+            it.tag.contains("Crash", ignoreCase = true) ||
+            it.tag == "PreviousCrash" ||
+            (it.tag == "ProcessExitInfo" && (it.level == "ERROR" || it.level == "FATAL"))
+    }
     val warningCount = records.count { it.level == "WARN" }
 
     Column(
@@ -127,7 +137,7 @@ fun AppLogsScreen(onBack: () -> Unit) {
                 LogSummaryCard("闪退", crashCount.toString(), Modifier.weight(1f), DangerRed)
             }
             Text(
-                "保留最近 7 天的记录。遇到闪退时，优先打开“闪退”筛选并查看错误详情。",
+                "保留最近 7 天的记录。“闪退”筛选也会包含系统报告的原生崩溃、ANR 和低内存异常退出；正常关闭不会当成闪退。",
                 color = SubText,
                 style = MaterialTheme.typography.bodySmall,
             )
