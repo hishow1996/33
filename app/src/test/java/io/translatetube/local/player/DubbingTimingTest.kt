@@ -307,4 +307,65 @@ class DubbingTimingTest {
         assertEquals(0, plan.sampleCount)
     }
 
+    @Test
+    fun playableEndBorrowsTheSilentGapButNeverTouchesTheNextCue() {
+        // 空隙很大：最多借 3 秒
+        assertEquals(6_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, 10_000L))
+        // 空隙不大：借完后给下一条字幕留 120ms
+        assertEquals(3_380L, DubbingTiming.playableEndMs(1_000L, 3_000L, 3_500L))
+        // 空隙不够 / 紧挨着 / 重叠：原样返回
+        assertEquals(3_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, 3_100L))
+        assertEquals(3_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, 3_000L))
+        assertEquals(3_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, 2_000L))
+        // 最后一句没有下一条字幕
+        assertEquals(6_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, Long.MAX_VALUE))
+        // 非法时间窗和接近 Long 上限的值不被改动
+        assertEquals(500L, DubbingTiming.playableEndMs(1_000L, 500L, 10_000L))
+        assertEquals(Long.MAX_VALUE - 1L, DubbingTiming.playableEndMs(0L, Long.MAX_VALUE - 1L, Long.MAX_VALUE))
+    }
+
+    @Test
+    fun extendCueWindowsOnlyWidensSpokenCuesAndKeepsOrderAndIndices() {
+        val lines = listOf(
+            io.translatetube.local.subs.SubLine(0, 0L, 1_000L, "a", "甲"),
+            io.translatetube.local.subs.SubLine(1, 1_500L, 2_500L, "b", "乙"),
+            // 没有译文的字幕不配音，但它的开始时间仍然限制前一句能借多少
+            io.translatetube.local.subs.SubLine(2, 2_550L, 3_000L, "c", null),
+            io.translatetube.local.subs.SubLine(3, 3_000L, 4_000L, "d", "丁"),
+        )
+
+        val extended = DubbingTiming.extendCueWindows(lines)
+
+        assertEquals(lines.map { it.index }, extended.map { it.index })
+        assertEquals(lines.map { it.startMs }, extended.map { it.startMs })
+        assertEquals(
+            // a: 下一条 1500 → 借到 1380；b: 下一条 2550 放不下缓冲 → 不变；c 无译文 → 不变；d 最后一句 → +3000
+            listOf(1_380L, 2_500L, 3_000L, 7_000L),
+            extended.map { it.endMs },
+        )
+        assertEquals(lines.map { it.zh }, extended.map { it.zh })
+    }
+
+    @Test
+    fun borrowedGapAvoidsSpeedUpAndTruncationForALongTranslation() {
+        // 2.4 秒的配音，字幕只有 1 秒：原来只能加速到 2 倍并截断；借到 3 秒空隙后窗口有 4 秒，不用加速也不截断。
+        val sampleRate = 16_000
+        val sampleCount = 2_400 * sampleRate / 1_000
+        val original = DubbingTiming.createPlan(
+            sampleCount = sampleCount, sampleRate = sampleRate,
+            lineStartMs = 1_000L, lineEndMs = 2_000L, positionMs = 1_000L, playerSpeed = 1.0f,
+        )
+        val borrowedEnd = DubbingTiming.playableEndMs(1_000L, 2_000L, 10_000L)
+        val borrowed = DubbingTiming.createPlan(
+            sampleCount = sampleCount, sampleRate = sampleRate,
+            lineStartMs = 1_000L, lineEndMs = borrowedEnd, positionMs = 1_000L, playerSpeed = 1.0f,
+        )
+
+        assertTrue(original.truncated)
+        assertEquals(2.0f, original.syncRate, 0.001f)
+        assertFalse(borrowed.truncated)
+        assertEquals(1.0f, borrowed.syncRate, 0.001f)
+        assertEquals(sampleCount, borrowed.sampleCount)
+    }
+
 }
