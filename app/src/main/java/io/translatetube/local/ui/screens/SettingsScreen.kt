@@ -107,8 +107,17 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
                 throw cancelled
             } catch (error: Exception) {
                 io.translatetube.local.util.AppLogStore.error(
-    ctx.applicationContext, "SystemTTS", "读取系统中文音色列表失败", error,
-)
+                    ctx.applicationContext,
+                    "SystemTTS",
+                    "读取系统中文音色列表失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "当前选择的配音引擎" to ttsEngine,
+                        "系统 TTS 配音模式" to systemTtsMode,
+                        "当前保存的音色名称" to systemTtsVoiceName.ifBlank { "未选择" },
+                        "当前已缓存音色数" to systemTtsVoiceCatalog.size.toString(),
+                    ),
+                )
 systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.javaClass.simpleName}"
             } finally {
                 refreshingSystemTtsVoices = false
@@ -1013,9 +1022,18 @@ private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                io.translatetube.local.util.AppLogStore.warning(
-    appCtx, "TTSPreview", "配音音色试听失败", e,
-)
+                io.translatetube.local.util.AppLogStore.error(
+                    appCtx,
+                    "TTSPreview",
+                    "Kokoro 配音音色试听失败",
+                    e,
+                    diagnosticContext = mapOf(
+                        "试听音色编号" to speaker.toString(),
+                        "试听文本字符数" to "23",
+                        "音频输出" to "AudioTrack / 静态 PCM_FLOAT / 单声道",
+                        "试听线程" to Thread.currentThread().name,
+                    ),
+                )
 android.util.Log.w("SettingsScreen", "音色试听失败", e)
             } finally {
                 try { track?.stop() } catch (_: Exception) {}
@@ -1213,8 +1231,17 @@ private fun YtDlpUpdateSection() {
                             message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
                         } catch (e: Exception) {
                             io.translatetube.local.util.AppLogStore.error(
-    ctx.applicationContext, "YtDlp", "更新网页视频解析规则失败", e,
-)
+                                ctx.applicationContext,
+                                "YtDlp",
+                                "更新网页视频解析规则失败",
+                                e,
+                                diagnosticContext = mapOf(
+                                    "操作" to "设置页执行规则更新",
+                                    "更新前本机版本" to state.current.orEmpty().ifBlank { "未知" },
+                                    "检查到的最新版本" to state.latest.orEmpty().ifBlank { "未知" },
+                                    "更新中的状态" to state.checking.toString(),
+                                ),
+                            )
 message = "更新失败：${e.message ?: "网络错误"}"
                         } finally {
                             updating = false
@@ -1247,8 +1274,17 @@ message = "更新失败：${e.message ?: "网络错误"}"
                             }
                         } catch (e: Exception) {
                             io.translatetube.local.util.AppLogStore.warning(
-    ctx.applicationContext, "YtDlp", "检查网页视频解析规则更新失败", e,
-)
+                                ctx.applicationContext,
+                                "YtDlp",
+                                "检查网页视频解析规则更新失败",
+                                e,
+                                diagnosticContext = mapOf(
+                                    "操作" to "设置页强制检查规则版本",
+                                    "本机版本" to state.current.orEmpty().ifBlank { "未知" },
+                                    "已知最新版本" to state.latest.orEmpty().ifBlank { "未知" },
+                                    "是否正在检查" to state.checking.toString(),
+                                ),
+                            )
 message = "检查失败：${e.message ?: "网络错误"}"
                         }
                     }
