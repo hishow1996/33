@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.subs.SubLine
 import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -27,8 +28,51 @@ internal object DubbingTiming {
     private const val COPY_CHUNK_SAMPLES = 8_192
     private const val COPY_CHECK_MASK = 0x1fff
 
+    /** 一句配音最多向后借用的字幕空隙（毫秒）。 */
+    const val MAX_GAP_BORROW_MS = 3_000L
+    /** 借用空隙时给下一条字幕留的缓冲，避免两句配音首尾相贴。 */
+    private const val NEXT_CUE_GUARD_MS = 120L
+
     fun normalizePlayerSpeed(speed: Float): Float =
         speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+
+    /**
+     * 配音实际可用的结束时间：在不碰到下一条字幕的前提下，借用本句字幕后面的静音空隙。
+     * 译文常比原文长，只按字幕自己的时间窗播放就得加速甚至截断；有空隙时多给一点时间，
+     * 语速更自然。空隙不够（或后一条字幕与本条重叠）时原样返回，借用量最多 [MAX_GAP_BORROW_MS]。
+     */
+    fun playableEndMs(startMs: Long, endMs: Long, nextCueStartMs: Long): Long {
+        if (startMs < 0L || endMs <= startMs || endMs > Long.MAX_VALUE - MAX_GAP_BORROW_MS) return endMs
+        val room = nextCueStartMs - NEXT_CUE_GUARD_MS - endMs
+        if (room <= 0L) return endMs
+        return endMs + minOf(room, MAX_GAP_BORROW_MS)
+    }
+
+    /**
+     * 给每条有译文的字幕套上 [playableEndMs] 的时间窗；其余字幕、顺序、下标都不变。
+     * "下一条字幕"取所有可播放字幕里严格晚于本条开始的最早开始时间（含没有译文的），
+     * 保证借用的空隙里不会有任何别的字幕。
+     */
+    fun extendCueWindows(lines: List<SubLine>): List<SubLine> {
+        val starts = LongArray(lines.size)
+        var count = 0
+        for (line in lines) {
+            if (DubbingTimeline.isPlayableCue(line)) starts[count++] = line.startMs
+        }
+        java.util.Arrays.sort(starts, 0, count)
+        return lines.map { line ->
+            if (!DubbingTimeline.isPlayableCue(line) || line.zh.isNullOrBlank()) return@map line
+            var low = 0
+            var high = count
+            while (low < high) {
+                val middle = (low + high) ushr 1
+                if (starts[middle] <= line.startMs) low = middle + 1 else high = middle
+            }
+            val nextStart = if (low < count) starts[low] else Long.MAX_VALUE
+            val end = playableEndMs(line.startMs, line.endMs, nextStart)
+            if (end == line.endMs) line else line.copy(endMs = end)
+        }
+    }
 
     fun createPlan(
         sampleCount: Int,

@@ -195,7 +195,10 @@ class DubbingEngine(
             val normalized = lines.map { line ->
                 line.copy(zh = DubbingTranslationPolicy.usableText(line.text, line.zh, sourceLanguage))
             }
-            normalized to DubbingTimeline(normalized)
+            // 译文常比原文长：让每句配音在不碰到下一条字幕的前提下借用后面的静音空隙，
+            // 播放窗口、合成限速、超长截断都按这个窗口算；字幕显示/导出仍用原始时间。
+            val windowed = DubbingTiming.extendCueWindows(normalized)
+            windowed to DubbingTimeline(windowed)
         } catch (error: Exception) {
             runCatching { tts.close() }
             throw error
