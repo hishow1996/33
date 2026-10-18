@@ -18,6 +18,7 @@ name: Build Android APK
 # User-requested rebuild after fixing TextureView parent reuse during reparse.
 # Explicit retry trigger after fixing the duplicate unavailable-TTS fallback branch.
 # Regression rebuild after rejecting invalid TTS timing estimates before auto-pause.
+# Explicit rebuild trigger after limiting dubbing speed to a natural synchronization rate.
 on:
   # Preferred path: run only after a manual user request.
   workflow_dispatch:
