@@ -17,6 +17,7 @@ name: Build Android APK
 # Retry trigger after correcting the TTS preview log context reference.
 # User-requested rebuild after fixing TextureView parent reuse during reparse.
 # Explicit retry trigger after fixing the duplicate unavailable-TTS fallback branch.
+# Regression rebuild after rejecting invalid TTS timing estimates before auto-pause.
 on:
   # Preferred path: run only after a manual user request.
   workflow_dispatch:
