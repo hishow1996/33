@@ -25,7 +25,7 @@ import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.Phase
 import io.translatetube.local.yt.NewPipeRepo
 
-enum class Screen { HOME, PLAYER, WEB, SETTINGS, API }
+enum class Screen { HOME, PLAYER, WEB, SETTINGS, API, LOGS }
 
 /** Survives process death so an interrupted parse can be restarted from its original entry URL. */
 private data class PendingResumeTask(
@@ -90,6 +90,18 @@ class MainActivity : ComponentActivity() {
         val task = PendingResumeTask(tokenizedRequest.key, tokenizedRequest.key, generation)
         persistPendingResumeTask(task)
         pendingResumeTaskState.value = task
+        val source = when {
+            request.videoId != null -> "YouTube 视频"
+            request.webPageUrl != null -> "网页视频"
+            request.mediaUrl != null -> "网页媒体"
+            request.localUri != null -> "本地视频"
+            else -> "未知来源"
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            applicationContext,
+            "PlaybackFlow",
+            "开始播放请求：$source",
+        )
     }
 
     /** Keep the original web page as the recovery source if parsing resolves to a temporary media URL. */
@@ -107,6 +119,11 @@ class MainActivity : ComponentActivity() {
         val updated = current.copy(activeKey = tokenizedRequest.key)
         persistPendingResumeTask(updated)
         pendingResumeTaskState.value = updated
+        io.translatetube.local.util.AppLogStore.info(
+            applicationContext,
+            "PlaybackFlow",
+            "网页视频已解析出媒体地址，准备进入播放器",
+        )
     }
 
     private fun clearPendingResumeTask(expected: PendingResumeTask) {
@@ -239,8 +256,10 @@ class MainActivity : ComponentActivity() {
                             Screen.SETTINGS -> SettingsScreen(
                                 onBack = { screen = previousScreen },
                                 onApiManager = { screen = Screen.API },
+                                onAppLogs = { screen = Screen.LOGS },
                             )
                             Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })
+                            Screen.LOGS -> AppLogsScreen(onBack = { screen = Screen.SETTINGS })
                         }
                     }
                 }
