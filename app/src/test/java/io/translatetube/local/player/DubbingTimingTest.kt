@@ -288,10 +288,11 @@ class DubbingTimingTest {
             maxSyncRate = 10.0f,
         )
 
-        assertEquals(2.0f, plan.syncRate, 0.001f)
-        assertEquals(4.0f, plan.playbackRate, 0.001f)
-        assertEquals(2_000, plan.sampleCount)
-        assertTrue(plan.truncated)
+        assertEquals(3.0f, plan.syncRate, 0.001f)
+        assertEquals(6.0f, plan.playbackRate, 0.001f)
+        assertEquals(10_000, plan.sampleCount)
+        assertTrue(plan.overrunsWindow)
+        assertFalse(plan.truncated)
     }
 
 
@@ -386,7 +387,7 @@ class DubbingTimingTest {
 
     @Test
     fun borrowedGapAvoidsSpeedUpAndTruncationForALongTranslation() {
-        // 2.4 秒的配音，字幕只有 1 秒：原来只能加速到 2 倍并截断；借到 3 秒空隙后窗口有 4 秒，不用加速也不截断。
+        // A 2.4 s cue now fits within the 3x sync ceiling; borrowing a silent gap still lets it sound more natural.
         val sampleRate = 16_000
         val sampleCount = 2_400 * sampleRate / 1_000
         val original = DubbingTiming.createPlan(
@@ -399,8 +400,9 @@ class DubbingTimingTest {
             lineStartMs = 1_000L, lineEndMs = borrowedEnd, positionMs = 1_000L, playerSpeed = 1.0f,
         )
 
-        assertTrue(original.truncated)
-        assertEquals(2.0f, original.syncRate, 0.001f)
+        assertFalse(original.truncated)
+        assertEquals(2.4f, original.syncRate, 0.001f)
+        assertEquals(sampleCount, original.sampleCount)
         assertFalse(borrowed.truncated)
         assertEquals(1.0f, borrowed.syncRate, 0.001f)
         assertEquals(sampleCount, borrowed.sampleCount)
