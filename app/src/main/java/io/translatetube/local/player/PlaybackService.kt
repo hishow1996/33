@@ -761,10 +761,15 @@ class PlaybackService : MediaSessionService() {
                         "play=${if (after.isPlaying) 1 else 0}",
                         "err=${if (after.phase == Phase.ERROR) 1 else 0}",
                     ).joinToString(";")
-                    io.translatetube.local.util.AppLogStore.updateProcessStateSummary(
-                        this@PlaybackService,
-                        compactProcessState,
-                    )
+                    // This platform API is intentionally updated only when the processing
+                    // phase changes. The system may throttle frequent writes; detailed step logs
+                    // remain in the local file log and don't need to be sent to ActivityManager.
+                    if (phaseChanged) {
+                        io.translatetube.local.util.AppLogStore.updateProcessStateSummary(
+                            this@PlaybackService,
+                            compactProcessState,
+                        )
+                    }
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
                         "PlaybackTrace",
