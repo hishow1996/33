@@ -121,7 +121,7 @@ object SubtitleParsers {
             }
         }
         flush()
-        return normalizeTimeline(out, checkActive)
+        return normalizeTimeline(collapseRollingCaptions(out, checkActive), checkActive)
     }
 
     /** SRT（1 行格式 00:00:01,000 --> 00:00:04,000） */
@@ -577,6 +577,141 @@ object SubtitleParsers {
         }
         return out
     }
+
+    // ---- YouTube 自动字幕「滚动」格式整理 -------------------------------------------------
+
+    /** 时长不超过该值的 cue 视为 YouTube 的"闪烁段"（常见为 10ms，只用来把旧行顶上去）。 */
+    private const val ROLLING_FLASH_CUE_MAX_MS = 100L
+    /** 闪烁段与紧随其后的正式 cue 间隔不超过该值时，才把闪烁段的文字并入正式 cue。 */
+    private const val ROLLING_FLASH_MERGE_GAP_MS = 200L
+    /** 孤立闪烁段（后面接不上正式 cue）至少保留的显示时长。 */
+    private const val ROLLING_ORPHAN_MIN_VISIBLE_MS = 800L
+
+    /** [snorts] / [Music] / [BLANK_AUDIO] 这类音效标注，以及 ♪ 音符：不是说话内容，翻译和配音都不该处理。 */
+    private val rollingSoundAnnotationRegex = Regex("""\[[^\[\]]{1,40}]|[♪♫]+""")
+    /** 口头语 uh / um / uhm（不含 uh-huh 这类带连字符的肯定回答）。 */
+    private val rollingFillerRegex = Regex("""(?<![\w'-])(?:uh+|um+|uhm+)(?![\w'-])\s*,?""", RegexOption.IGNORE_CASE)
+    private val spaceBeforePunctuationRegex = Regex("""\s+([,.!?;:])""")
+    private val repeatedCommaRegex = Regex(""",(?:\s*,)+""")
+
+    /**
+     * YouTube 自动字幕的 WebVTT 是"滚动"格式：每个 cue 带着上一行再加一行新的，
+     * 中间还夹着 10ms 的闪烁段，所以同一句话会出现 2~3 次。
+     * 这里只保留每个 cue 里"新出现"的行，并沿用该 cue 的时间；普通字幕（没有这种上一行带下一行的结构）原样返回。
+     */
+    internal fun collapseRollingCaptions(
+        cues: List<SubLine>,
+        checkActive: () -> Unit = {},
+    ): List<SubLine> {
+        if (cues.size < 3) return cues
+        val cueLines = ArrayList<List<String>>(cues.size)
+        for ((index, cue) in cues.withIndex()) {
+            if ((index and 0xff) == 0) checkActive()
+            cueLines += cue.text.split('\n')
+                .map(::normalizeSubtitleWhitespace)
+                .filter { it.isNotEmpty() }
+        }
+        if (!looksLikeRollingCaptions(cueLines)) return cues
+
+        val out = ArrayList<SubLine>(cues.size / 2 + 1)
+        fun emit(startMs: Long, endMs: Long, rawText: String) {
+            val text = cleanSpokenText(rawText)
+            if (text.isEmpty() || endMs <= startMs) return
+            ensureCueCapacity(out.size)
+            out += SubLine(out.size, startMs, endMs, text)
+        }
+
+        var previousLines: List<String> = emptyList()
+        val held = StringBuilder() // 闪烁段里的新文字，等紧随其后的正式 cue 一起出
+        var heldStart = -1L
+        var heldEnd = -1L
+        fun flushHeld(nextStartMs: Long) {
+            if (held.isEmpty()) return
+            val end = maxOf(heldEnd, minOf(heldStart + ROLLING_ORPHAN_MIN_VISIBLE_MS, nextStartMs))
+            emit(heldStart, end, held.toString())
+            held.clear()
+        }
+
+        for ((index, cue) in cues.withIndex()) {
+            if ((index and 0xff) == 0) checkActive()
+            val lines = cueLines[index]
+            if (lines.isEmpty()) continue
+            val carried = carriedPrefixLength(previousLines, lines)
+            val fresh = lines.drop(carried)
+            previousLines = lines
+            val duration = cue.endMs - cue.startMs
+
+            if (fresh.isEmpty()) {
+                // 整个 cue 都是上一个 cue 的旧行：闪烁段直接丢掉；较长的重复段只延长上一句的显示时间。
+                if (duration > ROLLING_FLASH_CUE_MAX_MS && out.isNotEmpty()) {
+                    val last = out.last()
+                    out[out.lastIndex] = last.copy(endMs = maxOf(last.endMs, cue.endMs))
+                }
+                continue
+            }
+
+            val freshText = fresh.joinToString(" ")
+            if (duration <= ROLLING_FLASH_CUE_MAX_MS) {
+                if (held.isEmpty()) heldStart = cue.startMs else held.append(' ')
+                held.append(freshText)
+                heldEnd = cue.endMs
+                continue
+            }
+
+            var start = cue.startMs
+            var text = freshText
+            if (held.isNotEmpty()) {
+                if (cue.startMs - heldEnd <= ROLLING_FLASH_MERGE_GAP_MS) {
+                    start = heldStart
+                    text = held.toString() + " " + freshText
+                    held.clear()
+                } else {
+                    flushHeld(cue.startMs)
+                }
+            }
+            emit(start, cue.endMs, text)
+        }
+        flushHeld(Long.MAX_VALUE)
+        return out
+    }
+
+    /** 至少出现几处"新 cue 第一行 = 上一 cue 最后一行，且还带着新的一行"，才认定为滚动字幕。 */
+    private fun looksLikeRollingCaptions(cueLines: List<List<String>>): Boolean {
+        var pairs = 0
+        var rolling = 0
+        for (i in 1 until cueLines.size) {
+            val previous = cueLines[i - 1]
+            val current = cueLines[i]
+            if (previous.isEmpty() || current.isEmpty()) continue
+            pairs++
+            if (current.size >= 2 && current.first() == previous.last() && current.last() != previous.last()) {
+                rolling++
+            }
+        }
+        return rolling >= 2 && rolling * 100 >= pairs * 20
+    }
+
+    /** 当前 cue 开头有几行是上一 cue 末尾已经出现过的（取最长的一段）。 */
+    private fun carriedPrefixLength(previous: List<String>, current: List<String>): Int {
+        for (k in minOf(previous.size, current.size) downTo 1) {
+            if (current.subList(0, k) == previous.subList(previous.size - k, previous.size)) return k
+        }
+        return 0
+    }
+
+    /**
+     * 去掉音效标注（[Music]、♪）和英文口头语（uh/um）；清理后什么都不剩就返回空串，调用方应丢弃该条字幕。
+     * 自动字幕和语音转写（网页视频、本地视频）共用，保证翻译和配音只处理真正的说话内容。
+     */
+    fun cleanSpokenText(text: String): String = text
+        .replace(rollingSoundAnnotationRegex, " ")
+        .replace(rollingFillerRegex, " ")
+        .replace(repeatedCommaRegex, ",")
+        .replace(whitespaceRegex, " ")
+        .replace(spaceBeforePunctuationRegex, "$1")
+        .trim()
+        .trimStart(',', ';', ':')
+        .trim()
 
     private fun stripTags(s: String): String {
         val decoded = SubtitleTextDecoder.decode(

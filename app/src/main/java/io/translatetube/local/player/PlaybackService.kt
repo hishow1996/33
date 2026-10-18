@@ -1916,7 +1916,8 @@ class PlaybackService : MediaSessionService() {
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
                 // Keep local ASR transcript caches separate by model selection.
-                videoId != null -> "$key|source|youtube-v4" +
+                // v5: YouTube 滚动字幕已整理为一句一条；旧 v4 缓存里是重复行，不能再用。
+                videoId != null -> "$key|source|youtube-v5" +
                     if (asrProvider == "local") "|asr-$localAsrModelId" else ""
                 remoteMediaUrl != null && asrProvider == "local" ->
                     "$cacheKeyBase|source|remote-asr-$localAsrModelId-timed-v3"
@@ -2531,9 +2532,16 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     asrTimelineDurationMs,
                     checkActive = { timelineOwnerJob?.ensureActive() },
                 )
-                val transcribedLines = normalizedAsrLines.mapIndexed { index, (startMs, endMs, text) ->
-                    SubLine(index, startMs, endMs, text)
-                }
+                // 网页/本地视频的转写结果：去掉 [Music]、♪ 和 uh/um，清理后为空的条目直接丢弃，
+                // 避免把音效标注和口头语送去翻译、再被配音读出来。
+                val transcribedLines = normalizedAsrLines
+                    .mapNotNull { (startMs, endMs, text) ->
+                        SubtitleParsers.cleanSpokenText(text).takeIf { it.isNotEmpty() }
+                            ?.let { Triple(startMs, endMs, it) }
+                    }
+                    .mapIndexed { index, (startMs, endMs, text) ->
+                        SubLine(index, startMs, endMs, text)
+                    }
                 if (transcribedLines.isEmpty()) {
                     if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
