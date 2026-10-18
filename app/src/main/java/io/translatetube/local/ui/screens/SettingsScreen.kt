@@ -1029,7 +1029,7 @@ private fun KokoroVoicePreview(speaker: Int, onDone: () -> Unit) {
                     e,
                     diagnosticContext = mapOf(
                         "试听音色编号" to speaker.toString(),
-                        "试听文本字符数" to "23",
+                        "试听语句" to "中英混合短句：你好，这是配音音色试听。Hello, this is a voice preview.",
                         "音频输出" to "AudioTrack / 静态 PCM_FLOAT / 单声道",
                         "试听线程" to Thread.currentThread().name,
                     ),
