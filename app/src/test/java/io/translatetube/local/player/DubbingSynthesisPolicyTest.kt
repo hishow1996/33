@@ -14,7 +14,7 @@ class DubbingSynthesisPolicyTest {
     }
 
     @Test
-    fun avoidsSecondSynthesisWhenTimelineCanFitSpeechAtThreeTimesSpeed() {
+    fun avoidsAggressiveRetryForModeratelyLongSpeech() {
         val speed = DubbingSynthesisPolicy.recommendedSpeed(
             baseSpeed = 1.0f,
             sampleCount = 40_000,
@@ -25,7 +25,7 @@ class DubbingSynthesisPolicyTest {
     }
 
     @Test
-    fun recommendsBoundedRetryOnlyWhenSpeechExceedsMaximumTimelineSpeed() {
+    fun recommendsBoundedRetryOnlyForExtremeCueDurationRatios() {
         val speed = DubbingSynthesisPolicy.recommendedSpeed(
             baseSpeed = 1.0f,
             sampleCount = 64_000,
@@ -58,9 +58,9 @@ class DubbingSynthesisPolicyTest {
         )
     }
     @Test
-    fun boundsCachedPcmToWhatCanPlayInsideTheSubtitleWindow() {
-        assertEquals(48_000, DubbingSynthesisPolicy.maxUsefulSampleCount(16_000, 1_000))
-        assertEquals(66_150, DubbingSynthesisPolicy.maxUsefulSampleCount(22_050, 1_000))
+    fun boundsCachedPcmToExtendedWindowForAutomaticVideoHold() {
+        assertEquals(96_000, DubbingSynthesisPolicy.maxUsefulSampleCount(16_000, 1_000))
+        assertEquals(132_300, DubbingSynthesisPolicy.maxUsefulSampleCount(22_050, 1_000))
         assertEquals(
             DubbingPcmValidation.MAX_SAMPLE_COUNT,
             DubbingSynthesisPolicy.maxUsefulSampleCount(192_000, 60_000),
