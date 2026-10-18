@@ -656,6 +656,15 @@ class PlaybackService : MediaSessionService() {
         return (current * 100f / total).toInt().coerceIn(0, 100)
     }
 
+    /** Normalize changing counters/percentages so progress ticks do not flood the diagnostic log. */
+    private fun progressLogSignature(progress: String): String = progress
+        .replace(Regex("\\d+(?:\\.\\d+)?\\s*%"), "%")
+        .replace(Regex("\\d+\\s*/\\s*\\d+"), "#/#")
+        .replace(Regex("\\b\\d+(?:\\.\\d+)?\\b"), "#")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(160)
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     /** Prevent a canceled pipeline from publishing progress/results into a newer video session. */
@@ -691,6 +700,7 @@ class PlaybackService : MediaSessionService() {
                 }
             }
         }
+        val before = ui.value
         if (pipelineGeneration == null) {
             publish()
         } else {
@@ -699,6 +709,45 @@ class PlaybackService : MediaSessionService() {
             synchronized(pipelineGenerationLock) {
                 if (pipelineGeneration != activePipelineGeneration) return
                 publish()
+            }
+        }
+
+        val after = ui.value
+        if (after.key == sessionKey) {
+            val phaseChanged = before.phase != after.phase
+            val stepChanged = after.progress.isNotBlank() &&
+                progressLogSignature(before.progress) != progressLogSignature(after.progress)
+            if (phaseChanged || stepChanged) {
+                val operation = if (phaseChanged) {
+                    "处理阶段变更：${before.phase.name} -> ${after.phase.name}"
+                } else {
+                    "处理步骤：${after.progress.take(160)}"
+                }
+                val contextSnapshot = mapOf(
+                    "前一阶段" to before.phase.name,
+                    "当前阶段" to after.phase.name,
+                    "当前处理步骤" to after.progress.take(200),
+                    "当前错误提示" to after.error.orEmpty().take(200),
+                    "翻译引擎" to after.engineName.ifBlank { "未确定" },
+                    "配音引擎" to after.ttsEngineName.ifBlank { "未确定" },
+                    "源语言" to after.sourceLang.ifBlank { "未确定" },
+                    "字幕已发布行数" to after.lines.size.toString(),
+                    "字幕总行数" to after.totalLines.toString(),
+                    "已准备配音行数" to after.preparedCount.toString(),
+                    "当前字幕索引" to after.currentLine.toString(),
+                    "等待转写引擎" to after.waitingForTranscriptionEngine.toString(),
+                    "等待配音引擎" to after.waitingForDubbingEngine.toString(),
+                    "处理代数" to (pipelineGeneration?.toString() ?: "未指定"),
+                )
+                // File I/O must not run on the UI thread; the event is queued on the service scope.
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackTrace",
+                        operation,
+                        diagnosticContext = contextSnapshot,
+                    )
+                }
             }
         }
     }
