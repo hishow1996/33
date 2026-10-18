@@ -1,5 +1,6 @@
 package io.translatetube.local.util
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import org.json.JSONObject
@@ -237,6 +238,12 @@ object AppLogStore {
             append("运行环境：\n")
             append("- 应用版本：")
                 .append(runCatching { io.translatetube.local.BuildConfig.VERSION_NAME }.getOrDefault("未知"))
+                .append(" (versionCode ")
+                .append(runCatching { io.translatetube.local.BuildConfig.VERSION_CODE }.getOrDefault(-1))
+                .append(")\n")
+            append("- 应用包名：").append(context.packageName).append('\n')
+            append("- targetSdk：")
+                .append(runCatching { context.applicationInfo.targetSdkVersion }.getOrDefault(-1))
                 .append('\n')
             append("- 设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
             append("- Android：").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
@@ -247,6 +254,16 @@ object AppLogStore {
                 .append(" MB / 最大 ")
                 .append((runtime.maxMemory() / (1024L * 1024L)))
                 .append(" MB\n")
+            runCatching {
+                val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                val memory = ActivityManager.MemoryInfo()
+                manager?.getMemoryInfo(memory)
+                if (manager != null) {
+                    append("- 系统可用内存：").append(memory.availMem / (1024L * 1024L))
+                        .append(" MB / 总内存约 ").append(memory.totalMem / (1024L * 1024L)).append(" MB\n")
+                    append("- 系统低内存状态：").append(memory.lowMemory).append('\n')
+                }
+            }
         }
         if (details.isNotBlank()) {
             append("异常详情与调用堆栈：\n")
@@ -369,7 +386,7 @@ object AppLogStore {
         var value = input
         val credentials = Regex("(?i)(api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\\s*[=:]\\s*)[^\\s,;]+")
         value = credentials.replace(value) { match -> match.groupValues[1] + match.groupValues[2] + "[REDACTED]" }
-        val querySecrets = Regex("(?i)([?&](?:key|token|sig|signature|cookie|auth|password|secret|expires)=)[^&\\s]+")
+        val querySecrets = Regex("(?i)([?&](?:[A-Za-z0-9_.-]*(?:api[_-]?key|key|token|sig(?:nature)?|cookie|auth|password|secret|expires|credential|session|hdnts|policy|jwt))=)[^&\\s]+")
         value = querySecrets.replace(value) { match -> match.groupValues[1] + "[REDACTED]" }
         return value
     }
