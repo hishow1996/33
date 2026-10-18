@@ -22,8 +22,8 @@ internal data class DubbingPlaybackPlan(
 )
 
 internal object DubbingTiming {
-    const val MAX_SYNC_RATE = 3.0f
-    const val MAX_OUTPUT_RATE = 6.0f
+    const val MAX_SYNC_RATE = 1.35f
+    const val MAX_OUTPUT_RATE = 3.0f
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
     private const val MIN_REMAINING_WINDOW_MS = 80L
