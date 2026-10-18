@@ -25,7 +25,7 @@ import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.Phase
 import io.translatetube.local.yt.NewPipeRepo
 
-enum class Screen { HOME, PLAYER, WEB, SETTINGS, API, LOGS }
+enum class Screen { HOME, PLAYER, WEB, SETTINGS, API, LOGS, STORAGE }
 
 /** Survives process death so an interrupted parse can be restarted from its original entry URL. */
 private data class PendingResumeTask(
@@ -163,6 +163,7 @@ class MainActivity : ComponentActivity() {
                 }
                 var screen by remember { mutableStateOf(Screen.HOME) }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
+                var logsReturnScreen by remember { mutableStateOf(Screen.SETTINGS) }
                 val req by playReq
                 val pendingTask by pendingResumeTaskState
                 val playback by PlaybackService.ui.collectAsState()
@@ -256,10 +257,21 @@ class MainActivity : ComponentActivity() {
                             Screen.SETTINGS -> SettingsScreen(
                                 onBack = { screen = previousScreen },
                                 onApiManager = { screen = Screen.API },
-                                onAppLogs = { screen = Screen.LOGS },
+                                onAppLogs = {
+                                    logsReturnScreen = Screen.SETTINGS
+                                    screen = Screen.LOGS
+                                },
+                                onStorageManagement = { screen = Screen.STORAGE },
                             )
                             Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })
-                            Screen.LOGS -> AppLogsScreen(onBack = { screen = Screen.SETTINGS })
+                            Screen.LOGS -> AppLogsScreen(onBack = { screen = logsReturnScreen })
+                            Screen.STORAGE -> StorageManagementScreen(
+                                onBack = { screen = Screen.SETTINGS },
+                                onOpenLogs = {
+                                    logsReturnScreen = Screen.STORAGE
+                                    screen = Screen.LOGS
+                                },
+                            )
                         }
                     }
                 }

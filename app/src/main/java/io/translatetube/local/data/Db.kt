@@ -41,6 +41,16 @@ interface VideoDao {
     @Query("SELECT * FROM videos WHERE isFavorite = 1 ORDER BY lastPlayedAt DESC")
     fun favorites(): Flow<List<VideoEntity>>
 
+    @Query("SELECT COUNT(*) FROM videos")
+    suspend fun countAll(): Int
+
+    @Query("SELECT COUNT(*) FROM videos WHERE isFavorite = 1")
+    suspend fun countFavorites(): Int
+
+    /** Clear ordinary history only; favorite rows and source files are preserved. */
+    @Query("DELETE FROM videos WHERE isFavorite = 0")
+    suspend fun deleteNonFavorites(): Int
+
     @Query("SELECT * FROM videos WHERE `key` = :key")
     suspend fun byKey(key: String): VideoEntity?
 
@@ -82,6 +92,13 @@ interface SubtitleCacheDao {
 
     @Query("DELETE FROM subtitle_cache")
     suspend fun clear()
+
+    @Query("SELECT COUNT(*) FROM subtitle_cache")
+    suspend fun countEntries(): Int
+
+    /** Byte count for stored JSON payloads, not a character count. */
+    @Query("SELECT COALESCE(SUM(LENGTH(CAST(linesJson AS BLOB))), 0) FROM subtitle_cache")
+    suspend fun payloadBytes(): Long
 }
 
 /** 用户配置的云翻译 API */
