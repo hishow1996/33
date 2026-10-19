@@ -119,3 +119,5 @@ jobs:
 # Trigger Edge TTS integration build using the workflow's existing approved trigger.
 
 # Stop the in-progress APK build at the user's request; do not start a replacement build.
+
+# Trigger APK build after user confirmed the request again on 2026-10-19.
