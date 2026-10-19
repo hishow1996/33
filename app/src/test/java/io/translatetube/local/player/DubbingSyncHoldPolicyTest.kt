@@ -74,6 +74,45 @@ class DubbingSyncHoldPolicyTest {
     }
 
     @Test
+    fun spokenCharacterCountExcludesSpacesAndPunctuation() {
+        assertEquals(5, DubbingSyncHoldPolicy.spokenCodePointCount("你好， 世界！"))
+        assertEquals(4, DubbingSyncHoldPolicy.spokenCodePointCount("Hello,"))
+        assertEquals(0, DubbingSyncHoldPolicy.spokenCodePointCount("……？！"))
+    }
+
+    @Test
+    fun punctuationPauseEstimateGroupsConsecutiveMarksAndIgnoresDecimalPoints() {
+        assertEquals(75L, DubbingSyncHoldPolicy.punctuationPauseMs("等一下，继续"))
+        assertEquals(165L, DubbingSyncHoldPolicy.punctuationPauseMs("真的吗？！"))
+        assertEquals(210L, DubbingSyncHoldPolicy.punctuationPauseMs("我想想……"))
+        assertEquals(0L, DubbingSyncHoldPolicy.punctuationPauseMs("版本 3.14"))
+    }
+
+    @Test
+    fun speechDurationEstimateAddsNaturalPauseBudget() {
+        assertEquals(
+            515L,
+            DubbingSyncHoldPolicy.estimateSpeechDurationMs("你好，世界！", 100.0),
+        )
+        assertEquals(
+            400L,
+            DubbingSyncHoldPolicy.estimateSpeechDurationMs("Hello world", 100.0),
+        )
+    }
+
+    @Test
+    fun directTtsDurationCalibrationSubtractsPunctuationPauseBeforeLearningPace() {
+        val updated = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
+            currentMsPerCodePoint = 220.0,
+            elapsedMs = 1_600L,
+            codePointCount = 10,
+            appliedSpeechRate = 2.0f,
+            estimatedPunctuationPauseMs = 200L,
+        )
+        assertEquals(244.0, updated, 0.001)
+    }
+
+    @Test
     fun directTtsDurationEstimateLearnsFromCompletedSpeech() {
         val updated = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
             currentMsPerCodePoint = 220.0,
