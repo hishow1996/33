@@ -1451,14 +1451,40 @@ class DubbingEngine(
      * chunk is built, then commit only at the old buffer boundary. Playback generation invalidation
      * makes pause/seek/release break this wait promptly without tying up the UI thread.
      */
+    private fun staticChunkBoundaryTimeoutMs(
+        expectedSampleCount: Long,
+        sampleRate: Int,
+        playbackRate: Float,
+    ): Long {
+        val safeSampleRate = sampleRate.coerceIn(8_000, 192_000)
+        // A requested speed-up may be unsupported by an OEM audio sink, so estimate at no
+        // faster than 1x. Slow playback must extend the deadline instead of failing at 5 seconds.
+        val safePlaybackRate = playbackRate
+            .takeIf { it.isFinite() && it > 0.0f }
+            ?.coerceIn(0.1f, 1.0f)
+            ?: 1.0f
+        val expectedPlaybackMs = kotlin.math.ceil(
+            expectedSampleCount.toDouble() * 1_000.0 /
+                safeSampleRate.toDouble() / safePlaybackRate.toDouble(),
+        ).toLong()
+        return maxOf(
+            MIN_STATIC_CHUNK_BOUNDARY_TIMEOUT_MS,
+            expectedPlaybackMs + STATIC_CHUNK_BOUNDARY_TIMEOUT_GRACE_MS,
+        )
+    }
+
     private fun awaitStaticChunkBoundary(
         sourceTrack: AudioTrack,
         chunkStartSample: Int,
         chunkEndSample: Int,
+        sampleRate: Int,
         generation: Int,
     ): Boolean {
         val expectedSampleCount = (chunkEndSample - chunkStartSample).coerceAtLeast(0).toLong()
         val waitStartedMs = android.os.SystemClock.elapsedRealtime()
+        var timeoutMs = staticChunkBoundaryTimeoutMs(expectedSampleCount, sampleRate, activePlaybackRate)
+        var lastObservedHead = -1L
+        var lastHeadProgressAtMs = waitStartedMs
         while (true) {
             if (!DubbingChunkTransitionPolicy.canCommit(
                     released = released,
@@ -1468,11 +1494,35 @@ class DubbingEngine(
                 )
             ) return false
 
+            val nowMs = android.os.SystemClock.elapsedRealtime()
             val playedSamples = sourceTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
             if (playedSamples >= expectedSampleCount ||
                 sourceTrack.playState != AudioTrack.PLAYSTATE_PLAYING
             ) return true
-            if (android.os.SystemClock.elapsedRealtime() - waitStartedMs >= 5_000L) {
+
+            if (playedSamples > lastObservedHead) {
+                lastObservedHead = playedSamples
+                lastHeadProgressAtMs = nowMs
+            }
+            // Playback speed can change while a long cue is active. Extend the deadline when
+            // necessary, but never shorten a wait that is already in progress.
+            val updatedTimeoutMs = staticChunkBoundaryTimeoutMs(
+                expectedSampleCount,
+                sampleRate,
+                activePlaybackRate,
+            )
+            if (updatedTimeoutMs > timeoutMs) timeoutMs = updatedTimeoutMs
+
+            val elapsedMs = nowMs - waitStartedMs
+            if (nowMs - lastHeadProgressAtMs >= STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS ||
+                elapsedMs >= timeoutMs
+            ) {
+                android.util.Log.w(
+                    "DubbingEngine",
+                    "Static dubbing chunk boundary timeout: expected=$expectedSampleCount " +
+                        "played=$playedSamples sampleRate=$sampleRate playbackRate=$activePlaybackRate " +
+                        "playState=${sourceTrack.playState} elapsed=${elapsedMs}ms budget=${timeoutMs}ms",
+                )
                 throw DubbingChunkBoundaryTimeoutException()
             }
             android.os.SystemClock.sleep(2L)
@@ -1577,6 +1627,7 @@ class DubbingEngine(
                                         sourceTrack,
                                         chunkStartSample,
                                         chunkEndSample,
+                                        sampleRate,
                                         generation,
                                     )
                                 ) {
@@ -1721,6 +1772,7 @@ class DubbingEngine(
                                                 sourceTrack,
                                                 chunkStartSample,
                                                 chunkEndSample,
+                                                sampleRate,
                                                 generation,
                                             )
                                         }.getOrDefault(false)
@@ -2802,5 +2854,8 @@ class DubbingEngine(
         // Keep static chunks small for Android 9/OEM AudioTrack implementations with
         // restrictive buffer limits. At 24 kHz this is at most one second of audio.
         private const val MAX_STATIC_TRACK_SAMPLES = 24_000
+        private const val MIN_STATIC_CHUNK_BOUNDARY_TIMEOUT_MS = 5_000L
+        private const val STATIC_CHUNK_BOUNDARY_TIMEOUT_GRACE_MS = 3_000L
+        private const val STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS = 5_000L
     }
 }
