@@ -101,21 +101,27 @@ internal object DubbingTiming {
         if (sampleCount <= 0 || sampleRate <= 0 || cueDurationMs <= 0L) {
             return DubbingPlaybackPlan(0, 0, 1.0f, safePlayerSpeed, false)
         }
+        // Convert the validated Float through its shortest decimal representation before
+        // timeline math; otherwise 2.1f becomes 2.0999999... and creates false overruns.
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
             ?.coerceAtMost(MAX_CATCH_UP_SYNC_RATE)
-            ?: MAX_SYNC_RATE
+            ?.toString()
+            ?.toDouble()
+            ?: MAX_SYNC_RATE.toString().toDouble()
         val audioDurationMs = sampleCount.toDouble() * 1_000.0 / sampleRate.toDouble()
         val cueMs = cueDurationMs.toDouble()
         val safeTargetRate = targetSyncRate.takeIf { it.isFinite() && it > 0.0f }
-            ?.coerceIn(1.0f, safeMaxRate)
-            ?: 1.0f
+            ?.toString()
+            ?.toDouble()
+            ?.coerceIn(1.0, safeMaxRate)
+            ?: 1.0
         // A late queued cue needs to recover some timeline debt even when its PCM would fit at 1x.
         // Bound the requested recovery rate and never crop its PCM to force the deadline.
-        val syncRate = maxOf(1.0, audioDurationMs / cueMs, safeTargetRate.toDouble())
-            .coerceAtMost(safeMaxRate.toDouble())
-            .toFloat()
-        val overrunsWindow = audioDurationMs > cueMs * safeMaxRate.toDouble()
+        val syncRateDouble = maxOf(1.0, audioDurationMs / cueMs, safeTargetRate)
+            .coerceAtMost(safeMaxRate)
+        val syncRate = syncRateDouble.toFloat()
+        val overrunsWindow = audioDurationMs > cueMs * safeMaxRate
         val outputRate = (syncRate * safePlayerSpeed).coerceIn(0.5f, MAX_OUTPUT_RATE)
         return DubbingPlaybackPlan(
             startSample = 0,
@@ -164,20 +170,24 @@ internal object DubbingTiming {
         val audioDurationMs = sampleCount.toDouble() * 1000.0 / sampleRate
         // The output rate includes both subtitle-window synchronization and the user's video speed.
         // Cap the components together so a fast video does not silently clip a long utterance.
+        // Keep timeline calculations in Double using the decimal value the caller selected.
+        // Reusing 1.8f directly here produces 1.79999995..., so floor() can skip one extra sample.
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
             ?.coerceAtMost(MAX_SYNC_RATE)
-            ?: MAX_SYNC_RATE
+            ?.toString()
+            ?.toDouble()
+            ?: MAX_SYNC_RATE.toString().toDouble()
         val desiredSyncRate = audioDurationMs / lineDurationMs.toDouble()
-        val syncRate = maxOf(1.0, desiredSyncRate)
-            .coerceAtMost(safeMaxRate.toDouble()).toFloat()
+        val syncRateDouble = maxOf(1.0, desiredSyncRate).coerceAtMost(safeMaxRate)
+        val syncRate = syncRateDouble.toFloat()
 
         // Skip elapsed speech during normal playback. If the tail still does not fit, preserve
         // the full PCM; PlaybackService queues cues crossed before it completes rather than pausing
         // the video or dropping those cues.
-        val offset = floor(elapsedMs.toDouble() * syncRate * sampleRate / 1000.0)
+        val offset = floor(elapsedMs.toDouble() * syncRateDouble * sampleRate / 1000.0)
             .toInt().coerceIn(0, sampleCount)
-        val budget = ceil(remainingMs.toDouble() * syncRate * sampleRate / 1000.0)
+        val budget = ceil(remainingMs.toDouble() * syncRateDouble * sampleRate / 1000.0)
             .toInt().coerceAtLeast(0)
         val availableSamples = (sampleCount - offset).coerceAtLeast(0)
         val overrunsWindow = availableSamples > budget
