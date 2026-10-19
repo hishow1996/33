@@ -82,11 +82,11 @@ internal class DubbingWorkQueue(
     @Synchronized
     fun isEmpty(): Boolean = ready.isEmpty() && deferred.isEmpty()
 
-    @Synchronized
+    @get:Synchronized
     val readySize: Int
         get() = ready.size
 
-    @Synchronized
+    @get:Synchronized
     val totalSize: Int
         get() = totalSizeLocked()
 

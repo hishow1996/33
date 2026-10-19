@@ -2,7 +2,6 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -69,6 +68,5 @@ class DubbingWorkQueueTest {
         }
         assertEquals((0 until 6).toList(), result)
         assertEquals(0, queue.totalSize)
-        assertNotNull(queue)
     }
 }
