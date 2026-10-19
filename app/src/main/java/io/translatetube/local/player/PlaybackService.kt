@@ -5588,6 +5588,21 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "SpeakerVoiceAssignment",
+                    "切换人物或字幕音色失败，配音引擎重新装配未完成",
+                    e,
+                    diagnosticContext = mapOf(
+                        "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                        "故障阶段" to ui.value.phase.name,
+                        "原字幕行数" to oldLines.size.toString(),
+                        "目标配音引擎" to selectedTts,
+                        "音色分配是否已经保存" to assignmentsSaved.toString(),
+                        "旧配音引擎是否已释放" to oldEngineRetired.toString(),
+                        "失败后的恢复" to "恢复原字幕和可用原声，必要时回滚音色分配",
+                    ),
+                )
                 // Restore the persisted assignment and translated captions if setup failed before
                 // a replacement engine became usable. If the old native engine was already retired,
                 // restore original audio rather than leaving the video silent.
