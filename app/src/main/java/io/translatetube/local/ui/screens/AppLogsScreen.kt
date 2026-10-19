@@ -52,6 +52,8 @@ fun AppLogsScreen(onBack: () -> Unit) {
     var showClearConfirm by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var writerHealth by remember { mutableStateOf(AppLogStore.writerHealth()) } }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
@@ -73,11 +75,15 @@ fun AppLogsScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(refreshKey) {
-        records = withContext(Dispatchers.IO) { AppLogStore.readRecent(ctx.applicationContext) }
+        val loaded = withContext(Dispatchers.IO) {
+            AppLogStore.readRecent(ctx.applicationContext) to AppLogStore.writerHealth()
+        }
+        records = loaded.first
+        writerHealth = loaded.second
     }
 
-    val visibleRecords = remember(records, filter) {
-        when (filter) {
+    val visibleRecords = remember(records, filter, searchQuery) {
+        val levelFiltered = when (filter) {
             "错误" -> records.filter { it.level == "ERROR" || it.level == "FATAL" }
             "闪退" -> records.filter {
                 it.level == "FATAL" ||
@@ -87,6 +93,13 @@ fun AppLogsScreen(onBack: () -> Unit) {
             }
             "警告" -> records.filter { it.level == "WARN" }
             else -> records
+        }
+        val query = searchQuery.trim()
+        if (query.isBlank()) levelFiltered else levelFiltered.filter { record ->
+            record.tag.contains(query, ignoreCase = true) ||
+                record.message.contains(query, ignoreCase = true) ||
+                record.details.contains(query, ignoreCase = true) ||
+                record.thread.contains(query, ignoreCase = true)
         }
     }
     val errorCount = records.count { it.level == "ERROR" || it.level == "FATAL" }
@@ -144,6 +157,55 @@ fun AppLogsScreen(onBack: () -> Unit) {
             )
         }
 
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = if (writerHealth.isHealthy) Color(0xFFEAF7EF) else Color(0xFFFFF0F0),
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    if (writerHealth.isHealthy) Icons.Filled.Info else Icons.Filled.WarningAmber,
+                    contentDescription = null,
+                    tint = if (writerHealth.isHealthy) Color(0xFF18794E) else DangerRed,
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        if (writerHealth.isHealthy) "日志写入状态正常" else "检测到日志写入失败",
+                        color = if (writerHealth.isHealthy) Color(0xFF18794E) else DangerRed,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Text(
+                        if (writerHealth.isHealthy) "诊断记录保存在本机，不会自动上传。"
+                        else "本次运行累计失败 ${writerHealth.failedWriteCount} 次。最近原因：${writerHealth.lastFailureDescription}",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("搜索标签、错误原因、配音引擎或线程") },
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    TextButton(onClick = { searchQuery = "" }) { Text("清除") }
+                }
+            },
+        )
+        Text(
+            "显示 ${visibleRecords.size} / ${records.size} 条记录",
+            color = SubText,
+            style = MaterialTheme.typography.labelSmall,
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -180,7 +242,11 @@ fun AppLogsScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(10.dp))
                 Text("暂无符合条件的日志", color = OnBg, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (records.isEmpty()) "后续检测到的未处理异常和已接入日志的错误会显示在这里。" else "切换筛选条件，查看其他运行记录。",
+                    when {
+                        records.isEmpty() -> "后续检测到的未处理异常和已接入日志的错误会显示在这里。"
+                        searchQuery.isNotBlank() -> "没有找到与“$searchQuery”匹配的日志。"
+                        else -> "切换筛选条件，查看其他运行记录。"
+                    },
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
