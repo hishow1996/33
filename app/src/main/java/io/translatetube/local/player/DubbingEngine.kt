@@ -195,6 +195,17 @@ class DubbingEngine(
     /** Sample count of the current static buffer when it is the final buffer of an overrun cue. */
     @Volatile private var activeTrackFinalChunkSampleCount = -1
 
+    // ---- Chunk 层（VideoLingo 式相邻句合并 + WSOLA 时长对齐，实时播放适配）----
+    /** 块首行 → 合并后的合成文本（相邻两句一口气念，衔接自然）。 */
+    private val chunkTextByFirst = HashMap<Int, String>()
+    /** 块次行 → 块首行（合成与 PCM 取用都重定向到首行）。 */
+    private val chunkRedirect = HashMap<Int, Int>()
+    /** 块首行 → 借用间隙后的窗口截止毫秒（WSOLA 对齐目标）。 */
+    private val chunkWindowEndByFirst = HashMap<Int, Long>()
+
+    /** PCM 取用统一入口：块次行重定向到首行（已对齐的整块 PCM）。 */
+    private fun resolveChunkIndex(idx: Int): Int = chunkRedirect[idx] ?: idx
+
     /** True only while this overlong line still owns live TTS/PCM output. */
     fun isSyncHoldActiveFor(index: Int): Boolean {
         if (released || _currentLine.value != index || !activeCueOverrunsWindow) return false
@@ -249,6 +260,18 @@ class DubbingEngine(
                 fallbackRequested.set(false)
                 this.lines = preparedLines
                 this.timeline = preparedTimeline
+                // VideoLingo 式分块：预算放不下的相邻句合并成块一口气合成（衔接自然），
+                // 块 PCM 由 WSOLA 变速不变调对齐到窗口（每条都配完、不暂停视频）。
+                chunkTextByFirst.clear()
+                chunkRedirect.clear()
+                chunkWindowEndByFirst.clear()
+                for (chunk in DubbingChunkPolicy.buildChunks(preparedLines)) {
+                    chunkTextByFirst[chunk.firstIndex] = chunk.text
+                    chunkWindowEndByFirst[chunk.firstIndex] = chunk.windowEndMs
+                    for (secondary in chunk.lineIndices.drop(1)) {
+                        chunkRedirect[secondary] = chunk.firstIndex
+                    }
+                }
                 val nextSpeechStarts = LongArray(preparedLines.size) { Long.MAX_VALUE }
                 var nextSpeechStart = Long.MAX_VALUE
                 for (lineIndex in preparedLines.indices.reversed()) {
@@ -520,6 +543,17 @@ class DubbingEngine(
                     bumpPrepared()
                     continue
                 }
+                // 块次行：随块首行一起合成（首行完成时由 markCuePrepared 同步补标记），
+                // 不在合成队列里单独处理；首行尚未合成/失败时先保持未就绪。
+                chunkRedirect[idx]?.let { firstIndex ->
+                    when {
+                        readiness.isPrepared(firstIndex) -> markCuePrepared(idx, hasAudio = true)
+                        readiness.isSilent(firstIndex) -> markCuePrepared(idx, hasAudio = false)
+                        else -> Unit // 等首行完成时统一补标
+                    }
+                    bumpPrepared()
+                    continue
+                }
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
                 if (text.isNullOrBlank()) {
@@ -556,10 +590,12 @@ class DubbingEngine(
                     var synthesisCallCount = 0
                     var audio: io.translatetube.local.tts.TtsAudio? = null
                     var lastFailure: Exception? = null
+                    // 块首行用合并文本一口气合成（相邻句衔接自然）；普通行保持原文。
+                    val synthText = chunkTextByFirst[idx] ?: text
                     for (attempt in 0..1) {
                         try {
                             synthesisCallCount++
-                            val generated = tts!!.synthCancellable(text, synthesisSpeed, line.speakerId, ::checkSynthesisActive)
+                            val generated = tts!!.synthCancellable(synthText, synthesisSpeed, line.speakerId, ::checkSynthesisActive)
                             // TTS providers perform blocking work; observe cancellation as soon
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -583,7 +619,20 @@ class DubbingEngine(
                                     "所选引擎返回静音、无效采样或不支持的采样率（${generated.sampleRate} Hz）"
                                 )
                             }
-                            audio = generated
+                            // WSOLA 变速不变调：把整块 PCM 精确拉到字幕窗口（含借用间隙），
+                            // 播放层不再变调变速，每一条都能在窗口内配完。
+                            val chunkEndMs = chunkWindowEndByFirst[idx]
+                            audio = if (chunkEndMs != null) {
+                                val ratio = Wsola.ratioFor(
+                                    generated.samples.size,
+                                    generated.sampleRate,
+                                    chunkEndMs - line.startMs,
+                                )
+                                if (ratio in 0.97f..1.03f) generated
+                                else generated.copy(samples = Wsola.stretch(generated.samples, ratio))
+                            } else {
+                                generated
+                            }
                             break
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
@@ -1135,6 +1184,14 @@ class DubbingEngine(
 
     private fun markCuePrepared(idx: Int, hasAudio: Boolean) {
         readinessProgress.markPrepared(idx, hasAudio, lines.size, ::publishReadinessProgress)
+        // 块首行完成时同步补标其次行（次行播放重定向到首行 PCM，就绪状态跟随首行）。
+        if (chunkRedirect.containsValue(idx)) {
+            for ((secondary, firstIndex) in chunkRedirect) {
+                if (firstIndex == idx && secondary != idx) {
+                    readinessProgress.markPrepared(secondary, hasAudio, lines.size, ::publishReadinessProgress)
+                }
+            }
+        }
     }
 
     private fun markCuePending(idx: Int) {
@@ -1445,14 +1502,16 @@ class DubbingEngine(
         return target.name
     }
 
-    /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。 */
+    /** 返回 (samples, sampleRate)；严格校验长度，避免损坏缓存导致超大分配或崩溃。
+     *  块次行自动重定向到首行（整块 PCM 挂在首行名下）。 */
     private fun load(
         idx: Int,
         isCurrent: () -> Boolean = { true },
     ): Pair<FloatArray, Int>? {
         if (!isCurrent()) return null
-        val f = cacheFile(idx)
-        val inMemory = memoryAudio(idx)
+        val playIdx = resolveChunkIndex(idx)
+        val f = cacheFile(playIdx)
+        val inMemory = memoryAudio(playIdx)
         if (inMemory != null) {
             if (!isCurrent()) return null
             // Media3's LRU evictor tracks actual cache touches. Keep our file-backed cache's
@@ -1468,8 +1527,8 @@ class DubbingEngine(
             // Cache files can disappear after attach() validates them. Treat this as recoverable
             // pending work, not a permanent silent cue; keep source audio audible while regenerating.
             deleteCacheIfUnchanged(f, cacheStamp)
-            markCuePending(idx)
-            queueSynthesisRetry(idx)
+            markCuePending(playIdx)
+            queueSynthesisRetry(playIdx)
             return null
         }
         return try {
@@ -1503,18 +1562,31 @@ class DubbingEngine(
                 val hasAudio = n > 0
                 if (!DubbingCacheAudioPolicy.isCompatibleWithTranslation(
                         hasAudio = hasAudio,
-                        translatedText = lines.getOrNull(idx)?.zh,
+                        translatedText = lines.getOrNull(playIdx)?.zh,
                     )
                 ) {
                     // A stale empty marker must not suppress speech for a translated cue, and
                     // a non-empty cache must not override a deliberately blank translation.
                     throw java.io.IOException("PCM 缓存音频状态与字幕译文不一致")
                 }
+                // 缓存污染自校验：合并块的 PCM 时长应贴合块窗口。旧版本按单行缓存的
+                // PCM（时长≈行窗口）混进块窗口时视为失效，删除后重新合成整块。
+                val chunkEndForValidation = chunkWindowEndByFirst[playIdx]
+                if (hasAudio && chunkEndForValidation != null) {
+                    val lineForValidation = lines.getOrNull(playIdx)
+                    if (lineForValidation != null) {
+                        val pcmMs = samples.size * 1000L / sr.coerceAtLeast(1)
+                        val windowMs = (chunkEndForValidation - lineForValidation.startMs).coerceAtLeast(1L)
+                        if (pcmMs < windowMs * 55 / 100 || pcmMs > windowMs * 165 / 100) {
+                            throw java.io.IOException("PCM 缓存时长与合并块窗口不符，重新合成")
+                        }
+                    }
+                }
                 if (!hasAudio) {
-                    markCuePrepared(idx, hasAudio = false)
+                    markCuePrepared(playIdx, hasAudio = false)
                 } else {
-                    rememberMemoryAudio(idx, samples, sr, f.name)
-                    markCuePrepared(idx, hasAudio = true)
+                    rememberMemoryAudio(playIdx, samples, sr, f.name)
+                    markCuePrepared(playIdx, hasAudio = true)
                 }
                 touchCacheFile(f, cacheStamp)
                 samples to sr
@@ -2505,6 +2577,9 @@ class DubbingEngine(
             audioExec.execute {
                 var created: AudioTrack? = null
                 try {
+                    // 块次行播的是首行名下的整块 PCM；窗口与起点必须按块首行计算，
+                    // 否则 elapsed 跳过与窗口裁剪会按次行的短窗口把整块 PCM 切坏。
+                    val pcmLine = lines.getOrNull(resolveChunkIndex(idx)) ?: line
                     val loaded = load(idx) {
                         !released && playbackGeneration.get() == generation
                     } ?: run {
@@ -2535,12 +2610,12 @@ class DubbingEngine(
                     }
 
                     val position = if (completeCueWhenLate) {
-                        line.startMs
+                        pcmLine.startMs
                     } else {
                         DubbingStartPositionPolicy.choose(
                             lineIndex = idx,
-                            lineStartMs = line.startMs,
-                            lineEndMs = line.endMs,
+                            lineStartMs = pcmLine.startMs,
+                            lineEndMs = pcmLine.endMs,
                             requestedPositionMs = positionMs,
                             latestCursor = latestTimelineCursor,
                         ) ?: run {
@@ -2553,7 +2628,7 @@ class DubbingEngine(
                         DubbingTiming.createCompleteCuePlan(
                             sampleCount = samples.size,
                             sampleRate = sr,
-                            cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L),
+                            cueDurationMs = (pcmLine.endMs - pcmLine.startMs).coerceAtLeast(1L),
                             playerSpeed = currentSpeed,
                             maxSyncRate = DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
                             targetSyncRate = catchUpSyncRate,
@@ -2562,8 +2637,8 @@ class DubbingEngine(
                         DubbingTiming.createPlan(
                             sampleCount = samples.size,
                             sampleRate = sr,
-                            lineStartMs = line.startMs,
-                            lineEndMs = line.endMs,
+                            lineStartMs = pcmLine.startMs,
+                            lineEndMs = pcmLine.endMs,
                             positionMs = position,
                             playerSpeed = currentSpeed,
                         )
@@ -2577,14 +2652,14 @@ class DubbingEngine(
                     if (plan.overrunsWindow) {
                         val remainingSamples = (samples.size - plan.startSample).coerceAtLeast(0)
                         val remainingAudioMs = remainingSamples.toDouble() * 1_000.0 / sr
-                        val remainingWindowMs = (line.endMs - position).coerceAtLeast(0L)
+                        val remainingWindowMs = (pcmLine.endMs - position).coerceAtLeast(0L)
                         android.util.Log.w(
                             "DubbingEngine",
                             "配音剩余音频无法装入当前时间槽，保留完整尾段并进入顺序补播调度：line=${idx + 1}, " +
                                 "sourceSamples=${samples.size}, remainingSamples=$remainingSamples, " +
                                 "remainingAudioMs=${remainingAudioMs.toLong()}, remainingWindowMs=$remainingWindowMs, " +
                                 "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, " +
-                                "windowMs=${line.endMs - line.startMs}",
+                                "windowMs=${pcmLine.endMs - pcmLine.startMs}",
                         )
                         runCatching {
                             io.translatetube.local.util.AppLogStore.warning(
@@ -2594,8 +2669,8 @@ class DubbingEngine(
                                 diagnosticContext = mapOf(
                                     "字幕行号" to "${idx + 1}/${lines.size}",
                                     "配音引擎" to (tts?.name ?: "未知引擎"),
-                                    "字幕开始时间 ms" to line.startMs.toString(),
-                                    "字幕截止时间 ms" to line.endMs.toString(),
+                                    "字幕开始时间 ms" to pcmLine.startMs.toString(),
+                                    "字幕截止时间 ms" to pcmLine.endMs.toString(),
                                     "当前视频位置 ms" to position.toString(),
                                     "剩余音频时长 ms" to remainingAudioMs.toLong().toString(),
                                     "剩余时间槽 ms" to remainingWindowMs.toString(),
@@ -2682,8 +2757,8 @@ class DubbingEngine(
                         if (completeCueWhenLate) return true
                         val latestPosition = DubbingStartPositionPolicy.choose(
                             lineIndex = idx,
-                            lineStartMs = line.startMs,
-                            lineEndMs = line.endMs,
+                            lineStartMs = pcmLine.startMs,
+                            lineEndMs = pcmLine.endMs,
                             requestedPositionMs = position,
                             latestCursor = latestTimelineCursor,
                         ) ?: return false
@@ -2773,8 +2848,8 @@ class DubbingEngine(
                         generation = generation,
                         preparedAtMs = position,
                         syncRate = plan.syncRate,
-                        lineStartMs = line.startMs,
-                        lineEndMs = line.endMs,
+                        lineStartMs = pcmLine.startMs,
+                        lineEndMs = pcmLine.endMs,
                         completeCueWhenLate = completeCueWhenLate,
                         // The first buffer may already have skipped elapsed speech during setup.
                         // Marker positions are track-local, so pass the exact remaining head offset

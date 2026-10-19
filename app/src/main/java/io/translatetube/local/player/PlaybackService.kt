@@ -581,31 +581,38 @@ class PlaybackService : MediaSessionService() {
     ) {
         if (engine.usesImmediateTimelinePlayback || lines.isEmpty()) return
 
-        val totalLines = lines.size
-        val firstSpeechCue = DubbingStartupBufferPolicy.spokenCueIndices(lines).firstOrNull()
-        if (firstSpeechCue != null) {
-            engine.prioritizeAround(firstSpeechCue, lookAhead = 12)
-        }
+        val spokenIndices = DubbingStartupBufferPolicy.spokenCueIndices(lines)
+        val firstSpeechCue = spokenIndices.firstOrNull() ?: return
+        engine.prioritizeAround(firstSpeechCue, lookAhead = 12)
 
+        // 滚动缓冲：前几句就绪即开播，合成在后台继续追赶（VideoLingo 式流水线的实时版）。
+        // 不再等全部合成完成——视频永不因配音暂停；30 秒兜底超时防极端场景卡死。
+        val needReady = minOf(6, spokenIndices.size)
+        val deadlineNs = System.nanoTime() +
+            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(30_000L)
         var lastReportedCount = -1
-        while (engine.preparedCount.value < totalLines) {
+        while (true) {
             awaitProcessingResumed(sessionKey, pipelineGeneration)
             ensureCurrentSession(sessionKey, pipelineGeneration)
             if (dubbing !== engine) {
                 throw kotlinx.coroutines.CancellationException("配音引擎已更换，取消等待合成")
             }
 
-            val prepared = engine.preparedCount.value.coerceIn(0, totalLines)
+            val prepared = engine.preparedCount.value.coerceIn(0, lines.size)
             if (prepared != lastReportedCount) {
                 lastReportedCount = prepared
                 updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         phase = Phase.SYNTHESIZING,
-                        progress = "正在合成全部中文配音（$prepared/$totalLines），完成后开始播放",
+                        progress = "正在合成中文配音（$prepared/${lines.size}），前几句就绪即开始播放",
                     )
                 }
             }
-            if (prepared >= totalLines) break
+            val readyAhead = spokenIndices
+                .take(needReady)
+                .count { engine.isPrepared(it) || engine.isSilent(it) }
+            if (readyAhead >= needReady) break
+            if (System.nanoTime() >= deadlineNs) break
             kotlinx.coroutines.delay(100L)
         }
 
@@ -3267,7 +3274,9 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         val waitStartedNs = System.nanoTime()
                         val deadlineNs = waitStartedNs +
                             java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
-                                startupBuffer.waitTimeoutMs.coerceAtMost(3_000L),
+                                // 用户要求视频立即开播：首句直播缓冲最多 1 秒（原 3 秒），
+                                // 未就绪的句先原声，TTS 引擎就绪后自然接上时间轴。
+                                startupBuffer.waitTimeoutMs.coerceAtMost(1_000L),
                             )
                         startupDubbing.prioritizeAround(
                             startupBuffer.lineIndices.first(),
