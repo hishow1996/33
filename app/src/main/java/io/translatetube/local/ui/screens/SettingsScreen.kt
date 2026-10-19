@@ -865,13 +865,27 @@ private fun Section(
         "关于应用" -> "版本信息与应用说明"
         else -> "查看与管理相关选项"
     }
+    val sectionBorderColor by animateColorAsState(
+        targetValue = if (expanded) Color(0xFFB9CDF6) else Color(0xFFE8EDF5),
+        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        label = "settingsSectionBorder",
+    )
+    val sectionIconBackground by animateColorAsState(
+        targetValue = if (expanded) Color(0xFFDDE8FF) else Color(0xFFF0F4FC),
+        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        label = "settingsSectionIconBackground",
+    )
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+            .padding(bottom = 2.dp)
+            .animateContentSize(
+                animationSpec = tween(durationMillis = 230, easing = FastOutSlowInEasing),
+            ),
         color = Color.White,
         shape = RoundedCornerShape(20.dp),
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
-            if (expanded) Color(0xFFB9CDF6) else Color(0xFFE8EDF5),
+            sectionBorderColor,
         ),
         tonalElevation = 0.dp,
     ) {
@@ -888,7 +902,7 @@ private fun Section(
                 Box(
                     Modifier.size(46.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(if (expanded) Color(0xFFDDE8FF) else Color(0xFFF0F4FC)),
+                        .background(sectionIconBackground),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(

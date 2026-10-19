@@ -1,9 +1,6 @@
 package io.translatetube.local.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -398,30 +395,21 @@ fun HomeScreen(
                 contentPadding = PaddingValues(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                itemsIndexed(shownVideos, key = { _, video -> video.key }) { index, video ->
-                    val entryDelay = (index * 18).coerceAtMost(126)
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn(animationSpec = tween(durationMillis = 170, delayMillis = entryDelay)) +
-                            slideInVertically(
-                                animationSpec = tween(
-                                    durationMillis = 190,
-                                    delayMillis = entryDelay,
-                                    easing = FastOutSlowInEasing,
-                                ),
-                                initialOffsetY = { fullHeight -> (fullHeight / 14).coerceAtMost(18) },
-                            ),
-                    ) {
-                        VideoRow(
-                            video = video,
-                            onPlay = onPlay,
-                            onFav = {
-                                scope.launch(Dispatchers.IO) {
-                                    db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
-                                }
-                            },
-                        )
-                    }
+                itemsIndexed(shownVideos, key = { _, video -> video.key }) { _, video ->
+                    VideoRow(
+                        video = video,
+                        onPlay = onPlay,
+                        onFav = {
+                            scope.launch(Dispatchers.IO) {
+                                db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
+                            }
+                        },
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = tween(durationMillis = 170),
+                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                            fadeOutSpec = tween(durationMillis = 120),
+                        ),
+                    )
                 }
             }
         }
@@ -434,9 +422,10 @@ private fun VideoRow(
     video: VideoEntity,
     onPlay: (PlayRequest) -> Unit,
     onFav: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(Color.White)
             .combinedClickable(

@@ -24,6 +24,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -968,7 +970,13 @@ fun WebVideoScreen(
                         items(pikpakFolders, key = { "${it.parentId}/${it.id}" }) { folder ->
                             val alreadyListed = folder.id in pikpakListedParents
                             Card(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .animateItem(
+                                        fadeInSpec = tween(durationMillis = 150),
+                                        placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                        fadeOutSpec = tween(durationMillis = 110),
+                                    )
+                                    .fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
                                     containerColor = if (alreadyListed) MaterialTheme.colorScheme.surface
                                     else MaterialTheme.colorScheme.surfaceVariant,
@@ -1038,7 +1046,13 @@ fun WebVideoScreen(
                             else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
                         }
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .animateItem(
+                                    fadeInSpec = tween(durationMillis = 160),
+                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                    fadeOutSpec = tween(durationMillis = 120),
+                                )
+                                .fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                         ) {
                             Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
