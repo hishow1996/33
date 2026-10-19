@@ -174,6 +174,7 @@ class MainActivity : ComponentActivity() {
                 var screen by remember { mutableStateOf(initialScreen) }
                 // Render only one screen at a time. Do not fade the old route to zero:
                 // replacing it at alpha=0 and restarting at alpha=0.01 creates a visible blank page.
+                // 所有页面使用固定尺寸的根容器，避免不同页面内容高度变化带动整页跳动。
                 var displayedScreen by remember { mutableStateOf(initialScreen) }
                 val pageMotion = remember { Animatable(1f) }
                 var hasInitializedScreenMotion by remember { mutableStateOf(false) }
@@ -184,22 +185,14 @@ class MainActivity : ComponentActivity() {
                         pageMotion.snapTo(1f)
                         return@LaunchedEffect
                     }
-                    // Keep at least 88% opacity throughout navigation so the destination is visible
-                    // as soon as it replaces the previous route. A short vertical drift preserves
-                    // the sense of motion without showing the window background between pages.
-                    pageMotion.animateTo(
-                        targetValue = 0.88f,
-                        animationSpec = tween(
-                            durationMillis = 70,
-                            easing = FastOutSlowInEasing,
-                        ),
-                    )
+
+                    // 直接切换目标页面，只做轻微淡入；不再先移动旧页面或重置垂直偏移。
                     displayedScreen = screen
-                    pageMotion.snapTo(0.90f)
+                    pageMotion.snapTo(0.96f)
                     pageMotion.animateTo(
                         targetValue = 1f,
                         animationSpec = tween(
-                            durationMillis = 155,
+                            durationMillis = 140,
                             easing = FastOutSlowInEasing,
                         ),
                     )
@@ -251,9 +244,9 @@ class MainActivity : ComponentActivity() {
                     Box(
                         Modifier
                             .widthIn(max = 720.dp)
+                            .fillMaxSize()
                             .graphicsLayer {
                                 alpha = pageMotion.value
-                                translationY = (1f - pageMotion.value) * 56.dp.toPx()
                             },
                     ) {
                         when (displayedScreen) {
