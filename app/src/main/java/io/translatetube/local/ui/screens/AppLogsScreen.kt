@@ -651,7 +651,7 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        AppLogStore.formatTime(record.timestampMs).substringAfterLast(" "),
+                        AppLogStore.formatTime(record.timestampMs),
                         color = Color(0xFF858B93),
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1,
@@ -663,6 +663,7 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
                 ) {
                     Text(
                         record.tag,
+                        modifier = Modifier.weight(1f),
                         color = Color(0xFF68707A),
                         style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
