@@ -85,6 +85,8 @@ class DubbingSyncHoldPolicyTest {
         assertEquals(75L, DubbingSyncHoldPolicy.punctuationPauseMs("等一下，继续"))
         assertEquals(165L, DubbingSyncHoldPolicy.punctuationPauseMs("真的吗？！"))
         assertEquals(210L, DubbingSyncHoldPolicy.punctuationPauseMs("我想想……"))
+        assertEquals(210L, DubbingSyncHoldPolicy.punctuationPauseMs("wait..."))
+        assertEquals(165L, DubbingSyncHoldPolicy.punctuationPauseMs("e.g. example"))
         assertEquals(0L, DubbingSyncHoldPolicy.punctuationPauseMs("版本 3.14"))
     }
 
