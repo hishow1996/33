@@ -180,7 +180,6 @@ internal class WebTts : TtsEngine {
                             } else {
                                 codec.queueInputBuffer(inIndex, 0, read, extractor.sampleTime, 0)
                                 extractor.advance()
-                            }
                         }
                         }
                     }
