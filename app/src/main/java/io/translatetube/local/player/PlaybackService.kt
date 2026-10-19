@@ -538,6 +538,52 @@ class PlaybackService : MediaSessionService() {
         return state.totalLines > 0 && state.preparedCount < state.totalLines
     }
 
+    /**
+     * Generated-PCM dubbing must be fully prepared before the video starts. Direct System TTS
+     * speaks live on the timeline and has no PCM batch to wait for, so it keeps its small startup
+     * buffer instead. Failed cues are still counted as prepared by DubbingEngine and safely fall
+     * back to source audio rather than blocking the whole video forever.
+     */
+    private suspend fun awaitDubbingSynthesisBeforePlayback(
+        sessionKey: String,
+        pipelineGeneration: Long,
+        engine: DubbingEngine,
+        lines: List<SubLine>,
+    ) {
+        if (engine.usesImmediateTimelinePlayback || lines.isEmpty()) return
+
+        val totalLines = lines.size
+        val firstSpeechCue = DubbingStartupBufferPolicy.spokenCueIndices(lines).firstOrNull()
+        if (firstSpeechCue != null) {
+            engine.prioritizeAround(firstSpeechCue, lookAhead = 12)
+        }
+
+        var lastReportedCount = -1
+        while (engine.preparedCount.value < totalLines) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            if (dubbing !== engine) {
+                throw kotlinx.coroutines.CancellationException("配音引擎已更换，取消等待合成")
+            }
+
+            val prepared = engine.preparedCount.value.coerceIn(0, totalLines)
+            if (prepared != lastReportedCount) {
+                lastReportedCount = prepared
+                updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                    state.copy(
+                        phase = Phase.SYNTHESIZING,
+                        progress = "正在合成全部中文配音（$prepared/$totalLines），完成后开始播放",
+                    )
+                }
+            }
+            if (prepared >= totalLines) break
+            kotlinx.coroutines.delay(100L)
+        }
+
+        awaitProcessingResumed(sessionKey, pipelineGeneration)
+        ensureCurrentSession(sessionKey, pipelineGeneration)
+    }
+
     private fun updateProcessingNotification(state: PlayerUiState) {
         if (!playerReady && state.phase == Phase.IDLE) return
         val (title, detail) = when (state.phase) {
@@ -1385,6 +1431,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
     fun importTranslatedSubtitles(uri: Uri) {
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        val resumePlaybackAfterImport = ::pm.isInitialized &&
+            runCatching { pm.player.playWhenReady }.getOrDefault(false)
+        if (::pm.isInitialized) pm.pause()
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
         prepJob = null
@@ -1522,6 +1571,12 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }
                 lastLineIdx = Int.MIN_VALUE
                 ensureCurrentSession(sessionKey, pipelineGeneration)
+                awaitDubbingSynthesisBeforePlayback(
+                    sessionKey = sessionKey,
+                    pipelineGeneration = pipelineGeneration,
+                    engine = d,
+                    lines = translatedLines,
+                )
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(sessionKey, pipelineGeneration)
                     pm.play()
@@ -1555,6 +1610,11 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         muteOriginal = false,
                     )
                 }
+                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == sessionKey && ui.value.key == sessionKey) pm.play()
+                    }
+                }
             }
             }
         }
@@ -1564,6 +1624,9 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
     fun importSubtitles(uri: Uri) {
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        val resumePlaybackAfterImport = ::pm.isInitialized &&
+            runCatching { pm.player.playWhenReady }.getOrDefault(false)
+        if (::pm.isInitialized) pm.pause()
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
         prepJob = null
@@ -1774,9 +1837,11 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         )
                     }
                     ensureCurrentSession(sessionKey, pipelineGeneration)
-                    withContext(Dispatchers.Main) {
-                        ensureCurrentSession(sessionKey, pipelineGeneration)
-                        pm.play()
+                    if (resumePlaybackAfterImport) {
+                        withContext(Dispatchers.Main) {
+                            ensureCurrentSession(sessionKey, pipelineGeneration)
+                            pm.play()
+                        }
                     }
                     return@launch
                 }
@@ -1855,6 +1920,12 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         )
                     )
                 }
+                awaitDubbingSynthesisBeforePlayback(
+                    sessionKey = sessionKey,
+                    pipelineGeneration = pipelineGeneration,
+                    engine = d,
+                    lines = translatedLines,
+                )
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         lines = translatedLines,
@@ -1866,6 +1937,12 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 }
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 lastLineIdx = Int.MIN_VALUE
+                if (resumePlaybackAfterImport) {
+                    withContext(Dispatchers.Main) {
+                        ensureCurrentSession(sessionKey, pipelineGeneration)
+                        pm.play()
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1879,6 +1956,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         progress = "",
                         error = "字幕导入失败: ${e.message ?: e.javaClass.simpleName}",
                     )
+                }
+                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (videoKey == sessionKey && ui.value.key == sessionKey) pm.play()
+                    }
                 }
             }
             }
@@ -3261,100 +3343,53 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     }
                 }
             }
-            // Both generated and immediate modes prepare a short startup buffer, then continue
-            // synthesizing while playback runs. If synthesis cannot keep up, apply the existing
-            // source-audio toggle to unready cues rather than delaying video until every row is ready.
+            // Generated-PCM engines finish the entire subtitle queue before playback starts.
+            // Direct System TTS has no pre-generated PCM queue, so it keeps a bounded first-cue wait.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 val immediateMode = startupDubbing.usesImmediateTimelinePlayback
-                val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
-                var startupBuffer = DubbingStartupBufferPolicy.plan(
-                    lines = finalLines,
-                    spokenCueIndices = startupSpeechCueIndices,
-                    immediateMode = immediateMode,
-                    synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
-                    synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
-                )
-                if (startupBuffer.lineIndices.isNotEmpty()) {
-                    fun cueFinished(index: Int): Boolean =
-                        startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
-
-                    val waitStartedNs = System.nanoTime()
-                    // Never wait for the full synthesis queue before allowing video playback.
-                    val maxStartupWaitMs = 3_000L
-                    var normalDeadlineNs = waitStartedNs +
-                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
-                            startupBuffer.waitTimeoutMs.coerceAtMost(maxStartupWaitMs),
-                        )
-                    startupDubbing.prioritizeAround(
-                        startupBuffer.lineIndices.first(),
-                        lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
+                if (!immediateMode) {
+                    awaitDubbingSynthesisBeforePlayback(
+                        sessionKey = key,
+                        pipelineGeneration = pipelineGeneration,
+                        engine = startupDubbing,
+                        lines = finalLines,
                     )
-                    while (true) {
-                        ensureCurrentSession(key, pipelineGeneration)
-                        startupBuffer = DubbingStartupBufferPolicy.plan(
-                            lines = finalLines,
-                            spokenCueIndices = startupSpeechCueIndices,
-                            immediateMode = immediateMode,
-                            synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
-                            synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
+                } else {
+                    val startupSpeechCueIndices = DubbingStartupBufferPolicy.spokenCueIndices(finalLines)
+                    val startupBuffer = DubbingStartupBufferPolicy.plan(
+                        lines = finalLines,
+                        spokenCueIndices = startupSpeechCueIndices,
+                        immediateMode = true,
+                        synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
+                        synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
+                    )
+                    if (startupBuffer.lineIndices.isNotEmpty()) {
+                        fun cueFinished(index: Int): Boolean =
+                            startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
+
+                        val waitStartedNs = System.nanoTime()
+                        val deadlineNs = waitStartedNs +
+                            java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                                startupBuffer.waitTimeoutMs.coerceAtMost(3_000L),
+                            )
+                        startupDubbing.prioritizeAround(
+                            startupBuffer.lineIndices.first(),
+                            lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
                         )
-                        if (startupBuffer.waitTimeoutMs > 0L) {
-                            val updatedDeadline = waitStartedNs +
-                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
-                                    startupBuffer.waitTimeoutMs.coerceAtMost(maxStartupWaitMs),
-                                )
-                            normalDeadlineNs = maxOf(normalDeadlineNs, updatedDeadline)
+                        while (true) {
+                            awaitProcessingResumed(key, pipelineGeneration)
+                            ensureCurrentSession(key, pipelineGeneration)
+                            val ready = startupBuffer.lineIndices
+                                .take(startupBuffer.minimumCueCount)
+                                .all(::cueFinished)
+                            if (ready || System.nanoTime() >= deadlineNs) break
+                            kotlinx.coroutines.delay(100L)
                         }
-
-                        val minimumBufferReady = startupBuffer.lineIndices
-                            .take(startupBuffer.minimumCueCount)
-                            .all(::cueFinished)
-                        if (minimumBufferReady || System.nanoTime() >= normalDeadlineNs) break
-
-                        if (startupBuffer.lineIndices.isNotEmpty()) {
-                            startupDubbing.prioritizeAround(
-                                startupBuffer.lineIndices.first(),
-                                lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
-                            )
-                        }
-                        kotlinx.coroutines.delay(100L)
-                    }
-
-                    val firstSpeech = startupSpeechCueIndices.first()
-                    val firstSpeechReady = cueFinished(firstSpeech)
-                    val minimumBufferReady = startupBuffer.lineIndices
-                        .take(startupBuffer.minimumCueCount)
-                        .all(::cueFinished)
-                    val bufferIncomplete = !minimumBufferReady
-                    val measuredLag = startupDubbing.synthesisTimelineLagFactor
-                    when {
-                        !firstSpeechReady -> {
-                            android.util.Log.w(
-                                "PlaybackService",
-                                "TTS startup timed out before the first cue; video playback continues without waiting for TTS",
-                            )
+                        val firstSpeechReady = startupSpeechCueIndices.firstOrNull()?.let(::cueFinished) ?: true
+                        if (!firstSpeechReady) {
                             updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "首句配音仍在准备，先开始播放；配音就绪后继续生成")
-                            }
-                        }
-                        bufferIncomplete && measuredLag.isFinite() && measuredLag >= 1.2f -> {
-                            android.util.Log.w(
-                                "PlaybackService",
-                                "TTS synthesis is slower than real time; bounded startup buffer reached",
-                            )
-                            updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "配音生成较慢，视频先继续播放；未就绪片段按原声开关设置处理")
-                            }
-                        }
-                        bufferIncomplete -> {
-                            updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "首段配音缓冲未完全就绪，先播放视频并继续生成")
-                            }
-                        }
-                        !immediateMode && measuredLag.isFinite() && measuredLag >= 1.2f -> {
-                            updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "已准备首段配音缓冲，播放期间继续合成后续字幕")
+                                it.copy(progress = "首句系统 TTS 尚未就绪，开始播放后会按时间轴朗读")
                             }
                         }
                     }
