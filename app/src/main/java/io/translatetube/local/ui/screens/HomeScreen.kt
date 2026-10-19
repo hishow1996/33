@@ -1,15 +1,25 @@
 package io.translatetube.local.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -245,7 +256,18 @@ fun HomeScreen(
                     ),
                 )
                 Spacer(Modifier.height(12.dp))
+                val playButtonInteraction = remember { MutableInteractionSource() }
+                val playButtonPressed by playButtonInteraction.collectIsPressedAsState()
+                val playButtonScale by animateFloatAsState(
+                    targetValue = if (playButtonPressed) 0.975f else 1f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMedium,
+                    ),
+                    label = "homePlayButtonPress",
+                )
                 Button(
+                    interactionSource = playButtonInteraction,
                     onClick = {
                         val input = link.trim()
                         val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(input)
@@ -279,7 +301,10 @@ fun HomeScreen(
                         }
                     },
                     enabled = link.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth().height(58.dp),
+                    modifier = Modifier.fillMaxWidth().height(58.dp).graphicsLayer {
+                        scaleX = playButtonScale
+                        scaleY = playButtonScale
+                    },
                     shape = RoundedCornerShape(17.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Brand,
@@ -373,16 +398,30 @@ fun HomeScreen(
                 contentPadding = PaddingValues(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(shownVideos, key = { it.key }) { video ->
-                    VideoRow(
-                        video = video,
-                        onPlay = onPlay,
-                        onFav = {
-                            scope.launch(Dispatchers.IO) {
-                                db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
-                            }
-                        },
-                    )
+                itemsIndexed(shownVideos, key = { _, video -> video.key }) { index, video ->
+                    val entryDelay = (index * 18).coerceAtMost(126)
+                    AnimatedVisibility(
+                        visible = true,
+                        enter = fadeIn(animationSpec = tween(durationMillis = 170, delayMillis = entryDelay)) +
+                            slideInVertically(
+                                animationSpec = tween(
+                                    durationMillis = 190,
+                                    delayMillis = entryDelay,
+                                    easing = FastOutSlowInEasing,
+                                ),
+                                initialOffsetY = { fullHeight -> (fullHeight / 14).coerceAtMost(18) },
+                            ),
+                    ) {
+                        VideoRow(
+                            video = video,
+                            onPlay = onPlay,
+                            onFav = {
+                                scope.launch(Dispatchers.IO) {
+                                    db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }

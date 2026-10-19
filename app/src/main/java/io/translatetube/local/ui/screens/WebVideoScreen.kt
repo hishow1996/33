@@ -18,6 +18,13 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.webkit.CookieManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -813,7 +820,17 @@ fun WebVideoScreen(
             }
 
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (pageLoading || ytDlpBusy) {
+            AnimatedVisibility(
+                visible = pageLoading || ytDlpBusy,
+                enter = fadeIn(animationSpec = tween(150)) +
+                    expandVertically(
+                        animationSpec = tween(180, easing = FastOutSlowInEasing),
+                    ),
+                exit = fadeOut(animationSpec = tween(110)) +
+                    shrinkVertically(
+                        animationSpec = tween(150, easing = FastOutSlowInEasing),
+                    ),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
