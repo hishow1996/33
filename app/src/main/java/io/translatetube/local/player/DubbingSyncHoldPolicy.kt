@@ -2,17 +2,26 @@ package io.translatetube.local.player
 
 internal object DubbingSyncHoldPolicy {
     /**
-     * Long sentences must not pause the video. Use a bounded speech-rate adjustment and timeline
-     * scheduling instead; PCM overrun handling keeps the current utterance coherent without
-     * treating an overlong subtitle as permission to freeze playback.
+     * Return true only when speech is still predicted to exceed the cue window after applying
+     * the selected speech rate and maximum safe timeline-rate multiplier.
      */
-    @Suppress("UNUSED_PARAMETER")
     fun requiresVideoHold(
         estimatedSpeechMs: Long,
         cueDurationMs: Long,
         baseSpeechRate: Float,
         maxSyncRate: Float = DubbingTiming.MAX_SYNC_RATE,
-    ): Boolean = false
+    ): Boolean {
+        if (estimatedSpeechMs <= 0L || cueDurationMs <= 0L ||
+            !baseSpeechRate.isFinite() || baseSpeechRate <= 0f
+        ) return false
+        val safeBaseRate = baseSpeechRate.coerceIn(0.5f, 3.0f)
+        val safeMaxRate = maxSyncRate
+            .takeIf { it.isFinite() && it >= 1.0f }
+            ?.coerceAtMost(DubbingTiming.MAX_SYNC_RATE)
+            ?: DubbingTiming.MAX_SYNC_RATE
+        val estimatedAtSelectedRateMs = estimatedSpeechMs.toDouble() / safeBaseRate.toDouble()
+        return estimatedAtSelectedRateMs > cueDurationMs.toDouble() * safeMaxRate.toDouble()
+    }
 
     /**
      * Estimate only the extra synchronization factor. Never slow short utterances merely to fill

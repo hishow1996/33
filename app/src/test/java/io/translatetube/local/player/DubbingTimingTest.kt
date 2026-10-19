@@ -105,6 +105,22 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun slightlyOverlongCueThatStartsLateKeepsTailAndRequestsHoldInsteadOfClipping() {
+        val plan = DubbingTiming.createPlan(
+            sampleCount = 1_400,
+            sampleRate = 1_000,
+            lineStartMs = 0L,
+            lineEndMs = 1_000L,
+            positionMs = 100L,
+            playerSpeed = 1.0f,
+        )
+        assertEquals(135, plan.startSample)
+        assertEquals(1_265, plan.sampleCount)
+        assertTrue(plan.overrunsWindow)
+        assertFalse(plan.truncated)
+    }
+
+    @Test
     fun lateStartingOverlongSpeechKeepsItsRemainingTail() {
         val samples = FloatArray(5_000) { 0.25f }
         val plan = DubbingTiming.createPlan(

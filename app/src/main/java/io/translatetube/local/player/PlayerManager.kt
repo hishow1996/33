@@ -62,6 +62,8 @@ class PlayerManager(private val ctx: Context) {
     var onVideoAspect: ((ratio: Float) -> Unit)? = null
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // A 50 ms cadence lowers subtitle-cue start jitter without polling aggressively on older phones.
+    private val timelineTickIntervalMs = 50L
     @Volatile private var released = false
     private var tickFailureLogged = false
 
@@ -100,7 +102,7 @@ class PlayerManager(private val ctx: Context) {
             if (!playing) return
             notifyTick()
             if (!released && onTick != null && runCatching { player.isPlaying }.getOrDefault(false)) {
-                mainHandler.postDelayed(this, 100)
+                mainHandler.postDelayed(this, timelineTickIntervalMs)
             }
         }
     }
@@ -110,7 +112,7 @@ class PlayerManager(private val ctx: Context) {
         mainHandler.removeCallbacks(ticker)
         if (released || onTick == null) return
         if (runCatching { player.isPlaying }.getOrDefault(false)) {
-            mainHandler.postDelayed(ticker, 100)
+            mainHandler.postDelayed(ticker, timelineTickIntervalMs)
         }
     }
 

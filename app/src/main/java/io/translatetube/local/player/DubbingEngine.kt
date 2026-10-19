@@ -83,7 +83,21 @@ class DubbingEngine(
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
     @Volatile var onPlaybackStarted: ((index: Int) -> Unit)? = null
+    /** Requests a video hold when a complete sentence cannot fit the currently remaining time slot. */
+    @Volatile var onSyncHoldRequired: ((index: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
+
+    private fun requestSyncHoldForOverrun(index: Int) {
+        try {
+            onSyncHoldRequired?.invoke(index)
+        } catch (error: Exception) {
+            android.util.Log.w(
+                "DubbingEngine",
+                "Could not request a timeline hold for overlong cue ${index + 1}",
+                error,
+            )
+        }
+    }
     private val firstSynthesisReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
@@ -2262,18 +2276,27 @@ class DubbingEngine(
             }
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
             val estimatedSpeechMs = spokenText.codePointCount(0, spokenText.length) * 220L
-            val timingRate = DubbingSyncHoldPolicy.timelineRate(estimatedSpeechMs, cueDurationMs)
-            if (estimatedSpeechMs > cueDurationMs * DubbingTiming.MAX_SYNC_RATE.toLong()) {
+            val baseSpeechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(speed)
+            val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
+            val estimatedAtEffectiveRateMs =
+                (estimatedSpeechMs.toDouble() / (baseSpeechRate * timelineSpeed).toDouble())
+                    .toLong().coerceAtLeast(1L)
+            val timingRate = DubbingSyncHoldPolicy.timelineRate(estimatedAtEffectiveRateMs, cueDurationMs)
+            val syncHoldRequired = DubbingSyncHoldPolicy.requiresVideoHold(
+                estimatedSpeechMs = estimatedAtEffectiveRateMs,
+                cueDurationMs = cueDurationMs,
+                baseSpeechRate = 1.0f,
+            )
+            if (syncHoldRequired) {
                 android.util.Log.w(
                     "DubbingEngine",
-                    "系统 TTS 长句预计仍超过字幕时间窗：line=${idx + 1}, estimatedMs=$estimatedSpeechMs, " +
-                        "windowMs=$cueDurationMs, maxRate=${DubbingTiming.MAX_SYNC_RATE}",
+                    "系统 TTS 长句预计超出可用时间槽，将在播放时保持本句完整：line=${idx + 1}, " +
+                        "estimatedAtEffectiveRateMs=$estimatedAtEffectiveRateMs, windowMs=$cueDurationMs, " +
+                        "maxRate=${DubbingTiming.MAX_SYNC_RATE}",
                 )
             }
-            val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
-            val speechTimelineSpeed = timelineSpeed
             val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalizeTimeline(
-                speed * timingRate * speechTimelineSpeed,
+                baseSpeechRate * timingRate * timelineSpeed,
             )
             val utteranceId = "timeline-${System.nanoTime()}-$idx-$generation"
             val ownsCue = synchronized(playbackControlLock) {
@@ -2284,7 +2307,7 @@ class DubbingEngine(
                     isActivePlaybackAllowedLocked()
                 ) {
                     activeTimelineUtteranceId = utteranceId
-                    activeCueOverrunsWindow = false
+                    activeCueOverrunsWindow = syncHoldRequired
                     activeTrackFinalChunkSampleCount = -1
                     true
                 } else false
@@ -2354,6 +2377,8 @@ class DubbingEngine(
                         _currentLine.value = -1
                     }
                 }
+            } else if (syncHoldRequired) {
+                requestSyncHoldForOverrun(idx)
             }
             return
         }
@@ -2419,7 +2444,7 @@ class DubbingEngine(
                     if (plan.overrunsWindow) {
                         android.util.Log.w(
                             "DubbingEngine",
-                            "长句超过字幕时间窗，保留语音尾段并继续播放视频：line=${idx + 1}, " +
+                            "配音剩余音频无法装入当前时间槽，保留完整尾段并请求视频同步等待：line=${idx + 1}, " +
                                 "sourceSamples=${samples.size}, remainingSamples=${samples.size - plan.startSample}, " +
                                 "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, windowMs=${line.endMs - line.startMs}",
                         )
@@ -2615,6 +2640,7 @@ class DubbingEngine(
                             .onFailure {
                                 android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
                             }
+                        if (plan.overrunsWindow) requestSyncHoldForOverrun(idx)
                     }
                 } catch (e: Exception) {
                     // play() can fail after this track has already been published. Clear the shared

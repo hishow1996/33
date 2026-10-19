@@ -1,12 +1,12 @@
 package io.translatetube.local.player
 
 /**
- * Keep adaptive synthesis retry limited to extreme cues. Ordinary synchronization stays within a
- * natural playback-rate bound; if the sentence still cannot fit, the service holds the video until
- * playback finishes instead of stretching the voice to an unintelligible speed.
+ * Retry synthesis as soon as a cue is meaningfully longer than its real timeline window. A new
+ * render is preferred over aggressive playback-rate changes; if the provider cannot shorten it
+ * enough, DubbingTiming preserves the remaining PCM tail and PlaybackService holds video safely.
  */
 internal object DubbingSynthesisPolicy {
-    private const val LONG_CUE_RATIO = 3.0
+    private const val LONG_CUE_RATIO = 1.15
     private const val TARGET_CUE_FILL = 0.90
     // This is a storage/PCM safety bound, not the normal synchronization playback rate. A cue that
     // exceeds 1.35x is allowed to finish while video is held, so preserve a larger bounded tail.

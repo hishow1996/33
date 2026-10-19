@@ -2,14 +2,16 @@ package io.translatetube.local.player
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DubbingSyncHoldPolicyTest {
     @Test
-    fun longUtterancesNeverPauseVideoToWaitForTts() {
-        assertFalse(DubbingSyncHoldPolicy.requiresVideoHold(1_351L, 1_000L, 1.0f))
-        assertFalse(DubbingSyncHoldPolicy.requiresVideoHold(2_026L, 1_000L, 1.5f))
-        assertFalse(DubbingSyncHoldPolicy.requiresVideoHold(80_000L, 1_000L, 0.5f))
+    fun onlyHoldsVideoWhenSpeechCannotFitAtTheMaximumTimelineRate() {
+        assertFalse(DubbingSyncHoldPolicy.requiresVideoHold(1_350L, 1_000L, 1.0f))
+        assertTrue(DubbingSyncHoldPolicy.requiresVideoHold(1_351L, 1_000L, 1.0f))
+        assertTrue(DubbingSyncHoldPolicy.requiresVideoHold(8_000L, 1_000L, 0.5f))
+        assertFalse(DubbingSyncHoldPolicy.requiresVideoHold(2_000L, 1_000L, 2.0f))
     }
 
     @Test

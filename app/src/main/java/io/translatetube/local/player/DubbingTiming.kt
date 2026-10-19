@@ -17,7 +17,7 @@ internal data class DubbingPlaybackPlan(
     val syncRate: Float,
     val playbackRate: Float,
     val truncated: Boolean,
-    /** Audio is longer than the safe timeline rate; preserve its tail and defer the next cue. */
+    /** The remaining audio cannot fit in the remaining media window; keep it intact and hold video. */
     val overrunsWindow: Boolean = false,
 )
 
@@ -121,15 +121,15 @@ internal object DubbingTiming {
         val syncRate = maxOf(1.0, desiredSyncRate)
             .coerceAtMost(safeMaxRate.toDouble()).toFloat()
 
-        // Skip elapsed speech for late starts, then determine whether the remaining tail can fit
-        // in the remaining media window at the safe rate. If it cannot, preserve that tail and
-        // let the playback scheduler finish this sentence before advancing to another cue.
+        // Skip elapsed speech for late starts, then compare the real remaining PCM tail with
+        // the remaining timeline budget. If even the remaining tail no longer fits, preserve it
+        // and signal PlaybackService to hold the video until this sentence truly completes.
         val offset = floor(elapsedMs.toDouble() * syncRate * sampleRate / 1000.0)
             .toInt().coerceIn(0, sampleCount)
         val budget = ceil(remainingMs.toDouble() * syncRate * sampleRate / 1000.0)
             .toInt().coerceAtLeast(0)
         val availableSamples = (sampleCount - offset).coerceAtLeast(0)
-        val overrunsWindow = desiredSyncRate > safeMaxRate.toDouble() && availableSamples > budget
+        val overrunsWindow = availableSamples > budget
         val count = if (overrunsWindow) availableSamples else min(availableSamples, budget).coerceAtLeast(0)
         val truncated = offset + count < sampleCount
         val outputRate = (syncRate * safePlayerSpeed).coerceIn(0.5f, MAX_OUTPUT_RATE)

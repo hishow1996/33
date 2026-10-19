@@ -963,7 +963,7 @@ class PlaybackService : MediaSessionService() {
 
         updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
             state.copy(
-                dubbingStatus = "第 ${lineIndex + 1} 句配音较长，视频暂时暂停，等待本句读完后继续",
+                dubbingStatus = "第 ${lineIndex + 1} 句配音超出时间槽，视频暂时停住，避免下一句错位",
                 activeDubbingLine = lineIndex,
             )
         }
@@ -4763,7 +4763,6 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
         }
         engine.onPlaybackStarted = { index ->
-            // Long cues no longer pause the video; the media playhead continues advancing.
             // Highlight the actual spoken cue, not just the video-time subtitle. AudioTrack
             // startup is asynchronous, so the first cue can otherwise miss its visual emphasis.
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
@@ -4771,6 +4770,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     dubbingStatus = "${engine.currentTtsName} 正在播放中文配音",
                     activeDubbingLine = index,
                 )
+            }
+        }
+        engine.onSyncHoldRequired = { index ->
+            // The engine raises this only when the actual remaining PCM (or the conservative
+            // System-TTS duration estimate) cannot fit its subtitle time slot. Marshal to main,
+            // then re-check engine/session ownership before touching ExoPlayer.
+            dubbingSyncHoldHandler.post {
+                if (isCurrentDubbingEngine(engine, sessionKey) && engine.isSyncHoldActiveFor(index)) {
+                    beginDubbingSyncHold(engine, sessionKey, index)
+                }
             }
         }
 
@@ -4967,6 +4976,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         val previousDubbingLine = d?.currentLineIdx() ?: -1
         d?.updateTimelinePosition(dubLine, ms)
         val keepingPreviousDubbingCue = d?.shouldContinueCurrentCue(dubLine) == true
+        // Fallback for transient callback/ticker races: if the active sentence no longer fits
+        // the remaining time slot, request the hold while we are still on that same cue.
+        val activeCueIndex = d?.currentLineIdx() ?: -1
+        if (
+            d != null && st.dubbingOn && activeCueIndex >= 0 &&
+            d.isSyncHoldActiveFor(activeCueIndex) &&
+            !isDubbingSyncHoldFor(d, activeCueIndex)
+        ) {
+            beginDubbingSyncHold(d, st.key, activeCueIndex)
+        }
         // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
         // index uses the same overlap/time-window rules as dubbing, without depending on an engine
         // that may be between old and replacement subtitle sessions.

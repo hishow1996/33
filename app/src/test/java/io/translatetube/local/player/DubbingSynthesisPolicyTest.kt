@@ -14,14 +14,14 @@ class DubbingSynthesisPolicyTest {
     }
 
     @Test
-    fun avoidsAggressiveRetryForModeratelyLongSpeech() {
+    fun retriesModeratelyLongSpeechBeforePlaybackToFitItsTimelineWindow() {
         val speed = DubbingSynthesisPolicy.recommendedSpeed(
             baseSpeed = 1.0f,
             sampleCount = 40_000,
             sampleRate = 16_000,
             cueDurationMs = 1_000,
         )
-        assertEquals(1.0f, speed, 0.001f)
+        assertEquals(2.7778f, speed, 0.001f)
     }
 
     @Test
