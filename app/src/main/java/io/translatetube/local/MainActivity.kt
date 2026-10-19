@@ -172,8 +172,8 @@ class MainActivity : ComponentActivity() {
                     else -> Screen.HOME
                 }
                 var screen by remember { mutableStateOf(initialScreen) }
-                // Render only one screen at a time. A staged fade avoids keeping two PlayerScreens
-                // alive together during AnimatedContent, which could duplicate playback side effects.
+                // Render only one screen at a time. Do not fade the old route to zero:
+                // replacing it at alpha=0 and restarting at alpha=0.01 creates a visible blank page.
                 var displayedScreen by remember { mutableStateOf(initialScreen) }
                 val pageMotion = remember { Animatable(1f) }
                 var hasInitializedScreenMotion by remember { mutableStateOf(false) }
@@ -184,21 +184,22 @@ class MainActivity : ComponentActivity() {
                         pageMotion.snapTo(1f)
                         return@LaunchedEffect
                     }
-                    // Short exit, then a slightly longer entrance with a subtle vertical drift.
-                    // The old route is disposed before the next one enters (important for PlayerScreen).
+                    // Keep at least 88% opacity throughout navigation so the destination is visible
+                    // as soon as it replaces the previous route. A short vertical drift preserves
+                    // the sense of motion without showing the window background between pages.
                     pageMotion.animateTo(
-                        targetValue = 0f,
+                        targetValue = 0.88f,
                         animationSpec = tween(
-                            durationMillis = 105,
+                            durationMillis = 70,
                             easing = FastOutSlowInEasing,
                         ),
                     )
                     displayedScreen = screen
-                    pageMotion.snapTo(0.01f)
+                    pageMotion.snapTo(0.90f)
                     pageMotion.animateTo(
                         targetValue = 1f,
                         animationSpec = tween(
-                            durationMillis = 225,
+                            durationMillis = 155,
                             easing = FastOutSlowInEasing,
                         ),
                     )
@@ -252,7 +253,7 @@ class MainActivity : ComponentActivity() {
                             .widthIn(max = 720.dp)
                             .graphicsLayer {
                                 alpha = pageMotion.value
-                                translationY = (1f - pageMotion.value) * 10.dp.toPx()
+                                translationY = (1f - pageMotion.value) * 56.dp.toPx()
                             },
                     ) {
                         when (displayedScreen) {
