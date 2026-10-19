@@ -112,19 +112,14 @@ internal class EdgeTts : TtsEngine {
                     return
                 }
                 try {
-                    val config = "X-Timestamp:${timestamp()}\\r\\n" +
-                        "Content-Type:application/json; charset=utf-8\\r\\n" +
-                        "Path:speech.config\\r\\n\\r\\n" +
-                        "{\\"context\\":{\\"synthesis\\":{\\"audio\\":{\\"metadataoptions\\":{" +
-                        "\\"sentenceBoundaryEnabled\\":\\"false\\",\\"wordBoundaryEnabled\\":\\"false\\"}," +
-                        "\\"outputFormat\\":\\"audio-24khz-48kbitrate-mono-mp3\\"}}}}"
-                    val ssml = "<?xml version=\\"1.0\\" encoding=\\"UTF-8\\"?>" +
-                        "<speak version=\\"1.0\\" xmlns=\\"http://www.w3.org/2001/10/synthesis\\" xml:lang=\\"zh-CN\\">" +
-                        "<voice name=\\"${voice}\\"><prosody pitch=\\"+0Hz\\" rate=\\"${ratePercent}%\\" volume=\\"+0%\\">" +
-                        xmlEscape(text) + "</prosody></voice></speak>"
-                    val ssmlMessage = "X-RequestId:${connectionId}\\r\\n" +
-                        "Content-Type:application/ssml+xml\\r\\n" +
-                        "X-Timestamp:${timestamp()}Z\\r\\nPath:ssml\\r\\n\\r\\n${ssml}"
+                    val config = "X-Timestamp:${timestamp()}\r\n" +
+                        "Content-Type:application/json; charset=utf-8\r\n" +
+                        "Path:speech.config\r\n\r\n" +
+                        """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
+                    val ssml = """<?xml version="1.0" encoding="UTF-8"?><speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN"><voice name="${voice}"><prosody pitch="+0Hz" rate="${ratePercent}%" volume="+0%">${xmlEscape(text)}</prosody></voice></speak>"""
+                    val ssmlMessage = "X-RequestId:${connectionId}\r\n" +
+                        "Content-Type:application/ssml+xml\r\n" +
+                        "X-Timestamp:${timestamp()}Z\r\nPath:ssml\r\n\r\n${ssml}"
                     if (!webSocket.send(config) || !webSocket.send(ssmlMessage)) {
                         throw IllegalStateException("无法发送微软 Edge TTS 合成请求")
                     }
@@ -136,7 +131,7 @@ internal class EdgeTts : TtsEngine {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                val separator = text.indexOf("\\r\\n\\r\\n")
+                val separator = text.indexOf("\r\n\r\n")
                 val header = if (separator >= 0) text.substring(0, separator) else text
                 val path = header.lineSequence().firstOrNull { it.startsWith("Path:", true) }
                     ?.substringAfter(':')?.trim()?.lowercase(Locale.ROOT)
@@ -344,8 +339,8 @@ internal class EdgeTts : TtsEngine {
 
     private fun xmlEscape(text: String): String = text
         .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        .replace("\\"", "&quot;").replace("'", "&apos;")
-        .filter { it == '\\n' || it == '\\r' || it == '\\t' || it.code >= 0x20 }
+        .replace("\"", "&quot;").replace("'", "&apos;")
+        .filter { it == '\n' || it == '\r' || it == '\t' || it.code >= 0x20 }
 
     private companion object {
         const val TARGET_RATE_HZ = 24_000
@@ -366,7 +361,7 @@ internal class EdgeTts : TtsEngine {
             "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural",
             "zh-CN-YunyangNeural", "zh-CN-XiaohanNeural", "zh-CN-XiaomengNeural",
         )
-        val SENTENCE_BREAKS = setOf('。', '！', '？', '；', '，', '、', ' ', '\\n')
+        val SENTENCE_BREAKS = setOf('。', '！', '？', '；', '，', '、', ' ', '\n')
     }
 }
 
