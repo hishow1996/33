@@ -150,3 +150,5 @@ jobs:
 # Explicit APK build trigger requested by user on 2026-10-20.
 
 # Workaround: pin the APK build to the explicit Ubuntu 22.04 hosted-runner label after ubuntu-latest jobs remained queued without runner assignment.
+
+# Trigger one-time APK build requested by user
