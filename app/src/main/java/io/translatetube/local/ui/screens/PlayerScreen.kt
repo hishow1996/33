@@ -1068,6 +1068,8 @@ private fun VideoParsingPage(
         waitingForDubbingEngine,
         state.dubbingHasErrors,
     ) && !dubbingPreparationPendingOnReady
+    // Keep pause/cancel controls visible until active, waiting, or paused processing has finished.
+    val busy = !complete && !isError && !isCancelled
 
     val mainTitle = when {
         isCancelled -> "处理已取消"
