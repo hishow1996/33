@@ -131,9 +131,10 @@ fun AppLogsScreen(onBack: () -> Unit) {
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                LogSummaryCard("日志总数", records.size.toString(), Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                LogSummaryCard("总数", records.size.toString(), Modifier.weight(1f))
                 LogSummaryCard("错误", errorCount.toString(), Modifier.weight(1f), DangerRed)
+                LogSummaryCard("警告", warningCount.toString(), Modifier.weight(1f), WarnYellow)
                 LogSummaryCard("闪退", crashCount.toString(), Modifier.weight(1f), DangerRed)
             }
             Text(
