@@ -383,10 +383,10 @@ class DubbingTimingTest {
     }
 
     @Test
-    fun playableEndBorrowsTheSilentGapButNeverTouchesTheNextCue() {
-        // 空隙很大：最多借 3 秒
-        assertEquals(6_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, 10_000L))
-        // 空隙不大：借完后给下一条字幕留 120ms
+    fun playableEndUsesTheEntireSilentGapButNeverTouchesTheNextCue() {
+        // 下一条字幕有足够远的起点时，使用全部空隙并保留 120ms 间隔
+        assertEquals(9_880L, DubbingTiming.playableEndMs(1_000L, 3_000L, 10_000L))
+        // 较小的空隙：仍给下一条字幕留 120ms
         assertEquals(3_380L, DubbingTiming.playableEndMs(1_000L, 3_000L, 3_500L))
         // 空隙不够 / 紧挨着 / 重叠：原样返回
         assertEquals(3_000L, DubbingTiming.playableEndMs(1_000L, 3_000L, 3_100L))
@@ -414,7 +414,7 @@ class DubbingTimingTest {
         assertEquals(lines.map { it.index }, extended.map { it.index })
         assertEquals(lines.map { it.startMs }, extended.map { it.startMs })
         assertEquals(
-            // a: 下一条 1500 → 借到 1380；b: 下一条 2550 放不下缓冲 → 不变；c 无译文 → 不变；d 最后一句 → +3000
+            // a: 下一条 1500 → 借到 1380；b: 下一条 2550 放不下缓冲 → 不变；c 无译文 → 不变；d 最后一句 → 最多 +3000
             listOf(1_380L, 2_500L, 3_000L, 7_000L),
             extended.map { it.endMs },
         )
