@@ -1018,7 +1018,6 @@ private fun VideoParsingPage(
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
     var parsingMenuExpanded by remember { mutableStateOf(false) }
-    var allStepsExpanded by remember(source, flow) { mutableStateOf(false) }
 
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
     val isError = state.phase == Phase.ERROR && !isCancelled
@@ -1098,13 +1097,6 @@ private fun VideoParsingPage(
         else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
 
-    val busy = state.phase in setOf(
-        Phase.PARSING,
-        Phase.DOWNLOADING_AUDIO,
-        Phase.TRANSCRIBING,
-        Phase.TRANSLATING,
-        Phase.SYNTHESIZING,
-    ) || waitingForTranscriptionEngine || waitingForDubbingEngine || dubbingPreparationPendingOnReady
     val sourceLabel = when (source) {
         VideoSourceKind.YOUTUBE -> "YouTube 来源"
         VideoSourceKind.WEB -> "网页视频来源"
@@ -1112,11 +1104,6 @@ private fun VideoParsingPage(
         VideoSourceKind.UNKNOWN -> "视频处理"
     }
     val subtitleHeadline = if (source == VideoSourceKind.YOUTUBE) "可用字幕" else "字幕生成状态"
-    val subtitleSubline = if (source == VideoSourceKind.YOUTUBE) {
-        "字幕轨状态与下载入口"
-    } else {
-        "转写、翻译后与视频时间轴同步"
-    }
     val subtitleState = when {
         isError -> if (source == VideoSourceKind.YOUTUBE) "未完成" else "需重试"
         complete -> "已就绪"
@@ -1125,27 +1112,8 @@ private fun VideoParsingPage(
         source == VideoSourceKind.YOUTUBE -> "查找中"
         else -> "自动生成"
     }
-    val subtitleMessage = when {
-        isError -> state.error?.takeIf { it.isNotBlank() } ?: "字幕处理未完成，可以重试"
-        state.availableSubtitleTracks.isNotEmpty() ->
-            "已发现 ${state.availableSubtitleTracks.size} 个字幕轨，可按需下载"
-        source == VideoSourceKind.YOUTUBE ->
-            state.subtitleTrackStatus.ifBlank { "正在查找可用字幕轨；如无字幕，将尝试音轨转写" }
-        waitingForTranscriptionEngine -> "等待转写引擎就绪，视频时间轴将与字幕保持同步"
-        source == VideoSourceKind.WEB ->
-            "将提取网页视频音轨，转写原文、翻译成中文，并按原时间轴配音"
-        source == VideoSourceKind.LOCAL ->
-            "将从本地视频提取音轨，生成时间轴字幕，再翻译并配音"
-        complete -> "字幕与配音处理流程已完成"
-        else -> state.progress.ifBlank { "处理中会保留字幕与视频时间轴的对应关系" }
-    }
-    val visibleStages = if (allStepsExpanded || state.phase == Phase.ERROR || isCancelled || complete) {
-        steps.indices.toList()
-    } else {
-        val from = (currentStage - 1).coerceAtLeast(0)
-        val to = (currentStage + 1).coerceAtLeast(from + 2).coerceAtMost(steps.lastIndex)
-        (from..to).toList()
-    }
+    // YouTube、网页视频与本地视频始终展示完整处理阶段，不再折叠后续步骤。
+    val visibleStages = steps.indices.toList()
     val animatedFraction by animateFloatAsState(
         targetValue = fraction?.coerceIn(0f, 1f) ?: 0f,
         animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
@@ -1658,17 +1626,6 @@ private fun VideoParsingPage(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    TextButton(
-                        onClick = { allStepsExpanded = !allStepsExpanded },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    ) {
-                        Text(
-                            if (allStepsExpanded) "收起流程⌃" else "完整流程⌄",
-                            color = Color(0xFF6080BA),
-                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                        )
-                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 visibleStages.forEachIndexed { visibleIndex, index ->
@@ -1816,19 +1773,6 @@ private fun VideoParsingPage(
                         )
                     }
                 }
-                if (visibleStages.size < steps.size) {
-                    TextButton(
-                        onClick = { allStepsExpanded = true },
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp),
-                    ) {
-                        Text(
-                            "查看全部 ${steps.size} 个阶段",
-                            color = Color(0xFF6080BA),
-                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                        )
-                    }
-                }
                 if (state.phase == Phase.ERROR) {
                     Spacer(Modifier.height(8.dp))
                     Box(
@@ -1903,13 +1847,6 @@ private fun VideoParsingPage(
                             color = Color(0xFF17243B),
                             style = MaterialTheme.typography.titleLarge.copy(fontSize = 15.sp, fontWeight = FontWeight.ExtraBold),
                         )
-                        Text(
-                            subtitleSubline,
-                            color = Color(0xFF95A0B2),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
                     }
                     Text(
                         subtitleState,
@@ -1947,18 +1884,12 @@ private fun VideoParsingPage(
                             ) {
                                 Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3C6EF1), modifier = Modifier.size(16.dp))
                             }
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    "${track.languageTag} · ${if (track.isAutoGenerated) "自动生成" else "人工字幕"}",
-                                    color = Color(0xFF34435A),
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
-                                )
-                                Text(
-                                    "VTT · 保留原时间轴",
-                                    color = Color(0xFF9AA5B5),
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp),
-                                )
-                            }
+                            Text(
+                                "${track.languageTag} · ${if (track.isAutoGenerated) "自动生成" else "人工字幕"}",
+                                color = Color(0xFF34435A),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                            )
                             TextButton(
                                 onClick = { onDownloadSubtitle(track) },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
@@ -1966,37 +1897,6 @@ private fun VideoParsingPage(
                                 Text("下载", color = Color(0xFF3268F5), fontWeight = FontWeight.Bold)
                             }
                         }
-                    }
-                } else {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFFF6F8FD))
-                            .padding(horizontal = 10.dp, vertical = 10.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (busy && !state.isProcessingPaused) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(13.dp),
-                                color = Color(0xFF3D72F6),
-                                strokeWidth = 1.8.dp,
-                            )
-                        } else {
-                            Icon(
-                                if (isError) Icons.Filled.Refresh else Icons.Filled.Subtitles,
-                                contentDescription = null,
-                                tint = if (isError) Color(0xFFCB3E4D) else Color(0xFF3D72F6),
-                                modifier = Modifier.size(15.dp),
-                            )
-                        }
-                        Text(
-                            subtitleMessage,
-                            color = if (isError) Color(0xFFCB3E4D) else Color(0xFF5D78A7),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 15.sp),
-                            modifier = Modifier.weight(1f),
-                        )
                     }
                 }
                 Spacer(Modifier.height(9.dp))
@@ -2019,29 +1919,17 @@ private fun VideoParsingPage(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Box(
-                            Modifier.size(37.dp).clip(RoundedCornerShape(13.dp)).background(Color(0xFFE1EBFF)),
+                            Modifier.size(34.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFE1EBFF)),
                             contentAlignment = androidx.compose.ui.Alignment.Center,
                         ) {
-                            Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5), modifier = Modifier.size(20.dp))
+                            Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5), modifier = Modifier.size(19.dp))
                         }
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                "导入字幕",
-                                color = Color(0xFF2E65ED),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.ExtraBold),
-                            )
-                            Text(
-                                if (source == VideoSourceKind.YOUTUBE) {
-                                    "原文字幕自动翻译，或使用已翻译字幕直接配音"
-                                } else {
-                                    "也可导入外部字幕，自动翻译或直接进行中文配音"
-                                },
-                                color = Color(0xFF8193B5),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, lineHeight = 13.sp),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                        Text(
+                            "导入字幕",
+                            color = Color(0xFF2E65ED),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+                        )
                         Icon(Icons.Filled.ArrowForwardIos, contentDescription = null, tint = Color(0xFF8BA0C5), modifier = Modifier.size(15.dp))
                     }
                 }
