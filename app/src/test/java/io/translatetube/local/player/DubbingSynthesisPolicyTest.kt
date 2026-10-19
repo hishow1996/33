@@ -69,9 +69,15 @@ class DubbingSynthesisPolicyTest {
         )
     }
     @Test
-    fun boundsCachedPcmToExtendedWindowForAutomaticVideoHold() {
-        assertEquals(96_000, DubbingSynthesisPolicy.maxUsefulSampleCount(16_000, 1_000))
-        assertEquals(132_300, DubbingSynthesisPolicy.maxUsefulSampleCount(22_050, 1_000))
+    fun preservesFullPcmInsteadOfCroppingAtACueDurationRatio() {
+        assertEquals(
+            DubbingPcmValidation.MAX_SAMPLE_COUNT,
+            DubbingSynthesisPolicy.maxUsefulSampleCount(16_000, 1_000),
+        )
+        assertEquals(
+            DubbingPcmValidation.MAX_SAMPLE_COUNT,
+            DubbingSynthesisPolicy.maxUsefulSampleCount(22_050, 1_000),
+        )
         assertEquals(
             DubbingPcmValidation.MAX_SAMPLE_COUNT,
             DubbingSynthesisPolicy.maxUsefulSampleCount(192_000, 60_000),
