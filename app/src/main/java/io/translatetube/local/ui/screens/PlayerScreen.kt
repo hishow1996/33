@@ -23,6 +23,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -54,11 +55,13 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -996,6 +999,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     }
 }
 
+
 @Composable
 private fun VideoParsingPage(
     state: PlayerUiState,
@@ -1011,7 +1015,10 @@ private fun VideoParsingPage(
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
     var parsingMenuExpanded by remember { mutableStateOf(false) }
+    var allStepsExpanded by remember(source, flow) { mutableStateOf(false) }
+
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
+    val isError = state.phase == Phase.ERROR && !isCancelled
     val waitingForTranscriptionEngine = state.waitingForTranscriptionEngine && state.phase != Phase.ERROR
     val waitingForDubbingEngine = state.waitingForDubbingEngine && state.phase != Phase.ERROR
     val dubbingPreparationIncomplete = VideoProcessingFlowPolicy.isDubbingPreparationIncomplete(
@@ -1019,12 +1026,13 @@ private fun VideoParsingPage(
         totalLines = state.totalLines,
         preparedCount = state.preparedCount,
     )
-    // The pipeline can set READY before background dubbing finishes; only this READY-state
-    // tail should override the displayed stage, never an earlier translation stage.
     val dubbingPreparationPendingOnReady = state.phase == Phase.READY && dubbingPreparationIncomplete
-    val displayPhase = if (
-        waitingForDubbingEngine || dubbingPreparationPendingOnReady
-    ) Phase.SYNTHESIZING else state.phase
+    val displayPhase = if (waitingForDubbingEngine || dubbingPreparationPendingOnReady) {
+        Phase.SYNTHESIZING
+    } else {
+        state.phase
+    }
+
     val currentStage = VideoProcessingFlowPolicy.stageIndex(
         source = source,
         flow = flow,
@@ -1033,10 +1041,12 @@ private fun VideoParsingPage(
         progress = if (state.phase == Phase.ERROR) state.failedProgress else state.progress,
         waitingForTranscriptionEngine = waitingForTranscriptionEngine,
     ).coerceIn(0, (steps.size - 1).coerceAtLeast(0))
-    val fraction = when (state.phase) {
+
+    val fraction: Float? = when (state.phase) {
         Phase.READY -> when {
             waitingForTranscriptionEngine || waitingForDubbingEngine -> null
-            dubbingPreparationIncomplete -> (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
+            dubbingPreparationIncomplete && state.totalLines > 0 ->
+                (state.preparedCount.toFloat() / state.totalLines).coerceIn(0f, 1f)
             VideoProcessingFlowPolicy.isCompleted(
                 state.phase,
                 waitingForTranscriptionEngine,
@@ -1050,72 +1060,207 @@ private fun VideoParsingPage(
         } else null
         else -> progressRatio(state.progress) ?: progressPercent(state.progress)
     }
+    val complete = VideoProcessingFlowPolicy.isCompleted(
+        state.phase,
+        waitingForTranscriptionEngine,
+        waitingForDubbingEngine,
+        state.dubbingHasErrors,
+    ) && !dubbingPreparationPendingOnReady
+
     val mainTitle = when {
         isCancelled -> "处理已取消"
+        waitingForTranscriptionEngine -> "等待转写引擎就绪"
         waitingForDubbingEngine -> "等待配音引擎就绪"
-        dubbingPreparationPendingOnReady && state.dubbingHasErrors -> "正在准备配音，失败字幕已恢复原声"
+        dubbingPreparationPendingOnReady && state.dubbingHasErrors ->
+            "正在准备配音，失败字幕已恢复原声"
         dubbingPreparationPendingOnReady -> "正在按时间轴生成中文配音"
         state.dubbingHasErrors -> "部分配音失败，相关字幕已恢复原声"
         else -> VideoProcessingFlowPolicy.mainTitle(
             source = source,
-            flow = flow,
             phase = displayPhase,
+            flow = flow,
             isPaused = state.isProcessingPaused,
             waitingForTranscriptionEngine = waitingForTranscriptionEngine,
         )
     }
     val detail = when {
+        isCancelled -> "任务已停止，可以重新开始处理"
+        isError -> state.error?.takeIf { it.isNotBlank() } ?: "当前阶段未能完成，请重试"
         state.noModelHint != null && state.phase != Phase.ERROR -> state.noModelHint.orEmpty()
-        state.isProcessingPaused -> "已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
+        state.isProcessingPaused ->
+            "任务已暂停 · " + state.progress.ifBlank { "点击继续处理以恢复当前任务" }
         state.progress.isNotBlank() -> state.progress
         dubbingPreparationPendingOnReady ->
-            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音；剩余字幕仍在处理。"
+            "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音，剩余字幕仍在处理"
         else -> VideoProcessingFlowPolicy.defaultDetail(source, flow, state.phase, state.error)
     }
 
+    val busy = state.phase in setOf(
+        Phase.PARSING,
+        Phase.DOWNLOADING_AUDIO,
+        Phase.TRANSCRIBING,
+        Phase.TRANSLATING,
+        Phase.SYNTHESIZING,
+    ) || waitingForTranscriptionEngine || waitingForDubbingEngine || dubbingPreparationPendingOnReady
+    val sourceLabel = when (source) {
+        VideoSourceKind.YOUTUBE -> "YouTube 来源"
+        VideoSourceKind.WEB -> "网页视频来源"
+        VideoSourceKind.LOCAL -> "本地视频来源"
+        VideoSourceKind.UNKNOWN -> "视频处理"
+    }
+    val sourceShortLabel = when (source) {
+        VideoSourceKind.YOUTUBE -> "YouTube"
+        VideoSourceKind.WEB -> "网页视频"
+        VideoSourceKind.LOCAL -> "本地视频"
+        VideoSourceKind.UNKNOWN -> "视频"
+    }
+    val subtitleHeadline = if (source == VideoSourceKind.YOUTUBE) "可用字幕" else "字幕生成状态"
+    val subtitleSubline = if (source == VideoSourceKind.YOUTUBE) {
+        "字幕轨状态与下载入口"
+    } else {
+        "转写、翻译后与视频时间轴同步"
+    }
+    val subtitleState = when {
+        isError -> if (source == VideoSourceKind.YOUTUBE) "未完成" else "需重试"
+        complete -> "已就绪"
+        waitingForTranscriptionEngine -> "等待转写"
+        state.availableSubtitleTracks.isNotEmpty() -> "已发现 ${state.availableSubtitleTracks.size} 条"
+        source == VideoSourceKind.YOUTUBE -> "查找中"
+        else -> "自动生成"
+    }
+    val subtitleMessage = when {
+        isError -> state.error?.takeIf { it.isNotBlank() } ?: "字幕处理未完成，可以重试"
+        state.availableSubtitleTracks.isNotEmpty() ->
+            "已发现 ${state.availableSubtitleTracks.size} 个字幕轨，可按需下载"
+        source == VideoSourceKind.YOUTUBE ->
+            state.subtitleTrackStatus.ifBlank { "正在查找可用字幕轨；如无字幕，将尝试音轨转写" }
+        waitingForTranscriptionEngine -> "等待转写引擎就绪，视频时间轴将与字幕保持同步"
+        source == VideoSourceKind.WEB ->
+            "将提取网页视频音轨，转写原文、翻译成中文，并按原时间轴配音"
+        source == VideoSourceKind.LOCAL ->
+            "将从本地视频提取音轨，生成时间轴字幕，再翻译并配音"
+        complete -> "字幕与配音处理流程已完成"
+        else -> state.progress.ifBlank { "处理中会保留字幕与视频时间轴的对应关系" }
+    }
+    val visibleStages = if (allStepsExpanded || state.phase == Phase.ERROR || isCancelled || complete) {
+        steps.indices.toList()
+    } else {
+        val from = (currentStage - 1).coerceAtLeast(0)
+        val to = (currentStage + 1).coerceAtLeast(from + 2).coerceAtMost(steps.lastIndex)
+        (from..to).toList()
+    }
+    val animatedFraction by animateFloatAsState(
+        targetValue = fraction?.coerceIn(0f, 1f) ?: 0f,
+        animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing),
+        label = "processingProgress",
+    )
+
     Column(
-        Modifier.fillMaxSize()
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(26.dp))
-            .background(Color(0xFFF2F6FC))
-            .padding(horizontal = 14.dp, vertical = 12.dp)
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF8FAFF))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
             .verticalScroll(androidx.compose.foundation.rememberScrollState()),
     ) {
+        // Navigation header — clean white surface with a compact source identity.
         Row(
             Modifier.fillMaxWidth().padding(bottom = 14.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                "←",
-                color = OnBg,
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.clip(CircleShape).clickable(onClick = onBack).padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                VideoProcessingFlowPolicy.pageTitle(source, flow, failed = state.phase == Phase.ERROR && !isCancelled),
-                color = OnBg,
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.weight(1f),
-            )
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(Color.White)
+                    .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(15.dp))
+                    .clickable(onClick = onBack),
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.ArrowBack,
+                    contentDescription = "返回",
+                    tint = Color(0xFF273953),
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        Brush.linearGradient(
+                            listOf(Color(0xFFFFECEE), Color(0xFFFFF5F4)),
+                        ),
+                    ),
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+            ) {
+                if (source == VideoSourceKind.YOUTUBE) {
+                    Box(
+                        Modifier
+                            .width(25.dp)
+                            .height(18.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFFF0444C)),
+                        contentAlignment = androidx.compose.ui.Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White)
+                    }
+                } else {
+                    Icon(
+                        if (source == VideoSourceKind.LOCAL) Icons.Filled.HighQuality else Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        tint = Color(0xFF3268F5),
+                        modifier = Modifier.size(23.dp),
+                    )
+                }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    VideoProcessingFlowPolicy.pageTitle(
+                        source,
+                        flow,
+                        failed = isError,
+                    ),
+                    color = Color(0xFF17243B),
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = (-0.45).sp,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "视频处理中心",
+                    color = Color(0xFF8995A9),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                )
+            }
             Box {
                 IconButton(
                     onClick = { parsingMenuExpanded = true },
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White)
+                        .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(14.dp)),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "解析处理菜单",
-                        tint = SubText,
-                        modifier = Modifier.size(22.dp),
+                        Icons.Filled.MoreVert,
+                        contentDescription = "更多处理操作",
+                        tint = Color(0xFF52647F),
+                        modifier = Modifier.size(21.dp),
                     )
                 }
                 DropdownMenu(
                     expanded = parsingMenuExpanded,
                     onDismissRequest = { parsingMenuExpanded = false },
+                    modifier = Modifier.widthIn(min = 228.dp),
                 ) {
                     DropdownMenuItem(
                         text = { Text("导入字幕并自动翻译") },
+                        leadingIcon = { Icon(Icons.Filled.Subtitles, contentDescription = null) },
                         onClick = {
                             parsingMenuExpanded = false
                             onImportSubtitles()
@@ -1123,13 +1268,14 @@ private fun VideoParsingPage(
                     )
                     DropdownMenuItem(
                         text = { Text("上传已翻译字幕并直接配音") },
+                        leadingIcon = { Icon(Icons.Filled.Subtitles, contentDescription = null) },
                         onClick = {
                             parsingMenuExpanded = false
                             onImportTranslatedSubtitles()
                         },
                     )
                     if (state.availableSubtitleTracks.isNotEmpty()) {
-                        HorizontalDivider()
+                        HorizontalDivider(color = Color(0xFFE9EEF6))
                         state.availableSubtitleTracks.forEach { track ->
                             DropdownMenuItem(
                                 text = { Text("下载原字幕 · ${track.languageTag}") },
@@ -1140,10 +1286,11 @@ private fun VideoParsingPage(
                             )
                         }
                     }
-                    if (state.phase == Phase.ERROR) {
-                        HorizontalDivider()
+                    if (state.phase == Phase.ERROR && !isCancelled) {
+                        HorizontalDivider(color = Color(0xFFE9EEF6))
                         DropdownMenuItem(
                             text = { Text("重试当前处理") },
+                            leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
                             onClick = {
                                 parsingMenuExpanded = false
                                 onRetry()
@@ -1154,265 +1301,746 @@ private fun VideoParsingPage(
             }
         }
 
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = Color.White,
-            shape = RoundedCornerShape(22.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F3F8)),
+        // Hero card: source, task title, progress and primary actions.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .shadow(12.dp, RoundedCornerShape(24.dp), clip = false)
+                .clip(RoundedCornerShape(24.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFFF1F7FF),
+                            Color(0xFFFFFFFF),
+                            Color(0xFFFAF8FF),
+                        ),
+                    ),
+                )
+                .border(1.dp, Color(0xFFE2EAFF), RoundedCornerShape(24.dp))
+                .padding(horizontal = 14.dp, vertical = 15.dp),
         ) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Column {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
                     Box(
-                        Modifier.size(52.dp).clip(RoundedCornerShape(15.dp)).background(SurfaceHigh),
+                        Modifier
+                            .size(62.dp)
+                            .clip(RoundedCornerShape(21.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(Color(0xFFE5F0FF), Color(0xFFF2F2FF)),
+                                ),
+                            ),
                         contentAlignment = androidx.compose.ui.Alignment.Center,
                     ) {
-                        Icon(Icons.Filled.Subtitles, contentDescription = null, tint = BrandBright, modifier = Modifier.size(26.dp))
+                        Box(
+                            Modifier
+                                .size(width = 49.dp, height = 43.dp)
+                                .graphicsLayer { rotationZ = -7f }
+                                .shadow(5.dp, RoundedCornerShape(13.dp))
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(Color.White)
+                                .border(1.dp, Color(0xFFE7EEFF), RoundedCornerShape(13.dp)),
+                            contentAlignment = androidx.compose.ui.Alignment.Center,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(width = 32.dp, height = 24.dp)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(
+                                        if (source == VideoSourceKind.YOUTUBE) Color(0xFFFF4A55)
+                                        else Color(0xFF3268F5),
+                                    ),
+                                contentAlignment = androidx.compose.ui.Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Filled.PlayArrow,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                            }
+                        }
+                        Text(
+                            "中",
+                            color = Color(0xFF3268F5),
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                            ),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 2.dp, bottom = 1.dp)
+                                .shadow(2.dp, RoundedCornerShape(7.dp))
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(Color.White)
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                        )
+                        Text(
+                            "A↔文",
+                            color = Color(0xFF4977E9),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                            ),
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 1.dp, end = 1.dp)
+                                .shadow(2.dp, RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.White)
+                                .padding(horizontal = 4.dp, vertical = 4.dp),
+                        )
                     }
-                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(mainTitle, color = OnBg, style = MaterialTheme.typography.titleLarge)
-                        Text(detail, color = SubText, style = MaterialTheme.typography.bodyMedium)
+                        Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Box(
+                                Modifier.size(5.dp).clip(CircleShape).background(Color(0xFF3268F5)),
+                            )
+                            Text(
+                                sourceLabel,
+                                color = Color(0xFF536985),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                            )
+                        }
+                        Text(
+                            mainTitle,
+                            color = Color(0xFF17243B),
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = (-0.35).sp,
+                                lineHeight = 21.sp,
+                            ),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            detail,
+                            color = Color(0xFF71819B),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Column(
+                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(start = 1.dp).widthIn(max = 68.dp),
+                    ) {
+                        val stateColor = when {
+                            isError || isCancelled -> Color(0xFFCB3E4D)
+                            state.isProcessingPaused -> Color(0xFFA86B13)
+                            complete -> Color(0xFF15996E)
+                            else -> Color(0xFF3268E9)
+                        }
+                        val stateBg = when {
+                            isError || isCancelled -> Color(0xFFFFF0F0)
+                            state.isProcessingPaused -> Color(0xFFFFF6E7)
+                            complete -> Color(0xFFE4F8EF)
+                            else -> Color(0xFFE9F0FF)
+                        }
+                        Row(
+                            Modifier
+                                .clip(CircleShape)
+                                .background(stateBg)
+                                .padding(horizontal = 7.dp, vertical = 6.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            if (busy && !state.isProcessingPaused) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(10.dp),
+                                    color = stateColor,
+                                    strokeWidth = 1.7.dp,
+                                )
+                            } else if (complete) {
+                                Icon(Icons.Filled.Check, contentDescription = null, tint = stateColor, modifier = Modifier.size(11.dp))
+                            } else if (isError || isCancelled) {
+                                Text("!", color = stateColor, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text(
+                                when {
+                                    isCancelled -> "已取消"
+                                    isError -> "失败"
+                                    state.isProcessingPaused -> "已暂停"
+                                    complete -> "已完成"
+                                    waitingForTranscriptionEngine -> "等待转写"
+                                    waitingForDubbingEngine -> "等待配音"
+                                    else -> "处理中"
+                                },
+                                color = stateColor,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                                maxLines = 1,
+                            )
+                        }
                     }
                 }
-                Spacer(Modifier.height(17.dp))
-                LinearProgressIndicator(
-                    progress = { fraction ?: 0f },
-                    modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
-                    color = Brand,
-                    trackColor = Color(0xFFE6ECF5),
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    when {
-                        waitingForTranscriptionEngine -> "等待转写引擎就绪"
-                        waitingForDubbingEngine -> "等待配音引擎就绪"
-                        state.dubbingHasErrors -> "部分配音失败 · 请查看提示"
-                        fraction != null -> "当前进度 · " + (fraction * 100).toInt() + "%"
-                        else -> "当前阶段 · 正在处理中"
-                    },
-                    color = SubText,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (state.phase in setOf(
-                        Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING,
-                        Phase.TRANSLATING, Phase.SYNTHESIZING,
-                    )
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    Spacer(Modifier.height(12.dp))
+                    if (fraction != null) {
+                        LinearProgressIndicator(
+                            progress = { animatedFraction },
+                            modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
+                            color = Color(0xFF3268F5),
+                            trackColor = Color(0xFFE8EDF6),
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
+                            color = Color(0xFF3268F5),
+                            trackColor = Color(0xFFE8EDF6),
+                        )
+                    }
+                    Text(
+                        if (complete) "${steps.size} / ${steps.size}" else "${(currentStage + 1).coerceAtMost(steps.size)} / ${steps.size}",
+                        color = Color(0xFF6B7C98),
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
-                        OutlinedButton(
-                            onClick = onTogglePause,
-                            modifier = Modifier.weight(1f).height(46.dp),
-                            shape = RoundedCornerShape(14.dp),
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = Color(0xFF8190A8),
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            when {
+                                isCancelled -> "当前任务已停止"
+                                isError -> "处理未能完成"
+                                complete -> "视频、字幕与配音已就绪"
+                                state.isProcessingPaused -> "已暂停 · 等待继续处理"
+                                fraction != null -> "实际进度 ${(animatedFraction * 100).toInt()}%"
+                                else -> "正在处理当前阶段…"
+                            },
+                            color = Color(0xFF7C8BA2),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (waitingForTranscriptionEngine || waitingForDubbingEngine) {
+                        Text(
+                            if (waitingForTranscriptionEngine) "等待转写引擎" else "等待配音引擎",
+                            color = Color(0xFF6680AC),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                        )
+                    }
+                }
+
+                if (busy) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
+                        val pauseLabel = if (state.isProcessingPaused) "继续处理" else "暂停处理"
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(43.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(if (state.isProcessingPaused) Brush.linearGradient(listOf(Color(0xFF3268F5), Color(0xFF517EF8))) else Brush.linearGradient(listOf(Color.White, Color(0xFFF9FBFF))))
+                                .border(1.dp, Color(0xFFCBDCFF), RoundedCornerShape(14.dp))
+                                .clickable(onClick = onTogglePause),
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Text(if (state.isProcessingPaused) "继续处理" else "暂停处理")
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    if (state.isProcessingPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                                    contentDescription = null,
+                                    tint = if (state.isProcessingPaused) Color.White else Color(0xFF2862EB),
+                                    modifier = Modifier.size(17.dp),
+                                )
+                                Text(
+                                    pauseLabel,
+                                    color = if (state.isProcessingPaused) Color.White else Color(0xFF2862EB),
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                                )
+                            }
                         }
-                        Button(
-                            onClick = onCancel,
-                            modifier = Modifier.weight(1f).height(46.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = DangerRed,
-                                contentColor = Color.White,
-                            ),
-                        ) { Text("取消处理") }
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(43.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Brush.linearGradient(listOf(Color.White, Color(0xFFFFF5F6))))
+                                .border(1.dp, Color(0xFFFFD6DB), RoundedCornerShape(14.dp))
+                                .clickable(onClick = onCancel),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text("×", color = Color(0xFFD94554), style = MaterialTheme.typography.titleLarge)
+                                Text(
+                                    "取消处理",
+                                    color = Color(0xFFD94554),
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(14.dp))
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = Color.White,
-            shape = RoundedCornerShape(22.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F3F8)),
+        // Stage timeline — finished tasks, current task, and a small preview of what comes next.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 14.dp)
+                .shadow(8.dp, RoundedCornerShape(22.dp), clip = false)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color.White)
+                .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(22.dp))
+                .padding(horizontal = 13.dp, vertical = 14.dp),
         ) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-                Text("处理进度", color = OnBg, style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(12.dp))
-                steps.forEachIndexed { index, label ->
-                    val done = index < currentStage
-                    val active = state.phase != Phase.ERROR && index == currentStage
-                    val failed = state.phase == Phase.ERROR && !isCancelled && index == currentStage
+            Column {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    Box(
+                        Modifier.size(34.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFEDF3FF)),
+                        contentAlignment = androidx.compose.ui.Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, tint = Color(0xFF356AF0), modifier = Modifier.size(18.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "处理进度",
+                            color = Color(0xFF17243B),
+                            style = MaterialTheme.typography.titleLarge.copy(fontSize = 15.sp, fontWeight = FontWeight.ExtraBold),
+                        )
+                        Text(
+                            when (source) {
+                                VideoSourceKind.YOUTUBE -> "优先使用可用字幕轨"
+                                VideoSourceKind.WEB -> "提取网页音轨并生成时间轴字幕"
+                                VideoSourceKind.LOCAL -> "提取本地音轨并同步字幕"
+                                VideoSourceKind.UNKNOWN -> "按真实处理阶段展示状态"
+                            },
+                            color = Color(0xFF95A0B2),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(
+                        onClick = { allStepsExpanded = !allStepsExpanded },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            if (allStepsExpanded) "收起流程⌃" else "完整流程⌄",
+                            color = Color(0xFF6080BA),
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                visibleStages.forEachIndexed { visibleIndex, index ->
+                    val done = complete || (!isCancelled && index < currentStage)
+                    val active = !complete && !isError && !isCancelled && index == currentStage
+                    val failed = isError && index == currentStage
                     val cancelled = isCancelled && index == currentStage
+                    val paused = active && state.isProcessingPaused
+                    val markerBg = when {
+                        done -> Color(0xFFE8F8F1)
+                        failed -> Color(0xFFFFE4E6)
+                        cancelled -> Color(0xFFFFF6E7)
+                        active -> Color(0xFFE5EEFF)
+                        else -> Color(0xFFF0F3F8)
+                    }
+                    val markerColor = when {
+                        done -> Color(0xFF18A879)
+                        failed -> Color(0xFFD74655)
+                        cancelled -> Color(0xFFA86B13)
+                        active -> Color(0xFF3268F5)
+                        else -> Color(0xFF9EACC0)
+                    }
+                    val rowBg = when {
+                        done -> Brush.linearGradient(listOf(Color(0xFFF2FBF7), Color.White))
+                        failed -> Brush.linearGradient(listOf(Color(0xFFFFF4F4), Color.White))
+                        active -> Brush.linearGradient(listOf(Color(0xFFEFF5FF), Color(0xFFF8FAFF)))
+                        else -> Brush.linearGradient(listOf(Color.White, Color(0xFFFCFDFF)))
+                    }
                     Row(
-                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clip(RoundedCornerShape(15.dp))
+                            .background(rowBg)
+                            .border(
+                                width = if (active || failed) 1.dp else 0.dp,
+                                color = if (active) Color(0xFFE4EDFF) else Color(0xFFFFD6DB),
+                                shape = RoundedCornerShape(15.dp),
+                            )
+                            .padding(horizontal = 7.dp, vertical = 8.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
                     ) {
                         Box(
-                            Modifier.size(27.dp).clip(CircleShape)
-                                .background(when {
-                                    failed -> Color(0xFFFFE8E8)
-                                    cancelled -> Color(0xFFFFF1DA)
-                                    done -> Color(0xFFE7F5ED)
-                                    active -> Color(0xFFE8F0FF)
-                                    else -> Color(0xFFF0F3F7)
-                                }),
+                            Modifier
+                                .size(29.dp)
+                                .clip(CircleShape)
+                                .background(markerBg)
+                                .border(1.dp, Color.White, CircleShape),
                             contentAlignment = androidx.compose.ui.Alignment.Center,
                         ) {
                             when {
-                                failed -> Text("!", color = DangerRed, style = MaterialTheme.typography.titleMedium)
-                                cancelled -> Text("Ⅱ", color = BrandBright, style = MaterialTheme.typography.titleMedium)
-                                done -> Text("✓", color = Color(0xFF21945A), style = MaterialTheme.typography.titleMedium)
+                                done -> Icon(Icons.Filled.Check, contentDescription = null, tint = markerColor, modifier = Modifier.size(17.dp))
+                                failed -> Text("!", color = markerColor, style = MaterialTheme.typography.titleMedium)
+                                cancelled -> Text("Ⅱ", color = markerColor, style = MaterialTheme.typography.titleMedium)
                                 active -> CircularProgressIndicator(
                                     modifier = Modifier.size(17.dp),
+                                    color = markerColor,
                                     strokeWidth = 2.dp,
-                                    color = BrandBright,
                                 )
-                                else -> Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFB7C2D1)))
+                                else -> Box(Modifier.size(7.dp).clip(CircleShape).background(markerColor))
                             }
                         }
-                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "${index + 1}. ${steps[index]}",
+                                color = when {
+                                    failed -> Color(0xFFCB3E4D)
+                                    active -> Color(0xFF265EE3)
+                                    else -> Color(0xFF34455F)
+                                },
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 11.sp,
+                                    fontWeight = if (active || done) FontWeight.Bold else FontWeight.SemiBold,
+                                    lineHeight = 15.sp,
+                                ),
+                            )
+                            Text(
+                                when {
+                                    done -> "已完成"
+                                    failed -> "此阶段处理未成功"
+                                    cancelled -> "处理已停止"
+                                    paused -> "任务已暂停，等待继续"
+                                    active && state.progress.isNotBlank() -> state.progress.take(72)
+                                    active && waitingForTranscriptionEngine -> "等待转写引擎就绪"
+                                    active && waitingForDubbingEngine -> "等待配音引擎就绪"
+                                    active -> "正在处理当前阶段…"
+                                    else -> "等待前序步骤完成"
+                                },
+                                color = when {
+                                    done -> Color(0xFF159B71)
+                                    failed -> Color(0xFFCB3E4D)
+                                    active -> Color(0xFF8193B5)
+                                    else -> Color(0xFF8D9BB0)
+                                },
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, lineHeight = 13.sp),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        val stageBadgeText = when {
+                            done -> "已完成"
+                            failed -> "失败"
+                            cancelled -> "已取消"
+                            paused -> "已暂停"
+                            active -> if (fraction != null) "${(animatedFraction * 100).toInt()}%" else "进行中"
+                            else -> "待处理"
+                        }
+                        val stageBadgeBg = when {
+                            done -> Color(0xFFE2F7ED)
+                            failed -> Color(0xFFFFE6E8)
+                            active && !paused -> Color(0xFFDFEAFF)
+                            paused || cancelled -> Color(0xFFFFF0D8)
+                            else -> Color(0xFFF1F4F8)
+                        }
+                        val stageBadgeColor = when {
+                            done -> Color(0xFF14996C)
+                            failed -> Color(0xFFCB3C4C)
+                            active && !paused -> Color(0xFF2862EA)
+                            paused || cancelled -> Color(0xFFA86B13)
+                            else -> Color(0xFF8794A8)
+                        }
                         Text(
-                            label,
-                            color = when {
-                                failed -> DangerRed
-                                cancelled -> BrandBright
-                                active -> BrandBright
-                                else -> OnBg
-                            },
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal
+                            stageBadgeText,
+                            color = stageBadgeColor,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(stageBadgeBg)
+                                .padding(horizontal = 7.dp, vertical = 5.dp),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold,
                             ),
-                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
                         )
+                    }
+                    if (visibleIndex < visibleStages.lastIndex) {
+                        Box(
+                            Modifier
+                                .padding(start = 20.dp)
+                                .width(2.dp)
+                                .height(7.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE9EEF7)),
+                        )
+                    }
+                }
+                if (visibleStages.size < steps.size) {
+                    TextButton(
+                        onClick = { allStepsExpanded = true },
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 5.dp),
+                    ) {
                         Text(
-                            when {
-                                failed -> "失败"
-                                cancelled -> "已取消"
-                                done -> "完成"
-                                active -> if (fraction != null) ((fraction * 100).toInt().toString() + "%") else "进行中"
-                                state.phase == Phase.ERROR -> "未执行"
-                                else -> "待处理"
-                            },
-                            color = when {
-                                failed -> DangerRed
-                                cancelled -> BrandBright
-                                done -> Color(0xFF21945A)
-                                active -> BrandBright
-                                else -> SubText
-                            },
-                            style = MaterialTheme.typography.bodySmall,
+                            "查看全部 ${steps.size} 个阶段",
+                            color = Color(0xFF6080BA),
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
                         )
                     }
                 }
                 if (state.phase == Phase.ERROR) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        state.error ?: detail,
-                        color = DangerRed,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
                     Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = onRetry,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White),
-                    ) { Text("重试") }
-                }
-                HorizontalDivider(color = OutlineSoft, modifier = Modifier.padding(vertical = 13.dp))
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = onImportSubtitles,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(15.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCCD9EC)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
-                ) {
-                    Icon(Icons.Filled.Subtitles, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("导入字幕并自动翻译", style = MaterialTheme.typography.titleMedium)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isCancelled) Color(0xFFFFF7E9) else Color(0xFFFFF1F2))
+                            .border(
+                                1.dp,
+                                if (isCancelled) Color(0xFFFFE4B5) else Color(0xFFFFD8DD),
+                                RoundedCornerShape(14.dp),
+                            )
+                            .padding(12.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                if (isCancelled) "处理已取消" else "处理未能完成",
+                                color = if (isCancelled) Color(0xFFA86B13) else Color(0xFFCB3E4D),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            )
+                            Text(
+                                state.error.orEmpty().ifBlank { detail },
+                                color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            if (!isCancelled) {
+                                Button(
+                                    onClick = onRetry,
+                                    modifier = Modifier.fillMaxWidth().height(43.dp),
+                                    shape = RoundedCornerShape(13.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF3268F5),
+                                        contentColor = Color.White,
+                                    ),
+                                ) {
+                                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(7.dp))
+                                    Text("重试当前处理", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        if (
-            source == VideoSourceKind.YOUTUBE ||
-            state.availableSubtitleTracks.isNotEmpty() ||
-            state.subtitleTrackStatus.isNotBlank()
+        // Subtitle panel differs by source: YouTube shows real available tracks, while web/local
+        // explicitly describe the generated timed-subtitle path.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 14.dp)
+                .shadow(8.dp, RoundedCornerShape(22.dp), clip = false)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Color.White)
+                .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(22.dp))
+                .padding(horizontal = 13.dp, vertical = 14.dp),
         ) {
-            Spacer(Modifier.height(14.dp))
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = Color.White,
-                shape = RoundedCornerShape(22.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F3F8)),
-            ) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Column {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    Box(
+                        Modifier.size(34.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFEDF3FF)),
+                        contentAlignment = androidx.compose.ui.Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF356AF0), modifier = Modifier.size(18.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            subtitleHeadline,
+                            color = Color(0xFF17243B),
+                            style = MaterialTheme.typography.titleLarge.copy(fontSize = 15.sp, fontWeight = FontWeight.ExtraBold),
+                        )
+                        Text(
+                            subtitleSubline,
+                            color = Color(0xFF95A0B2),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        subtitleState,
+                        color = when {
+                            isError -> Color(0xFFCB3E4D)
+                            complete -> Color(0xFF15996E)
+                            else -> Color(0xFF3268F5)
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    isError -> Color(0xFFFFF0F0)
+                                    complete -> Color(0xFFE4F8EF)
+                                    else -> Color(0xFFEDF3FF)
+                                },
+                            )
+                            .padding(horizontal = 9.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                    )
+                }
+                Spacer(Modifier.height(9.dp))
+                if (source == VideoSourceKind.YOUTUBE && state.availableSubtitleTracks.isNotEmpty()) {
+                    state.availableSubtitleTracks.forEachIndexed { index, track ->
+                        if (index > 0) HorizontalDivider(color = Color(0xFFF0F3F8))
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                        ) {
+                            Box(
+                                Modifier.size(31.dp).clip(RoundedCornerShape(11.dp)).background(Color(0xFFEDF3FF)),
+                                contentAlignment = androidx.compose.ui.Alignment.Center,
+                            ) {
+                                Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3C6EF1), modifier = Modifier.size(16.dp))
+                            }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    "${track.languageTag} · ${if (track.isAutoGenerated) "自动生成" else "人工字幕"}",
+                                    color = Color(0xFF34435A),
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                                )
+                                Text(
+                                    "VTT · 保留原时间轴",
+                                    color = Color(0xFF9AA5B5),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp),
+                                )
+                            }
+                            TextButton(
+                                onClick = { onDownloadSubtitle(track) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            ) {
+                                Text("下载", color = Color(0xFF3268F5), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                } else {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFFF6F8FD))
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (busy && !state.isProcessingPaused) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(13.dp),
+                                color = Color(0xFF3D72F6),
+                                strokeWidth = 1.8.dp,
+                            )
+                        } else {
+                            Icon(
+                                if (isError) Icons.Filled.Refresh else Icons.Filled.Subtitles,
+                                contentDescription = null,
+                                tint = if (isError) Color(0xFFCB3E4D) else Color(0xFF3D72F6),
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                        Text(
+                            subtitleMessage,
+                            color = if (isError) Color(0xFFCB3E4D) else Color(0xFF5D78A7),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 15.sp),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(9.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(Color(0xFFF1F6FF), Color(0xFFFBFCFF)),
+                            ),
+                        )
+                        .border(1.dp, Color(0xFFD9E5FF), RoundedCornerShape(15.dp))
+                        .clickable(onClick = onImportSubtitles)
+                        .padding(horizontal = 11.dp, vertical = 10.dp),
+                ) {
                     Row(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        Box(
+                            Modifier.size(37.dp).clip(RoundedCornerShape(13.dp)).background(Color(0xFFE1EBFF)),
+                            contentAlignment = androidx.compose.ui.Alignment.Center,
+                        ) {
+                            Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5), modifier = Modifier.size(20.dp))
+                        }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text("可用字幕文件", color = OnBg, style = MaterialTheme.typography.titleLarge)
                             Text(
-                                when {
-                                    state.availableSubtitleTracks.isNotEmpty() ->
-                                        "发现 " + state.availableSubtitleTracks.size + " 个字幕轨"
-                                    state.phase == Phase.ERROR -> "未能获取字幕轨列表"
-                                    else -> "正在查找可用字幕轨…"
+                                "导入字幕",
+                                color = Color(0xFF2E65ED),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp, fontWeight = FontWeight.ExtraBold),
+                            )
+                            Text(
+                                if (source == VideoSourceKind.YOUTUBE) {
+                                    "原文字幕自动翻译，或使用已翻译字幕直接配音"
+                                } else {
+                                    "也可导入外部字幕，自动翻译或直接进行中文配音"
                                 },
-                                color = SubText,
-                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF8193B5),
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp, lineHeight = 13.sp),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Text("可选下载", color = BrandBright, style = MaterialTheme.typography.labelLarge)
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "下载原字幕后可在外部翻译，再上传已翻译文件配音。不下载也不影响当前流程。",
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        state.subtitleTrackStatus.ifBlank {
-                            when {
-                                state.availableSubtitleTracks.isNotEmpty() ->
-                                    "字幕轨已就绪；下载为可选操作，不影响当前处理。"
-                                state.phase == Phase.ERROR ->
-                                    "处理未完成，尚未取得字幕轨列表；可重试或导入字幕文件。"
-                                dubbingPreparationPendingOnReady ->
-                                    "字幕读取已结束，正在继续准备中文配音。"
-                                else -> "正在获取可用字幕轨…"
-                            }
-                        },
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    if (state.availableSubtitleTracks.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        state.availableSubtitleTracks.forEachIndexed { index, track ->
-                            if (index > 0) HorizontalDivider(color = OutlineSoft)
-                            Row(
-                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            ) {
-                                Column(
-                                    Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                                ) {
-                                    Text(
-                                        track.languageTag + " · " + (if (track.isAutoGenerated) "自动生成" else "人工字幕"),
-                                        color = OnBg,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    Text(
-                                        "时间轴会保留为 VTT 格式",
-                                        color = SubText,
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                                TextButton(onClick = { onDownloadSubtitle(track) }) {
-                                    Text("下载")
-                                }
-                            }
-                        }
+                        Icon(Icons.Filled.ArrowForwardIos, contentDescription = null, tint = Color(0xFF8BA0C5), modifier = Modifier.size(15.dp))
                     }
                 }
             }
