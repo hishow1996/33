@@ -37,7 +37,7 @@ class DubbingStartupBufferPolicyTest {
         assertTrue(plan.lineIndices.size >= 3)
         assertTrue(plan.lineIndices.size <= 6)
         assertEquals(8_000L, plan.lookAheadMs)
-        assertEquals(25_000L, plan.waitTimeoutMs)
+        assertEquals(3_000L, plan.waitTimeoutMs)
     }
 
     @Test
@@ -53,26 +53,25 @@ class DubbingStartupBufferPolicyTest {
             synthesisTimelineLagFactor = 1.8f,
         )
         assertEquals(8_000L, baseline.lookAheadMs)
-        assertEquals(20_000L, slow.lookAheadMs)
-        assertEquals(8, slow.minimumCueCount)
+        assertEquals(12_000L, slow.lookAheadMs)
+        assertEquals(2, slow.minimumCueCount)
         assertFalse(slow.waitForAllBeforePlayback)
         assertTrue(slow.lineIndices.size >= baseline.lineIndices.size)
     }
 
     @Test
-    fun sustainedSevereSlowdownWaitsForAllGeneratedCues() {
-        val spoken = DubbingStartupBufferPolicy.spokenCueIndices(lines(16))
+    fun sustainedSevereSlowdownStillStartsAfterBoundedBufferWait() {
         val plan = DubbingStartupBufferPolicy.plan(
-            lines = lines(16),
-            spokenCueIndices = spoken,
+            lines(16),
             immediateMode = false,
             synthesisTimelineLagFactor = 2.2f,
             synthesisSampleCount = 2,
         )
-        assertTrue(plan.waitForAllBeforePlayback)
-        assertEquals(spoken, plan.lineIndices)
-        assertEquals(spoken.size, plan.minimumCueCount)
-        assertEquals(0L, plan.waitTimeoutMs)
+        assertFalse(plan.waitForAllBeforePlayback)
+        assertEquals(12_000L, plan.lookAheadMs)
+        assertEquals(2, plan.minimumCueCount)
+        assertEquals(3_000L, plan.waitTimeoutMs)
+        assertTrue(plan.lineIndices.size < 16)
     }
 
     @Test
@@ -84,8 +83,8 @@ class DubbingStartupBufferPolicyTest {
             synthesisSampleCount = 1,
         )
         assertFalse(plan.waitForAllBeforePlayback)
-        assertEquals(20_000L, plan.lookAheadMs)
-        assertEquals(8, plan.minimumCueCount)
+        assertEquals(12_000L, plan.lookAheadMs)
+        assertEquals(2, plan.minimumCueCount)
     }
 
     @Test
