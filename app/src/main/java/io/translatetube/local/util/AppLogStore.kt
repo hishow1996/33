@@ -27,8 +27,11 @@ data class AppLogWriterHealth(
     val failedWriteCount: Long,
     val lastFailureTimestampMs: Long,
     val lastFailureDescription: String,
+    val lastSuccessTimestampMs: Long,
+    val lastOperationSucceeded: Boolean,
 ) {
-    val isHealthy: Boolean get() = failedWriteCount == 0L
+    /** Historical failures remain visible, but a later successful write restores current health. */
+    val isHealthy: Boolean get() = lastOperationSucceeded
 }
 
 object AppLogStore {
@@ -51,12 +54,16 @@ object AppLogStore {
     private val failedWriteCount = java.util.concurrent.atomic.AtomicLong(0L)
     @Volatile private var lastWriteFailureTimestampMs: Long = 0L
     @Volatile private var lastWriteFailureDescription: String = ""
+    @Volatile private var lastWriteSuccessTimestampMs: Long = 0L
+    @Volatile private var lastLogOperationSucceeded: Boolean = true
 
     /** Runtime-only health fallback: remains available when the log file itself cannot be written. */
     fun writerHealth(): AppLogWriterHealth = AppLogWriterHealth(
         failedWriteCount = failedWriteCount.get(),
         lastFailureTimestampMs = lastWriteFailureTimestampMs,
         lastFailureDescription = lastWriteFailureDescription,
+        lastSuccessTimestampMs = lastWriteSuccessTimestampMs,
+        lastOperationSucceeded = lastLogOperationSucceeded,
     )
 
     private fun noteWriteFailure(operation: String, failure: Throwable? = null) {
@@ -67,6 +74,7 @@ object AppLogStore {
         }.orEmpty()
         val reasonSuffix = if (reason.isBlank()) "" else " — $reason"
         lastWriteFailureDescription = redact(operation + reasonSuffix).take(240)
+        lastLogOperationSucceeded = false
         // Do not feed this back into AppLogStore: Logcat is the fallback when file logging itself fails.
         runCatching {
             android.util.Log.e(
@@ -476,6 +484,8 @@ object AppLogStore {
                     rotate(directory)
                 }
                 File(directory, LOG_NAME).appendText(row + "\n", Charsets.UTF_8)
+                lastWriteSuccessTimestampMs = System.currentTimeMillis()
+                lastLogOperationSucceeded = true
                 val crumb = "${formatTime(timestampMs)} [${redact(level)}] ${redact(tag)} · ${redact(message)}"
                     .replace(Regex("\\s+"), " ")
                     .take(600)
