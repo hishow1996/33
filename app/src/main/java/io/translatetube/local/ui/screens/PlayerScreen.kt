@@ -1022,6 +1022,9 @@ private fun VideoParsingPage(
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    val screenConfig = androidx.compose.ui.platform.LocalConfiguration.current
+    // Keep the full card design on larger screens; use a slightly denser rhythm on short phones.
+    val compactLayout = screenConfig.screenHeightDp < 760 || screenConfig.screenWidthDp < 360
     var processingSettingsOpen by remember { mutableStateOf(false) }
 
     val isCancelled = state.phase == Phase.ERROR && state.error.orEmpty().contains("已取消处理")
@@ -1292,7 +1295,7 @@ private fun VideoParsingPage(
                         bottomEnd = 9.dp,
                     ),
                 )
-                .padding(horizontal = 12.dp, vertical = 9.dp),
+                .padding(horizontal = 14.dp, vertical = if (compactLayout) 10.dp else 12.dp),
         ) {
             Column {
                 Row(
@@ -1302,7 +1305,7 @@ private fun VideoParsingPage(
                 ) {
                     Box(
                         Modifier
-                            .size(48.dp)
+                            .size(62.dp)
                             .clip(RoundedCornerShape(21.dp))
                             .background(
                                 Brush.linearGradient(
@@ -1391,10 +1394,10 @@ private fun VideoParsingPage(
                             mainTitle,
                             color = Color(0xFF17243B),
                             style = MaterialTheme.typography.titleLarge.copy(
-                                fontSize = 15.sp,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = (-0.3).sp,
-                                lineHeight = 18.sp,
+                                letterSpacing = (-0.35).sp,
+                                lineHeight = 21.sp,
                             ),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -1402,8 +1405,8 @@ private fun VideoParsingPage(
                         Text(
                             detail,
                             color = Color(0xFF71819B),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 13.sp),
-                            maxLines = 1,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -1462,7 +1465,7 @@ private fun VideoParsingPage(
                         }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(if (compactLayout) 8.dp else 10.dp))
                 Row(
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -1495,7 +1498,7 @@ private fun VideoParsingPage(
                     )
                 }
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    Modifier.fillMaxWidth().padding(top = if (compactLayout) 8.dp else 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 ) {
@@ -1570,7 +1573,7 @@ private fun VideoParsingPage(
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(43.dp)
+                                .height(36.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(Brush.linearGradient(listOf(Color.White, Color(0xFFFFF5F6))))
                                 .border(1.dp, Color(0xFFFFD6DB), RoundedCornerShape(14.dp))
@@ -1581,7 +1584,7 @@ private fun VideoParsingPage(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                Text("×", color = Color(0xFFD94554), style = MaterialTheme.typography.titleLarge)
+                                Text("×", color = Color(0xFFD94554), style = MaterialTheme.typography.titleMedium)
                                 Text(
                                     "取消处理",
                                     color = Color(0xFFD94554),
@@ -1646,7 +1649,7 @@ private fun VideoParsingPage(
                         bottomEnd = 22.dp,
                     ),
                 )
-                .padding(horizontal = 12.dp, vertical = 9.dp),
+                .padding(horizontal = 12.dp, vertical = if (compactLayout) 8.dp else 10.dp),
         ) {
             Column {
                 visibleStages.forEachIndexed { visibleIndex, index ->
@@ -1678,7 +1681,7 @@ private fun VideoParsingPage(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp)
+                            .padding(vertical = if (compactLayout) 2.dp else 4.dp)
                             .clip(RoundedCornerShape(17.dp))
                             .background(rowBg)
                             .border(
@@ -1686,24 +1689,24 @@ private fun VideoParsingPage(
                                 color = if (active) Color(0xFFE4EDFF) else Color(0xFFFFD6DB),
                                 shape = RoundedCornerShape(17.dp),
                             )
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            .padding(horizontal = 8.dp, vertical = if (compactLayout) 5.dp else 7.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (compactLayout) 7.dp else 9.dp),
                     ) {
                         Box(
                             Modifier
-                                .size(28.dp)
+                                .size(if (compactLayout) 28.dp else 32.dp)
                                 .clip(CircleShape)
                                 .background(markerBg)
                                 .border(1.dp, Color.White, CircleShape),
                             contentAlignment = androidx.compose.ui.Alignment.Center,
                         ) {
                             when {
-                                done -> Icon(Icons.Filled.Check, contentDescription = null, tint = markerColor, modifier = Modifier.size(21.dp))
+                                done -> Icon(Icons.Filled.Check, contentDescription = null, tint = markerColor, modifier = Modifier.size(if (compactLayout) 19.dp else 22.dp))
                                 failed -> Text("!", color = markerColor, style = MaterialTheme.typography.titleMedium)
                                 cancelled -> Text("Ⅱ", color = markerColor, style = MaterialTheme.typography.titleMedium)
                                 active -> CircularProgressIndicator(
-                                    modifier = Modifier.size(21.dp),
+                                    modifier = Modifier.size(if (compactLayout) 19.dp else 22.dp),
                                     color = markerColor,
                                     strokeWidth = 2.dp,
                                 )
@@ -1719,9 +1722,9 @@ private fun VideoParsingPage(
                                     else -> Color(0xFF34455F)
                                 },
                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontSize = 13.sp,
+                                    fontSize = if (compactLayout) 12.sp else 13.sp,
                                     fontWeight = if (active || done) FontWeight.Bold else FontWeight.SemiBold,
-                                    lineHeight = 16.sp,
+                                    lineHeight = if (compactLayout) 14.sp else 17.sp,
                                 ),
                             )
                             Text(
@@ -1742,7 +1745,10 @@ private fun VideoParsingPage(
                                     active -> Color(0xFF8193B5)
                                     else -> Color(0xFF8D9BB0)
                                 },
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = if (compactLayout) 9.sp else 10.sp,
+                                    lineHeight = if (compactLayout) 11.sp else 12.sp,
+                                ),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -1775,9 +1781,9 @@ private fun VideoParsingPage(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .background(stageBadgeBg)
-                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                                .padding(horizontal = if (compactLayout) 6.dp else 8.dp, vertical = if (compactLayout) 3.dp else 5.dp),
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 9.sp,
+                                fontSize = if (compactLayout) 9.sp else 10.sp,
                                 fontWeight = FontWeight.Bold,
                             ),
                             maxLines = 1,
@@ -1788,7 +1794,7 @@ private fun VideoParsingPage(
                             Modifier
                                 .padding(start = 21.dp)
                                 .width(2.dp)
-                                .height(5.dp)
+                                .height(if (compactLayout) 5.dp else 6.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFFE9EEF7)),
                         )
