@@ -721,8 +721,42 @@ class DubbingEngine(
                                     generated.sampleRate,
                                     chunkEndMs - line.startMs,
                                 )
-                                if (ratio in 0.97f..1.03f) generated
-                                else generated.copy(samples = Wsola.stretch(generated.samples, ratio))
+                                if (ratio in 0.97f..1.03f) {
+                                    generated
+                                } else {
+                                    // Alignment is post-processing: if it fails, keep the valid
+                                    // provider PCM and let timeline recovery handle its duration.
+                                    // Never report a successfully synthesized sentence as a TTS failure.
+                                    val alignedSamples = try {
+                                        Wsola.stretch(generated.samples, ratio)
+                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                        throw cancelled
+                                    } catch (alignmentError: Exception) {
+                                        android.util.Log.w(
+                                            "DubbingEngine",
+                                            "WSOLA alignment failed for line ${idx + 1}; preserving original synthesized PCM",
+                                            alignmentError,
+                                        )
+                                        runCatching {
+                                            io.translatetube.local.util.AppLogStore.warning(
+                                                appContext,
+                                                "DubbingEngine",
+                                                "第 ${idx + 1}/${lines.size} 句配音时长对齐失败，已保留成功合成的原始音频",
+                                                alignmentError,
+                                                diagnosticContext = mapOf(
+                                                    "字幕行号" to "${idx + 1}/${lines.size}",
+                                                    "配音引擎" to (tts?.name ?: "未知引擎"),
+                                                    "合成音频样本数" to generated.samples.size.toString(),
+                                                    "合成采样率 Hz" to generated.sampleRate.toString(),
+                                                    "目标对齐比例" to ratio.toString(),
+                                                    "恢复策略" to "跳过 WSOLA 变速对齐，缓存并继续使用原始合成 PCM",
+                                                ),
+                                            )
+                                        }
+                                        generated.samples
+                                    }
+                                    generated.copy(samples = alignedSamples)
+                                }
                             } else {
                                 generated
                             }
