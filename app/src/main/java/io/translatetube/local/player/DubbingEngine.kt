@@ -2330,10 +2330,13 @@ class DubbingEngine(
                 return
             }
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
-            val spokenCodePointCount = spokenText.codePointCount(0, spokenText.length).coerceAtLeast(1)
+            val spokenCodePointCount = DubbingSyncHoldPolicy.spokenCodePointCount(spokenText).coerceAtLeast(1)
+            val punctuationPauseMs = DubbingSyncHoldPolicy.punctuationPauseMs(spokenText)
             val estimatedMsPerCodePoint = directTtsMsPerCodePoint
-            val estimatedSpeechMs = (spokenCodePointCount * estimatedMsPerCodePoint)
-                .toLong().coerceAtLeast(1L)
+            val estimatedSpeechMs = DubbingSyncHoldPolicy.estimateSpeechDurationMs(
+                text = spokenText,
+                msPerCodePoint = estimatedMsPerCodePoint,
+            ).coerceAtLeast(1L)
             val baseSpeechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(speed)
             val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
             val estimatedAtEffectiveRateMs =
@@ -2457,12 +2460,14 @@ class DubbingEngine(
                             elapsedMs = elapsedMs,
                             codePointCount = spokenCodePointCount,
                             appliedSpeechRate = speechRate,
+                            estimatedPunctuationPauseMs = punctuationPauseMs,
                         )
                         directTtsMsPerCodePoint = newEstimate
                         android.util.Log.d(
                             "DubbingEngine",
                             "System TTS timing calibration: line=${idx + 1}/${lines.size} " +
-                                "chars=$spokenCodePointCount elapsedMs=$elapsedMs appliedRate=$speechRate " +
+                                "speechChars=$spokenCodePointCount punctuationPauseMs=$punctuationPauseMs " +
+                                "elapsedMs=$elapsedMs appliedRate=$speechRate " +
                                 "msPerCodePoint=$oldEstimate->$newEstimate",
                         )
                     }
