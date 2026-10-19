@@ -115,3 +115,5 @@ jobs:
           retention-days: 14
 
 # User-requested APK rebuild after adding Microsoft Edge TTS.
+
+# Trigger Edge TTS integration build using the workflow's existing approved trigger.
