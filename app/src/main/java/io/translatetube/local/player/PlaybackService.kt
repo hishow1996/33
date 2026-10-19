@@ -451,7 +451,10 @@ class PlaybackService : MediaSessionService() {
             // resumes from the paused sample position instead of finishing the current line.
             pm.player.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady) {
+                    val endedWithPendingDubbing = !isPlaying && ::pm.isInitialized &&
+                        pm.player.playbackState == androidx.media3.common.Player.STATE_ENDED &&
+                        hasPendingDubbingAfterVideoEnd(ui.value.key)
+                    if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady && !endedWithPendingDubbing) {
                         resumeAfterDubbingSyncHold = false
                         cancelDubbingDrainAfterVideoEnd()
                         clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
@@ -475,7 +478,10 @@ class PlaybackService : MediaSessionService() {
                         if (::pm.isInitialized) tickFromPlayerCallback(pm.position(), "player resumed")
                     } else {
                         val syncHeld = dubbingSyncHoldEngine != null
-                        if (!syncHeld) {
+                        val drainingEndedVideo = !isPlaying && ::pm.isInitialized &&
+                            pm.player.playbackState == androidx.media3.common.Player.STATE_ENDED &&
+                            hasPendingDubbingAfterVideoEnd(ui.value.key)
+                        if (!syncHeld && !drainingEndedVideo) {
                             safelyControlDubbing("player paused") { dubbing?.pausePlayback() }
                             ui.update { state ->
                                 if (state.activeDubbingLine == -1) state
@@ -4972,6 +4978,22 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
     }
 
+    private fun hasPendingDubbingAfterVideoEnd(sessionKey: String): Boolean {
+        if (!::pm.isInitialized ||
+            pm.player.playbackState != androidx.media3.common.Player.STATE_ENDED
+        ) return false
+        val state = ui.value
+        if (state.key != sessionKey || videoKey != sessionKey || !state.dubbingOn) return false
+        if (hasDubbingCatchUpCues(sessionKey)) return true
+        val engine = dubbing ?: return false
+        val index = engine.currentLineIdx()
+        return index >= 0 && (
+            engine.shouldContinueCurrentCue(-1) ||
+                (!engine.hasStartedPlaybackFor(index) &&
+                    engine.isPrepared(index) && !engine.isSilent(index))
+            )
+    }
+
     private fun clearDubbingCatchUpQueue(sessionKey: String? = null, positionMs: Long = -1L) {
         synchronized(dubbingCatchUpLock) {
             dubbingCatchUpQueue.clear()
@@ -5072,7 +5094,17 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         lateinit var poll: Runnable
         poll = object : Runnable {
             override fun run() {
-                if (!isDubbingDrainActiveFor(engine, sessionKey)) return
+                if (!dubbingDrainAfterVideoEnd || dubbingDrainEngine !== engine ||
+                    dubbingDrainSessionKey != sessionKey
+                ) return
+                if (!isDubbingDrainActiveFor(engine, sessionKey)) {
+                    cancelDubbingDrainAfterVideoEnd()
+                    if (videoKey == sessionKey && ui.value.key == sessionKey && !ui.value.dubbingOn) {
+                        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = pm.position())
+                        engine.stop()
+                    }
+                    return
+                }
                 if (!playerReady || !isCurrentDubbingEngine(engine, sessionKey)) {
                     cancelDubbingDrainAfterVideoEnd()
                     return
@@ -5343,7 +5375,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 hasSelectedLine = d.currentLineIdx() >= 0,
                 dubbingEnabled = latestState.dubbingOn,
                 playerIsPlaying = ::pm.isInitialized &&
-                    (pm.player.isPlaying || isDubbingSyncHoldFor(d, d.currentLineIdx())),
+                    (pm.player.isPlaying || isDubbingSyncHoldFor(d, d.currentLineIdx()) ||
+                        isDubbingDrainActiveFor(d, st.key)),
                 engineIsCurrent = dubbing === d,
             )
         ) {
