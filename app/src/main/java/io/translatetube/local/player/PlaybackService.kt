@@ -4861,6 +4861,10 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     private fun hasDubbingCatchUpCues(sessionKey: String): Boolean =
         peekDubbingCatchUpCue(sessionKey) != null
 
+    private fun dubbingCatchUpQueueDepth(sessionKey: String): Int = synchronized(dubbingCatchUpLock) {
+        if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.size else 0
+    }
+
     /** Record every playable cue whose start time passes while another sentence owns output. */
     private fun updateDubbingCatchUpQueue(
         state: PlayerUiState,
@@ -5087,6 +5091,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 positionMs = catchUpLine.startMs,
                                 playerSpeed = pm.playbackSpeed(),
                                 completeCueWhenLate = true,
+                                catchUpSyncRate = DubbingRecoveryRatePolicy.rateForQueueDepth(
+                                    dubbingCatchUpQueueDepth(st.key),
+                                ),
                                 playbackAllowed = {
                                     val latest = ui.value
                                     ::pm.isInitialized &&
