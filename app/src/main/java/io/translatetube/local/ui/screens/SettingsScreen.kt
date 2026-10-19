@@ -595,6 +595,17 @@ Section("配音设置") {
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
+            EngineOption("web", "在线语音 · 推荐，无需下载（需网络）", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(

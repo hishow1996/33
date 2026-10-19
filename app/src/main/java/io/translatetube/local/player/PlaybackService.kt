@@ -1707,6 +1707,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 val importEngineReady = when (selectedImportTts) {
                     "kokoro" -> kokoroRuntimeReady()
                     "piper" -> piperModelReadyForChinese()
+                    "web" -> true
                     else -> selectedImportTts == "system"
                 }
                 if (isChineseLanguage(srcLang) && !importEngineReady) {
@@ -3071,6 +3072,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
 
                 val selectedEngineReady = when (selectedTts) {
                     "system" -> true
+                    "web" -> true
                     "kokoro" -> kokoroRuntimeReady()
                     "piper" -> piperModelReadyForChinese()
                     else -> false
@@ -4619,6 +4621,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     private fun ttsDisplayName(engineId: String): String = when (engineId) {
         "system" -> "系统 TTS"
+        "web" -> "在线语音"
         "kokoro" -> "Kokoro"
         "piper" -> {
             val prefs = getSharedPreferences("settings", MODE_PRIVATE)
@@ -4665,6 +4668,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 io.translatetube.local.tts.PiperTts(this, modelId)
             }
+            "web" -> io.translatetube.local.tts.WebTts()
             else -> throw IllegalStateException("未知配音引擎「$selected」，请在设置中重新选择")
         }
     }

@@ -110,12 +110,13 @@ fun PlayerScreen(
             systemVoiceCatalog.drop(1).forEachIndexed { index, voiceName -> add(index to voiceName) }
         }
         "piper" -> emptyList()
+        "web" -> listOf(-1 to "在线语音 · 默认音色")
         else -> buildList {
             add(-1 to "Kokoro 默认音色")
             (0..53).forEach { add(it to "Kokoro 音色 $it") }
         }
     }
-    val voiceSelectionEnabled = selectedTtsEngine != "piper" && voiceOptions.size > 1
+    val voiceSelectionEnabled = selectedTtsEngine != "piper" && selectedTtsEngine != "web" && voiceOptions.size > 1
     val state by PlaybackService.ui.collectAsState()
     val listState = rememberLazyListState()
     var subtitlesVisible by remember { mutableStateOf(true) }
