@@ -3304,6 +3304,16 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     ),
                 )
             }
+            io.translatetube.local.util.AppLogStore.resolveIssue(
+                context = this@PlaybackService,
+                issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
+                message = "视频处理流程已重新成功完成",
+                diagnosticContext = mapOf(
+                    "恢复阶段" to Phase.READY.name,
+                    "恢复证据" to "本次视频处理管线完成并进入 READY 阶段",
+                    "字幕行数" to ui.value.lines.size.toString(),
+                ),
+            )
             // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
             val resumeSec = try {
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
@@ -3353,8 +3363,9 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     "当前字幕索引" to failureState.currentLine.toString(),
                     "原声是否静音" to failureState.muteOriginal.toString(),
                     "处理代数" to pipelineGeneration.toString(),
-                ),
-            )
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey("PlaybackPipeline", key),
+                )
 android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
                 if (ui.value.key == key && videoKey == key) {
