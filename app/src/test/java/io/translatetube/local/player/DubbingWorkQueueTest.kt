@@ -12,8 +12,8 @@ class DubbingWorkQueueTest {
         val queue = DubbingWorkQueue(readyCapacity = 4, maximumPending = 20)
         repeat(12) { assertTrue(queue.offerLast(it)) }
 
-        assertEquals(4, queue.readySize)
-        assertEquals(12, queue.totalSize)
+        assertEquals(4, queue.readySize())
+        assertEquals(12, queue.totalSize())
         assertTrue(queue.contains(11))
 
         val drained = mutableListOf<Int>()

@@ -15,6 +15,8 @@ internal class DubbingWorkQueue(
 ) {
     private val ready = ArrayDeque<Int>(readyCapacity)
     private val deferred = ArrayDeque<Int>()
+    /** O(1) membership checks keep bulk cache scans linear for very long subtitle files. */
+    private val queuedIndexes = HashSet<Int>()
 
     init {
         require(readyCapacity > 0) { "readyCapacity must be positive" }
@@ -23,15 +25,16 @@ internal class DubbingWorkQueue(
 
     @Synchronized
     fun offerLast(index: Int): Boolean {
-        if (contains(index)) return true
+        if (queuedIndexes.contains(index)) return true
         if (totalSizeLocked() >= maximumPending) return false
         if (ready.size < readyCapacity) ready.addLast(index) else deferred.addLast(index)
+        queuedIndexes.add(index)
         return true
     }
 
     @Synchronized
     fun offerFirst(index: Int): Boolean {
-        if (contains(index)) return true
+        if (queuedIndexes.contains(index)) return true
         if (totalSizeLocked() >= maximumPending) return false
         if (ready.size < readyCapacity) {
             ready.addFirst(index)
@@ -41,6 +44,7 @@ internal class DubbingWorkQueue(
             deferred.addFirst(ready.removeLast())
             ready.addFirst(index)
         }
+        queuedIndexes.add(index)
         return true
     }
 
@@ -48,6 +52,7 @@ internal class DubbingWorkQueue(
     fun pollFirst(): Int? {
         refillReadyLocked()
         val value = ready.pollFirst() ?: return null
+        queuedIndexes.remove(value)
         refillReadyLocked()
         return value
     }
@@ -64,6 +69,7 @@ internal class DubbingWorkQueue(
             destination.add(deferred.removeFirst())
             drained++
         }
+        queuedIndexes.clear()
         return drained
     }
 
@@ -71,10 +77,11 @@ internal class DubbingWorkQueue(
     fun clear() {
         ready.clear()
         deferred.clear()
+        queuedIndexes.clear()
     }
 
     @Synchronized
-    fun contains(index: Int): Boolean = ready.contains(index) || deferred.contains(index)
+    fun contains(index: Int): Boolean = queuedIndexes.contains(index)
 
     @Synchronized
     fun isNotEmpty(): Boolean = ready.isNotEmpty() || deferred.isNotEmpty()
@@ -82,13 +89,11 @@ internal class DubbingWorkQueue(
     @Synchronized
     fun isEmpty(): Boolean = ready.isEmpty() && deferred.isEmpty()
 
-    @get:Synchronized
-    val readySize: Int
-        get() = ready.size
+    @Synchronized
+    fun readySize(): Int = ready.size
 
-    @get:Synchronized
-    val totalSize: Int
-        get() = totalSizeLocked()
+    @Synchronized
+    fun totalSize(): Int = totalSizeLocked()
 
     private fun refillReadyLocked() {
         while (ready.size < readyCapacity && deferred.isNotEmpty()) {
