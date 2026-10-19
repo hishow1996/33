@@ -326,7 +326,7 @@ class PlaybackService : MediaSessionService() {
         dubCollectJob?.cancel()
         dubCollectJob = null
         runCatching { retireCurrentDubbing() }
-        if (playerReady && ::pm.isInitialized) runCatching { pm.originalVolume = 1f }
+        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
         updateUiForSession(current.key) {
             it.copy(
                 phase = Phase.ERROR,
@@ -1399,7 +1399,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     )
                 })
                 ensureCurrentSession(sessionKey, pipelineGeneration)
-                pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+                safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, "source audio fallback")
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.SYNTHESIZING,
@@ -1503,7 +1503,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
 )
 android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (videoKey == sessionKey && ui.value.key == sessionKey) {
-                    runCatching { pm.originalVolume = 1f }
+                    runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
                 }
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
@@ -1543,7 +1543,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
         dubCollectJob?.cancel()
         dubCollectJob = null
         retireCurrentDubbing()
-        pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f
+        safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, "source audio fallback")
         lastLineIdx = Int.MIN_VALUE
 
         prepJob = scope.launch {
@@ -1697,7 +1697,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (isChineseLanguage(srcLang) && !importEngineReady) {
                     // 中文源 + 所选 TTS 引擎未就绪（模型未下载/未知引擎）：直接显示原文并保留原声。
                     // 引擎就绪时（含系统 TTS 与已装模型）仍按时间轴朗读中文字幕。
-                    pm.originalVolume = 1f
+                    safelySetOriginalVolume(1f, "source audio restore requested")
                     val translatedCount = translatedLines.count {
                         SubtitleParsers.cleanTranslatedText(it.zh) != null
                     }
@@ -3099,7 +3099,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         )
                     }
                     withContext(Dispatchers.Main) {
-                        if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                        if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
                     }
                 } else if (selectedEngineReady) {
                     try {
@@ -3210,7 +3210,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                             )
                         }
                         withContext(Dispatchers.Main) {
-                            if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                            if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
                         }
                     }
                 } else {
@@ -3242,7 +3242,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         )
                     }
                     withContext(Dispatchers.Main) {
-                        if (videoKey == key && ui.value.key == key) pm.originalVolume = 1f
+                        if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
                     }
                 }
             }
@@ -3378,7 +3378,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
 android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (e is TranslationFailureException) {
                 if (ui.value.key == key && videoKey == key) {
-                    runCatching { pm.originalVolume = 1f }
+                    runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
                 }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
@@ -3395,7 +3395,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // A TTS constructor can fail before the subtitle list is published to UI.
             // Restore original volume immediately so default mute never silences the whole video.
             if (ui.value.key == key && videoKey == key && ui.value.dubbingOn) {
-                runCatching { pm.originalVolume = 1f }
+                runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.ERROR,
@@ -3459,7 +3459,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 runCatching {
                     withContext(Dispatchers.Main) {
                         if (videoKey == key && ui.value.key == key && ::pm.isInitialized) {
-                            pm.originalVolume = 1f
+                            safelySetOriginalVolume(1f, "source audio restore requested")
                             pm.play()
                         }
                     }
@@ -3931,7 +3931,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             withContext(Dispatchers.Main) {
                 if (ui.value.key == sessionKey && videoId == failedVideoId) {
                     pm.errorSink.value = null
-                    runCatching { pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f }
+                    runCatching { safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, "source audio fallback") }
                     updateUiForSession(sessionKey) {
                         it.copy(
                             phase = Phase.ERROR,
@@ -4717,7 +4717,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 scope.launch(Dispatchers.Main) {
                     if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
-                        runCatching { pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f }
+                        runCatching { safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, "source audio fallback") }
                     }
                 }
                 false
@@ -4749,7 +4749,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             scope.launch(Dispatchers.Main) {
                 if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
-                    runCatching { pm.originalVolume = if (ui.value.muteOriginal) 0f else 1f }
+                    runCatching { safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, "source audio fallback") }
                 }
             }
             if (detail.contains("设备内存不足")) {
@@ -4761,7 +4761,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         .onFailure { android.util.Log.w("PlaybackService", "TTS cleanup after memory failure did not finish cleanly", it) }
                     withContext(Dispatchers.Main) {
                         if (::pm.isInitialized && videoKey == sessionKey && ui.value.key == sessionKey) {
-                            runCatching { pm.originalVolume = 1f }
+                            runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
                         }
                     }
                 }
@@ -4830,7 +4830,18 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     private fun safelySetOriginalVolume(volume: Float, source: String) {
         try {
-            if (playerReady && ::pm.isInitialized) pm.originalVolume = volume
+            if (playerReady && ::pm.isInitialized) {
+                // Central safety gate: async cleanup/fallback callbacks must not unmute source
+                // audio over a cue that has already begun speaking.
+                val state = ui.value
+                val engine = dubbing
+                val activeIndex = engine?.currentLineIdx() ?: -1
+                val dubbedSpeechIsActive = state.dubbingOn &&
+                    engine != null &&
+                    activeIndex >= 0 &&
+                    engine.hasStartedPlaybackFor(activeIndex)
+                pm.originalVolume = if (dubbedSpeechIsActive) 0f else volume
+            }
         } catch (error: Exception) {
             io.translatetube.local.util.AppLogStore.warning(
                 this@PlaybackService, "PlaybackSync",
@@ -5105,6 +5116,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 d.updatePlayerSpeed(pm.playbackSpeed())
                 // Voice volume is independent of source-audio state: never mix the two narrations.
                 d.updateVolume(1.0f)
+                val activeCueIndex = d.currentLineIdx()
+                val voiceStarted = activeCueIndex >= 0 && d.hasStartedPlaybackFor(activeCueIndex)
+                safelySetOriginalVolume(
+                    if (voiceStarted || st.muteOriginal) 0f else 1f,
+                    "continuing a dubbed cue",
+                )
                 d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
             } else if (peekDubbingCatchUpCue(st.key) != null) {
                 // Play a late cue from its beginning; do not trim it against the advanced video cursor.
@@ -5144,13 +5161,15 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 val activeCatchUpIndex = d.currentLineIdx()
                 val voiceStarted = d.hasStartedPlaybackFor(activeCatchUpIndex)
-                // The source narration is cut completely once the dubbed voice starts.
-                pm.originalVolume = if (voiceStarted || st.muteOriginal) 0f else 1f
+                safelySetOriginalVolume(
+                    if (voiceStarted || st.muteOriginal) 0f else 1f,
+                    "catch-up dubbing playback",
+                )
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 // No synthesized voice is playing for this cue, so source audio is the only
                 // available narration; it can never overlap a live dubbed cue.
-                pm.originalVolume = 1f
+                safelySetOriginalVolume(1f, "source audio restore requested")
                 ui.update { state ->
                     if (state.key == st.key) {
                         state.copy(
@@ -5183,15 +5202,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     )
                 } else {
                     d.updatePlayerSpeed(pm.playbackSpeed())
-                    // Voice volume is independent of source-audio state: never mix the two narrations.
-                d.updateVolume(1.0f)
+                        // Voice volume is independent of source-audio state: never mix the two narrations.
+                    d.updateVolume(1.0f)
                 }
-                // Do not silence the video during asynchronous TTS/AudioTrack startup. The
-                // original is muted only after the dubbed voice has actually started.
+                // Keep the source audible during TTS startup, then cut it to zero when speech starts.
                 val voiceStarted = d.hasStartedPlaybackFor(dubLine) ||
                     (keepingPreviousDubbingCue && d.hasStartedPlaybackFor(previousDubbingLine))
-                // The source narration is cut completely once the dubbed voice starts.
-                pm.originalVolume = if (voiceStarted || st.muteOriginal) 0f else 1f
+                safelySetOriginalVolume(
+                    if (voiceStarted || st.muteOriginal) 0f else 1f,
+                    "dubbing cue playback",
+                )
             } else if (dubLine >= 0) {
                 // If generation is falling behind real time, continuously enlarge the look-ahead
                 // priority window so the single TTS worker prepares more upcoming cues first.
@@ -5214,15 +5234,15 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     }
                 }
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = 1f
+                safelySetOriginalVolume(1f, "source audio restore requested")
             } else {
                 // Outside a dubbed cue, keep the original track as the only audio source.
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = if (st.muteOriginal) 0f else 1f
+                safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "source audio timeline policy")
             }
         } else {
             // With no dubbing engine, only the original track can be heard.
-            pm.originalVolume = if (st.muteOriginal) 0f else 1f
+            safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "source audio timeline policy")
             if (
                 st.dubbingOn &&
                 st.muteOriginal &&
@@ -5257,7 +5277,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         ) {
             d.stop()
             if (::pm.isInitialized) {
-                pm.originalVolume = if (latestState.muteOriginal) 0f else 1f
+                safelySetOriginalVolume(if (latestState.muteOriginal) 0f else 1f, "stale dubbing playback stop")
             }
         }
 
@@ -5605,7 +5625,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     } else state
                 }
                 if (oldEngineRetired && videoKey == sessionKey && ui.value.key == sessionKey) {
-                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                    withContext(Dispatchers.Main) { safelySetOriginalVolume(1f, "source audio restore requested") }
                 }
             } finally {
                 pendingTts?.close()
@@ -5844,7 +5864,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     )
                 }
                 if (oldEngineRetired && videoKey == sessionKey && ui.value.key == sessionKey) {
-                    withContext(Dispatchers.Main) { pm.originalVolume = 1f }
+                    withContext(Dispatchers.Main) { safelySetOriginalVolume(1f, "source audio restore requested") }
                 }
             } finally {
                 pendingTts?.close()
@@ -5976,7 +5996,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     )
                 } else state
             }
-            if (::pm.isInitialized) pm.originalVolume = 1f
+            if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
         } else {
             ui.update { state ->
                 if (state.key == sessionKey) {
@@ -5990,7 +6010,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             // Never mix source narration with Chinese dubbing. tick() opens the source track
             // only when no dubbed cue is actually speaking, and silences it at voice start.
-            if (::pm.isInitialized) pm.originalVolume = 1f
+            if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
             lastLineIdx = Int.MIN_VALUE
             if (::pm.isInitialized) {
                 tickFromPlayerCallback(pm.position(), "dubbing enabled")
@@ -6015,7 +6035,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 )
             } else state
         }
-        if (::pm.isInitialized) pm.originalVolume = 1f
+        if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
         lastLineIdx = Int.MIN_VALUE
     }
 
