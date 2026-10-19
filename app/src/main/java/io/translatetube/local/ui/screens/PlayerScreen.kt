@@ -1215,8 +1215,8 @@ private fun VideoParsingPage(
                         .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(14.dp)),
                 ) {
                     Icon(
-                        Icons.Filled.Settings,
-                        contentDescription = "处理设置",
+                        Icons.Filled.MoreVert,
+                        contentDescription = "更多处理操作",
                         tint = Color(0xFF43546D),
                         modifier = Modifier.size(22.dp),
                     )
