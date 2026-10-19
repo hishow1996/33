@@ -47,8 +47,8 @@ class DubbingTimingTest {
             lineStartMs = 0, lineEndMs = 2_000,
             positionMs = 500, playerSpeed = 1.0f,
         )
-        assertEquals(675, plan.startSample)
-        assertEquals(3_325, plan.sampleCount)
+        assertEquals(900, plan.startSample)
+        assertEquals(3_100, plan.sampleCount)
         assertEquals(1.8f, plan.syncRate, 0.001f)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
@@ -105,7 +105,7 @@ class DubbingTimingTest {
     }
 
     @Test
-    fun slightlyOverlongCueThatStartsLateKeepsTailAndRequestsHoldInsteadOfClipping() {
+    fun slightlyOverlongCueFitsWithinTheRaisedSynchronizationRate() {
         val plan = DubbingTiming.createPlan(
             sampleCount = 1_400,
             sampleRate = 1_000,
@@ -114,9 +114,9 @@ class DubbingTimingTest {
             positionMs = 100L,
             playerSpeed = 1.0f,
         )
-        assertEquals(135, plan.startSample)
-        assertEquals(1_265, plan.sampleCount)
-        assertTrue(plan.overrunsWindow)
+        assertEquals(140, plan.startSample)
+        assertEquals(1_260, plan.sampleCount)
+        assertFalse(plan.overrunsWindow)
         assertFalse(plan.truncated)
     }
 
@@ -132,15 +132,15 @@ class DubbingTimingTest {
             playerSpeed = 1.0f,
         )
         val playable = DubbingTiming.slice(samples, plan, 1_000)
-        assertEquals(270, plan.startSample)
-        assertEquals(4_730, plan.sampleCount)
+        assertEquals(360, plan.startSample)
+        assertEquals(4_640, plan.sampleCount)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
-        assertEquals(4_730, playable.size)
+        assertEquals(4_640, playable.size)
     }
 
     @Test
-    fun longUtteranceBeyondNaturalRateIsPreservedForVideoHold() {
+    fun longUtteranceBeyondNaturalRateIsPreservedWithoutTruncation() {
         val samples = FloatArray(3_000) { 0.2f }
         val plan = DubbingTiming.createPlan(
             sampleCount = samples.size,
@@ -165,7 +165,7 @@ class DubbingTimingTest {
             lineStartMs = 0, lineEndMs = 2_000,
             positionMs = 500, playerSpeed = 1.5f,
         )
-        assertEquals(675, plan.startSample)
+        assertEquals(900, plan.startSample)
         assertEquals(1.8f, plan.syncRate, 0.001f)
         assertEquals(2.7f, plan.playbackRate, 0.001f)
         assertTrue(plan.overrunsWindow)
