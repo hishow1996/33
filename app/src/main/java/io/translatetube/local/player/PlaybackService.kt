@@ -4679,6 +4679,19 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
         }
         engine.onPlaybackStarted = { index ->
+            // Cut the original track at speech start; waiting for the next player tick would
+            // briefly overlap two narrations on slower devices.
+            if (::pm.isInitialized) {
+                scope.launch(Dispatchers.Main) {
+                    if (
+                        ::pm.isInitialized &&
+                        isCurrentDubbingEngine(engine, sessionKey) &&
+                        ui.value.dubbingOn
+                    ) {
+                        runCatching { pm.originalVolume = 0f }
+                    }
+                }
+            }
             // Highlight the actual spoken cue, not just the video-time subtitle. AudioTrack
             // startup is asynchronous, so the first cue can otherwise miss its visual emphasis.
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
@@ -5090,7 +5103,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 // Finish the current sentence without pausing video. Captions crossed meanwhile
                 // stay in the ordered catch-up queue instead of being skipped.
                 d.updatePlayerSpeed(pm.playbackSpeed())
-                d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
+                // Voice volume is independent of source-audio state: never mix the two narrations.
+                d.updateVolume(1.0f)
                 d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
             } else if (peekDubbingCatchUpCue(st.key) != null) {
                 // Play a late cue from its beginning; do not trim it against the advanced video cursor.
@@ -5107,7 +5121,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         if (d.isPrepared(catchUpIndex)) {
                             d.playAt(
                                 catchUpIndex,
-                                if (st.muteOriginal) 1f else 0.35f,
+                                1.0f,
                                 positionMs = catchUpLine.startMs,
                                 playerSpeed = pm.playbackSpeed(),
                                 completeCueWhenLate = true,
@@ -5130,14 +5144,13 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 val activeCatchUpIndex = d.currentLineIdx()
                 val voiceStarted = d.hasStartedPlaybackFor(activeCatchUpIndex)
-                pm.originalVolume = when {
-                    st.muteOriginal -> 0f
-                    !voiceStarted -> 1f
-                    else -> 0.15f
-                }
+                // The source narration is cut completely once the dubbed voice starts.
+                pm.originalVolume = if (voiceStarted || st.muteOriginal) 0f else 1f
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = if (st.muteOriginal) 0f else 1f
+                // No synthesized voice is playing for this cue, so source audio is the only
+                // available narration; it can never overlap a live dubbed cue.
+                pm.originalVolume = 1f
                 ui.update { state ->
                     if (state.key == st.key) {
                         state.copy(
@@ -5156,7 +5169,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 } else if (d.currentLineIdx() != dubLine) {
                     d.playAt(
                         dubLine,
-                        if (st.muteOriginal) 1f else 0.35f,
+                        1.0f,
                         positionMs = ms,
                         playerSpeed = pm.playbackSpeed(),
                         playbackAllowed = {
@@ -5170,17 +5183,15 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     )
                 } else {
                     d.updatePlayerSpeed(pm.playbackSpeed())
-                    d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
+                    // Voice volume is independent of source-audio state: never mix the two narrations.
+                d.updateVolume(1.0f)
                 }
                 // Do not silence the video during asynchronous TTS/AudioTrack startup. The
                 // original is muted only after the dubbed voice has actually started.
                 val voiceStarted = d.hasStartedPlaybackFor(dubLine) ||
                     (keepingPreviousDubbingCue && d.hasStartedPlaybackFor(previousDubbingLine))
-                pm.originalVolume = when {
-                    st.muteOriginal -> 0f
-                    !voiceStarted -> 1f
-                    else -> 0.15f
-                }
+                // The source narration is cut completely once the dubbed voice starts.
+                pm.originalVolume = if (voiceStarted || st.muteOriginal) 0f else 1f
             } else if (dubLine >= 0) {
                 // If generation is falling behind real time, continuously enlarge the look-ahead
                 // priority window so the single TTS worker prepares more upcoming cues first.
@@ -5203,15 +5214,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     }
                 }
                 if (d.currentLineIdx() >= 0) d.stop()
-                pm.originalVolume = if (st.muteOriginal) 0f else 1f
+                pm.originalVolume = 1f
             } else {
-                // 字幕间隙不播放配音；仍按用户开关决定是否保留原音。
+                // Outside a dubbed cue, keep the original track as the only audio source.
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f
             }
         } else {
-            // The source-audio control is an explicit user preference. Do not silently turn it off
-            // just because TTS is still initializing or has failed.
+            // With no dubbing engine, only the original track can be heard.
             pm.originalVolume = if (st.muteOriginal) 0f else 1f
             if (
                 st.dubbingOn &&
