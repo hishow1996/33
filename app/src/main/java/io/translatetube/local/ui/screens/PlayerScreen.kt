@@ -2528,11 +2528,16 @@ private fun SubtitleList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    val hasActiveDubbingLine = state.dubbingOn && state.activeDubbingLine in state.lines.indices
-    val sharedDubbingPulse by animateFloatAsState(
-        targetValue = if (hasActiveDubbingLine) 1.01f else 1f,
+    // Original and dubbed playback share the same active-row visual state.
+    // Prefer the line whose voice has actually started; otherwise follow the media timeline.
+    val activeSubtitleIndex = if (
+        state.dubbingOn && state.activeDubbingLine in state.lines.indices
+    ) state.activeDubbingLine else state.currentLine
+    val hasActiveSubtitle = activeSubtitleIndex in state.lines.indices
+    val activeSubtitlePulse by animateFloatAsState(
+        targetValue = if (hasActiveSubtitle) 1.01f else 1f,
         animationSpec = tween(180),
-        label = "subtitleDubbingScale",
+        label = "subtitleActiveScale",
     )
 
     Column(
@@ -2555,11 +2560,8 @@ private fun SubtitleList(
                 }
             }
             itemsIndexed(state.lines, key = { i, _ -> i }) { i, line ->
-                val active = i == state.currentLine
-                // Follow the cue whose AudioTrack has really started. The media playhead can
-                // advance before the first asynchronous TTS track starts, missing line zero.
-                val activeDub = i == state.activeDubbingLine && state.dubbingOn
-                val dubbingScale = if (activeDub) sharedDubbingPulse else 1f
+                val active = i == activeSubtitleIndex
+                val activeScale = if (active) activeSubtitlePulse else 1f
                 val translatedText = remember(line.text, line.zh) {
                     SubtitleParsers.preferredTranslationText(line)
                         ?.takeIf { it.isNotBlank() }
@@ -2570,11 +2572,8 @@ private fun SubtitleList(
                 val translatedComparisonKey = remember(translatedText) {
                     subtitleComparisonKey(translatedText)
                 }
-                // Show the source line as soon as its subtitle is active, not only
-                // after the asynchronous voice output callback starts. This keeps English
-                // source text visible while System TTS is preparing/reading the Chinese line.
-                val showOriginalText = state.dubbingOn &&
-                    (activeDub || active) &&
+                // Keep the same bilingual active cue visible in both playback modes.
+                val showOriginalText = active &&
                     line.text.isNotBlank() &&
                     sourceComparisonKey != translatedComparisonKey
 
@@ -2582,37 +2581,26 @@ private fun SubtitleList(
                     Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
                         .background(
-                            when {
-                                activeDub -> Color(0xFFF6F7F9)
-                                active -> SurfaceHigh.copy(alpha = 0.34f)
-                                else -> Color.Transparent
-                            }
+                            if (active) Color(0xFFF6F7F9) else Color.Transparent
                         )
                         .clickable(
                             enabled = svc != null && line.startMs >= 0L && line.endMs > line.startMs,
                         ) { svc?.seekAndPlay(line.startMs) }
-                        .padding(horizontal = 10.dp, vertical = if (activeDub) 6.dp else 5.dp),
+                        .padding(horizontal = 10.dp, vertical = if (active) 6.dp else 5.dp),
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 ) {
                     Text(
                         translatedText,
-                        // 仅当前配音行和原视频时间轴对应行显示蓝色，其余字幕保持辅助文字色。
-                        color = when {
-                            activeDub || active -> BrandBright
-                            else -> SubText
-                        },
+                        // Use identical emphasis whether the active cue is source-audio or dubbed playback.
+                        color = if (active) BrandBright else SubText,
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            fontSize = if (activeDub) 16.sp else if (active) 15.sp else 14.sp,
-                            fontWeight = when {
-                                activeDub -> FontWeight.Bold
-                                active -> FontWeight.SemiBold
-                                else -> FontWeight.Normal
-                            },
+                            fontSize = if (active) 16.sp else 14.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                         ),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().graphicsLayer {
-                            scaleX = dubbingScale
-                            scaleY = dubbingScale
+                            scaleX = activeScale
+                            scaleY = activeScale
                         },
                     )
                     if (showOriginalText) {
