@@ -606,6 +606,17 @@ Section("配音设置") {
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
+            EngineOption("edge", "微软 Edge TTS · 神经语音（需网络）", ttsEngine) { e ->
+                if (e != ttsEngine) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx,
+                        "Settings",
+                        "切换配音引擎：$ttsEngine -> $e",
+                    )
+                }
+                ttsEngine = e
+                prefs.edit().putString("tts_engine", e).apply()
+            }
             EngineOption("system", "系统 TTS · 无需下载", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
