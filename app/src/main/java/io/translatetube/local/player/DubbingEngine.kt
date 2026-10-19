@@ -376,6 +376,19 @@ class DubbingEngine(
                     throw e
                 } catch (e: Exception) {
                     android.util.Log.e("DubbingEngine", "PCM cache initialization failed", e)
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            appContext, "DubbingEngine",
+                            "配音 PCM 缓存初始化失败，正在重建待合成队列并继续尝试", e,
+                            diagnosticContext = mapOf(
+                                "缓存初始化代次" to generation.toString(),
+                                "当前缓存初始化代次" to cacheInitGeneration.get().toString(),
+                                "字幕总行数" to lines.size.toString(),
+                                "配音引擎" to (tts?.name ?: "未知引擎"),
+                                "是否已经释放" to released.toString(),
+                            ),
+                        )
+                    }
                     if (!released && generation == cacheInitGeneration.get()) {
                         // Cache I/O failure must not permanently strand the dubbing queue.
                         pending.clear()
@@ -628,6 +641,21 @@ class DubbingEngine(
                                 "Adaptive speech-rate retry failed for line ${idx + 1}; keeping first synthesis",
                                 e,
                             )
+                            runCatching {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    appContext, "DubbingEngine",
+                                    "第 ${idx + 1}/${lines.size} 句自适应语速重试失败，已保留首次合成音频",
+                                    e,
+                                    diagnosticContext = mapOf(
+                                        "字幕行号" to "${idx + 1}/${lines.size}",
+                                        "配音引擎" to (tts?.name ?: "未知引擎"),
+                                        "原始语速" to synthesisSpeed.toString(),
+                                        "重试语速" to fasterSpeed.toString(),
+                                        "字幕字符数" to text.length.toString(),
+                                        "处理策略" to "保留首次合成结果，不中断整段配音",
+                                    ),
+                                )
+                            }
                             firstAudio
                         }
                     } else firstAudio
@@ -721,6 +749,23 @@ class DubbingEngine(
                             "PCM cache write failed for line ${idx + 1}; trying bounded memory playback",
                             cacheError,
                         )
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                appContext, "DubbingEngine",
+                                "第 ${idx + 1}/${lines.size} 句配音缓存写入失败，正在尝试内存缓存播放",
+                                cacheError,
+                                diagnosticContext = mapOf(
+                                    "字幕行号" to "${idx + 1}/${lines.size}",
+                                    "配音引擎" to (tts?.name ?: "未知引擎"),
+                                    "PCM 采样率 Hz" to readyAudio.sampleRate.toString(),
+                                    "PCM 采样点数" to boundedSamples.size.toString(),
+                                    "音频时长估算 ms" to (boundedSamples.size.toDouble() * 1000.0 / readyAudio.sampleRate.coerceAtLeast(1)).toLong().toString(),
+                                    "应用文件目录可用空间 MB" to (appContext.filesDir.usableSpace / (1024L * 1024L)).toString(),
+                                    "当前内存缓存条目数" to synchronized(mem) { mem.size }.toString(),
+                                    "恢复策略" to "优先保留已合成音频；内存也无法容纳时才报告配音失败",
+                                ),
+                            )
+                        }
                     }
                     checkSynthesisActive()
                     val retainedInMemory = synchronized(mem) {
@@ -885,6 +930,22 @@ class DubbingEngine(
                         "Stopping selected TTS engine after out-of-memory during synthesis",
                         memoryError,
                     )
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.error(
+                            appContext, "DubbingEngine",
+                            "中文配音合成时内存耗尽，已停止当前合成队列并准备恢复视频原声",
+                            memoryError,
+                            diagnosticContext = mapOf(
+                                "配音引擎" to (tts?.name ?: "未知引擎"),
+                                "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                                "字幕总行数" to lines.size.toString(),
+                                "当前合成字幕索引" to activeSynthesisIndex.toString(),
+                                "待合成队列长度" to pending.size.toString(),
+                                "内存缓存清理前条目数" to synchronized(mem) { mem.size }.toString(),
+                                "失败处理" to "清空待合成队列和 PCM 内存缓存，向播放服务上报恢复原声",
+                            ),
+                        )
+                    }
                     // OOM must replace any earlier one-time synthesis warning so the service
                     // receives the memory-specific signal and can dispose this native runtime.
                     synthesisErrorReported.set(false)
@@ -998,6 +1059,18 @@ class DubbingEngine(
                     "当前合成语速" to speed.toString(),
                     "音频处理方式" to if (usesImmediateTimelinePlayback) "即时 TTS" else "PCM 合成后播放",
                     "该句额外恢复重试次数" to (synthesisRecoveryRetryCounts[index] ?: 0).toString(),
+                    "系统音频模式" to runCatching {
+                        (appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager)?.mode?.toString() ?: "不可用"
+                    }.getOrDefault("读取失败"),
+                    "系统音乐播放状态" to runCatching {
+                        (appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager)?.isMusicActive?.toString() ?: "不可用"
+                    }.getOrDefault("读取失败"),
+                    "音频输出设备" to runCatching {
+                        val manager = appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+                        manager?.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+                            ?.joinToString { "type=${it.type}, id=${it.id}" }?.take(500)
+                            ?.ifBlank { "未检测到输出设备" } ?: "不可用"
+                    }.getOrDefault("读取失败"),
                 ) + extraContext,
             )
         }.onFailure {
@@ -2605,6 +2678,22 @@ class DubbingEngine(
                     _currentLine.value = -1
                     try { active.release() } catch (_: Exception) {}
                     android.util.Log.w("DubbingEngine", "Unable to resume voice track", e)
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            appContext, "DubbingEngine",
+                            "恢复视频播放时重新启动配音音轨失败",
+                            e,
+                            diagnosticContext = mapOf(
+                                "当前字幕行号" to currentLineIdx().toString(),
+                                "预期播放代次" to expectedGeneration.toString(),
+                                "当前播放代次" to playbackGeneration.get().toString(),
+                                "音轨初始化状态" to runCatching { active.state.toString() }.getOrDefault("读取失败"),
+                                "音轨播放状态" to runCatching { active.playState.toString() }.getOrDefault("读取失败"),
+                                "音轨播放头" to runCatching { active.playbackHeadPosition.toString() }.getOrDefault("读取失败"),
+                                "恢复策略" to "释放无法恢复的音轨，等待下一次视频时间轴回调重新创建",
+                            ),
+                        )
+                    }
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
