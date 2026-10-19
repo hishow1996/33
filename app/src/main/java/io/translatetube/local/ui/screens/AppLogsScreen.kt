@@ -53,7 +53,7 @@ fun AppLogsScreen(onBack: () -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
-    var writerHealth by remember { mutableStateOf(AppLogStore.writerHealth()) } }
+    var writerHealth by remember { mutableStateOf(AppLogStore.writerHealth()) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
