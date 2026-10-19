@@ -2338,23 +2338,25 @@ class DubbingEngine(
                 cueDurationMs = cueDurationMs,
                 baseSpeechRate = 1.0f,
             )
-            // Only an estimated overrun gets the slightly higher recovery cap; normal cues retain
-            // the conservative limit to avoid making all system-TTS speech sound rushed.
+            // Both genuinely long cues and queued late cues may use the bounded recovery cap.
+            // Normal on-time System TTS stays on the lower cap to avoid rushing every sentence.
+            val syncRateLimit = if (predictedOverrun || completeCueWhenLate) {
+                DubbingTiming.MAX_CATCH_UP_SYNC_RATE
+            } else {
+                DubbingTiming.MAX_SYNC_RATE
+            }
             val timingRate = DubbingSyncHoldPolicy.timelineRate(
                 estimatedSpeechMs = estimatedAtEffectiveRateMs,
                 cueDurationMs = cueDurationMs,
-                maxSyncRate = if (predictedOverrun) {
-                    DubbingTiming.MAX_CATCH_UP_SYNC_RATE
-                } else {
-                    DubbingTiming.MAX_SYNC_RATE
-                },
+                maxSyncRate = syncRateLimit,
+                targetRate = if (completeCueWhenLate) catchUpSyncRate else 1.0f,
             )
             if (predictedOverrun) {
                 android.util.Log.w(
                     "DubbingEngine",
                     "系统 TTS 长句预计超出时间槽，将以自适应语速完整朗读并顺序补播后续字幕：line=${idx + 1}, " +
                         "estimatedAtEffectiveRateMs=$estimatedAtEffectiveRateMs, windowMs=$cueDurationMs, " +
-                        "maxRate=${DubbingTiming.MAX_SYNC_RATE}",
+                        "maxRate=$syncRateLimit",
                 )
                 runCatching {
                     io.translatetube.local.util.AppLogStore.warning(
