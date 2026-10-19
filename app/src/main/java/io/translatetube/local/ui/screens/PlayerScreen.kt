@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Headphones
@@ -1137,7 +1136,7 @@ private fun VideoParsingPage(
     ) {
         // Navigation header — centered title balanced between the two actions.
         Row(
-            Modifier.fillMaxWidth().padding(bottom = 14.dp),
+            Modifier.fillMaxWidth().padding(bottom = 7.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1293,7 +1292,7 @@ private fun VideoParsingPage(
                         bottomEnd = 9.dp,
                     ),
                 )
-                .padding(horizontal = 14.dp, vertical = 15.dp),
+                .padding(horizontal = 12.dp, vertical = 9.dp),
         ) {
             Column {
                 Row(
@@ -1303,7 +1302,7 @@ private fun VideoParsingPage(
                 ) {
                     Box(
                         Modifier
-                            .size(62.dp)
+                            .size(48.dp)
                             .clip(RoundedCornerShape(21.dp))
                             .background(
                                 Brush.linearGradient(
@@ -1392,10 +1391,10 @@ private fun VideoParsingPage(
                             mainTitle,
                             color = Color(0xFF17243B),
                             style = MaterialTheme.typography.titleLarge.copy(
-                                fontSize = 16.sp,
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = (-0.35).sp,
-                                lineHeight = 21.sp,
+                                letterSpacing = (-0.3).sp,
+                                lineHeight = 18.sp,
                             ),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -1403,8 +1402,8 @@ private fun VideoParsingPage(
                         Text(
                             detail,
                             color = Color(0xFF71819B),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
-                            maxLines = 2,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 13.sp),
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -1463,7 +1462,7 @@ private fun VideoParsingPage(
                         }
                     }
                 }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(8.dp))
                 Row(
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -1537,14 +1536,14 @@ private fun VideoParsingPage(
 
                 if (busy) {
                     Row(
-                        Modifier.fillMaxWidth().padding(top = 14.dp),
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(9.dp),
                     ) {
                         val pauseLabel = if (state.isProcessingPaused) "继续处理" else "暂停处理"
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(43.dp)
+                                .height(36.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (state.isProcessingPaused) Brush.linearGradient(listOf(Color(0xFF3268F5), Color(0xFF517EF8))) else Brush.linearGradient(listOf(Color.White, Color(0xFFF9FBFF))))
                                 .border(1.dp, Color(0xFFCBDCFF), RoundedCornerShape(14.dp))
@@ -1647,29 +1646,9 @@ private fun VideoParsingPage(
                         bottomEnd = 22.dp,
                     ),
                 )
-                .padding(horizontal = 16.dp, vertical = 17.dp),
+                .padding(horizontal = 12.dp, vertical = 9.dp),
         ) {
             Column {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(11.dp),
-                ) {
-                    Box(
-                        Modifier.size(38.dp).clip(RoundedCornerShape(13.dp)).background(Color(0xFFEDF3FF)),
-                        contentAlignment = androidx.compose.ui.Alignment.Center,
-                    ) {
-                        Icon(Icons.Filled.Assessment, contentDescription = null, tint = Color(0xFF356AF0), modifier = Modifier.size(23.dp))
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "处理进度",
-                            color = Color(0xFF17243B),
-                            style = MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp, fontWeight = FontWeight.ExtraBold),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(13.dp))
                 visibleStages.forEachIndexed { visibleIndex, index ->
                     val done = complete || index < currentStage
                     val active = !complete && !isError && !isCancelled && index == currentStage
@@ -1699,7 +1678,7 @@ private fun VideoParsingPage(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 5.dp)
+                            .padding(vertical = 2.dp)
                             .clip(RoundedCornerShape(17.dp))
                             .background(rowBg)
                             .border(
@@ -1707,13 +1686,13 @@ private fun VideoParsingPage(
                                 color = if (active) Color(0xFFE4EDFF) else Color(0xFFFFD6DB),
                                 shape = RoundedCornerShape(17.dp),
                             )
-                            .padding(horizontal = 10.dp, vertical = 12.dp),
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(11.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Box(
                             Modifier
-                                .size(36.dp)
+                                .size(28.dp)
                                 .clip(CircleShape)
                                 .background(markerBg)
                                 .border(1.dp, Color.White, CircleShape),
@@ -1740,9 +1719,9 @@ private fun VideoParsingPage(
                                     else -> Color(0xFF34455F)
                                 },
                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontSize = 14.sp,
+                                    fontSize = 13.sp,
                                     fontWeight = if (active || done) FontWeight.Bold else FontWeight.SemiBold,
-                                    lineHeight = 19.sp,
+                                    lineHeight = 16.sp,
                                 ),
                             )
                             Text(
@@ -1763,8 +1742,8 @@ private fun VideoParsingPage(
                                     active -> Color(0xFF8193B5)
                                     else -> Color(0xFF8D9BB0)
                                 },
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, lineHeight = 15.sp),
-                                maxLines = 2,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
@@ -1796,9 +1775,9 @@ private fun VideoParsingPage(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .background(stageBadgeBg)
-                                .padding(horizontal = 9.dp, vertical = 6.dp),
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 10.sp,
+                                fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                             ),
                             maxLines = 1,
@@ -1807,9 +1786,9 @@ private fun VideoParsingPage(
                     if (visibleIndex < visibleStages.lastIndex) {
                         Box(
                             Modifier
-                                .padding(start = 27.dp)
+                                .padding(start = 21.dp)
                                 .width(2.dp)
-                                .height(10.dp)
+                                .height(5.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFFE9EEF7)),
                         )
