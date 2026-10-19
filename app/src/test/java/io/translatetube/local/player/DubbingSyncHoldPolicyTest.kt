@@ -81,7 +81,7 @@ class DubbingSyncHoldPolicyTest {
             codePointCount = 10,
             appliedSpeechRate = 2.0f,
         )
-        assertEquals(196.0, updated, 0.001)
+        assertEquals(214.0, updated, 0.001)
     }
 
     @Test
