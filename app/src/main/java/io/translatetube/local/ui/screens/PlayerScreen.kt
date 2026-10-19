@@ -18,6 +18,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateColorAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -1551,20 +1555,49 @@ private fun ModeButton(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    val selectedColor by animateColorAsState(
+        targetValue = if (selected) Color(0xFFE4EDFF) else Color.White,
+        animationSpec = tween(210, easing = FastOutSlowInEasing),
+        label = "playbackModeColor",
+    )
+    val labelColor by animateColorAsState(
+        targetValue = if (selected) BrandBright else OnBg,
+        animationSpec = tween(210, easing = FastOutSlowInEasing),
+        label = "playbackModeLabelColor",
+    )
+    val glyphScale by animateFloatAsState(
+        targetValue = if (selected) 1.06f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "playbackModeGlyphScale",
+    )
     Surface(
         modifier = modifier.height(60.dp),
         onClick = onClick,
-        color = if (selected) Color(0xFFE4EDFF) else Color.White,
+        color = selectedColor,
         shape = RoundedCornerShape(18.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) Color(0xFFE4EDFF) else OutlineSoft),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            selectedColor,
+        ),
     ) {
         Column(
             Modifier.fillMaxSize().padding(vertical = 5.dp),
             horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
-            Text(glyph, color = BrandBright, style = MaterialTheme.typography.titleMedium.copy(fontSize = 20.sp))
-            Text(title, color = if (selected) BrandBright else OnBg, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                glyph,
+                color = BrandBright,
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 20.sp),
+                modifier = Modifier.graphicsLayer {
+                    scaleX = glyphScale
+                    scaleY = glyphScale
+                },
+            )
+            Text(title, color = labelColor, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

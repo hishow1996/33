@@ -1,5 +1,8 @@
 package io.translatetube.local.ui.screens
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -76,13 +79,23 @@ private fun BuiltinWebEngineCard(
     onSelect: () -> Unit,
     onTest: () -> Unit,
 ) {
+    val cardColor by animateColorAsState(
+        targetValue = if (selected) Color(0xFFEAF1FF) else Color.White,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "builtinEngineCardColor",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) Color(0xFF3569D4) else Color(0xFFE3E9F2),
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "builtinEngineBorderColor",
+    )
     Row(
         modifier = Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(if (selected) Color(0xFFEAF1FF) else Color.White)
+            .background(cardColor)
             .border(
                 width = if (selected) 1.5.dp else 1.dp,
-                color = if (selected) Color(0xFF3569D4) else Color(0xFFE3E9F2),
+                color = borderColor,
                 shape = RoundedCornerShape(18.dp),
             )
             .clickable { onSelect() }
