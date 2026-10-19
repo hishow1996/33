@@ -65,6 +65,8 @@ class DubbingEngine(
     @Volatile private var synthesisTts: TtsEngine? = null
     @Volatile private var backgroundSynthesisRequested = false
     @Volatile private var backgroundSynthesisUnavailable = false
+    @Volatile private var backgroundTtsInitializationJob: Job? = null
+    private val backgroundTtsInitLock = Any()
     private val ttsInstances = java.util.concurrent.CopyOnWriteArrayList<TtsEngine>()
     private val fallbackRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     /** Return true when the service has scheduled a safe fallback-engine switch for this failed cue. */
@@ -322,54 +324,22 @@ class DubbingEngine(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
 
-                    // Instant System TTS remains the audible playback engine. Prepare a second,
-                    // non-audible System TTS instance for optional background PCM generation when
-                    // the user chooses original-only playback. Separate instances avoid blocking or
-                    // interrupting live utterances when the user switches back to dubbing.
+                    // Instant System TTS keeps its direct audible playback path. Queue valid cues
+                    // for optional PCM warm-up, but do not allocate a second TTS service or begin
+                    // synthesis until the user actually selects original-only playback.
                     if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
-                        val backgroundEngine = try {
-                            io.translatetube.local.tts.SystemTts(
-                                appContext,
-                                io.translatetube.local.tts.SystemTtsPlaybackMode.GENERATED,
-                            )
-                        } catch (error: Exception) {
-                            backgroundSynthesisUnavailable = true
-                            android.util.Log.w(
-                                "DubbingEngine",
-                                "Unable to initialize background System TTS synthesis; instant playback remains available",
-                                error,
-                            )
-                            null
-                        }
-                        if (backgroundEngine != null) {
-                            val published = synchronized(cacheWriteLock) {
-                                if (released || generation != cacheInitGeneration.get()) {
-                                    false
-                                } else {
-                                    synthesisTts = backgroundEngine
-                                    ttsInstances.addIfAbsent(backgroundEngine)
-                                    true
-                                }
-                            }
-                            if (!published) {
-                                runCatching { backgroundEngine.close() }
-                                throw kotlinx.coroutines.CancellationException(
-                                    "配音引擎已释放，取消后台系统 TTS 初始化",
-                                )
-                            }
-                        }
                         for (i in this@DubbingEngine.lines.indices) {
                             checkCacheInitActive()
                             val cue = this@DubbingEngine.lines[i]
                             val hasSpeech = DubbingTimeline.isPlayableCue(cue) &&
                                 !cue.zh.isNullOrBlank()
-                            // Direct playback can speak immediately; pending indexes separately
-                            // describe which cues still need generated PCM for subsequent reuse.
+                            // Direct playback is immediately available; queued indexes separately
+                            // track which cues still need reusable generated PCM.
                             markCuePrepared(i, hasAudio = hasSpeech)
-                            if (hasSpeech && backgroundEngine != null) pending.offerLast(i)
+                            if (hasSpeech) pending.offerLast(i)
                         }
                         bumpPrepared()
-                        if (backgroundSynthesisRequested && backgroundEngine != null) startSynthLoop()
+                        if (backgroundSynthesisRequested) ensureBackgroundSynthesisEngine()
                         return@launch
                     }
 
@@ -519,7 +489,51 @@ class DubbingEngine(
         if (released || synthesisMemoryFailure) return
         backgroundSynthesisRequested = true
         if (index in lines.indices) prioritizeAround(index, lookAhead)
-        startSynthLoop()
+        if (usesImmediateTimelinePlayback && synthesisTts === tts) {
+            ensureBackgroundSynthesisEngine()
+        } else if (pending.isNotEmpty()) {
+            startSynthLoop()
+        }
+    }
+
+    private fun ensureBackgroundSynthesisEngine() {
+        if (released || !backgroundSynthesisRequested || !usesImmediateTimelinePlayback) return
+        if (synthesisTts !== tts) {
+            if (pending.isNotEmpty()) startSynthLoop()
+            return
+        }
+        synchronized(backgroundTtsInitLock) {
+            if (released || backgroundSynthesisUnavailable || backgroundTtsInitializationJob?.isActive == true) return
+            backgroundTtsInitializationJob = scope.launch(Dispatchers.IO) {
+                val generated = try {
+                    io.translatetube.local.tts.SystemTts(
+                        appContext,
+                        io.translatetube.local.tts.SystemTtsPlaybackMode.GENERATED,
+                    )
+                } catch (error: Exception) {
+                    backgroundSynthesisUnavailable = true
+                    android.util.Log.w(
+                        "DubbingEngine",
+                        "Unable to initialize background System TTS synthesis; instant playback remains available",
+                        error,
+                    )
+                    return@launch
+                }
+                val published = synchronized(cacheWriteLock) {
+                    if (released) false
+                    else {
+                        synthesisTts = generated
+                        ttsInstances.addIfAbsent(generated)
+                        true
+                    }
+                }
+                if (!published) {
+                    runCatching { generated.close() }
+                    return@launch
+                }
+                if (backgroundSynthesisRequested && pending.isNotEmpty()) startSynthLoop()
+            }
+        }
     }
 
     private fun startSynthLoop() {
@@ -528,6 +542,8 @@ class DubbingEngine(
         if (usesImmediateTimelinePlayback &&
             (!backgroundSynthesisRequested || backgroundSynthesisUnavailable || synthesisTts == null || synthesisTts === tts)
         ) return
+        // Do not continually launch empty workers from the high-frequency player ticker.
+        if (pending.isEmpty()) return
         // Queue recovery and cache initialization can request startup concurrently. Serialize
         // the check-and-launch pair; otherwise both callers could observe an idle worker and
         // invoke the same native TTS engine concurrently.
@@ -3236,6 +3252,8 @@ class DubbingEngine(
         tts = null
         synthesisTts = null
         backgroundSynthesisRequested = false
+        backgroundTtsInitializationJob?.cancel()
+        backgroundTtsInitializationJob = null
         fallbackRequested.set(false)
         cacheInitGeneration.incrementAndGet()
         cacheInitJob?.cancel()
