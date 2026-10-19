@@ -1,5 +1,10 @@
 package io.translatetube.local.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -123,20 +128,28 @@ private fun BuiltinWebEngineCard(
             )
             Text(subtitle, color = SubText, style = MaterialTheme.typography.bodySmall)
         }
-        if (selected) {
-            Surface(
-                color = Color(0xFF3569D4),
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Text(
-                    "正在使用",
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                )
+        AnimatedVisibility(
+            visible = selected,
+            enter = fadeIn(animationSpec = tween(160)) +
+                expandHorizontally(animationSpec = tween(190, easing = FastOutSlowInEasing)),
+            exit = shrinkHorizontally(animationSpec = tween(130, easing = FastOutSlowInEasing)) +
+                fadeOut(animationSpec = tween(100)),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = Color(0xFF3569D4),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(
+                        "正在使用",
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
             }
-            Spacer(Modifier.width(6.dp))
         }
         TextButton(onClick = onTest, enabled = !testing) {
             Text(if (testing) "测试中…" else "测试")
