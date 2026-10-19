@@ -333,7 +333,7 @@ fun HomeScreen(
             Text("观看记录", color = OnBg, style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.weight(1f))
             Text(
-                if (favoritesOnly) "返回全部" else "全部",
+                if (favoritesOnly) "全部记录" else "收藏",
                 color = BrandBright,
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
