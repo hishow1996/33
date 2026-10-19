@@ -2332,11 +2332,21 @@ class DubbingEngine(
             val estimatedAtEffectiveRateMs =
                 (estimatedSpeechMs.toDouble() / (baseSpeechRate * timelineSpeed).toDouble())
                     .toLong().coerceAtLeast(1L)
-            val timingRate = DubbingSyncHoldPolicy.timelineRate(estimatedAtEffectiveRateMs, cueDurationMs)
             val predictedOverrun = DubbingSyncHoldPolicy.wouldOverrunCueWindow(
                 estimatedSpeechMs = estimatedAtEffectiveRateMs,
                 cueDurationMs = cueDurationMs,
                 baseSpeechRate = 1.0f,
+            )
+            // Only an estimated overrun gets the slightly higher recovery cap; normal cues retain
+            // the conservative limit to avoid making all system-TTS speech sound rushed.
+            val timingRate = DubbingSyncHoldPolicy.timelineRate(
+                estimatedSpeechMs = estimatedAtEffectiveRateMs,
+                cueDurationMs = cueDurationMs,
+                maxSyncRate = if (predictedOverrun) {
+                    DubbingTiming.MAX_CATCH_UP_SYNC_RATE
+                } else {
+                    DubbingTiming.MAX_SYNC_RATE
+                },
             )
             if (predictedOverrun) {
                 android.util.Log.w(
@@ -2507,6 +2517,7 @@ class DubbingEngine(
                             sampleRate = sr,
                             cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L),
                             playerSpeed = currentSpeed,
+                            maxSyncRate = DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
                         )
                     } else {
                         DubbingTiming.createPlan(
