@@ -154,6 +154,11 @@ class PlaybackService : MediaSessionService() {
     private val dubbingCatchUpQueue = LinkedHashSet<Int>()
     @Volatile private var dubbingCatchUpSessionKey = ""
     private var lastDubbingCatchUpPositionMs = -1L
+    private val dubbingDrainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var dubbingDrainAfterVideoEnd = false
+    @Volatile private var dubbingDrainEngine: DubbingEngine? = null
+    @Volatile private var dubbingDrainSessionKey = ""
+    @Volatile private var dubbingDrainPoll: Runnable? = null
     /** Retained for legacy hold-state cleanup; new overrun handling never pauses the player. */
     @Volatile private var resumeAfterDubbingSyncHold = false
     @Volatile private var playerReady = false
@@ -404,14 +409,41 @@ class PlaybackService : MediaSessionService() {
             pm = PlayerManager(this)
             pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
             pm.onEnded = {
-            cancelDubbingSyncHold(resumePlayer = false, reason = "player ended")
-            clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
-            // AudioTrack is independent from ExoPlayer. Once the player reaches STATE_ENDED its
-            // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
-            safelyControlDubbing("player ended") { dubbing?.stop() }
-            safelySetOriginalVolume(1f, "player ended")
-            ui.update { it.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1) }
-        }
+                cancelDubbingSyncHold(resumePlayer = false, reason = "player ended")
+                val sessionKey = ui.value.key
+                val engine = dubbing
+                val activeIndex = engine?.currentLineIdx() ?: -1
+                val activeSentenceCanFinish = engine != null && activeIndex >= 0 && (
+                    engine.shouldContinueCurrentCue(-1) ||
+                        (!engine.hasStartedPlaybackFor(activeIndex) &&
+                            engine.isPrepared(activeIndex) && !engine.isSilent(activeIndex))
+                    )
+                val queuedCuesRemain = hasDubbingCatchUpCues(sessionKey)
+                if (engine != null && ui.value.dubbingOn && (queuedCuesRemain || activeSentenceCanFinish)) {
+                    // The video has ended; finish speech off-timeline without pausing or restarting the video.
+                    if (activeIndex >= 0 && !engine.hasStartedPlaybackFor(activeIndex) &&
+                        engine.isPrepared(activeIndex) && !engine.isSilent(activeIndex)
+                    ) {
+                        enqueueDubbingCatchUpCue(sessionKey, activeIndex)
+                    }
+                    safelySetOriginalVolume(1f, "video ended; draining remaining dubbing")
+                    ui.update {
+                        if (it.key == sessionKey) it.copy(
+                            isPlaying = false,
+                            currentLine = -1,
+                            activeDubbingLine = activeIndex,
+                            dubbingStatus = "视频已结束，正在完成剩余配音",
+                        ) else it
+                    }
+                    startDubbingDrainAfterVideoEnd(engine, sessionKey)
+                } else {
+                    cancelDubbingDrainAfterVideoEnd()
+                    clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = pm.position())
+                    safelyControlDubbing("player ended") { dubbing?.stop() }
+                    safelySetOriginalVolume(1f, "player ended")
+                    ui.update { it.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1) }
+                }
+            }
             pm.onVideoAspect = { ratio -> ui.update { it.copy(videoAspect = ratio) } }
 
             // Keep dubbed AudioTrack locked to ExoPlayer's playback state. This callback
@@ -421,6 +453,11 @@ class PlaybackService : MediaSessionService() {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady) {
                         resumeAfterDubbingSyncHold = false
+                        cancelDubbingDrainAfterVideoEnd()
+                        clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
+                    }
+                    if (isPlaying && dubbingDrainAfterVideoEnd) {
+                        cancelDubbingDrainAfterVideoEnd()
                         clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
                     }
                     if (isPlaying && dubbingSyncHoldEngine != null) {
@@ -454,6 +491,7 @@ class PlaybackService : MediaSessionService() {
                     reason: Int,
                 ) {
                     cancelDubbingSyncHold(resumePlayer = true, reason = "position discontinuity")
+                    cancelDubbingDrainAfterVideoEnd()
                     clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = newPosition.positionMs)
                     // A seek can land inside the same subtitle cue, so comparing line indexes
                     // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
@@ -901,6 +939,7 @@ class PlaybackService : MediaSessionService() {
             false
         } else {
             dubbing = engine
+            cancelDubbingDrainAfterVideoEnd()
             clearDubbingCatchUpQueue(
                 sessionKey = sessionKey,
                 positionMs = if (::pm.isInitialized) pm.position() else -1L,
@@ -1066,6 +1105,7 @@ class PlaybackService : MediaSessionService() {
         // Cancel work before releasing services it may still be using. In particular, the
         // local ASR JNI recognizer must not be released while a synchronous decode call is active.
         cancelDubbingSyncHold(resumePlayer = false, reason = "service destroyed")
+        cancelDubbingDrainAfterVideoEnd()
         val activePipeline = prepJob
         prepJob?.cancel()
         speakerJob?.cancel()
@@ -4944,6 +4984,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.firstOrNull() else null
     }
 
+    private fun enqueueDubbingCatchUpCue(sessionKey: String, index: Int) {
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.add(index)
+        }
+    }
+
     private fun removeDubbingCatchUpCue(sessionKey: String, index: Int) {
         synchronized(dubbingCatchUpLock) {
             if (dubbingCatchUpSessionKey == sessionKey && dubbingCatchUpQueue.firstOrNull() == index) {
@@ -4996,6 +5042,84 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             if (dubbingCatchUpSessionKey != state.key || !state.dubbingOn) return
             crossed.forEach { dubbingCatchUpQueue.add(it) }
         }
+    }
+
+    private fun isDubbingDrainActiveFor(engine: DubbingEngine, sessionKey: String): Boolean =
+        dubbingDrainAfterVideoEnd &&
+            dubbingDrainEngine === engine &&
+            dubbingDrainSessionKey == sessionKey &&
+            videoKey == sessionKey &&
+            ui.value.key == sessionKey &&
+            ui.value.dubbingOn
+
+    private fun cancelDubbingDrainAfterVideoEnd() {
+        val poll = dubbingDrainPoll
+        dubbingDrainPoll = null
+        dubbingDrainAfterVideoEnd = false
+        dubbingDrainEngine = null
+        dubbingDrainSessionKey = ""
+        poll?.let(dubbingDrainHandler::removeCallbacks)
+    }
+
+    private fun startDubbingDrainAfterVideoEnd(engine: DubbingEngine, sessionKey: String) {
+        if (!isCurrentDubbingEngine(engine, sessionKey) || !ui.value.dubbingOn) return
+        if (isDubbingDrainActiveFor(engine, sessionKey)) return
+        cancelDubbingDrainAfterVideoEnd()
+        dubbingDrainAfterVideoEnd = true
+        dubbingDrainEngine = engine
+        dubbingDrainSessionKey = sessionKey
+
+        lateinit var poll: Runnable
+        poll = object : Runnable {
+            override fun run() {
+                if (!isDubbingDrainActiveFor(engine, sessionKey)) return
+                if (!playerReady || !isCurrentDubbingEngine(engine, sessionKey)) {
+                    cancelDubbingDrainAfterVideoEnd()
+                    return
+                }
+
+                runCatching { tick(pm.position()) }.onFailure { error ->
+                    io.translatetube.local.util.AppLogStore.error(
+                        this@PlaybackService,
+                        "PlaybackTimeline",
+                        "视频结束后的剩余配音调度失败",
+                        error,
+                        diagnosticContext = mapOf(
+                            "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                            "当前配音引擎" to engine.currentTtsName,
+                            "当前字幕索引" to engine.currentLineIdx().toString(),
+                            "剩余补播队列长度" to synchronized(dubbingCatchUpLock) {
+                                dubbingCatchUpQueue.size
+                            }.toString(),
+                        ),
+                    )
+                }
+
+                val index = engine.currentLineIdx()
+                val activeSpeechRemains = index >= 0 && (
+                    engine.shouldContinueCurrentCue(-1) ||
+                        (!engine.hasStartedPlaybackFor(index) &&
+                            engine.isPrepared(index) && !engine.isSilent(index))
+                    )
+                if (hasDubbingCatchUpCues(sessionKey) || activeSpeechRemains) {
+                    dubbingDrainHandler.postDelayed(this, 50L)
+                } else {
+                    cancelDubbingDrainAfterVideoEnd()
+                    engine.stop()
+                    safelySetOriginalVolume(1f, "remaining dubbing completed")
+                    updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
+                        state.copy(
+                            isPlaying = false,
+                            currentLine = -1,
+                            activeDubbingLine = -1,
+                            dubbingStatus = "视频已结束，剩余字幕配音已完成",
+                        )
+                    }
+                }
+            }
+        }
+        dubbingDrainPoll = poll
+        dubbingDrainHandler.post(poll)
     }
 
     private fun tickFromPlayerCallback(ms: Long, source: String) {
@@ -5095,7 +5219,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 completeCueWhenLate = true,
                                 playbackAllowed = {
                                     val latest = ui.value
-                                    ::pm.isInitialized && pm.isPlaying.value &&
+                                    ::pm.isInitialized &&
+                                        (pm.isPlaying.value || isDubbingDrainActiveFor(d, st.key)) &&
                                         latest.key == st.key && latest.dubbingOn && dubbing === d
                                 },
                             )
@@ -5138,7 +5263,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         playbackAllowed = {
                             val latest = ui.value
                             ::pm.isInitialized &&
-                                (pm.isPlaying.value || isDubbingSyncHoldFor(d, dubLine)) &&
+                                (pm.isPlaying.value || isDubbingSyncHoldFor(d, dubLine) ||
+                                    isDubbingDrainActiveFor(d, st.key)) &&
                                 latest.key == st.key &&
                                 latest.dubbingOn &&
                                 dubbing === d
