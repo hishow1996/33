@@ -27,7 +27,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Merge PR #2 then PR #3, preferring current integrated code on overlapping hunks
+      - name: Merge PR #2 then PR #3, preferring the targeted branch changes on overlapping hunks
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +37,7 @@ jobs:
           merge_branch() {
             local ref="$1"
             local message="$2"
-            if git merge --no-ff --no-edit -X ours -m "$message" "$ref"; then
+            if git merge --no-ff --no-edit -X theirs -m "$message" "$ref"; then
               return 0
             fi
             local conflicts
