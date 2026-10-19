@@ -25,6 +25,17 @@ class DubbingSynthesisPolicyTest {
     }
 
     @Test
+    fun secondAdaptivePassCanIncreaseTheRateWhenTheFirstRetryStillDoesNotFit() {
+        val speed = DubbingSynthesisPolicy.recommendedSpeed(
+            baseSpeed = 2.7778f,
+            sampleCount = 24_000,
+            sampleRate = 16_000,
+            cueDurationMs = 1_000,
+        )
+        assertEquals(3.0f, speed, 0.001f)
+    }
+
+    @Test
     fun recommendsBoundedRetryOnlyForExtremeCueDurationRatios() {
         val speed = DubbingSynthesisPolicy.recommendedSpeed(
             baseSpeed = 1.0f,

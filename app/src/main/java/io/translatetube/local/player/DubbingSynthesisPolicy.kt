@@ -6,6 +6,8 @@ package io.translatetube.local.player
  * enough, DubbingTiming preserves the remaining PCM tail and PlaybackService holds video safely.
  */
 internal object DubbingSynthesisPolicy {
+    /** Maximum additional renders after the first successful PCM synthesis. */
+    const val MAX_ADAPTIVE_SYNTHESIS_RETRIES = 2
     private const val LONG_CUE_RATIO = 1.15
     private const val TARGET_CUE_FILL = 0.90
     // This is a storage/PCM safety bound, not the normal synchronization playback rate. A cue that

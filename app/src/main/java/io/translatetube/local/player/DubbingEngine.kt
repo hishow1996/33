@@ -616,63 +616,105 @@ class DubbingEngine(
                     val firstAudio = audio ?: throw (lastFailure
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
                     val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
-                    val fasterSpeed = DubbingSynthesisPolicy.recommendedSpeed(
-                        baseSpeed = synthesisSpeed,
-                        sampleCount = firstAudio.samples.size,
-                        sampleRate = firstAudio.sampleRate,
-                        cueDurationMs = cueDurationMs,
-                    )
-                    // Prefer regenerating a long sentence with the same selected engine at a
-                    // higher but bounded speech rate before trimming it to the video time window.
-                    // If adaptive synthesis fails or the provider ignores speed, keep the first audio.
-                    val readyAudio = if (fasterSpeed > synthesisSpeed + 0.05f) {
+                    // TTS engines may not scale linearly with their requested speech rate. Measure
+                    // each accepted render and allow up to two adaptive passes before playback,
+                    // stopping as soon as the measured PCM fits the safe timeline multiplier.
+                    var readyAudio = firstAudio
+                    var effectiveSynthesisSpeed = synthesisSpeed
+                    var adaptiveRetryCount = 0
+                    while (adaptiveRetryCount < DubbingSynthesisPolicy.MAX_ADAPTIVE_SYNTHESIS_RETRIES) {
+                        val retrySpeed = DubbingSynthesisPolicy.recommendedSpeed(
+                            baseSpeed = effectiveSynthesisSpeed,
+                            sampleCount = readyAudio.samples.size,
+                            sampleRate = readyAudio.sampleRate,
+                            cueDurationMs = cueDurationMs,
+                        )
+                        if (retrySpeed <= effectiveSynthesisSpeed + 0.05f) break
+
                         try {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             synthesisCallCount++
-                            val faster = tts!!.synthCancellable(text, fasterSpeed, line.speakerId, ::checkSynthesisActive)
+                            val candidate = tts!!.synthCancellable(
+                                text, retrySpeed, line.speakerId, ::checkSynthesisActive,
+                            )
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            // Apply the same finite, audible-PCM validation to the adaptive
-                            // retry as to the original synthesis. A non-empty array may still be
-                            // silent or contain NaN/Infinity, and must never replace good audio.
-                            val fasterIsValid = DubbingPcmValidation.isValidAudio(
-                                faster.sampleRate,
-                                faster.samples,
+                            val candidateIsValid = DubbingPcmValidation.isValidAudio(
+                                candidate.sampleRate,
+                                candidate.samples,
                                 checkActive = {
                                     if (released || workerJob?.isActive == false) {
                                         throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
                                     }
                                 },
                             )
-                            val fasterIsShorter = fasterIsValid &&
-                                faster.samples.size.toDouble() / faster.sampleRate <
-                                firstAudio.samples.size.toDouble() / firstAudio.sampleRate * 0.98
-                            if (fasterIsShorter) faster else firstAudio
+                            val currentDurationMs = readyAudio.samples.size.toDouble() * 1_000.0 /
+                                readyAudio.sampleRate.coerceAtLeast(1)
+                            val candidateDurationMs = candidate.samples.size.toDouble() * 1_000.0 /
+                                candidate.sampleRate.coerceAtLeast(1)
+                            val candidateIsShorter = candidateIsValid &&
+                                candidateDurationMs < currentDurationMs * 0.98
+                            if (!candidateIsShorter) {
+                                runCatching {
+                                    io.translatetube.local.util.AppLogStore.warning(
+                                        appContext,
+                                        "DubbingEngine",
+                                        "第 ${idx + 1}/${lines.size} 句自适应语速合成未产生更短的有效音频，保留上一版结果",
+                                        diagnosticContext = mapOf(
+                                            "字幕行号" to "${idx + 1}/${lines.size}",
+                                            "配音引擎" to (tts?.name ?: "未知引擎"),
+                                            "当前合成语速" to effectiveSynthesisSpeed.toString(),
+                                            "尝试语速" to retrySpeed.toString(),
+                                            "当前音频时长 ms" to currentDurationMs.toLong().toString(),
+                                            "候选音频时长 ms" to candidateDurationMs.toLong().toString(),
+                                            "候选音频有效" to candidateIsValid.toString(),
+                                            "处理方式" to "不替换已验证的 PCM，后续由时间轴兜底处理",
+                                        ),
+                                    )
+                                }
+                                break
+                            }
+
+                            readyAudio = candidate
+                            effectiveSynthesisSpeed = retrySpeed
+                            adaptiveRetryCount++
+                            android.util.Log.i(
+                                "DubbingEngine",
+                                "Adaptive synthesis accepted: line=${idx + 1}/${lines.size}, " +
+                                    "pass=$adaptiveRetryCount, rate=$effectiveSynthesisSpeed, " +
+                                    "durationMs=${candidateDurationMs.toLong()}",
+                            )
+                            // If the real duration fits the maximum timeline multiplier, another
+                            // synthesis pass would add cost without improving the deadline guarantee.
+                            if (candidateDurationMs <= cueDurationMs.toDouble() * DubbingTiming.MAX_SYNC_RATE) {
+                                break
+                            }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (e: Exception) {
                             android.util.Log.w(
                                 "DubbingEngine",
-                                "Adaptive speech-rate retry failed for line ${idx + 1}; keeping first synthesis",
+                                "Adaptive speech-rate retry failed for line ${idx + 1}; keeping last valid synthesis",
                                 e,
                             )
                             runCatching {
                                 io.translatetube.local.util.AppLogStore.warning(
-                                    appContext, "DubbingEngine",
-                                    "第 ${idx + 1}/${lines.size} 句自适应语速重试失败，已保留首次合成音频",
+                                    appContext,
+                                    "DubbingEngine",
+                                    "第 ${idx + 1}/${lines.size} 句自适应语速重试失败，已保留此前有效音频",
                                     e,
                                     diagnosticContext = mapOf(
                                         "字幕行号" to "${idx + 1}/${lines.size}",
                                         "配音引擎" to (tts?.name ?: "未知引擎"),
-                                        "原始语速" to synthesisSpeed.toString(),
-                                        "重试语速" to fasterSpeed.toString(),
-                                        "字幕字符数" to text.length.toString(),
-                                        "处理策略" to "保留首次合成结果，不中断整段配音",
+                                        "当前合成语速" to effectiveSynthesisSpeed.toString(),
+                                        "尝试语速" to retrySpeed.toString(),
+                                        "已接受的自适应次数" to adaptiveRetryCount.toString(),
+                                        "处理策略" to "保留此前有效音频，由时间轴兜底处理",
                                     ),
                                 )
                             }
-                            firstAudio
+                            break
                         }
-                    } else firstAudio
+                    }
                     val synthesisElapsedMs = (System.nanoTime() - synthesisStartedAtNanos)
                         .coerceAtLeast(0L) / 1_000_000L
                     val outputAudioDurationMs = readyAudio.samples.size.toDouble() * 1_000.0 /
@@ -2454,12 +2496,37 @@ class DubbingEngine(
                         }
                     }
                     if (plan.overrunsWindow) {
+                        val remainingSamples = (samples.size - plan.startSample).coerceAtLeast(0)
+                        val remainingAudioMs = remainingSamples.toDouble() * 1_000.0 / sr
+                        val remainingWindowMs = (line.endMs - position).coerceAtLeast(0L)
                         android.util.Log.w(
                             "DubbingEngine",
                             "配音剩余音频无法装入当前时间槽，保留完整尾段并请求视频同步等待：line=${idx + 1}, " +
-                                "sourceSamples=${samples.size}, remainingSamples=${samples.size - plan.startSample}, " +
-                                "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, windowMs=${line.endMs - line.startMs}",
+                                "sourceSamples=${samples.size}, remainingSamples=$remainingSamples, " +
+                                "remainingAudioMs=${remainingAudioMs.toLong()}, remainingWindowMs=$remainingWindowMs, " +
+                                "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, " +
+                                "windowMs=${line.endMs - line.startMs}, adaptivePasses=$adaptiveRetryCount",
                         )
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                appContext,
+                                "DubbingTimeline",
+                                "第 ${idx + 1} 句配音经过自适应合成后仍超过时间槽，暂时暂停视频等待本句完成",
+                                diagnosticContext = mapOf(
+                                    "字幕行号" to "${idx + 1}/${lines.size}",
+                                    "配音引擎" to (tts?.name ?: "未知引擎"),
+                                    "字幕开始时间 ms" to line.startMs.toString(),
+                                    "字幕截止时间 ms" to line.endMs.toString(),
+                                    "当前视频位置 ms" to position.toString(),
+                                    "剩余音频时长 ms" to remainingAudioMs.toLong().toString(),
+                                    "剩余时间槽 ms" to remainingWindowMs.toString(),
+                                    "同步倍率" to plan.syncRate.toString(),
+                                    "视频播放速度" to currentSpeed.toString(),
+                                    "自适应合成次数" to adaptiveRetryCount.toString(),
+                                    "实际策略" to "保留完整语音，暂停视频等待句子结束，避免下一句漏配音",
+                                ),
+                            )
+                        }
                     } else if (plan.truncated) {
                         android.util.Log.w(
                             "DubbingEngine",
