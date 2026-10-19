@@ -1211,8 +1211,7 @@ private fun VideoParsingPage(
                     modifier = Modifier
                         .size(42.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White)
-                        .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(14.dp)),
+                        .background(Color.White),
                 ) {
                     Icon(
                         Icons.Filled.MoreVert,
