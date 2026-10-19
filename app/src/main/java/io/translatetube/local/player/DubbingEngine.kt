@@ -545,10 +545,11 @@ class DubbingEngine(
                 }
                 // 块次行：随块首行一起合成（首行完成时由 markCuePrepared 同步补标记），
                 // 不在合成队列里单独处理；首行尚未合成/失败时先保持未就绪。
-                chunkRedirect[idx]?.let { firstIndex ->
+                val redirectFirstIndex = chunkRedirect[idx]
+                if (redirectFirstIndex != null) {
                     when {
-                        readiness.isPrepared(firstIndex) -> markCuePrepared(idx, hasAudio = true)
-                        readiness.isSilent(firstIndex) -> markCuePrepared(idx, hasAudio = false)
+                        readiness.isPrepared(redirectFirstIndex) -> markCuePrepared(idx, hasAudio = true)
+                        readiness.isSilent(redirectFirstIndex) -> markCuePrepared(idx, hasAudio = false)
                         else -> Unit // 等首行完成时统一补标
                     }
                     bumpPrepared()

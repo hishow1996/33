@@ -76,9 +76,11 @@ internal object Wsola {
         if (ratio < 1f && outPos < outLen) {
             val tail = inLen - WINDOW
             if (tail > 0) {
-                for (i in 0 until WINDOW && outPos + i < outLen) {
+                var i = 0
+                while (i < WINDOW && outPos + i < outLen) {
                     val w = fade[i]
                     out[outPos + i] = out[outPos + i] * (1f - w) + samples[tail + i] * w
+                    i++
                 }
             }
         }

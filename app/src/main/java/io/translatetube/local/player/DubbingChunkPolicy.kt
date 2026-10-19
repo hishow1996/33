@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.subs.SubLine
+
 /**
  * 配音分块策略（移植自 VideoLingo 的 analyze_subtitle_timing_and_speed / calc_if_too_fast /
  * gen_dub_chunks 思想，适配实时播放）：
@@ -87,7 +89,7 @@ internal object DubbingChunkPolicy {
                 val withinInputLimit =
                     mergedText.codePointCount(0, mergedText.length) <=
                         io.translatetube.local.tts.TtsTextPolicy.MAX_CODE_POINTS
-                if (withinInputLimit && mergedEst <= mergedWindow * MAX_SPEEDUP) {
+                if (withinInputLimit && mergedEst <= mergedWindow * MAX_SPEEDUP.toDouble()) {
                     // 合并后放得下（含语速预算）：一口气合成两行
                     chunks += Chunk(i, listOf(i, i + 1), mergedText, line.startMs, mergedWindowEnd)
                     i += 2
