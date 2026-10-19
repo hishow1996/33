@@ -31,15 +31,20 @@ internal object DubbingSyncHoldPolicy {
         estimatedSpeechMs: Long,
         cueDurationMs: Long,
         maxSyncRate: Float = DubbingTiming.MAX_SYNC_RATE,
+        targetRate: Float = 1.0f,
     ): Float {
         if (estimatedSpeechMs <= 0L || cueDurationMs <= 0L) return 1.0f
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
             ?.coerceAtMost(DubbingTiming.MAX_CATCH_UP_SYNC_RATE)
             ?: DubbingTiming.MAX_SYNC_RATE
-        return (estimatedSpeechMs.toDouble() / cueDurationMs.toDouble())
+        val requiredRate = (estimatedSpeechMs.toDouble() / cueDurationMs.toDouble())
             .coerceIn(1.0, safeMaxRate.toDouble())
-            .toFloat()
+        val safeTargetRate = targetRate.takeIf { it.isFinite() && it > 0.0f }
+            ?.coerceIn(1.0f, safeMaxRate)
+            ?.toDouble()
+            ?: 1.0
+        return maxOf(requiredRate, safeTargetRate).coerceIn(1.0, safeMaxRate.toDouble()).toFloat()
     }
 
     /** Speech playback rate always follows both synchronization rate and the video's chosen speed. */
