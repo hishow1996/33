@@ -47,17 +47,17 @@ import java.util.Date
 
 @Composable
 fun AppLogsScreen(onBack: () -> Unit) {
-    // Keep the log tools warm and neutral instead of inheriting the app's blue accent.
+    // Match the app-wide blue-and-white theme on the log screen.
     val logsColorScheme = MaterialTheme.colorScheme.copy(
-        primary = Color(0xFFD97736),
+        primary = BrandBright,
         onPrimary = Color.White,
-        primaryContainer = Color(0xFFFFE8D6),
-        onPrimaryContainer = Color(0xFF783B16),
-        secondary = Color(0xFF73856A),
+        primaryContainer = SurfaceHigh,
+        onPrimaryContainer = OnBg,
+        secondary = Brand,
         onSecondary = Color.White,
-        secondaryContainer = Color(0xFFEDF3E8),
-        onSecondaryContainer = Color(0xFF35462F),
-        tertiary = Color(0xFFAD7045),
+        secondaryContainer = SelectedBlue,
+        onSecondaryContainer = OnBg,
+        tertiary = BrandBright,
         onTertiary = Color.White,
     )
     MaterialTheme(colorScheme = logsColorScheme) {
@@ -246,7 +246,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 }
             },
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color(0xFFD97736),
+                focusedBorderColor = BrandBright,
                 unfocusedBorderColor = Color(0xFFE0E3E7),
                 focusedContainerColor = Color(0xFFFAFAFB),
                 unfocusedContainerColor = Color(0xFFFAFAFB),
@@ -280,7 +280,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                     onClick = { filter = name },
                     label = { Text("$name $count", maxLines = 1) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = Color(0xFFD97736),
+                        selectedContainerColor = BrandBright,
                         selectedLabelColor = Color.White,
                         selectedLeadingIconColor = Color.White,
                         containerColor = Color(0xFFF3F4F6),
@@ -290,7 +290,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         enabled = true,
                         selected = filter == name,
                         borderColor = Color(0xFFE7E9EC),
-                        selectedBorderColor = Color(0xFFD97736),
+                        selectedBorderColor = BrandBright,
                     ),
                 )
             }
@@ -571,7 +571,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             selectedRecord = null
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFD97736),
+                            containerColor = BrandBright,
                             contentColor = Color.White,
                         ),
                         shape = RoundedCornerShape(14.dp),
