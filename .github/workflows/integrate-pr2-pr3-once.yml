@@ -57,13 +57,35 @@ jobs:
             git commit -m "$message (structural conflicts kept from current integration)"
           }
 
-          merge_branch "origin/upgrade/dubbing-pipeline-oct-2026" "Merge PR #2: dubbing pipeline, cache correctness, playback reliability"
-          merge_branch "origin/feature/robust-asr-audio-segment-cache" "Merge PR #3: webpage audio extraction and synchronized Chinese subtitles"
+          PR2_REF="origin/upgrade/dubbing-pipeline-oct-2026"
+          PR3_REF="origin/feature/robust-asr-audio-segment-cache"
+          PR2_BASE="$(git merge-base origin/main "$PR2_REF")"
+          PR3_BASE="$(git merge-base origin/main "$PR3_REF")"
+          PR2_PATHS="$(git diff --name-only --no-renames "$PR2_BASE" "$PR2_REF" -- app)"
+          PR3_PATHS="$(git diff --name-only --no-renames "$PR3_BASE" "$PR3_REF" -- app)"
 
-          # These two long files have incompatible structural edits across the stale branches.
-          # Resolve them to the corresponding feature-head versions rather than keeping broken mixed tails.
-          git checkout origin/upgrade/dubbing-pipeline-oct-2026 -- app/src/main/java/io/translatetube/local/player/DubbingEngine.kt
-          git checkout origin/feature/robust-asr-audio-segment-cache -- app/src/main/java/io/translatetube/local/ui/screens/PlayerScreen.kt
+          merge_branch "$PR2_REF" "Merge PR #2: dubbing pipeline, cache correctness, playback reliability"
+          merge_branch "$PR3_REF" "Merge PR #3: webpage audio extraction and synchronized Chinese subtitles"
+
+          # Feature branches are stale relative to main and shared-file hunks are structurally incompatible.
+          # Restore whole versions of changed app files in PR order to keep each feature's APIs consistent.
+          while IFS= read -r path; do
+            [[ -n "$path" ]] || continue
+            if git cat-file -e "$PR2_REF:$path" 2>/dev/null; then
+              git checkout "$PR2_REF" -- "$path"
+            else
+              git rm -f --ignore-unmatch -- "$path"
+            fi
+          done <<< "$PR2_PATHS"
+
+          while IFS= read -r path; do
+            [[ -n "$path" ]] || continue
+            if git cat-file -e "$PR3_REF:$path" 2>/dev/null; then
+              git checkout "$PR3_REF" -- "$path"
+            else
+              git rm -f --ignore-unmatch -- "$path"
+            fi
+          done <<< "$PR3_PATHS"
 
           printf '\n# Trigger APK build after long-sentence auto-pause synchronization merged PR #2 and PR #3.\n' >> .github/workflows/build-apk.yml
           rm .github/workflows/integrate-pr2-pr3-once.yml
