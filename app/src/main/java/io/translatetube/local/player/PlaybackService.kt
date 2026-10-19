@@ -3245,8 +3245,8 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                 }
             }
             // Both generated and immediate modes prepare a short startup buffer, then continue
-            // synthesizing while playback runs. If synthesis cannot keep up, unready cues retain
-            // source audio rather than delaying video until every row has been synthesized.
+            // synthesizing while playback runs. If synthesis cannot keep up, apply the existing
+            // source-audio toggle to unready cues rather than delaying video until every row is ready.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 val immediateMode = startupDubbing.usesImmediateTimelinePlayback
@@ -3315,7 +3315,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         !firstSpeechReady -> {
                             android.util.Log.w(
                                 "PlaybackService",
-                                "TTS startup timed out before the first cue; video starts with source audio",
+                                "TTS startup timed out before the first cue; video playback continues without waiting for TTS",
                             )
                             updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "首句配音仍在准备，先开始播放；配音就绪后继续生成")
@@ -3327,7 +3327,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                                 "TTS synthesis is slower than real time; bounded startup buffer reached",
                             )
                             updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "配音生成较慢，视频先继续播放；未就绪片段暂时保留原声")
+                                it.copy(progress = "配音生成较慢，视频先继续播放；未就绪片段按原声开关设置处理")
                             }
                         }
                         bufferIncomplete -> {
@@ -4912,7 +4912,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     updateUiForCurrentDubbingEngine(d, st.key) { state ->
                         if (state.dubbingStatus.startsWith("配音生成偏慢")) state
                         else state.copy(
-                            dubbingStatus = "配音生成偏慢，正在优先准备后续字幕；未就绪片段保留原声",
+                            dubbingStatus = "配音生成偏慢，正在优先准备后续字幕；未就绪片段按原声开关设置处理",
                         )
                     }
                 }

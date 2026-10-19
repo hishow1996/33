@@ -56,8 +56,8 @@ internal object DubbingStartupBufferPolicy {
         }
 
         // Even when synthesis is severely slower than playback, never require the whole video
-        // to finish synthesizing before playback starts. Keep a small first-cue buffer and let
-        // not-yet-ready cues fall back to source audio while background synthesis continues.
+        // to finish synthesizing before playback starts. Keep a small first-cue buffer; the
+        // playback service applies the user's existing source-audio setting while synthesis continues.
         // Keep enough lead for upcoming cues, but cap the startup wait. Playback continues with
         // source audio for any cue that is not ready when this bounded wait expires.
         val tier = when {
