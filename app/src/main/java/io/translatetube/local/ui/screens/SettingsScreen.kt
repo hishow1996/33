@@ -209,10 +209,15 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
 
 
 
+        // Show the engine the user actually selected. Do not route online providers
+        // through the old fallback label, which made Web/Edge TTS look like Kokoro.
         val ttsLabel = when (ttsEngine) {
             "system" -> "系统 TTS"
             "piper" -> "Piper 多语种"
-            else -> "Kokoro 神经网络"
+            "web" -> "在线语音"
+            "edge" -> "微软 Edge TTS"
+            "kokoro" -> "Kokoro 神经网络"
+            else -> "未知配音引擎"
         }
         val asrLabel = when (asrEngine) {
             "elevenlabs" -> "ElevenLabs"
