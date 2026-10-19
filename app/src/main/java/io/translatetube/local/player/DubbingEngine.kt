@@ -638,7 +638,9 @@ class DubbingEngine(
                                 text, retrySpeed, line.speakerId, ::checkSynthesisActive,
                             )
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            val candidateIsValid = DubbingPcmValidation.isValidAudio(
+                            val candidateWithinSampleLimit =
+                                candidate.samples.size <= DubbingPcmValidation.MAX_SAMPLE_COUNT
+                            val candidateIsValid = candidateWithinSampleLimit && DubbingPcmValidation.isValidAudio(
                                 candidate.sampleRate,
                                 candidate.samples,
                                 checkActive = {
@@ -667,6 +669,7 @@ class DubbingEngine(
                                             "当前音频时长 ms" to currentDurationMs.toLong().toString(),
                                             "候选音频时长 ms" to candidateDurationMs.toLong().toString(),
                                             "候选音频有效" to candidateIsValid.toString(),
+                                            "候选音频在样本上限内" to candidateWithinSampleLimit.toString(),
                                             "处理方式" to "不替换已验证的 PCM，后续由时间轴兜底处理",
                                         ),
                                     )
@@ -2348,6 +2351,27 @@ class DubbingEngine(
                         "estimatedAtEffectiveRateMs=$estimatedAtEffectiveRateMs, windowMs=$cueDurationMs, " +
                         "maxRate=${DubbingTiming.MAX_SYNC_RATE}",
                 )
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        appContext,
+                        "DubbingTimeline",
+                        "系统 TTS 第 ${idx + 1} 句预计无法在字幕时间槽内读完，将等待本句结束后继续视频",
+                        diagnosticContext = mapOf(
+                            "字幕行号" to "${idx + 1}/${lines.size}",
+                            "配音引擎" to "系统TTS（即时模式）",
+                            "字幕开始时间 ms" to line.startMs.toString(),
+                            "字幕截止时间 ms" to line.endMs.toString(),
+                            "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                            "原始估算朗读时长 ms" to estimatedSpeechMs.toString(),
+                            "应用当前语速后估算 ms" to estimatedAtEffectiveRateMs.toString(),
+                            "可用时间槽 ms" to cueDurationMs.toString(),
+                            "同步倍率" to timingRate.toString(),
+                            "用户语速" to baseSpeechRate.toString(),
+                            "视频播放速度" to timelineSpeed.toString(),
+                            "处理方式" to "维持单句完整，不让下一句抢播；必要时暂时暂停视频",
+                        ),
+                    )
+                }
             }
             val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalizeTimeline(
                 baseSpeechRate * timingRate * timelineSpeed,
