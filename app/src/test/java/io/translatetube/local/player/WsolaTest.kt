@@ -27,6 +27,10 @@ class WsolaTest {
                     "output should retain audio for input=$length ratio=$ratio",
                     output.any { it != 0f },
                 )
+                assertTrue(
+                    "tail should not be silently zero-padded for input=$length ratio=$ratio",
+                    output.takeLast(minOf(128, output.size)).any { kotlin.math.abs(it) > 0.000001f },
+                )
                 assertFalse(
                     "output must not contain NaN for input=$length ratio=$ratio",
                     output.any { it.isNaN() },
