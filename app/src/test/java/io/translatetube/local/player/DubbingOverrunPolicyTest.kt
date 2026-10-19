@@ -12,7 +12,7 @@ class DubbingOverrunPolicyTest {
                 currentLineIndex = 2,
                 nextLineIndex = 3,
                 liveUtteranceActive = true,
-                pcmOverrunActive = false,
+                pcmOutputActive = false,
                 currentAudioFinished = false,
             )
         )
@@ -25,7 +25,7 @@ class DubbingOverrunPolicyTest {
                 currentLineIndex = 4,
                 nextLineIndex = 5,
                 liveUtteranceActive = false,
-                pcmOverrunActive = true,
+                pcmOutputActive = true,
                 currentAudioFinished = false,
             )
         )
@@ -34,7 +34,7 @@ class DubbingOverrunPolicyTest {
                 currentLineIndex = 4,
                 nextLineIndex = 5,
                 liveUtteranceActive = false,
-                pcmOverrunActive = true,
+                pcmOutputActive = true,
                 currentAudioFinished = true,
             )
         )
@@ -47,7 +47,7 @@ class DubbingOverrunPolicyTest {
                 currentLineIndex = -1,
                 nextLineIndex = 2,
                 liveUtteranceActive = true,
-                pcmOverrunActive = true,
+                pcmOutputActive = true,
                 currentAudioFinished = false,
             )
         )
@@ -56,8 +56,30 @@ class DubbingOverrunPolicyTest {
                 currentLineIndex = 2,
                 nextLineIndex = 2,
                 liveUtteranceActive = true,
-                pcmOverrunActive = true,
+                pcmOutputActive = true,
                 currentAudioFinished = false,
+            )
+        )
+    }
+
+    @Test
+    fun activeNonOverrunPcmCueStillFinishesBeforeNextCueStarts() {
+        assertTrue(
+            DubbingOverrunPolicy.shouldHold(
+                currentLineIndex = 5,
+                nextLineIndex = 6,
+                liveUtteranceActive = false,
+                pcmOutputActive = true,
+                currentAudioFinished = false,
+            )
+        )
+        assertFalse(
+            DubbingOverrunPolicy.shouldHold(
+                currentLineIndex = 5,
+                nextLineIndex = 6,
+                liveUtteranceActive = false,
+                pcmOutputActive = false,
+                currentAudioFinished = true,
             )
         )
     }
@@ -69,7 +91,7 @@ class DubbingOverrunPolicyTest {
                 currentLineIndex = 1,
                 nextLineIndex = 2,
                 liveUtteranceActive = false,
-                pcmOverrunActive = false,
+                pcmOutputActive = false,
                 currentAudioFinished = false,
             )
         )

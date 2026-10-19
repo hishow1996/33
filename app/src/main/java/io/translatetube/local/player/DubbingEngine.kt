@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -118,7 +117,7 @@ class DubbingEngine(
     private val audioCloseSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val readiness = DubbingReadiness()
     private val readinessProgress = DubbingReadinessProgress(readiness)
-    private val pending = LinkedBlockingDeque<Int>()
+    private val pending = DubbingWorkQueue()
     /** Cue currently inside the single synthesis worker, protected by the pending-queue lock. */
     @Volatile private var activeSynthesisIndex = -1
     /** Cache misses observed while the same cue is synthesizing are reconsidered when it exits. */
@@ -1932,30 +1931,39 @@ class DubbingEngine(
                 activeTimelineUtteranceId != null
 
         var audioFinished = false
-        if (activeCueOverrunsWindow) {
-            val activeTrack = track
-            if (activeTrack != null) {
-                val finalChunkSamples = activeTrackFinalChunkSampleCount
-                val playedSamples = activeTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
-                // A stopped intermediate chunk may be about to transition to another chunk.
-                // Only the final chunk's end, or an explicit stop after playback began, completes a cue.
-                audioFinished = playbackStartedLine == currentIndex && finalChunkSamples > 0 &&
-                    (activeTrack.playState == AudioTrack.PLAYSTATE_STOPPED ||
-                        playedSamples >= finalChunkSamples.toLong())
+        var pcmOutputActive = false
+        val activeTrack = track
+        if (playbackStartedLine == currentIndex && activeTrack != null) {
+            val finalChunkSamples = activeTrackFinalChunkSampleCount
+            val playedSamples = activeTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
+            val trackStopped = activeTrack.playState == AudioTrack.PLAYSTATE_STOPPED
+
+            if (finalChunkSamples > 0) {
+                // This is the final chunk: wait for its real playback head/stop signal before
+                // accepting the next cue, even when the cue was not classified as an overrun.
+                audioFinished = trackStopped || playedSamples >= finalChunkSamples.toLong()
+                pcmOutputActive = !audioFinished
+            } else {
+                // A non-final static chunk can briefly stop while the next chunk is prepared.
+                // Treat that transition as part of this sentence instead of starting the next one
+                // and cutting the current voice at a subtitle boundary.
+                pcmOutputActive = activeCueOverrunsWindow ||
+                    activeTrack.playState == AudioTrack.PLAYSTATE_PLAYING
             }
-            if (audioFinished) {
-                synchronized(playbackControlLock) {
-                    val latestTrack = track
-                    val latestFinalChunkSamples = activeTrackFinalChunkSampleCount
-                    val finalChunkReached = playbackStartedLine == currentIndex && latestTrack != null &&
-                        latestFinalChunkSamples > 0 &&
-                        (latestTrack.playbackHeadPosition.toLong() and 0xffff_ffffL) >= latestFinalChunkSamples.toLong()
-                    val finalChunkStopped = playbackStartedLine == currentIndex && latestTrack != null &&
-                        latestFinalChunkSamples > 0 && latestTrack.playState == AudioTrack.PLAYSTATE_STOPPED
-                    if (track == null || finalChunkReached || finalChunkStopped) {
-                        activeCueOverrunsWindow = false
-                        activeTrackFinalChunkSampleCount = -1
-                    }
+        }
+
+        if (activeCueOverrunsWindow && audioFinished) {
+            synchronized(playbackControlLock) {
+                val latestTrack = track
+                val latestFinalChunkSamples = activeTrackFinalChunkSampleCount
+                val finalChunkReached = playbackStartedLine == currentIndex && latestTrack != null &&
+                    latestFinalChunkSamples > 0 &&
+                    (latestTrack.playbackHeadPosition.toLong() and 0xffff_ffffL) >= latestFinalChunkSamples.toLong()
+                val finalChunkStopped = playbackStartedLine == currentIndex && latestTrack != null &&
+                    latestFinalChunkSamples > 0 && latestTrack.playState == AudioTrack.PLAYSTATE_STOPPED
+                if (track == null || finalChunkReached || finalChunkStopped) {
+                    activeCueOverrunsWindow = false
+                    activeTrackFinalChunkSampleCount = -1
                 }
             }
         }
@@ -1964,7 +1972,7 @@ class DubbingEngine(
             currentLineIndex = currentIndex,
             nextLineIndex = nextLineIndex,
             liveUtteranceActive = directTtsActive,
-            pcmOverrunActive = activeCueOverrunsWindow,
+            pcmOutputActive = pcmOutputActive,
             currentAudioFinished = audioFinished,
         )
     }
