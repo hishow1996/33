@@ -2293,7 +2293,6 @@ class DubbingEngine(
                     val playbackRate = DubbingSyncHoldPolicy.playbackRate(
                         syncRate = plan.syncRate,
                         playerSpeed = activePlayerSpeed,
-            
                     )
                     runCatching {
                         newTrack.setPlaybackParams(
@@ -2595,7 +2594,6 @@ class DubbingEngine(
         val rate = DubbingSyncHoldPolicy.playbackRate(
             syncRate = activeSyncRate,
             playerSpeed = normalized,
-
         )
         if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
         activePlaybackRate = rate

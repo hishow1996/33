@@ -3244,10 +3244,9 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     }
                 }
             }
-            // Normal generated mode prepares a buffer, then continues synthesizing while playing.
-            // If repeated measurements show synthesis taking >=2x the timeline gap to the next
-            // speech cue, stay on this page until all rows are prepared rather than start repeated gaps.
-            // Both modes use a bounded startup wait; slow TTS must not delay the whole video.
+            // Both generated and immediate modes prepare a short startup buffer, then continue
+            // synthesizing while playback runs. If synthesis cannot keep up, unready cues retain
+            // source audio rather than delaying video until every row has been synthesized.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 val immediateMode = startupDubbing.usesImmediateTimelinePlayback
