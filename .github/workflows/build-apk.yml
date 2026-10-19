@@ -141,3 +141,5 @@ jobs:
 # Re-trigger latest main source APK build on 2026-10-19; workflow-only, no application source changes.
 
 # Re-trigger latest main after correcting floating-point timing boundaries in dubbing tests (2026-10-19).
+
+# Explicit user-requested APK build trigger after processing-page title/header refinement (2026-10-19).
