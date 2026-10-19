@@ -2376,6 +2376,7 @@ class DubbingEngine(
                             "字幕截止时间 ms" to line.endMs.toString(),
                             "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                             "原始估算朗读时长 ms" to estimatedSpeechMs.toString(),
+                            "每字符时长估算 ms" to estimatedMsPerCodePoint.toString(),
                             "应用当前语速后估算 ms" to estimatedAtEffectiveRateMs.toString(),
                             "可用时间槽 ms" to cueDurationMs.toString(),
                             "同步倍率" to timingRate.toString(),
@@ -2460,7 +2461,7 @@ class DubbingEngine(
                         directTtsMsPerCodePoint = newEstimate
                         android.util.Log.d(
                             "DubbingEngine",
-                            "System TTS timing calibration: line=\${idx + 1}/\${lines.size} " +
+                            "System TTS timing calibration: line=${idx + 1}/${lines.size} " +
                                 "chars=$spokenCodePointCount elapsedMs=$elapsedMs appliedRate=$speechRate " +
                                 "msPerCodePoint=$oldEstimate->$newEstimate",
                         )
