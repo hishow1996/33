@@ -188,6 +188,32 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun catchUpCueCanUseSlightlyHigherRateWithoutChangingNormalCueLimit() {
+        val normal = DubbingTiming.createPlan(
+            sampleCount = 2_100,
+            sampleRate = 1_000,
+            lineStartMs = 0L,
+            lineEndMs = 1_000L,
+            positionMs = 0L,
+            playerSpeed = 1.0f,
+        )
+        val catchUp = DubbingTiming.createCompleteCuePlan(
+            sampleCount = 2_100,
+            sampleRate = 1_000,
+            cueDurationMs = 1_000L,
+            playerSpeed = 1.0f,
+            maxSyncRate = DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
+        )
+
+        assertEquals(1.8f, normal.syncRate, 0.001f)
+        assertTrue(normal.overrunsWindow)
+        assertEquals(2.1f, catchUp.syncRate, 0.001f)
+        assertFalse(catchUp.overrunsWindow)
+        assertFalse(catchUp.truncated)
+        assertEquals(2_100, catchUp.sampleCount)
+    }
+
+    @Test
     fun endedCueDoesNotRestartSpeech() {
         val plan = DubbingTiming.createPlan(
             sampleCount = 2_000, sampleRate = 1_000,
