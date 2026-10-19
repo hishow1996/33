@@ -27,6 +27,16 @@ internal object DubbingSynthesisPolicy {
         return minOf(maxSamples, DubbingPcmValidation.MAX_SAMPLE_COUNT)
     }
 
+    /**
+     * A regenerated cue is considered ready for its timeline only when it leaves a little room
+     * for AudioTrack startup jitter and natural phrasing. Do not stop adaptive synthesis merely
+     * because a long cue fits under a broad emergency playback-rate ceiling.
+     */
+    fun isWithinTimelineTarget(audioDurationMs: Double, cueDurationMs: Long): Boolean {
+        if (!audioDurationMs.isFinite() || audioDurationMs < 0.0 || cueDurationMs <= 0L) return false
+        return audioDurationMs <= cueDurationMs.toDouble() * TARGET_CUE_FILL
+    }
+
     fun recommendedSpeed(
         baseSpeed: Float,
         sampleCount: Int,
