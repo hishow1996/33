@@ -338,6 +338,21 @@ class DubbingEngine(
                             markCuePrepared(i, hasAudio = hasSpeech)
                             if (hasSpeech) pending.offerLast(i)
                         }
+                        // The user can select original-only mode before this IO pass finishes.
+                        // Apply that already-published playhead priority to the freshly built queue.
+                        synchronized(pending) {
+                            val target = priorityTarget
+                            if (target in this@DubbingEngine.lines.indices) {
+                                val queued = mutableListOf<Int>()
+                                pending.drainTo(queued)
+                                DubbingQueueOrder.prioritize(
+                                    queued,
+                                    target,
+                                    this@DubbingEngine.lines.size,
+                                    lookAhead = priorityLookAhead,
+                                ).forEach { pending.offerLast(it) }
+                            }
+                        }
                         bumpPrepared()
                         if (backgroundSynthesisRequested) ensureBackgroundSynthesisEngine()
                         return@launch
