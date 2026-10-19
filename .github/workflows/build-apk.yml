@@ -117,3 +117,5 @@ jobs:
 # User-requested APK rebuild after adding Microsoft Edge TTS.
 
 # Trigger Edge TTS integration build using the workflow's existing approved trigger.
+
+# Stop the in-progress APK build at the user's request; do not start a replacement build.
