@@ -1551,13 +1551,13 @@ private fun VideoParsingPage(
                 .clip(RoundedCornerShape(22.dp))
                 .background(Color.White)
                 .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(22.dp))
-                .padding(horizontal = 13.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 17.dp),
         ) {
             Column {
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(11.dp),
                 ) {
                     Box(
                         Modifier.size(38.dp).clip(RoundedCornerShape(13.dp)).background(Color(0xFFEDF3FF)),
@@ -1609,7 +1609,7 @@ private fun VideoParsingPage(
                             .border(
                                 width = if (active || failed) 1.dp else 0.dp,
                                 color = if (active) Color(0xFFE4EDFF) else Color(0xFFFFD6DB),
-                                shape = RoundedCornerShape(15.dp),
+                                shape = RoundedCornerShape(17.dp),
                             )
                             .padding(horizontal = 10.dp, vertical = 12.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
