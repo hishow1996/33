@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 行级时间轴配音引擎：
@@ -73,6 +74,8 @@ class DubbingEngine(
     val synthesisRealtimeFactor: Float get() = synthesisRealtimeFactorValue
     @Volatile private var synthesisRealtimeSampleCountValue: Int = 0
     val synthesisRealtimeSampleCount: Int get() = synthesisRealtimeSampleCountValue
+    /** Adaptive estimate of actual System TTS duration, normalized to its approximate 1x rate. */
+    @Volatile private var directTtsMsPerCodePoint: Double = 220.0
     /** Scheduler-aware lag: synthesis wall time divided by the interval before the next speech cue. */
     @Volatile private var synthesisTimelineLagFactorValue: Float = Float.NaN
     val synthesisTimelineLagFactor: Float get() = synthesisTimelineLagFactorValue
@@ -2327,7 +2330,10 @@ class DubbingEngine(
                 return
             }
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
-            val estimatedSpeechMs = spokenText.codePointCount(0, spokenText.length) * 220L
+            val spokenCodePointCount = spokenText.codePointCount(0, spokenText.length).coerceAtLeast(1)
+            val estimatedMsPerCodePoint = directTtsMsPerCodePoint
+            val estimatedSpeechMs = (spokenCodePointCount * estimatedMsPerCodePoint)
+                .toLong().coerceAtLeast(1L)
             val baseSpeechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalize(speed)
             val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
             val estimatedAtEffectiveRateMs =
@@ -2384,6 +2390,7 @@ class DubbingEngine(
                 baseSpeechRate * timingRate * timelineSpeed,
             )
             val utteranceId = "timeline-${System.nanoTime()}-$idx-$generation"
+            val directTtsStartedAtNanos = AtomicLong(0L)
             val ownsCue = synchronized(playbackControlLock) {
                 if (
                     !released &&
@@ -2410,7 +2417,10 @@ class DubbingEngine(
                             playbackGeneration.get() == generation &&
                             _currentLine.value == idx &&
                             isActivePlaybackAllowedLocked()
-                        if (allowed) playbackStartedLine = idx
+                        if (allowed) {
+                            playbackStartedLine = idx
+                            directTtsStartedAtNanos.set(System.nanoTime())
+                        }
                         allowed
                     }
                     if (stillCurrent) {
@@ -2427,6 +2437,8 @@ class DubbingEngine(
                     }
                 },
                 onCompleted = { error ->
+                    val completedAtNanos = System.nanoTime()
+                    val startedAtNanos = directTtsStartedAtNanos.getAndSet(0L)
                     val stillCurrent = synchronized(playbackControlLock) {
                         if (activeTimelineUtteranceId == utteranceId) {
                             activeTimelineUtteranceId = null
@@ -2435,6 +2447,23 @@ class DubbingEngine(
                         !released &&
                             playbackGeneration.get() == generation &&
                             _currentLine.value == idx
+                    }
+                    if (stillCurrent && error.isNullOrBlank() && startedAtNanos > 0L) {
+                        val elapsedMs = ((completedAtNanos - startedAtNanos).coerceAtLeast(0L) / 1_000_000L)
+                        val oldEstimate = directTtsMsPerCodePoint
+                        val newEstimate = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
+                            currentMsPerCodePoint = oldEstimate,
+                            elapsedMs = elapsedMs,
+                            codePointCount = spokenCodePointCount,
+                            appliedSpeechRate = speechRate,
+                        )
+                        directTtsMsPerCodePoint = newEstimate
+                        android.util.Log.d(
+                            "DubbingEngine",
+                            "System TTS timing calibration: line=\${idx + 1}/\${lines.size} " +
+                                "chars=$spokenCodePointCount elapsedMs=$elapsedMs appliedRate=$speechRate " +
+                                "msPerCodePoint=$oldEstimate->$newEstimate",
+                        )
                     }
                     if (!error.isNullOrBlank()) {
                         if (stillCurrent) {
