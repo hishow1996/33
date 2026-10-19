@@ -77,8 +77,9 @@ import kotlinx.coroutines.withContext
 @Composable
 private fun BuiltinWebEngineCard(
     title: String,
-    subtitle: String,
+    logoResId: Int,
     initial: String,
+    imageLoader: ImageLoader,
     selected: Boolean,
     testing: Boolean,
     onSelect: () -> Unit,
@@ -112,11 +113,29 @@ private fun BuiltinWebEngineCard(
                 .background(if (selected) Color(0xFFEAF1FF) else Color(0xFFF7F9FC)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                initial,
-                color = Color(0xFF3569D4),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            SubcomposeAsyncImage(
+                model = logoResId,
+                imageLoader = imageLoader,
+                contentDescription = "$title 官方 Logo",
+                modifier = Modifier.size(42.dp),
+                contentScale = ContentScale.Fit,
+                loading = {
+                    Text(
+                        initial,
+                        color = Color(0xFF3569D4),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    )
+                },
+                error = {
+                    Text(
+                        initial,
+                        color = Color(0xFF3569D4),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    )
+                },
+                success = { SubcomposeAsyncImageContent() },
             )
         }
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
@@ -126,7 +145,6 @@ private fun BuiltinWebEngineCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
             )
-            Text(subtitle, color = SubText, style = MaterialTheme.typography.bodySmall)
         }
         AnimatedVisibility(
             visible = selected,
@@ -361,8 +379,9 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             item(key = "builtin_microsoft") {
                 BuiltinWebEngineCard(
                     title = "微软翻译",
-                    subtitle = "免费在线 · 无需 Key",
+                    logoResId = io.translatetube.local.R.raw.microsoft_translator_logo,
                     initial = "微",
+                    imageLoader = providerLogoImageLoader,
                     selected = activeId == EngineFactory.ID_MICROSOFT,
                     testing = testingFreeModel == "微软翻译",
                     onSelect = { setActive(EngineFactory.ID_MICROSOFT) },
@@ -372,8 +391,9 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             item(key = "builtin_baidu") {
                 BuiltinWebEngineCard(
                     title = "百度翻译",
-                    subtitle = "免费在线 · 无需 Key · 逐句翻译较慢",
+                    logoResId = io.translatetube.local.R.raw.baidu_translate_logo,
                     initial = "百",
+                    imageLoader = providerLogoImageLoader,
                     selected = activeId == EngineFactory.ID_BAIDU,
                     testing = testingFreeModel == "百度翻译",
                     onSelect = { setActive(EngineFactory.ID_BAIDU) },
