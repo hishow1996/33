@@ -6,7 +6,7 @@ internal object TtsSpeakerCapabilityPolicy {
         engineId: String,
         systemChineseVoiceCount: Int = 0,
     ): Boolean = when (engineId) {
-        "kokoro" -> true
+        "kokoro", "edge" -> true
         "system" -> systemChineseVoiceCount > 1
         // The Piper models in the current catalog are single-speaker; PiperTts deliberately
         // fixes the native speaker id to zero.
