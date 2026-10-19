@@ -919,6 +919,8 @@ class DubbingEngine(
                 // Stop this engine's queue, release cached PCM references and tell the service to
                 // retire the native TTS runtime; the source video can continue on its original audio.
                 if (!released) {
+                    val memoryCacheEntryCountBeforeOom = synchronized(mem) { mem.size }
+                    val pendingCountBeforeOom = pending.size
                     synthesisMemoryFailure = true
                     synchronized(mem) { mem.clear() }
                     synchronized(pending) {
@@ -940,8 +942,8 @@ class DubbingEngine(
                                 "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
                                 "字幕总行数" to lines.size.toString(),
                                 "当前合成字幕索引" to activeSynthesisIndex.toString(),
-                                "待合成队列长度" to pending.size.toString(),
-                                "内存缓存清理前条目数" to synchronized(mem) { mem.size }.toString(),
+                                "待合成队列长度" to pendingCountBeforeOom.toString(),
+                                "内存缓存清理前条目数" to memoryCacheEntryCountBeforeOom.toString(),
                                 "失败处理" to "清空待合成队列和 PCM 内存缓存，向播放服务上报恢复原声",
                             ),
                         )
