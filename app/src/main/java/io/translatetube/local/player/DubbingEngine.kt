@@ -60,6 +60,11 @@ class DubbingEngine(
     private val mem = DubbingPcmMemoryCache(maxBytes = pcmMemoryBudgetBytes, maxEntries = 48)
 
     @Volatile private var tts: TtsEngine? = null
+    // PCM generation can use a separate System TTS instance when live playback mode is selected.
+    // This keeps background synthesizeToFile work independent from audible timeline speech.
+    @Volatile private var synthesisTts: TtsEngine? = null
+    @Volatile private var backgroundSynthesisRequested = false
+    @Volatile private var backgroundSynthesisUnavailable = false
     private val ttsInstances = java.util.concurrent.CopyOnWriteArrayList<TtsEngine>()
     private val fallbackRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     /** Return true when the service has scheduled a safe fallback-engine switch for this failed cue. */
@@ -254,6 +259,9 @@ class DubbingEngine(
             synchronized(cacheWriteLock) {
                 if (released) throw IllegalStateException("配音引擎已释放，不能重新绑定字幕")
                 this.tts = tts
+                this.synthesisTts = tts
+                backgroundSynthesisRequested = false
+                backgroundSynthesisUnavailable = false
                 ttsInstances.clear()
                 ttsInstances.add(tts)
                 ttsPublished = true
@@ -314,18 +322,54 @@ class DubbingEngine(
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
 
-                    // In immediate mode, system TTS speaks directly on the subtitle timeline
-                    // without PCM cache files. Generated mode intentionally follows the common
-                    // WAV/PCM path so timing, reusable cache and AudioTrack behavior match Kokoro/Piper.
+                    // Instant System TTS remains the audible playback engine. Prepare a second,
+                    // non-audible System TTS instance for optional background PCM generation when
+                    // the user chooses original-only playback. Separate instances avoid blocking or
+                    // interrupting live utterances when the user switches back to dubbing.
                     if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
+                        val backgroundEngine = try {
+                            io.translatetube.local.tts.SystemTts(
+                                appContext,
+                                io.translatetube.local.tts.SystemTtsPlaybackMode.GENERATED,
+                            )
+                        } catch (error: Exception) {
+                            backgroundSynthesisUnavailable = true
+                            android.util.Log.w(
+                                "DubbingEngine",
+                                "Unable to initialize background System TTS synthesis; instant playback remains available",
+                                error,
+                            )
+                            null
+                        }
+                        if (backgroundEngine != null) {
+                            val published = synchronized(cacheWriteLock) {
+                                if (released || generation != cacheInitGeneration.get()) {
+                                    false
+                                } else {
+                                    synthesisTts = backgroundEngine
+                                    ttsInstances.addIfAbsent(backgroundEngine)
+                                    true
+                                }
+                            }
+                            if (!published) {
+                                runCatching { backgroundEngine.close() }
+                                throw kotlinx.coroutines.CancellationException(
+                                    "配音引擎已释放，取消后台系统 TTS 初始化",
+                                )
+                            }
+                        }
                         for (i in this@DubbingEngine.lines.indices) {
                             checkCacheInitActive()
                             val cue = this@DubbingEngine.lines[i]
                             val hasSpeech = DubbingTimeline.isPlayableCue(cue) &&
                                 !cue.zh.isNullOrBlank()
+                            // Direct playback can speak immediately; pending indexes separately
+                            // describe which cues still need generated PCM for subsequent reuse.
                             markCuePrepared(i, hasAudio = hasSpeech)
+                            if (hasSpeech && backgroundEngine != null) pending.offerLast(i)
                         }
                         bumpPrepared()
+                        if (backgroundSynthesisRequested && backgroundEngine != null) startSynthLoop()
                         return@launch
                     }
 
@@ -466,7 +510,24 @@ class DubbingEngine(
         }
     }
 
+    /**
+     * Keep producing cached Chinese PCM while the user listens to source audio. Generated-mode
+     * engines already run this worker continuously; this method additionally enables the optional
+     * PCM warm-up path for instant System TTS without playing any Chinese audio.
+     */
+    fun prepareForBackgroundPlayback(index: Int = -1, lookAhead: Int = 8) {
+        if (released || synthesisMemoryFailure) return
+        backgroundSynthesisRequested = true
+        if (index in lines.indices) prioritizeAround(index, lookAhead)
+        startSynthLoop()
+    }
+
     private fun startSynthLoop() {
+        // Instant System TTS uses its own background generator and only starts that generator after
+        // source-only mode asks for it. Generated-mode engines keep their existing eager pipeline.
+        if (usesImmediateTimelinePlayback &&
+            (!backgroundSynthesisRequested || backgroundSynthesisUnavailable || synthesisTts == null || synthesisTts === tts)
+        ) return
         // Queue recovery and cache initialization can request startup concurrently. Serialize
         // the check-and-launch pair; otherwise both callers could observe an idle worker and
         // invoke the same native TTS engine concurrently.
@@ -596,7 +657,7 @@ class DubbingEngine(
                     for (attempt in 0..1) {
                         try {
                             synthesisCallCount++
-                            val generated = tts!!.synthCancellable(synthText, synthesisSpeed, line.speakerId, ::checkSynthesisActive)
+                            val generated = (synthesisTts ?: tts)!!.synthCancellable(synthText, synthesisSpeed, line.speakerId, ::checkSynthesisActive)
                             // TTS providers perform blocking work; observe cancellation as soon
                             // as the provider returns, before installing audio into the cache.
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -673,7 +734,7 @@ class DubbingEngine(
                         try {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             synthesisCallCount++
-                            val candidate = tts!!.synthCancellable(
+                            val candidate = (synthesisTts ?: tts)!!.synthCancellable(
                                 text, retrySpeed, line.speakerId, ::checkSynthesisActive,
                             )
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -3173,6 +3234,8 @@ class DubbingEngine(
         val oldTtsInstances = ttsInstances.toList()
         ttsInstances.clear()
         tts = null
+        synthesisTts = null
+        backgroundSynthesisRequested = false
         fallbackRequested.set(false)
         cacheInitGeneration.incrementAndGet()
         cacheInitJob?.cancel()
