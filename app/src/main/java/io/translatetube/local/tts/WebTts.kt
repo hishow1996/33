@@ -133,6 +133,7 @@ internal class WebTts : TtsEngine {
     }
 
     /** MediaCodec 同步模式解码 MP3 → 16bit PCM → FloatArray（-1..1）与采样率。 */
+    /** MediaCodec 同步模式解码 MP3 → 16bit PCM → FloatArray（-1..1）与采样率。 */
     private fun decodeMp3(bytes: ByteArray): Pair<FloatArray, Int> {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -141,85 +142,101 @@ internal class WebTts : TtsEngine {
             var trackIndex = -1
             var format: MediaFormat? = null
             for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                if (f.getString(MediaFormat.KEY_MIME).orEmpty().startsWith("audio/")) {
+                val candidate = extractor.getTrackFormat(i)
+                if (candidate.getString(MediaFormat.KEY_MIME).orEmpty().startsWith("audio/")) {
                     trackIndex = i
-                    format = f
+                    format = candidate
                     break
                 }
             }
-            if (trackIndex < 0 || format == null) throw IllegalStateException("在线语音响应不是有效音频")
+            if (trackIndex < 0 || format == null) {
+                throw IllegalStateException("在线语音响应不是有效音频")
+            }
             extractor.selectTrack(trackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
+            val mime = format.getString(MediaFormat.KEY_MIME)
+                ?: throw IllegalStateException("在线语音未返回音频格式")
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
-            val out = ArrayList<FloatArray>(4)
-            var totalFrames = 0
+
+            val chunks = ArrayList<FloatArray>(4)
+            var totalSamples = 0
             var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var sawInputEos = false
-            var sawOutputEos = false
-            val bufferInfo = MediaCodec.BufferInfo()
+            var inputEos = false
+            var outputEos = false
+            val info = MediaCodec.BufferInfo()
             var loops = 0
-            while (!sawOutputEos && loops < 10_000) {
-                loops++
-                if (!sawInputEos) {
-                    val inIndex = codec.dequeueInputBuffer(10_000L)
-                    if (inIndex >= 0) {
-                        val input = codec.getInputBuffer(inIndex)!!
+
+            while (!outputEos && loops++ < 10_000) {
+                if (!inputEos) {
+                    val inputIndex = codec.dequeueInputBuffer(10_000L)
+                    if (inputIndex >= 0) {
+                        val input = codec.getInputBuffer(inputIndex)
+                            ?: throw IllegalStateException("在线语音解码器输入缓冲区不可用")
                         val sampleSize = extractor.sampleSize
                         if (sampleSize <= 0L) {
-                            codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            sawInputEos = true
+                            codec.queueInputBuffer(
+                                inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                            )
+                            inputEos = true
                         } else {
                             input.clear()
                             val read = extractor.readSampleData(input, 0)
                             if (read <= 0) {
-                                codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                sawInputEos = true
+                                codec.queueInputBuffer(
+                                    inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                                )
+                                inputEos = true
                             } else {
-                                codec.queueInputBuffer(inIndex, 0, read, extractor.sampleTime, 0)
+                                codec.queueInputBuffer(inputIndex, 0, read, extractor.sampleTime, 0)
                                 extractor.advance()
-                        }
+                            }
                         }
                     }
                 }
-                val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+
+                val outputIndex = codec.dequeueOutputBuffer(info, 10_000L)
                 when {
-                    outIndex >= 0 -> {
-                        val pcmBuffer = codec.getOutputBuffer(outIndex)!!
-                        pcmBuffer.order(PCM_BYTE_ORDER)
-                        val shorts = ShortArray(bufferInfo.size / 2)
-                        for (i in shorts.indices) shorts[i] = pcmBuffer.getShort(i * 2)
-                        val floats = FloatArray(shorts.size) { shorts[it] / 32768f }
-                        out.add(floats)
-                        totalFrames += floats.size
-                        codec.releaseOutputBuffer(outIndex, false)
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEos = true
+                    outputIndex >= 0 -> {
+                        val output = codec.getOutputBuffer(outputIndex)
+                        if (output != null && info.size > 0) {
+                            output.order(PCM_BYTE_ORDER)
+                            val byteCount = info.size - (info.size % 2)
+                            val samples = FloatArray(byteCount / 2)
+                            for (i in samples.indices) {
+                                samples[i] = output.getShort(info.offset + i * 2) / 32768f
+                            }
+                            chunks.add(samples)
+                            totalSamples += samples.size
+                        }
+                        codec.releaseOutputBuffer(outputIndex, false)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            outputEos = true
+                        }
                     }
-                    outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         sampleRate = codec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     }
                 }
             }
-            if (totalFrames == 0) throw IllegalStateException("在线语音解码结果为空")
-            val merged = FloatArray(totalFrames)
+            if (totalSamples == 0) {
+                throw IllegalStateException("在线语音解码结果为空")
+            }
+            val merged = FloatArray(totalSamples)
             var cursor = 0
-            for (part in out) {
-                System.arraycopy(part, 0, merged, cursor, part.size)
-                cursor += part.size
+            for (chunk in chunks) {
+                System.arraycopy(chunk, 0, merged, cursor, chunk.size)
+                cursor += chunk.size
             }
             return merged to sampleRate
         } finally {
             runCatching { extractor.release() }
-            codec?.let { c ->
-                runCatching { c.stop() }
-                runCatching { c.release() }
+            codec?.let { decoder ->
+                runCatching { decoder.stop() }
+                runCatching { decoder.release() }
             }
         }
     }
-
-    /** 线性插值重采样（TTS 语音对插值失真不敏感），统一采样率用于段间无缝拼接。 */
     private fun resampleTo(samples: FloatArray, fromRate: Int, toRate: Int): FloatArray {
         if (fromRate == toRate || samples.isEmpty()) return samples
         val ratio = fromRate.toDouble() / toRate
