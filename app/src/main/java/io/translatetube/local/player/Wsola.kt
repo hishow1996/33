@@ -88,13 +88,33 @@ internal object Wsola {
             inPos += HOP_OUT / ratio
             outPos += HOP_OUT
         }
-        // 收尾：剩余源尾部若有残余（压缩时），把最后一窗直接补到输出末尾避免截词
-        if (ratio < 1f && outPos < outLen) {
+        // Complete the final partial hop for both stretching and compression. The previous
+        // loop intentionally requires a complete source window; without this tail fill, ratios
+        // above 1.0 could leave up to roughly 1.5 windows of zero samples at the end of each cue.
+        val remaining = outLen - outPos
+        if (remaining > 0) {
             val tail = maxSourceOffset
             var i = 0
-            while (i < WINDOW && outPos + i < outLen) {
-                val w = fade[i]
-                out[outPos + i] = out[outPos + i] * (1f - w) + samples[tail + i] * w
+            while (i < remaining) {
+                // Resample the final valid source window to exactly cover the unrendered tail.
+                val sourcePosition = if (remaining <= 1) {
+                    0.0
+                } else {
+                    i.toDouble() * (WINDOW - 1) / (remaining - 1)
+                }
+                val left = sourcePosition.toInt().coerceIn(0, WINDOW - 1)
+                val right = (left + 1).coerceAtMost(WINDOW - 1)
+                val fraction = (sourcePosition - left).toFloat()
+                val tailSample = samples[tail + left] * (1f - fraction) +
+                    samples[tail + right] * fraction
+                // Crossfade the first overlapping output hop; subsequent output positions have
+                // not been written by WSOLA yet and can take the tail sample directly.
+                if (i < HOP_OUT) {
+                    val blend = ((i + 1).toFloat() / HOP_OUT).coerceIn(0f, 1f)
+                    out[outPos + i] = out[outPos + i] * (1f - blend) + tailSample * blend
+                } else {
+                    out[outPos + i] = tailSample
+                }
                 i++
             }
         }
