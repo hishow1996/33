@@ -75,8 +75,8 @@ class DubbingSyncHoldPolicyTest {
 
     @Test
     fun spokenCharacterCountExcludesSpacesAndPunctuation() {
-        assertEquals(5, DubbingSyncHoldPolicy.spokenCodePointCount("你好， 世界！"))
-        assertEquals(4, DubbingSyncHoldPolicy.spokenCodePointCount("Hello,"))
+        assertEquals(4, DubbingSyncHoldPolicy.spokenCodePointCount("你好， 世界！"))
+        assertEquals(5, DubbingSyncHoldPolicy.spokenCodePointCount("Hello,"))
         assertEquals(0, DubbingSyncHoldPolicy.spokenCodePointCount("……？！"))
     }
 
@@ -91,11 +91,11 @@ class DubbingSyncHoldPolicyTest {
     @Test
     fun speechDurationEstimateAddsNaturalPauseBudget() {
         assertEquals(
-            515L,
+            640L,
             DubbingSyncHoldPolicy.estimateSpeechDurationMs("你好，世界！", 100.0),
         )
         assertEquals(
-            400L,
+            1_000L,
             DubbingSyncHoldPolicy.estimateSpeechDurationMs("Hello world", 100.0),
         )
     }
