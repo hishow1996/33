@@ -672,9 +672,10 @@ class DubbingEngine(
                                     "pass=$adaptiveRetryCount, rate=$effectiveSynthesisSpeed, " +
                                     "durationMs=${candidateDurationMs.toLong()}",
                             )
-                            // If the real duration fits the maximum timeline multiplier, another
-                            // synthesis pass would add cost without improving the deadline guarantee.
-                            if (candidateDurationMs <= cueDurationMs.toDouble() * DubbingTiming.MAX_SYNC_RATE) {
+                            // Keep adapting until the measured render leaves headroom in the real cue
+                            // window. The emergency playback-rate cap is not a synthesis success target:
+                            // accepting a 1.7 s render for a 1 s cue would cause avoidable catch-up drift.
+                            if (DubbingSynthesisPolicy.isWithinTimelineTarget(candidateDurationMs, cueDurationMs)) {
                                 break
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
