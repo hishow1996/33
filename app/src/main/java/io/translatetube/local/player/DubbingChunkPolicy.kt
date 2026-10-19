@@ -82,7 +82,12 @@ internal object DubbingChunkPolicy {
                 val mergedWindowEnd = next.endMs
                 val mergedEst = estimateSpeechMs(mergedText)
                 val mergedWindow = mergedWindowEnd - line.startMs
-                if (mergedEst <= mergedWindow * MAX_SPEEDUP) {
+                // 引擎输入上限守卫：合并文本超限会导致整块合成失败（无声），
+                // 宁可不合并让 WSOLA 单行硬对齐，也不能让两行都没声音。
+                val withinInputLimit =
+                    mergedText.codePointCount(0, mergedText.length) <=
+                        io.translatetube.local.tts.TtsTextPolicy.MAX_CODE_POINTS
+                if (withinInputLimit && mergedEst <= mergedWindow * MAX_SPEEDUP) {
                     // 合并后放得下（含语速预算）：一口气合成两行
                     chunks += Chunk(i, listOf(i, i + 1), mergedText, line.startMs, mergedWindowEnd)
                     i += 2
