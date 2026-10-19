@@ -22,8 +22,20 @@ internal object Wsola {
     fun stretch(samples: FloatArray, ratio: Float): FloatArray {
         if (samples.isEmpty() || !ratio.isFinite() || ratio <= 0f || ratio == 1f) return samples
         val inLen = samples.size
-        val outLen = (inLen * ratio).toInt().coerceAtLeast(WINDOW)
+        val outLen = (inLen.toDouble() * ratio)
+            .toLong()
+            .coerceIn(1L, Int.MAX_VALUE.toLong())
+            .toInt()
+
+        // WSOLA requires a full analysis window in both arrays. Extremely short subtitles and
+        // compressed outputs do not have one, so use bounded interpolation rather than returning
+        // a silent buffer or attempting an invalid overlap.
+        if (inLen <= WINDOW || outLen <= WINDOW) {
+            return linearResample(samples, outLen)
+        }
+
         val out = FloatArray(outLen)
+        val maxSourceOffset = inLen - WINDOW
 
         // 每个输出 hop 对应的输入 hop（可变相位），从 0 开始同步推进
         var inPos = 0f
@@ -35,18 +47,20 @@ internal object Wsola {
             (0.5 * (1.0 - Math.cos(2.0 * Math.PI * i / WINDOW))).toFloat()
         }
 
-        while (outPos + WINDOW <= outLen && inPos.toInt() + WINDOW < inLen) {
-            val base = inPos.toInt()
+        while (outPos + WINDOW <= outLen && inPos.toInt() + WINDOW <= inLen) {
+            val base = inPos.toInt().coerceIn(0, maxSourceOffset)
             if (outPos == 0) {
                 // 首块直接搭基
                 System.arraycopy(samples, base, out, 0, WINDOW)
             } else {
-                // 在搜索域内找与已输出尾部最相似的输入段（最小平方差）
-                val center = anchor + HOP_OUT
-                var bestOffset = center
-                var bestError = Float.MAX_VALUE
+                // Clamp the search centre before constructing its range. Previously, once the
+                // anchor approached the source tail, from could exceed to; the search then did
+                // zero iterations and left bestOffset one sample beyond the last full window.
+                val center = (anchor + HOP_OUT).coerceIn(0, maxSourceOffset)
                 val from = (center - SEARCH).coerceAtLeast(0)
-                val to = (center + SEARCH).coerceAtMost(inLen - WINDOW)
+                val to = (center + SEARCH).coerceAtMost(maxSourceOffset)
+                var bestOffset = center.coerceIn(from, to)
+                var bestError = Float.MAX_VALUE
                 var candidate = from
                 while (candidate <= to) {
                     var err = 0f
@@ -62,6 +76,8 @@ internal object Wsola {
                     }
                     candidate += 16
                 }
+                // Defensive bound: this offset must always identify a complete source window.
+                bestOffset = bestOffset.coerceIn(0, maxSourceOffset)
                 anchor = bestOffset
                 // overlap-add：淡出旧尾巴 + 淡入新块
                 for (i in 0 until WINDOW) {
@@ -74,17 +90,32 @@ internal object Wsola {
         }
         // 收尾：剩余源尾部若有残余（压缩时），把最后一窗直接补到输出末尾避免截词
         if (ratio < 1f && outPos < outLen) {
-            val tail = inLen - WINDOW
-            if (tail > 0) {
-                var i = 0
-                while (i < WINDOW && outPos + i < outLen) {
-                    val w = fade[i]
-                    out[outPos + i] = out[outPos + i] * (1f - w) + samples[tail + i] * w
-                    i++
-                }
+            val tail = maxSourceOffset
+            var i = 0
+            while (i < WINDOW && outPos + i < outLen) {
+                val w = fade[i]
+                out[outPos + i] = out[outPos + i] * (1f - w) + samples[tail + i] * w
+                i++
             }
         }
         return out
+    }
+
+    /** Safe fallback for cues shorter than one WSOLA window. */
+    private fun linearResample(samples: FloatArray, outLen: Int): FloatArray {
+        if (samples.isEmpty() || outLen <= 0) return FloatArray(0)
+        if (samples.size == 1) return FloatArray(outLen) { samples[0] }
+        if (outLen == 1) return floatArrayOf(samples[0])
+        val output = FloatArray(outLen)
+        val sourceScale = (samples.lastIndex).toDouble() / output.lastIndex
+        for (i in output.indices) {
+            val sourcePosition = i * sourceScale
+            val left = sourcePosition.toInt().coerceIn(0, samples.lastIndex)
+            val right = (left + 1).coerceAtMost(samples.lastIndex)
+            val fraction = (sourcePosition - left).toFloat()
+            output[i] = samples[left] * (1f - fraction) + samples[right] * fraction
+        }
+        return output
     }
 
     /** 估算拉伸比：让 PCM 落到 [targetMs] 时长，带 [maxRatio] 上限保护自然度。 */
