@@ -18,6 +18,13 @@ class DubbingRecoveryRatePolicyTest {
     }
 
     @Test
+    fun actualTimelineDebtRaisesRecoveryRateEvenWithOneQueuedCue() {
+        assertEquals(1.0f, DubbingRecoveryRatePolicy.rateForBacklog(0, -100L), 0.001f)
+        assertEquals(1.5f, DubbingRecoveryRatePolicy.rateForBacklog(0, 5_000L), 0.001f)
+        assertEquals(2.05f, DubbingRecoveryRatePolicy.rateForBacklog(5, 5_000L), 0.001f)
+    }
+
+    @Test
     fun extremeBacklogsStayWithinTheCatchUpCeiling() {
         assertEquals(
             DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
