@@ -2584,7 +2584,7 @@ class DubbingEngine(
                                 "sourceSamples=${samples.size}, remainingSamples=$remainingSamples, " +
                                 "remainingAudioMs=${remainingAudioMs.toLong()}, remainingWindowMs=$remainingWindowMs, " +
                                 "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, " +
-                                "windowMs=${line.endMs - line.startMs}, adaptivePasses=$adaptiveRetryCount",
+                                "windowMs=${line.endMs - line.startMs}",
                         )
                         runCatching {
                             io.translatetube.local.util.AppLogStore.warning(
@@ -2601,7 +2601,6 @@ class DubbingEngine(
                                     "剩余时间槽 ms" to remainingWindowMs.toString(),
                                     "同步倍率" to plan.syncRate.toString(),
                                     "视频播放速度" to currentSpeed.toString(),
-                                    "自适应合成次数" to adaptiveRetryCount.toString(),
                                     "实际策略" to "保留完整语音，不暂停视频；将时间窗内经过的字幕排队逐句补播",
                                 ),
                             )
