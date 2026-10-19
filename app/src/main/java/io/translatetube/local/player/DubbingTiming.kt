@@ -30,7 +30,7 @@ internal object DubbingTiming {
     private const val COPY_CHUNK_SAMPLES = 8_192
     private const val COPY_CHECK_MASK = 0x1fff
 
-    /** 一句配音最多向后借用的字幕空隙（毫秒）。 */
+    /** 最后一句没有后续字幕可避让时，最多向后扩展的时长（毫秒）。 */
     const val MAX_GAP_BORROW_MS = 3_000L
     /** 借用空隙时给下一条字幕留的缓冲，避免两句配音首尾相贴。 */
     private const val NEXT_CUE_GUARD_MS = 120L
@@ -39,15 +39,22 @@ internal object DubbingTiming {
         speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
 
     /**
-     * 配音实际可用的结束时间：在不碰到下一条字幕的前提下，借用本句字幕后面的静音空隙。
-     * 译文常比原文长，只按字幕自己的时间窗播放就得加速甚至截断；有空隙时多给一点时间，
-     * 语速更自然。空隙不够（或后一条字幕与本条重叠）时原样返回，借用量最多 [MAX_GAP_BORROW_MS]。
+     * 配音实际可用的结束时间：在不碰到下一条字幕的前提下，借用本句后面的静音空隙。
+     * 有后续字幕时使用全部可用间隙，并为下一句保留 [NEXT_CUE_GUARD_MS]；不能因为固定的
+     * 3 秒上限而浪费更长的静音段。最后一句没有下一条开始时间，才应用 [MAX_GAP_BORROW_MS]，
+     * 避免把字幕活动区间扩展到整段视频剩余时长。
      */
     fun playableEndMs(startMs: Long, endMs: Long, nextCueStartMs: Long): Long {
         if (startMs < 0L || endMs <= startMs || endMs > Long.MAX_VALUE - MAX_GAP_BORROW_MS) return endMs
-        val room = nextCueStartMs - NEXT_CUE_GUARD_MS - endMs
+        if (nextCueStartMs <= endMs + NEXT_CUE_GUARD_MS) return endMs
+        val room = nextCueStartMs - endMs - NEXT_CUE_GUARD_MS
         if (room <= 0L) return endMs
-        return endMs + minOf(room, MAX_GAP_BORROW_MS)
+        val borrow = if (nextCueStartMs == Long.MAX_VALUE) {
+            minOf(room, MAX_GAP_BORROW_MS)
+        } else {
+            room
+        }
+        return endMs + borrow
     }
 
     /**
