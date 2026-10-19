@@ -5122,6 +5122,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             pipelineExecutionMutex.withLock {
             var pendingTts: TtsEngine? = null
             var oldEngineRetired = false
+            var detectedSpeakerCount = 0
             try {
                 ensureCurrentSession(sessionKey, pipelineGeneration, mutationGeneration)
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) {
@@ -5210,6 +5211,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         if (state.key == sessionKey) state.copy(progress = message) else state
                     }
                 }
+                detectedSpeakerCount = segments.map { it.speaker }.distinct().size
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (videoKey != sessionKey || ui.value.key != sessionKey) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧的视频人物识别结果")
@@ -5386,8 +5388,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     diagnosticContext = mapOf(
                         "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
                         "故障阶段" to ui.value.phase.name,
-                        "原字幕行数" to oldLines.size.toString(),
-                        "识别到人物数量" to segments.map { speaker -> speaker.speaker }.distinct().size.toString(),
+                        "原字幕行数" to originalLines.size.toString(),
+                        "识别到人物数量" to detectedSpeakerCount.toString(),
                         "配音引擎" to selectedTts,
                         "旧配音引擎是否已释放" to oldEngineRetired.toString(),
                         "错误后的恢复" to "恢复原字幕和原声；保留原有音色分配以便重试",
