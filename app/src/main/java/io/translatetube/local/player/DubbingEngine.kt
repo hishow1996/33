@@ -920,7 +920,7 @@ class DubbingEngine(
                 // retire the native TTS runtime; the source video can continue on its original audio.
                 if (!released) {
                     val memoryCacheEntryCountBeforeOom = synchronized(mem) { mem.size }
-                    val pendingCountBeforeOom = pending.size
+                    val pendingCountBeforeOom = pending.totalSize()
                     synthesisMemoryFailure = true
                     synchronized(mem) { mem.clear() }
                     synchronized(pending) {
