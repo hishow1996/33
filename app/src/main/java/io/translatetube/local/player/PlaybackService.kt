@@ -5241,7 +5241,18 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "source audio timeline policy")
             }
         } else {
-            // With no dubbing engine, only the original track can be heard.
+            if (d != null && !st.dubbingOn) {
+                // Source-only playback still drives the synthesis queue. Prioritize captions near
+                // the current playhead so the corresponding Chinese PCM is ready before the user
+                // switches back to dubbed mode; this never starts audible dubbing output.
+                val synthesisTarget = when {
+                    dubLine in st.lines.indices -> dubLine
+                    highlightLine in st.lines.indices -> highlightLine
+                    else -> -1
+                }
+                d.prepareForBackgroundPlayback(synthesisTarget, lookAhead = 8)
+            }
+            // With no active dubbed speech, only the original track can be heard.
             safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "source audio timeline policy")
             if (
                 st.dubbingOn &&
@@ -5997,6 +6008,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 } else state
             }
             if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
+            val currentDubbing = dubbing
+            if (position >= 0L) currentDubbing?.prepareForBackgroundPlayback(currentDubbing.lineAt(position))
         } else {
             ui.update { state ->
                 if (state.key == sessionKey) {
@@ -6037,6 +6050,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
         if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
         lastLineIdx = Int.MIN_VALUE
+        if (position >= 0L) {
+            dubbing?.let { it.prepareForBackgroundPlayback(it.lineAt(position)) }
+        }
     }
 
     // Backward-compatible entry point; the player control now selects the original-only mode.
