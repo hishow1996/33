@@ -45,6 +45,51 @@ class DubbingChunkTransitionPolicyTest {
     }
 
     @Test
+    fun recoversNearEndStaticTrackHeadStallWithoutDiscardingTheWholeCue() {
+        // Reported production case: 1,444 samples remain in a 24,000-sample chunk at 16 kHz
+        // after the Android 9 AudioTrack playhead stops advancing. This is under 100 ms.
+        assertTrue(
+            DubbingChunkTransitionPolicy.canAdvanceAfterNearEndStall(
+                expectedSampleCount = 24_000L,
+                playedSampleCount = 22_556L,
+                sampleRate = 16_000,
+            )
+        )
+    }
+
+    @Test
+    fun nearEndRecoveryDoesNotHideMidBufferOrLargeTailFailures() {
+        assertFalse(
+            DubbingChunkTransitionPolicy.canAdvanceAfterNearEndStall(
+                expectedSampleCount = 24_000L,
+                playedSampleCount = 22_000L,
+                sampleRate = 16_000,
+            )
+        )
+        assertFalse(
+            DubbingChunkTransitionPolicy.canAdvanceAfterNearEndStall(
+                expectedSampleCount = 24_000L,
+                playedSampleCount = 16_000L,
+                sampleRate = 16_000,
+            )
+        )
+        assertFalse(
+            DubbingChunkTransitionPolicy.canAdvanceAfterNearEndStall(
+                expectedSampleCount = 3_000L,
+                playedSampleCount = 2_900L,
+                sampleRate = 16_000,
+            )
+        )
+        assertFalse(
+            DubbingChunkTransitionPolicy.canAdvanceAfterNearEndStall(
+                expectedSampleCount = 24_000L,
+                playedSampleCount = 23_999L,
+                sampleRate = 0,
+            )
+        )
+    }
+
+    @Test
     fun prefetchMarkerLeavesAPlaybackRateAdjustedLeadWindow() {
         assertEquals(
             25_600,

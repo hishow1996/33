@@ -16,6 +16,30 @@ internal object DubbingChunkTransitionPolicy {
         !released && currentGeneration == expectedGeneration && currentTrackIsSource
 
     /**
+     * Android 9/OEM static tracks can stop advancing the playback-head counter just short of
+     * the end. Permit a boundary hand-off only when the remaining tail is both <= maxTailMs and
+     * <= 10% of this chunk; a genuine mid-buffer stall still fails and is reported.
+     */
+    fun canAdvanceAfterNearEndStall(
+        expectedSampleCount: Long,
+        playedSampleCount: Long,
+        sampleRate: Int,
+        maxTailMs: Long = 100L,
+    ): Boolean {
+        if (expectedSampleCount <= 0L || playedSampleCount < 0L ||
+            sampleRate <= 0 || maxTailMs <= 0L
+        ) return false
+        // Short chunks are not eligible: for them, the allowed tail would be a large part of
+        // the subtitle and could hide a real failure instead of recovering a boundary stall.
+        if (expectedSampleCount < sampleRate.toLong() / 4L) return false
+
+        val timeBoundSamples = ceil(sampleRate.toDouble() * maxTailMs.toDouble() / 1_000.0).toLong()
+        val ratioBoundSamples = ceil(expectedSampleCount.toDouble() * 0.10).toLong()
+        val toleratedTailSamples = minOf(timeBoundSamples, ratioBoundSamples)
+        return playedSampleCount >= (expectedSampleCount - toleratedTailSamples).coerceAtLeast(0L)
+    }
+
+    /**
      * AudioTrack markers are absolute positions within a static buffer. Place the marker early
      * enough to overlap next-buffer creation, accounting for the current playback rate and any
      * samples already skipped in the buffer after a late video tick.

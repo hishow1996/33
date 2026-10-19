@@ -1596,6 +1596,25 @@ class DubbingEngine(
             val elapsedMs = nowMs - waitStartedMs
             val headStallMs = nowMs - lastHeadProgressAtMs
             if (headStallMs >= STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS || elapsedMs >= timeoutMs) {
+                // Several Android 9/OEM static AudioTrack sinks stop reporting head progress
+                // within the final few milliseconds of a buffer while playState remains PLAYING.
+                // The next chunk has already been prefetched; when only a tiny tail remains,
+                // advance to it rather than discard the entire synthesized sentence.
+                if (DubbingChunkTransitionPolicy.canAdvanceAfterNearEndStall(
+                        expectedSampleCount = expectedSampleCount,
+                        playedSampleCount = playedSamples,
+                        sampleRate = sampleRate,
+                    )
+                ) {
+                    val remainingSamples = (expectedSampleCount - playedSamples).coerceAtLeast(0L)
+                    android.util.Log.w(
+                        "DubbingEngine",
+                        "AudioTrack 播放头在分段末尾停滞，按边界继续后续配音分段：" +
+                            "已播放=$playedSamples/$expectedSampleCount，剩余采样点=$remainingSamples，" +
+                            "采样率=${sampleRate}Hz，播放头停滞=${headStallMs}ms",
+                    )
+                    return true
+                }
                 val reason = if (headStallMs >= STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS) {
                     "播放头长时间没有前进"
                 } else {
