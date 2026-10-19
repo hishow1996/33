@@ -38,6 +38,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Face
@@ -48,11 +49,13 @@ import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -1108,12 +1111,6 @@ private fun VideoParsingPage(
         VideoSourceKind.LOCAL -> "本地视频来源"
         VideoSourceKind.UNKNOWN -> "视频处理"
     }
-    val sourceShortLabel = when (source) {
-        VideoSourceKind.YOUTUBE -> "YouTube"
-        VideoSourceKind.WEB -> "网页视频"
-        VideoSourceKind.LOCAL -> "本地视频"
-        VideoSourceKind.UNKNOWN -> "视频"
-    }
     val subtitleHeadline = if (source == VideoSourceKind.YOUTUBE) "可用字幕" else "字幕生成状态"
     val subtitleSubline = if (source == VideoSourceKind.YOUTUBE) {
         "字幕轨状态与下载入口"
@@ -1499,8 +1496,15 @@ private fun VideoParsingPage(
                             color = Color(0xFF3268F5),
                             trackColor = Color(0xFFE8EDF6),
                         )
+                    } else if (busy && !state.isProcessingPaused) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
+                            color = Color(0xFF3268F5),
+                            trackColor = Color(0xFFE8EDF6),
+                        )
                     } else {
                         LinearProgressIndicator(
+                            progress = { 0f },
                             modifier = Modifier.weight(1f).height(7.dp).clip(CircleShape),
                             color = Color(0xFF3268F5),
                             trackColor = Color(0xFFE8EDF6),
@@ -1668,7 +1672,7 @@ private fun VideoParsingPage(
                 }
                 Spacer(Modifier.height(8.dp))
                 visibleStages.forEachIndexed { visibleIndex, index ->
-                    val done = complete || (!isCancelled && index < currentStage)
+                    val done = complete || index < currentStage
                     val active = !complete && !isError && !isCancelled && index == currentStage
                     val failed = isError && index == currentStage
                     val cancelled = isCancelled && index == currentStage
