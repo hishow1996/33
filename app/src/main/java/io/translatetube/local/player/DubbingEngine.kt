@@ -3263,9 +3263,19 @@ class DubbingEngine(
             // Service is shutting down.
         }
     }
+    /**
+     * Instant System TTS can speak directly without generated PCM. Background warm-up failures
+     * must therefore never make an otherwise valid direct-speech cue appear unavailable.
+     */
+    private fun canSpeakDirectly(idx: Int): Boolean {
+        if (!usesImmediateTimelinePlayback) return false
+        val cue = lines.getOrNull(idx) ?: return false
+        return DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank()
+    }
+
     /** 该行音频是否已可播放（纯内存判断，供 100ms tick 高频调用，绝不做磁盘 IO） */
-    fun isPrepared(idx: Int): Boolean = readiness.isPrepared(idx)
-    fun isSilent(idx: Int): Boolean = readiness.isSilent(idx)
+    fun isPrepared(idx: Int): Boolean = canSpeakDirectly(idx) || readiness.isPrepared(idx)
+    fun isSilent(idx: Int): Boolean = !canSpeakDirectly(idx) && readiness.isSilent(idx)
 
     /** Mark a sync-held sentence unavailable after a watchdog timeout so it cannot restart forever. */
     fun abortSyncHoldCue(idx: Int) {
