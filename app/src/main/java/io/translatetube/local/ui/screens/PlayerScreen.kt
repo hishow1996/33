@@ -1135,7 +1135,7 @@ private fun VideoParsingPage(
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .verticalScroll(androidx.compose.foundation.rememberScrollState()),
     ) {
-        // Navigation header — clean white surface with a compact source identity.
+        // Navigation header — centered title balanced between the two actions.
         Row(
             Modifier.fillMaxWidth().padding(bottom = 14.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
@@ -1180,18 +1180,18 @@ private fun VideoParsingPage(
                 )
             }
             IconButton(
-                    onClick = { processingSettingsOpen = true },
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White),
-                ) {
-                    Icon(
-                        Icons.Filled.MoreVert,
-                        contentDescription = "更多处理操作",
-                        tint = Color(0xFF43546D),
-                        modifier = Modifier.size(22.dp),
-                    )
+                onClick = { processingSettingsOpen = true },
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White),
+            ) {
+                Icon(
+                    Icons.Filled.MoreVert,
+                    contentDescription = "更多处理操作",
+                    tint = Color(0xFF43546D),
+                    modifier = Modifier.size(22.dp),
+                )
             }
         }
 
