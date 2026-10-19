@@ -16,7 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
@@ -217,7 +217,7 @@ fun AppLogsScreen(onBack: () -> Unit) {
             shape = RoundedCornerShape(14.dp),
             placeholder = { Text("搜索错误、模块或关键词", maxLines = 1) },
             leadingIcon = {
-                Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = Color(0xFF8A9099))
+                Icon(Icons.Filled.Search, contentDescription = null, tint = Color(0xFF8A9099))
             },
             trailingIcon = {
                 if (searchQuery.isNotBlank()) {
