@@ -1,13 +1,14 @@
 package io.translatetube.local.player
 
 import java.util.ArrayDeque
+import java.util.BitSet
 
 /**
  * Bounded ready queue for the next synthesis jobs plus a capped FIFO backlog of cue indexes.
  *
- * PCM itself remains in the existing bounded LRU/disk cache. Keeping only a small number of
- * linked ready entries avoids allocating one linked-list node per subtitle in long videos, while
- * the backlog is bounded by the same hard input-cue limit as the timeline.
+ * PCM itself remains in the existing bounded LRU/disk cache. The ready window and deferred FIFO
+ * use array-backed storage rather than one linked-list node per subtitle; the backlog is bounded
+ * by the same hard input-cue limit as the timeline.
  */
 internal class DubbingWorkQueue(
     private val readyCapacity: Int = DEFAULT_READY_CAPACITY,
@@ -16,7 +17,7 @@ internal class DubbingWorkQueue(
     private val ready = ArrayDeque<Int>(readyCapacity)
     private val deferred = ArrayDeque<Int>()
     /** O(1) membership checks keep bulk cache scans linear for very long subtitle files. */
-    private val queuedIndexes = HashSet<Int>()
+    private val queuedIndexes = BitSet()
 
     init {
         require(readyCapacity > 0) { "readyCapacity must be positive" }
@@ -25,16 +26,18 @@ internal class DubbingWorkQueue(
 
     @Synchronized
     fun offerLast(index: Int): Boolean {
-        if (queuedIndexes.contains(index)) return true
+        if (index !in 0 until DubbingTimeline.MAX_INPUT_CUE_COUNT) return false
+        if (queuedIndexes.get(index)) return true
         if (totalSizeLocked() >= maximumPending) return false
         if (ready.size < readyCapacity) ready.addLast(index) else deferred.addLast(index)
-        queuedIndexes.add(index)
+        queuedIndexes.set(index)
         return true
     }
 
     @Synchronized
     fun offerFirst(index: Int): Boolean {
-        if (queuedIndexes.contains(index)) return true
+        if (index !in 0 until DubbingTimeline.MAX_INPUT_CUE_COUNT) return false
+        if (queuedIndexes.get(index)) return true
         if (totalSizeLocked() >= maximumPending) return false
         if (ready.size < readyCapacity) {
             ready.addFirst(index)
@@ -44,7 +47,7 @@ internal class DubbingWorkQueue(
             deferred.addFirst(ready.removeLast())
             ready.addFirst(index)
         }
-        queuedIndexes.add(index)
+        queuedIndexes.set(index)
         return true
     }
 
@@ -52,7 +55,7 @@ internal class DubbingWorkQueue(
     fun pollFirst(): Int? {
         refillReadyLocked()
         val value = ready.pollFirst() ?: return null
-        queuedIndexes.remove(value)
+        queuedIndexes.clear(value)
         refillReadyLocked()
         return value
     }
@@ -81,7 +84,8 @@ internal class DubbingWorkQueue(
     }
 
     @Synchronized
-    fun contains(index: Int): Boolean = queuedIndexes.contains(index)
+    fun contains(index: Int): Boolean =
+        index in 0 until DubbingTimeline.MAX_INPUT_CUE_COUNT && queuedIndexes.get(index)
 
     @Synchronized
     fun isNotEmpty(): Boolean = ready.isNotEmpty() || deferred.isNotEmpty()
