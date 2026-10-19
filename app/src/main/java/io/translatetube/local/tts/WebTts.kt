@@ -126,7 +126,7 @@ internal class WebTts : TtsEngine {
             .build()
         client.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
-            val body = resp.body?.bytes().orEmpty()
+            val body = resp.body?.bytes() ?: ByteArray(0)
             if (body.size < MIN_MP3_BYTES) throw IllegalStateException("响应过短：${body.size} 字节")
             return body
         }
@@ -137,7 +137,7 @@ internal class WebTts : TtsEngine {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            extractor.setDataSource(bytes, 0, bytes.size)
+            extractor.setDataSource(ByteArrayMediaDataSource(bytes))
             var trackIndex = -1
             var format: MediaFormat? = null
             for (i in 0 until extractor.trackCount) {
@@ -167,15 +167,21 @@ internal class WebTts : TtsEngine {
                     val inIndex = codec.dequeueInputBuffer(10_000L)
                     if (inIndex >= 0) {
                         val input = codec.getInputBuffer(inIndex)!!
-                        val chunk = if (extractor.sampleSize > input.capacity()) input.capacity() else extractor.sampleSize
-                        if (chunk <= 0) {
-                            codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        val sampleSize = extractor.sampleSize
+                        if (sampleSize <= 0L) {
+                            codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             sawInputEos = true
                         } else {
                             input.clear()
-                            extractor.readSampleData(input, 0)
-                            codec.queueInputBuffer(inIndex, 0, chunk, extractor.sampleTime, 0)
-                            extractor.advance()
+                            val read = extractor.readSampleData(input, 0)
+                            if (read <= 0) {
+                                codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                sawInputEos = true
+                            } else {
+                                codec.queueInputBuffer(inIndex, 0, read, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
                         }
                     }
                 }
