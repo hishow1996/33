@@ -56,6 +56,15 @@ class DubbingSynthesisPolicyTest {
     }
 
     @Test
+    fun adaptiveSynthesisTargetLeavesHeadroomBeforePlayback() {
+        assertEquals(true, DubbingSynthesisPolicy.isWithinTimelineTarget(900.0, 1_000L))
+        assertEquals(false, DubbingSynthesisPolicy.isWithinTimelineTarget(1_001.0, 1_000L))
+        assertEquals(false, DubbingSynthesisPolicy.isWithinTimelineTarget(1_700.0, 1_000L))
+        assertEquals(false, DubbingSynthesisPolicy.isWithinTimelineTarget(Double.NaN, 1_000L))
+        assertEquals(false, DubbingSynthesisPolicy.isWithinTimelineTarget(100.0, 0L))
+    }
+
+    @Test
     fun invalidAudioOrCueReturnsNormalizedBaseSpeed() {
         assertEquals(
             1.0f,
