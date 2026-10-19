@@ -14,13 +14,15 @@ internal object DubbingSyncHoldPolicy {
         if (estimatedSpeechMs <= 0L || cueDurationMs <= 0L ||
             !baseSpeechRate.isFinite() || baseSpeechRate <= 0f
         ) return false
-        val safeBaseRate = baseSpeechRate.coerceIn(0.5f, 3.0f)
+        val safeBaseRate = baseSpeechRate.coerceIn(0.5f, 3.0f).toString().toDouble()
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
             ?.coerceAtMost(DubbingTiming.MAX_SYNC_RATE)
-            ?: DubbingTiming.MAX_SYNC_RATE
-        val estimatedAtSelectedRateMs = estimatedSpeechMs.toDouble() / safeBaseRate.toDouble()
-        return estimatedAtSelectedRateMs > cueDurationMs.toDouble() * safeMaxRate.toDouble()
+            ?.toString()
+            ?.toDouble()
+            ?: DubbingTiming.MAX_SYNC_RATE.toString().toDouble()
+        val estimatedAtSelectedRateMs = estimatedSpeechMs.toDouble() / safeBaseRate
+        return estimatedAtSelectedRateMs > cueDurationMs.toDouble() * safeMaxRate
     }
 
     /**
