@@ -127,3 +127,5 @@ jobs:
 # Retry APK build after fixing in-memory MP3 decoding and Kotlin numeric types.
 
 # Retry APK build after rewriting the online TTS decoder block with balanced braces.
+
+# Explicit APK build trigger after bounded TTS recovery and Edge TTS token correction (2026-10-19).
