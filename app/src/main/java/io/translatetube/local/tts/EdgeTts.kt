@@ -199,7 +199,7 @@ internal class EdgeTts : TtsEngine {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            extractor.setDataSource(bytes, 0, bytes.size)
+            extractor.setDataSource(ByteArrayMediaDataSource(bytes))
             var trackIndex = -1
             var inputFormat: MediaFormat? = null
             for (index in 0 until extractor.trackCount) {
@@ -492,8 +492,8 @@ internal object EdgeTtsSecurity {
         val factorA=keyA*CS_FACTOR; val factorB=keyB*CS_FACTOR
         val terms=ArrayList<Int>(); val offsets=ArrayList<Int>()
         for(i in CS_COEFFICIENTS.indices) {
-            terms += CS_COEFFICIENTS[i] * if(i%2==0) factorA else factorB
-            offsets += CS_OFFSETS[i]
+            terms.add((CS_COEFFICIENTS[i] * (if (i % 2 == 0) factorA else factorB)).toInt())
+            offsets.add(CS_OFFSETS[i])
         }
         val padded=ByteArray(data.size+1)
         System.arraycopy(data,0,padded,1,data.size)
@@ -506,8 +506,8 @@ internal object EdgeTtsSecurity {
         words.forEachIndexed { i, word ->
             var term=word * if(i%2==0) keyA else keyB
             var off=rol16(word) * if(i%2==0) 0xEF0569FBL.toInt() else 0xC31713DBL.toInt()
-            if(i==0) { term += CS_ADJUSTMENT_0*factorA; off += CS_ADJUSTMENT_1 }
-            terms += term; offsets += off
+            if (i == 0) { term += (CS_ADJUSTMENT_0 * factorA).toInt(); off += CS_ADJUSTMENT_1 }
+            terms.add(term); offsets.add(off)
         }
         var swapAcc=0; var swapLast=0; var state=0; var acc=0
         for(i in terms.indices step 2) {
