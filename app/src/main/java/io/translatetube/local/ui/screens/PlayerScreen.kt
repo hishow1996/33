@@ -1199,8 +1199,24 @@ private fun VideoParsingPage(
         Box(
             Modifier
                 .fillMaxWidth()
-                .shadow(12.dp, RoundedCornerShape(24.dp), clip = false)
-                .clip(RoundedCornerShape(24.dp))
+                .shadow(
+                    6.dp,
+                    RoundedCornerShape(
+                        topStart = 24.dp,
+                        topEnd = 24.dp,
+                        bottomStart = 9.dp,
+                        bottomEnd = 9.dp,
+                    ),
+                    clip = false,
+                )
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 24.dp,
+                        topEnd = 24.dp,
+                        bottomStart = 9.dp,
+                        bottomEnd = 9.dp,
+                    ),
+                )
                 .background(
                     Brush.linearGradient(
                         colors = listOf(
@@ -1210,7 +1226,16 @@ private fun VideoParsingPage(
                         ),
                     ),
                 )
-                .border(1.dp, Color(0xFFE2EAFF), RoundedCornerShape(24.dp))
+                .border(
+                    1.dp,
+                    Color(0xFFE2EAFF),
+                    RoundedCornerShape(
+                        topStart = 24.dp,
+                        topEnd = 24.dp,
+                        bottomStart = 9.dp,
+                        bottomEnd = 9.dp,
+                    ),
+                )
                 .padding(horizontal = 14.dp, vertical = 15.dp),
         ) {
             Column {
@@ -1513,15 +1538,58 @@ private fun VideoParsingPage(
             }
         }
 
-        // Stage timeline — finished tasks, current task, and a small preview of what comes next.
+        // Stitched seam: a fine dashed thread visually joins the two cards.
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp),
+        ) {
+            drawLine(
+                color = Color(0xFFBCCBE5),
+                start = Offset(0f, size.height / 2f),
+                end = Offset(size.width, size.height / 2f),
+                strokeWidth = 1.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                    floatArrayOf(3.dp.toPx(), 3.dp.toPx()),
+                    0f,
+                ),
+            )
+        }
+
+        // Stage timeline — the lower card is rounded to meet the stitched upper card.
         Box(
             Modifier
                 .fillMaxWidth()
-                .padding(top = 14.dp)
-                .shadow(8.dp, RoundedCornerShape(22.dp), clip = false)
-                .clip(RoundedCornerShape(22.dp))
+                .shadow(
+                    6.dp,
+                    RoundedCornerShape(
+                        topStart = 9.dp,
+                        topEnd = 9.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                    clip = false,
+                )
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 9.dp,
+                        topEnd = 9.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                )
                 .background(Color.White)
-                .border(1.dp, Color(0xFFE8EDF5), RoundedCornerShape(22.dp))
+                .border(
+                    1.dp,
+                    Color(0xFFE8EDF5),
+                    RoundedCornerShape(
+                        topStart = 9.dp,
+                        topEnd = 9.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                )
                 .padding(horizontal = 16.dp, vertical = 17.dp),
         ) {
             Column {
