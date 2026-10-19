@@ -2435,10 +2435,10 @@ private fun ControlBar(
             )
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
-                icon = if (state.muteOriginal) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                icon = if (state.dubbingOn) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
                 label = "原声",
-                selected = state.muteOriginal,
-                onClick = { svc?.toggleMute() },
+                selected = !state.dubbingOn,
+                onClick = { svc?.selectOriginalPlayback() },
             )
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
