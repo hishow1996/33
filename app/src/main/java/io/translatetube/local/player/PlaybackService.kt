@@ -5948,40 +5948,69 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     fun toggleDub() {
         val nowOn = !ui.value.dubbingOn
+        val sessionKey = ui.value.key
+        val position = if (::pm.isInitialized) pm.position() else -1L
+        // Mode changes invalidate any speech queued for the previous mode, including end-of-video
+        // draining. The next dub tick will select a cue from the current video timestamp.
+        cancelDubbingDrainAfterVideoEnd()
+        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
         if (!nowOn) {
-            dubbing?.stop()
-            // Turning dubbing off must leave a usable audio path. Otherwise a remembered
-            // "mute original" setting can silence both the source video and the stopped dub.
-            ui.update {
-                it.copy(dubbingOn = false, muteOriginal = false, activeDubbingLine = -1)
+            safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        dubbingOn = false,
+                        muteOriginal = false,
+                        activeDubbingLine = -1,
+                        dubbingStatus = "仅播放原声",
+                    )
+                } else state
             }
-            pm.originalVolume = 1f
+            if (::pm.isInitialized) pm.originalVolume = 1f
         } else {
-            ui.update {
-                it.copy(
-                    dubbingOn = true,
-                    dubbingStatus = "正在等待中文配音启动",
-                )
+            ui.update { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        dubbingOn = true,
+                        muteOriginal = false,
+                        activeDubbingLine = -1,
+                        dubbingStatus = "正在等待中文配音启动",
+                    )
+                } else state
             }
+            // Never mix source narration with Chinese dubbing. tick() opens the source track
+            // only when no dubbed cue is actually speaking, and silences it at voice start.
+            if (::pm.isInitialized) pm.originalVolume = 1f
             lastLineIdx = Int.MIN_VALUE
-            // Re-evaluate the live media timestamp immediately. This starts/resumes the
-            // subtitle cue at the current video position instead of waiting for the next
-            // periodic player tick, reducing drift when switching from source audio to dubbing.
             if (::pm.isInitialized) {
                 tickFromPlayerCallback(pm.position(), "dubbing enabled")
             }
         }
     }
-    fun toggleMute() {
-        val nowMuted = !ui.value.muteOriginal
-        ui.update { it.copy(muteOriginal = nowMuted) }
-        // Apply this immediately; tick() will refine it to the ducked mix volume when dubbing is active.
-        pm.originalVolume = if (nowMuted) 0f else 1f
-        if (ui.value.dubbingOn) {
-            dubbing?.updateVolume(if (nowMuted) 1.0f else 0.35f)
+
+    /** Select source-audio mode; it is mutually exclusive with Chinese dubbing. */
+    fun selectOriginalPlayback() {
+        val sessionKey = ui.value.key
+        val position = if (::pm.isInitialized) pm.position() else -1L
+        cancelDubbingDrainAfterVideoEnd()
+        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
+        safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+        ui.update { state ->
+            if (state.key == sessionKey) {
+                state.copy(
+                    dubbingOn = false,
+                    muteOriginal = false,
+                    activeDubbingLine = -1,
+                    dubbingStatus = "仅播放原声",
+                )
+            } else state
         }
+        if (::pm.isInitialized) pm.originalVolume = 1f
         lastLineIdx = Int.MIN_VALUE
     }
+
+    // Backward-compatible entry point; the player control now selects the original-only mode.
+    fun toggleMute() = selectOriginalPlayback()
     fun toggleAudioOnly() {
         val nowOnly = !ui.value.audioOnly
         ui.update { it.copy(audioOnly = nowOnly) }
