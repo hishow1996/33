@@ -681,6 +681,14 @@ class PlaybackService : MediaSessionService() {
         return (current * 100f / total).toInt().coerceIn(0, 100)
     }
 
+    /** Stable per-session correlation ID without persisting the original URL or local file path. */
+    private fun safeDiagnosticSessionFingerprint(sessionKey: String): String = runCatching {
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(sessionKey.toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }.getOrDefault("unavailable")
+
     /** Normalize changing counters/percentages so progress ticks do not flood the diagnostic log. */
     private fun progressLogSignature(progress: String): String = progress
         .replace(Regex("\\d+(?:\\.\\d+)?\\s*%"), "%")
@@ -764,6 +772,15 @@ class PlaybackService : MediaSessionService() {
                     "等待转写引擎" to after.waitingForTranscriptionEngine.toString(),
                     "等待配音引擎" to after.waitingForDubbingEngine.toString(),
                     "处理代数" to (pipelineGeneration?.toString() ?: "未指定"),
+                    "视频来源" to when {
+                        sessionKey.startsWith("youtube:") -> "YouTube"
+                        sessionKey.startsWith("remote:") -> "网页视频"
+                        sessionKey.startsWith("webpage:") -> "网页"
+                        sessionKey.startsWith("local:") -> "本地视频"
+                        else -> "其他来源"
+                    },
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                    "播放器初始化状态" to playerReady.toString(),
                 )
                 // File I/O must not run on the UI thread; the event is queued on the service scope.
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -5816,6 +5833,22 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 // while buffering. This is one final play() nudge after the seek transition.
                 if (!pm.player.playWhenReady || !pm.player.isPlaying) pm.play()
             } catch (error: Exception) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackSeek",
+                    "跳转后恢复播放失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                        "延迟恢复代次" to token.toString(),
+                        "当前恢复代次" to synchronized(seekResumeLock) { seekResumeGeneration }.toString(),
+                        "播放器初始化状态" to playerReady.toString(),
+                        "播放意图 playWhenReady" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
+                        "播放器当前是否实际播放" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
+                        "播放器状态码" to runCatching { pm.player.playbackState.toString() }.getOrDefault("读取失败"),
+                        "跳转目标位置 ms" to runCatching { pm.position().toString() }.getOrDefault("读取失败"),
+                    ),
+                )
                 android.util.Log.w("PlaybackService", "Playback resume after seek did not complete", error)
             } finally {
                 synchronized(seekResumeLock) {
@@ -5856,6 +5889,23 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 scheduleSeekResume(sessionKey)
             }
         } catch (error: Exception) {
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService,
+                "PlaybackSeek",
+                "视频跳转操作失败：$reason",
+                error,
+                diagnosticContext = mapOf(
+                    "触发原因" to reason,
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                    "请求跳转位置 ms" to ms.coerceAtLeast(0L).toString(),
+                    "播放器初始化状态" to playerReady.toString(),
+                    "播放器阶段" to ui.value.phase.name,
+                    "当前视频位置 ms" to runCatching { if (::pm.isInitialized) pm.position().toString() else "未初始化" }.getOrDefault("读取失败"),
+                    "当前字幕索引" to ui.value.currentLine.toString(),
+                    "当前配音字幕索引" to ui.value.activeDubbingLine.toString(),
+                    "恢复播放是否已排队" to synchronized(seekResumeLock) { pendingSeekResume != null }.toString(),
+                ),
+            )
             android.util.Log.e("PlaybackService", "$reason failed", error)
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
@@ -5937,7 +5987,20 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         scope.launch {
             try {
                 AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, pm.position() / 1000)
-            } catch (_: Exception) {}
+            } catch (error: Exception) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackProgress",
+                    "保存观看进度失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                        "视频会话标识长度" to key.length.toString(),
+                        "播放器初始化状态" to ::pm.isInitialized.toString(),
+                        "保存位置秒" to runCatching { if (::pm.isInitialized) (pm.position() / 1000).toString() else "不可用" }.getOrDefault("读取失败"),
+                    ),
+                )
+            }
         }
     }
     fun setSpeed(s: Float) { pm.speed(s) }
