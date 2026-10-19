@@ -979,7 +979,7 @@ class DubbingEngine(
             io.translatetube.local.util.AppLogStore.error(
                 appContext,
                 "DubbingEngine",
-                "第 ${index + 1}/${lines.size} 句配音$stage失败（${tts?.name ?: "未知引擎"}）",
+                "第 ${index + 1}/${lines.size} 句配音${stage}失败（${tts?.name ?: "未知引擎"}）",
                 failure,
                 diagnosticContext = mapOf(
                     "配音引擎名称" to (tts?.name ?: "未知引擎"),
