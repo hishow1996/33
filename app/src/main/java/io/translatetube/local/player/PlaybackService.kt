@@ -5964,6 +5964,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 )
             }
             lastLineIdx = Int.MIN_VALUE
+            // Re-evaluate the live media timestamp immediately. This starts/resumes the
+            // subtitle cue at the current video position instead of waiting for the next
+            // periodic player tick, reducing drift when switching from source audio to dubbing.
+            if (::pm.isInitialized) {
+                tickFromPlayerCallback(pm.position(), "dubbing enabled")
+            }
         }
     }
     fun toggleMute() {
