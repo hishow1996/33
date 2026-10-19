@@ -2289,6 +2289,7 @@ class DubbingEngine(
         playerSpeed: Float = 1.0f,
         playbackAllowed: (() -> Boolean)? = null,
         completeCueWhenLate: Boolean = false,
+        catchUpSyncRate: Float = 1.0f,
     ) {
         if (released) return
         val line = lines.getOrNull(idx) ?: return
@@ -2518,6 +2519,7 @@ class DubbingEngine(
                             cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L),
                             playerSpeed = currentSpeed,
                             maxSyncRate = DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
+                            targetSyncRate = catchUpSyncRate,
                         )
                     } else {
                         DubbingTiming.createPlan(
