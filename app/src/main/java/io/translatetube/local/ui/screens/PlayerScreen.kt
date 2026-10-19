@@ -1139,7 +1139,7 @@ private fun VideoParsingPage(
         Row(
             Modifier.fillMaxWidth().padding(bottom = 14.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Box(
                 Modifier
@@ -1159,36 +1159,10 @@ private fun VideoParsingPage(
             }
             Box(
                 Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(Color(0xFFFFECEE), Color(0xFFFFF5F4)),
-                        ),
-                    ),
+                    .weight(1f)
+                    .padding(horizontal = 4.dp),
                 contentAlignment = androidx.compose.ui.Alignment.Center,
             ) {
-                if (source == VideoSourceKind.YOUTUBE) {
-                    Box(
-                        Modifier
-                            .width(25.dp)
-                            .height(18.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFFF0444C)),
-                        contentAlignment = androidx.compose.ui.Alignment.Center,
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White)
-                    }
-                } else {
-                    Icon(
-                        if (source == VideoSourceKind.LOCAL) Icons.Filled.HighQuality else Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        tint = Color(0xFF3268F5),
-                        modifier = Modifier.size(23.dp),
-                    )
-                }
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     VideoProcessingFlowPolicy.pageTitle(
                         source,
@@ -1197,16 +1171,15 @@ private fun VideoParsingPage(
                     ),
                     color = Color(0xFF17243B),
                     style = MaterialTheme.typography.titleLarge.copy(
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = (-0.45).sp,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = (-0.35).sp,
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Box {
-                IconButton(
+            IconButton(
                     onClick = { processingSettingsOpen = true },
                     modifier = Modifier
                         .size(42.dp)
@@ -1219,7 +1192,6 @@ private fun VideoParsingPage(
                         tint = Color(0xFF43546D),
                         modifier = Modifier.size(22.dp),
                     )
-                }
             }
         }
 
