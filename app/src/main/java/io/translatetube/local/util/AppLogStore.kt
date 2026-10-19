@@ -23,6 +23,14 @@ data class AppLogRecord(
     val thread: String,
 )
 
+data class AppLogWriterHealth(
+    val failedWriteCount: Long,
+    val lastFailureTimestampMs: Long,
+    val lastFailureDescription: String,
+) {
+    val isHealthy: Boolean get() = failedWriteCount == 0L
+}
+
 object AppLogStore {
     private const val LOG_DIR = "app_logs"
     private const val LOG_NAME = "runtime.jsonl"
@@ -40,6 +48,33 @@ object AppLogStore {
     private val lock = Any()
     private val recentEvents = java.util.ArrayDeque<String>()
     private const val MAX_RECENT_EVENTS = 16
+    private val failedWriteCount = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile private var lastWriteFailureTimestampMs: Long = 0L
+    @Volatile private var lastWriteFailureDescription: String = ""
+
+    /** Runtime-only health fallback: remains available when the log file itself cannot be written. */
+    fun writerHealth(): AppLogWriterHealth = AppLogWriterHealth(
+        failedWriteCount = failedWriteCount.get(),
+        lastFailureTimestampMs = lastWriteFailureTimestampMs,
+        lastFailureDescription = lastWriteFailureDescription,
+    )
+
+    private fun noteWriteFailure(operation: String, failure: Throwable? = null) {
+        val count = failedWriteCount.incrementAndGet()
+        lastWriteFailureTimestampMs = System.currentTimeMillis()
+        val reason = failure?.let {
+            it.javaClass.simpleName + it.message?.takeIf(String::isNotBlank)?.let { message -> ": $message" }.orEmpty()
+        }.orEmpty()
+        val reasonSuffix = if (reason.isBlank()) "" else " — $reason"
+        lastWriteFailureDescription = redact(operation + reasonSuffix).take(240)
+        // Do not feed this back into AppLogStore: Logcat is the fallback when file logging itself fails.
+        runCatching {
+            android.util.Log.e(
+                "AppLogStore",
+                "Local diagnostic write failed ($count failures): $lastWriteFailureDescription",
+            )
+        }
+    }
 
     fun info(
         context: Context,
@@ -416,7 +451,10 @@ object AppLogStore {
         synchronized(lock) {
             try {
                 val directory = logDirectory(context)
-                if (!directory.exists() && !directory.mkdirs()) return
+                if (!directory.exists() && !directory.mkdirs()) {
+                    noteWriteFailure("无法创建本地日志目录：" + directory.name)
+                    return
+                }
                 pruneOldFiles(directory)
                 val file = File(directory, LOG_NAME)
                 val shouldIncludeTrail = level == "WARN" || level == "ERROR" || level == "FATAL"
@@ -443,8 +481,10 @@ object AppLogStore {
                     .take(600)
                 recentEvents.addLast(crumb)
                 while (recentEvents.size > MAX_RECENT_EVENTS) recentEvents.removeFirst()
-            } catch (_: Throwable) {
-                // Diagnostics must never cause or amplify an application crash.
+            } catch (failure: Throwable) {
+                // Diagnostics must never cause or amplify an application crash. Report write
+                // failures through Logcat and an in-memory health counter instead of recursing.
+                noteWriteFailure("写入本地诊断日志失败", failure)
             }
         }
     }
@@ -615,12 +655,24 @@ object AppLogStore {
         }
     }
 
-    /** Redact common credential fields and signed query parameters before writing or exporting. */
+    /** Redact common credentials, authorization headers, URL user-info and signed query parameters. */
     private fun redact(input: String): String {
         var value = input
-        val credentials = Regex("(?i)(api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\\s*[=:]\\s*)[^\\s,;]+")
-        value = credentials.replace(value) { match -> match.groupValues[1] + match.groupValues[2] + "[REDACTED]" }
-        val querySecrets = Regex("(?i)([?&](?:[A-Za-z0-9_.-]*(?:api[_-]?key|key|token|sig(?:nature)?|cookie|auth|password|secret|expires|credential|session|hdnts|policy|jwt))=)[^&\\s]+")
+        val bearer = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""")
+        value = bearer.replace(value, "Bearer [REDACTED]")
+        val basic = Regex("""(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}""")
+        value = basic.replace(value, "Basic [REDACTED]")
+        val jsonSecrets = Regex("""(?i)("(?:api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)"\s*:\s*")[^"]*(")""")
+        value = jsonSecrets.replace(value) { match ->
+            match.groupValues[1] + "[REDACTED]" + match.groupValues[2]
+        }
+        val urlUserInfo = Regex("""(?i)(https?://)[^/\s@]+@""")
+        value = urlUserInfo.replace(value) { match -> match.groupValues[1] + "[REDACTED]@" }
+        val credentials = Regex("""(?i)(api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|password|client[_-]?secret)(\s*[=:]\s*)[^\s,;]+""")
+        value = credentials.replace(value) { match ->
+            match.groupValues[1] + match.groupValues[2] + "[REDACTED]"
+        }
+        val querySecrets = Regex("""(?i)([?&](?:[A-Za-z0-9_.-]*(?:api[_-]?key|key|token|sig(?:nature)?|cookie|auth|password|secret|expires|credential|session|hdnts|policy|jwt))=)[^\s&]+""")
         value = querySecrets.replace(value) { match -> match.groupValues[1] + "[REDACTED]" }
         return value
     }
