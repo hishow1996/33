@@ -22,7 +22,9 @@ internal data class DubbingPlaybackPlan(
 )
 
 internal object DubbingTiming {
+    /** Normal playback stays conservative; only queued late-cue recovery may use the higher cap. */
     const val MAX_SYNC_RATE = 1.8f
+    const val MAX_CATCH_UP_SYNC_RATE = 2.1f
     const val MAX_OUTPUT_RATE = 3.0f
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
@@ -100,7 +102,7 @@ internal object DubbingTiming {
         }
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
-            ?.coerceAtMost(MAX_SYNC_RATE)
+            ?.coerceAtMost(MAX_CATCH_UP_SYNC_RATE)
             ?: MAX_SYNC_RATE
         val audioDurationMs = sampleCount.toDouble() * 1_000.0 / sampleRate.toDouble()
         val cueMs = cueDurationMs.toDouble()
