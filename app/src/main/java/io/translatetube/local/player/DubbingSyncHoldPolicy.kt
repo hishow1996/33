@@ -83,7 +83,18 @@ internal object DubbingSyncHoldPolicy {
             val decimalPoint = codePoint == 0x002E &&
                 previousCodePoint in 0x0030..0x0039 &&
                 nextCodePoint in 0x0030..0x0039
-            val pauseMs = if (decimalPoint) 0L else punctuationPauseForCodePoint(codePoint)
+            val asciiEllipsisPart = codePoint == 0x002E &&
+                (previousCodePoint == 0x002E || nextCodePoint == 0x002E)
+            val midWordPeriod = codePoint == 0x002E &&
+                nextCodePoint >= 0 &&
+                !Character.isWhitespace(nextCodePoint) &&
+                nextCodePoint != 0x002E
+            val pauseMs = when {
+                decimalPoint -> 0L
+                asciiEllipsisPart -> 210L
+                midWordPeriod -> 0L
+                else -> punctuationPauseForCodePoint(codePoint)
+            }
             if (pauseMs > 0L) {
                 if (!inPauseRun) {
                     totalMs += pauseMs
