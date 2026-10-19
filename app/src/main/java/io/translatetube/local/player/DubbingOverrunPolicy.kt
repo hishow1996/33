@@ -10,11 +10,11 @@ internal object DubbingOverrunPolicy {
         currentLineIndex: Int,
         nextLineIndex: Int,
         liveUtteranceActive: Boolean,
-        pcmOverrunActive: Boolean,
+        pcmOutputActive: Boolean,
         currentAudioFinished: Boolean,
     ): Boolean {
         if (currentLineIndex < 0 || currentLineIndex == nextLineIndex) return false
         if (liveUtteranceActive) return true
-        return pcmOverrunActive && !currentAudioFinished
+        return pcmOutputActive && !currentAudioFinished
     }
 }
