@@ -95,6 +95,7 @@ internal object DubbingTiming {
         cueDurationMs: Long,
         playerSpeed: Float,
         maxSyncRate: Float = MAX_SYNC_RATE,
+        targetSyncRate: Float = 1.0f,
     ): DubbingPlaybackPlan {
         val safePlayerSpeed = normalizePlayerSpeed(playerSpeed)
         if (sampleCount <= 0 || sampleRate <= 0 || cueDurationMs <= 0L) {
@@ -106,7 +107,12 @@ internal object DubbingTiming {
             ?: MAX_SYNC_RATE
         val audioDurationMs = sampleCount.toDouble() * 1_000.0 / sampleRate.toDouble()
         val cueMs = cueDurationMs.toDouble()
-        val syncRate = maxOf(1.0, audioDurationMs / cueMs)
+        val safeTargetRate = targetSyncRate.takeIf { it.isFinite() && it > 0.0f }
+            ?.coerceIn(1.0f, safeMaxRate)
+            ?: 1.0f
+        // A late queued cue needs to recover some timeline debt even when its PCM would fit at 1x.
+        // Bound the requested recovery rate and never crop its PCM to force the deadline.
+        val syncRate = maxOf(1.0, audioDurationMs / cueMs, safeTargetRate.toDouble())
             .coerceAtMost(safeMaxRate.toDouble())
             .toFloat()
         val overrunsWindow = audioDurationMs > cueMs * safeMaxRate.toDouble()
