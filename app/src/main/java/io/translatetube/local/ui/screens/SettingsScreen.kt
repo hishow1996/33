@@ -3,6 +3,18 @@ package io.translatetube.local.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -1241,15 +1253,37 @@ private fun EngineOption(
     current: String, onPick: (String) -> Unit,
 ) {
     val selected = current == id
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(15.dp))
-            .clickable { onPick(id) },
-        color = if (selected) Color(0xFFEAF1FF) else Color.White,
-        shape = RoundedCornerShape(15.dp),
-        border = androidx.compose.foundation.BorderStroke(
-            if (selected) 1.4.dp else 1.dp,
-            if (selected) BrandBright else OutlineSoft,
+    val surfaceColor by animateColorAsState(
+        targetValue = if (selected) Color(0xFFEAF1FF) else Color.White,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "ttsEngineSurface",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) BrandBright else OutlineSoft,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "ttsEngineBorder",
+    )
+    val borderWidth by animateDpAsState(
+        targetValue = if (selected) 1.4.dp else 1.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium,
         ),
+        label = "ttsEngineBorderWidth",
+    )
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(15.dp))
+            .clickable { onPick(id) }
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = 0.88f,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+            ),
+        color = surfaceColor,
+        shape = RoundedCornerShape(15.dp),
+        border = androidx.compose.foundation.BorderStroke(borderWidth, borderColor),
         tonalElevation = 0.dp,
     ) {
         Row(
@@ -1267,7 +1301,13 @@ private fun EngineOption(
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.weight(1f).padding(start = 4.dp),
             )
-            if (selected) {
+            AnimatedVisibility(
+                visible = selected,
+                enter = fadeIn(animationSpec = tween(150)) +
+                    expandHorizontally(animationSpec = tween(190, easing = FastOutSlowInEasing)),
+                exit = shrinkHorizontally(animationSpec = tween(130, easing = FastOutSlowInEasing)) +
+                    fadeOut(animationSpec = tween(100)),
+            ) {
                 Surface(color = Color(0xFFD6E5FF), shape = RoundedCornerShape(30.dp)) {
                     Text(
                         "当前使用",

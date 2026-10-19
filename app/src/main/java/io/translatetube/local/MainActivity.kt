@@ -9,6 +9,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import io.translatetube.local.ui.screens.*
@@ -161,7 +165,44 @@ class MainActivity : ComponentActivity() {
                         notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
-                var screen by remember { mutableStateOf(Screen.HOME) }
+                // Resolve deep links before the first draw so opening a shared video never flashes Home.
+                val initialScreen = when {
+                    playReq.value?.webPageUrl != null -> Screen.WEB
+                    playReq.value != null -> Screen.PLAYER
+                    else -> Screen.HOME
+                }
+                var screen by remember { mutableStateOf(initialScreen) }
+                // Render only one screen at a time. A staged fade avoids keeping two PlayerScreens
+                // alive together during AnimatedContent, which could duplicate playback side effects.
+                var displayedScreen by remember { mutableStateOf(initialScreen) }
+                val pageMotion = remember { Animatable(1f) }
+                var hasInitializedScreenMotion by remember { mutableStateOf(false) }
+                LaunchedEffect(screen) {
+                    if (!hasInitializedScreenMotion) {
+                        hasInitializedScreenMotion = true
+                        displayedScreen = screen
+                        pageMotion.snapTo(1f)
+                        return@LaunchedEffect
+                    }
+                    // Short exit, then a slightly longer entrance with a subtle vertical drift.
+                    // The old route is disposed before the next one enters (important for PlayerScreen).
+                    pageMotion.animateTo(
+                        targetValue = 0f,
+                        animationSpec = tween(
+                            durationMillis = 105,
+                            easing = FastOutSlowInEasing,
+                        ),
+                    )
+                    displayedScreen = screen
+                    pageMotion.snapTo(0.01f)
+                    pageMotion.animateTo(
+                        targetValue = 1f,
+                        animationSpec = tween(
+                            durationMillis = 225,
+                            easing = FastOutSlowInEasing,
+                        ),
+                    )
+                }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
                 var logsReturnScreen by remember { mutableStateOf(Screen.SETTINGS) }
                 val req by playReq
@@ -206,8 +247,15 @@ class MainActivity : ComponentActivity() {
                     Modifier.fillMaxSize().background(BgDark),
                     contentAlignment = Alignment.TopCenter,
                 ) {
-                    Box(Modifier.widthIn(max = 720.dp)) {
-                        when (screen) {
+                    Box(
+                        Modifier
+                            .widthIn(max = 720.dp)
+                            .graphicsLayer {
+                                alpha = pageMotion.value
+                                translationY = (1f - pageMotion.value) * 10.dp.toPx()
+                            },
+                    ) {
+                        when (displayedScreen) {
                             Screen.HOME -> HomeScreen(
                                 onPlay = { r -> rememberPlayRequest(r) },
                                 onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
