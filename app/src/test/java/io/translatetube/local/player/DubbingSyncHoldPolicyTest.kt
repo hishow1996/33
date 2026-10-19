@@ -74,6 +74,44 @@ class DubbingSyncHoldPolicyTest {
     }
 
     @Test
+    fun directTtsDurationEstimateLearnsFromCompletedSpeech() {
+        val updated = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
+            currentMsPerCodePoint = 220.0,
+            elapsedMs = 1_000L,
+            codePointCount = 10,
+            appliedSpeechRate = 2.0f,
+        )
+        assertEquals(196.0, updated, 0.001)
+    }
+
+    @Test
+    fun directTtsDurationCalibrationIgnoresInvalidOrTinySamples() {
+        assertEquals(
+            220.0,
+            DubbingSyncHoldPolicy.updateSpeechDurationEstimate(220.0, 50L, 10, 1.0f),
+            0.001,
+        )
+        assertEquals(
+            220.0,
+            DubbingSyncHoldPolicy.updateSpeechDurationEstimate(220.0, 1_000L, 0, 1.0f),
+            0.001,
+        )
+        assertEquals(
+            220.0,
+            DubbingSyncHoldPolicy.updateSpeechDurationEstimate(220.0, 1_000L, 10, Float.NaN),
+            0.001,
+        )
+    }
+
+    @Test
+    fun directTtsDurationCalibrationClampsExtremeObservations() {
+        val faster = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(220.0, 120L, 10, 1.0f)
+        val slower = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(220.0, 60_000L, 1, 1.0f)
+        assertEquals(172.0, faster, 0.001)
+        assertEquals(424.0, slower, 0.001)
+    }
+
+    @Test
     fun invalidInputsDoNotReportAnOverrun() {
         assertFalse(DubbingSyncHoldPolicy.wouldOverrunCueWindow(0L, 1_000L, 1.0f))
         assertFalse(DubbingSyncHoldPolicy.wouldOverrunCueWindow(8_000L, 0L, 1.0f))
