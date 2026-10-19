@@ -179,8 +179,14 @@ fun AppLogsScreen(onBack: () -> Unit) {
                         style = MaterialTheme.typography.labelLarge,
                     )
                     Text(
-                        if (writerHealth.isHealthy) "诊断记录保存在本机，不会自动上传。"
-                        else "本次运行累计失败 ${writerHealth.failedWriteCount} 次。最近原因：${writerHealth.lastFailureDescription}",
+                        when {
+                            writerHealth.failedWriteCount == 0L ->
+                                "诊断记录保存在本机，不会自动上传。"
+                            writerHealth.isHealthy ->
+                                "写入已恢复；本次运行累计失败 ${writerHealth.failedWriteCount} 次。最近原因：${writerHealth.lastFailureDescription}"
+                            else ->
+                                "当前写入仍有问题；本次运行累计失败 ${writerHealth.failedWriteCount} 次。最近原因：${writerHealth.lastFailureDescription}"
+                        },
                         color = SubText,
                         style = MaterialTheme.typography.bodySmall,
                     )
