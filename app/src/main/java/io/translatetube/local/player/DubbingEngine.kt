@@ -41,6 +41,7 @@ class DubbingEngine(
     private val videoKey: String,
     private val scope: CoroutineScope,
 ) {
+    private val appContext = ctx.applicationContext
     // videoKey may contain a content:// URI with slashes. Hash it to keep all cache files
     // inside one bounded, collision-resistant directory instead of creating nested path segments.
     private val cacheRootDir = File(ctx.cacheDir, "dub").apply { mkdirs() }
@@ -127,6 +128,7 @@ class DubbingEngine(
     @Volatile private var synthJob: Job? = null
     @Volatile private var cacheInitJob: Job? = null
     private val synthStartLock = Any()
+    private val synthesisRecoveryRetryCounts = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     private val cacheInitGeneration = AtomicInteger(0)
 
     /** Pause/seek/release cannot invalidate a request between its final check and AudioTrack.play(). */
@@ -470,6 +472,7 @@ class DubbingEngine(
                     }
                 }
                 if (cachedAudioState != null) {
+                    synthesisRecoveryRetryCounts.remove(idx)
                     // A cache file is usable only after its header and exact payload length are
                     // validated. Preserve empty failure markers separately from corrupt entries.
                     markCuePrepared(idx, hasAudio = cachedAudioState)
@@ -734,13 +737,16 @@ class DubbingEngine(
                     }
                     checkSynthesisActive()
                     if (!cachePersisted && !retainedInMemory) {
-                        reportSynthesisError(
+                        val cacheFailure = IllegalStateException(
                             "第 ${idx + 1} 句已合成，但缓存写入失败，且该句音频超出可用内存缓存容量，无法安全播放。请释放存储空间后重试。"
                         )
+                        recordDubbingFailure(idx, "音频缓存", cacheFailure)
+                        reportSynthesisError(cacheFailure.message ?: "配音音频缓存失败")
                         markCuePrepared(idx, hasAudio = false)
                         bumpPrepared()
                         continue
                     }
+                    synthesisRecoveryRetryCounts.remove(idx)
                     markCuePrepared(idx, hasAudio = true)
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
                         runCatching {
@@ -778,6 +784,38 @@ class DubbingEngine(
                         bumpPrepared()
                         continue
                     }
+                    val retriesAlreadyScheduled = synthesisRecoveryRetryCounts[idx] ?: 0
+                    val deterministicFailure = e is DubbingPcmLimitException || e is TtsInputLimitException
+                    if (DubbingSynthesisFailureRecoveryPolicy.shouldScheduleRetry(
+                            retriesAlreadyScheduled = retriesAlreadyScheduled,
+                            deterministicFailure = deterministicFailure,
+                            released = released,
+                        )
+                    ) {
+                        synthesisRecoveryRetryCounts[idx] = retriesAlreadyScheduled + 1
+                        markCuePending(idx)
+                        bumpPrepared()
+                        android.util.Log.w(
+                            "DubbingEngine",
+                            "Scheduling one delayed recovery retry: line=${idx + 1}/${lines.size}, " +
+                                "engine=${tts?.name}, chars=${text.length}, waitMs=${DubbingSynthesisFailureRecoveryPolicy.RETRY_DELAY_MS}",
+                            e,
+                        )
+                        scope.launch {
+                            kotlinx.coroutines.delay(DubbingSynthesisFailureRecoveryPolicy.RETRY_DELAY_MS)
+                            if (released) return@launch
+                            val enqueued = synchronized(pending) {
+                                if (released || pending.contains(idx) || readiness.isReady(idx)) {
+                                    false
+                                } else {
+                                    pending.offerLast(idx)
+                                }
+                            }
+                            if (enqueued) startSynthLoop()
+                        }
+                        continue
+                    }
+                    recordDubbingFailure(idx, "合成", e)
                     reportSynthesisError("第 ${idx + 1} 句，${tts?.name ?: "所选引擎"}合成失败：$detail")
                     // Do not persist a zero-sample marker for a failed synthesis. A transient
                     // service/voice failure should be retried in a future session, not cached as silence.
@@ -934,6 +972,33 @@ class DubbingEngine(
         }
     }
 
+    private fun recordDubbingFailure(index: Int, stage: String, failure: Throwable) {
+        val cue = lines.getOrNull(index)
+        val text = cue?.zh.orEmpty()
+        runCatching {
+            io.translatetube.local.util.AppLogStore.error(
+                appContext,
+                "DubbingEngine",
+                "第 ${index + 1}/${lines.size} 句配音$stage失败（${tts?.name ?: "未知引擎"}）",
+                failure,
+                diagnosticContext = mapOf(
+                    "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                    "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                    "故障阶段" to stage,
+                    "字幕行号" to "${index + 1}/${lines.size}",
+                    "字幕字符数" to text.length.toString(),
+                    "字幕 Unicode 码点数" to text.codePointCount(0, text.length).toString(),
+                    "字幕时间轴" to (cue?.let { "${it.startMs}–${it.endMs} ms" } ?: "未知"),
+                    "人物/音色编号" to (cue?.speakerId?.toString() ?: "未知"),
+                    "当前合成语速" to speed.toString(),
+                    "音频处理方式" to if (usesImmediateTimelinePlayback) "即时 TTS" else "PCM 合成后播放",
+                    "该句额外恢复重试次数" to (synthesisRecoveryRetryCounts[index] ?: 0).toString(),
+                ),
+            )
+        }.onFailure {
+            android.util.Log.w("DubbingEngine", "Could not persist detailed dubbing failure log", it)
+        }
+    }
     private fun publishReadinessProgress(snapshot: DubbingReadinessProgressSnapshot) {
         _preparedCount.value = snapshot.preparedCount
         _preparedUntil.value = snapshot.preparedUntil
@@ -2395,6 +2460,7 @@ class DubbingEngine(
                     markCuePrepared(idx, hasAudio = false)
                     val detail = e.message ?: e.javaClass.simpleName
                     android.util.Log.w("DubbingEngine", "AudioTrack playback failed for line $idx using selected engine ${tts?.name}", e)
+                    recordDubbingFailure(idx, "音频输出", e)
                     if (!requestTtsFallback(idx, detail)) {
                         reportSynthesisError("第 ${idx + 1} 句音频输出失败：$detail")
                     }

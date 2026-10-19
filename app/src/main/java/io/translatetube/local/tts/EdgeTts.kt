@@ -411,9 +411,15 @@ internal object EdgeTtsSecurity {
     private const val CS_ADJUSTMENT_1 = 0x0B1A0000
 
     fun generateSecMsGec(nowMs: Long = System.currentTimeMillis()): String {
-        var windowsSeconds = nowMs / 1000L + WINDOWS_EPOCH_SECONDS
-        windowsSeconds -= windowsSeconds % 300L
-        val data = ((windowsSeconds * TICKS_PER_SECOND).toString() + TRUSTED_TOKEN).toByteArray(Charsets.US_ASCII)
+        // Match edge-tts upstream exactly: use floating-point Unix seconds for the Windows
+        // epoch conversion, round down to the 5-minute bucket, then format 100-ns ticks with
+        // zero decimal places. Integer-second multiplication differs for some buckets and can
+        // produce a token that the current Microsoft service rejects while ending with no audio.
+        var ticks = nowMs.toDouble() / 1_000.0 + WINDOWS_EPOCH_SECONDS.toDouble()
+        ticks -= ticks % 300.0
+        ticks *= TICKS_PER_SECOND.toDouble()
+        val tickString = String.format(Locale.US, "%.0f", ticks)
+        val data = (tickString + TRUSTED_TOKEN).toByteArray(Charsets.US_ASCII)
         val digest = shaDigest(data)
         val cs = csDigest(data, digest)
         val prefix = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putInt(cs.first).putInt(cs.second).array()
