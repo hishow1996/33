@@ -85,6 +85,12 @@ fun AppLogsScreen(onBack: () -> Unit) {
     val visibleRecords = remember(records, filter, searchQuery) {
         val levelFiltered = when (filter) {
             "错误" -> records.filter { it.level == "ERROR" || it.level == "FATAL" }
+            "未恢复" -> records.filter {
+                isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs == null
+            }
+            "已恢复" -> records.filter {
+                isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs != null
+            }
             "闪退" -> records.filter {
                 it.level == "FATAL" ||
                     it.tag.contains("Crash", ignoreCase = true) ||
@@ -99,8 +105,16 @@ fun AppLogsScreen(onBack: () -> Unit) {
             record.tag.contains(query, ignoreCase = true) ||
                 record.message.contains(query, ignoreCase = true) ||
                 record.details.contains(query, ignoreCase = true) ||
-                record.thread.contains(query, ignoreCase = true)
+                record.thread.contains(query, ignoreCase = true) ||
+                record.issueKey.contains(query, ignoreCase = true) ||
+                record.resolvesIssueKey.contains(query, ignoreCase = true)
         }
+    }
+    val unresolvedCount = records.count {
+        isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs == null
+    }
+    val recoveredCount = records.count {
+        isRecoverableLevel(it.level) && it.issueKey.isNotBlank() && it.recoveredAtMs != null
     }
     val errorCount = records.count { it.level == "ERROR" || it.level == "FATAL" }
     val crashCount = records.count {
@@ -150,8 +164,13 @@ fun AppLogsScreen(onBack: () -> Unit) {
                 LogSummaryCard("警告", warningCount.toString(), Modifier.weight(1f), WarnYellow)
                 LogSummaryCard("闪退", crashCount.toString(), Modifier.weight(1f), DangerRed)
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                LogSummaryCard("未恢复", unresolvedCount.toString(), Modifier.weight(1f), DangerRed)
+                LogSummaryCard("已恢复", recoveredCount.toString(), Modifier.weight(1f), Color(0xFF18794E))
+                Spacer(Modifier.weight(2f))
+            }
             Text(
-                "保留最近 7 天的记录。“闪退”筛选也会包含系统报告的原生崩溃、ANR 和低内存异常退出；正常关闭不会当成闪退。",
+                "未恢复表示还没有记录到同一故障的成功恢复事件，不代表问题一定仍在发生。闪退筛选也包含系统报告的原生崩溃、ANR 和低内存异常退出。",
                 color = SubText,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -212,21 +231,26 @@ fun AppLogsScreen(onBack: () -> Unit) {
             style = MaterialTheme.typography.labelSmall,
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            listOf("全部", "错误", "闪退", "警告").forEach { option ->
-                FilterChip(
-                    selected = filter == option,
-                    onClick = { filter = option },
-                    label = { Text(option) },
-                    modifier = Modifier.weight(1f),
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = SurfaceHigh,
-                        selectedLabelColor = BrandBright,
-                    ),
-                )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf(listOf("全部", "错误", "闪退", "警告"), listOf("未恢复", "已恢复")).forEach { rowOptions ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    rowOptions.forEach { option ->
+                        FilterChip(
+                            selected = filter == option,
+                            onClick = { filter = option },
+                            label = { Text(option) },
+                            modifier = Modifier.weight(1f),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = SurfaceHigh,
+                                selectedLabelColor = BrandBright,
+                            ),
+                        )
+                    }
+                    if (rowOptions.size == 2) Spacer(Modifier.weight(2f))
+                }
             }
         }
 
@@ -297,6 +321,25 @@ fun AppLogsScreen(onBack: () -> Unit) {
                 ) {
                     Text(AppLogStore.formatTime(record.timestampMs), color = SubText, style = MaterialTheme.typography.bodySmall)
                     Text(record.message.ifBlank { "（无错误摘要）" }, color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                    if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (record.recoveredAtMs != null) Color(0xFFE8F5E9) else Color(0xFFFFF1F0),
+                            shape = RoundedCornerShape(9.dp),
+                        ) {
+                            Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    if (record.recoveredAtMs != null) "故障状态：已恢复" else "故障状态：尚无恢复成功记录",
+                                    color = if (record.recoveredAtMs != null) Color(0xFF216E39) else DangerRed,
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                                record.recoveredAtMs?.let {
+                                    Text("恢复时间：${AppLogStore.formatTime(it)}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                                }
+                                Text("关联故障编号：${record.issueKey}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                     if (record.thread.isNotBlank()) {
                         Text("异常发生线程：${record.thread}", color = SubText, style = MaterialTheme.typography.bodySmall)
                     }
@@ -422,9 +465,19 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
                 }
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     Text(record.message.ifBlank { record.tag }, color = OnBg, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(record.level, color = color, style = MaterialTheme.typography.labelSmall)
+                    if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
+                        Text(
+                            if (record.recoveredAtMs != null) "已恢复" else "待确认",
+                            color = if (record.recoveredAtMs != null) Color(0xFF216E39) else DangerRed,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                 }
                 Text(
                     AppLogStore.formatTime(record.timestampMs),
@@ -455,6 +508,9 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
         }
     }
 }
+
+private fun isRecoverableLevel(level: String): Boolean =
+    level == "WARN" || level == "ERROR" || level == "FATAL"
 
 private fun levelColor(level: String): Color = when (level) {
     "FATAL" -> DangerRed
