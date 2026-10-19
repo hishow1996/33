@@ -3445,7 +3445,24 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // Native ASR/TTS engines can exhaust the app heap/native budget when a history replay
             // switches engines in the same service process. Prefer original-audio playback and an
             // actionable warning over letting this recoverable initialization failure kill the app.
-            android.util.Log.e("PlaybackService", "Insufficient memory while preparing video/TTS for key=$key", e)
+            val memoryFailureState = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackPipeline",
+                "视频处理或配音初始化时发生 OutOfMemoryError，已启动内存恢复流程",
+                e,
+                diagnosticContext = mapOf(
+                    "故障阶段" to memoryFailureState.phase.name,
+                    "最近处理步骤" to memoryFailureState.progress.ifBlank { memoryFailureState.failedProgress }.take(200),
+                    "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
+                    "字幕行数" to memoryFailureState.lines.size.toString(),
+                    "已翻译行数" to memoryFailureState.translatedLineCount.toString(),
+                    "已准备配音行数" to memoryFailureState.preparedCount.toString(),
+                    "当前字幕索引" to memoryFailureState.currentLine.toString(),
+                    "配音引擎" to memoryFailureState.ttsEngineName.ifBlank { "未确定" },
+                    "本次处理状态" to "捕获内存错误后释放本地转写、配音和音频缓存资源，尝试恢复原声",
+                ),
+            )
+            android.util.Log.e("PlaybackService", "Insufficient memory while preparing video/TTS for key=${key.substringBefore('?').take(80)}", e)
             runCatching {
                 withContext(Dispatchers.IO) {
                     localAsrMutex.withLock { releaseLocalAsr() }
@@ -3484,7 +3501,23 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // A non-fatal Error (for example, an extractor/library linkage error) must be shown
             // as a playback failure rather than escaping a Dispatchers.Default coroutine.
             if (e is VirtualMachineError || e is ThreadDeath) throw e
-            android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=$key", e)
+            val nonVmFailureState = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackPipeline",
+                "视频处理流程捕获到非虚拟机致命错误",
+                e,
+                diagnosticContext = mapOf(
+                    "故障阶段" to nonVmFailureState.phase.name,
+                    "最近处理步骤" to nonVmFailureState.progress.ifBlank { nonVmFailureState.failedProgress }.take(200),
+                    "视频会话标识（去除查询参数）" to key.substringBefore('?').take(160),
+                    "配音引擎" to nonVmFailureState.ttsEngineName.ifBlank { "未确定" },
+                    "字幕行数" to nonVmFailureState.lines.size.toString(),
+                    "当前字幕索引" to nonVmFailureState.currentLine.toString(),
+                    "错误类型" to e.javaClass.name,
+                    "处理策略" to "将异常显示在播放器状态中，避免非 VM 错误逃逸到后台协程",
+                ),
+            )
+            android.util.Log.e("PlaybackService", "Fatal-looking non-VM error in video pipeline for key=${key.substringBefore('?').take(80)}", e)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     phase = Phase.ERROR,
@@ -4787,6 +4820,24 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         try {
             action()
         } catch (error: Exception) {
+            val state = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackSync",
+                "播放器事件中同步配音状态失败：$source",
+                error,
+                diagnosticContext = mapOf(
+                    "触发来源" to source,
+                    "视频会话标识（去除查询参数）" to state.key.substringBefore('?').take(160),
+                    "播放器阶段" to state.phase.name,
+                    "视频播放位置 ms" to runCatching { if (::pm.isInitialized) pm.position() else -1L }.getOrDefault(-1L).toString(),
+                    "当前字幕索引" to state.currentLine.toString(),
+                    "当前配音字幕索引" to state.activeDubbingLine.toString(),
+                    "是否开启配音" to state.dubbingOn.toString(),
+                    "是否静音原声" to state.muteOriginal.toString(),
+                    "当前配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
+                    "恢复策略" to "恢复原声音量并清除活动配音行，继续视频播放",
+                ),
+            )
             android.util.Log.e("PlaybackService", "Unable to synchronize dubbing during $source", error)
             safelySetOriginalVolume(if (ui.value.muteOriginal) 0f else 1f, source)
             ui.update { state ->
@@ -4802,6 +4853,19 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         try {
             if (playerReady && ::pm.isInitialized) pm.originalVolume = volume
         } catch (error: Exception) {
+            io.translatetube.local.util.AppLogStore.warning(
+                this@PlaybackService, "PlaybackSync",
+                "播放期间调整原视频音量失败：$source",
+                error,
+                diagnosticContext = mapOf(
+                    "触发来源" to source,
+                    "视频会话标识（去除查询参数）" to ui.value.key.substringBefore('?').take(160),
+                    "播放器阶段" to ui.value.phase.name,
+                    "请求音量" to volume.toString(),
+                    "当前是否静音原声" to ui.value.muteOriginal.toString(),
+                    "播放器是否初始化" to (::pm.isInitialized).toString(),
+                ),
+            )
             android.util.Log.w("PlaybackService", "Unable to set source volume during $source", error)
         }
     }
@@ -4810,6 +4874,22 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         try {
             tick(ms)
         } catch (error: Exception) {
+            val state = ui.value
+            io.translatetube.local.util.AppLogStore.error(
+                this@PlaybackService, "PlaybackTimeline",
+                "视频时间轴更新失败：$source",
+                error,
+                diagnosticContext = mapOf(
+                    "触发来源" to source,
+                    "视频会话标识（去除查询参数）" to state.key.substringBefore('?').take(160),
+                    "触发时间位置 ms" to ms.toString(),
+                    "播放器阶段" to state.phase.name,
+                    "最近处理步骤" to state.progress.ifBlank { state.failedProgress }.take(200),
+                    "当前字幕索引" to state.currentLine.toString(),
+                    "当前配音字幕索引" to state.activeDubbingLine.toString(),
+                    "配音引擎" to state.ttsEngineName.ifBlank { "未确定" },
+                ),
+            )
             android.util.Log.e("PlaybackService", "Timeline update failed during $source", error)
             val key = ui.value.key
             updateUiForSession(key) { state ->
@@ -5282,6 +5362,20 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService, "SpeakerDiarization",
+                    "自动区分人物失败，未能完成字幕人物与配音引擎重新装配",
+                    e,
+                    diagnosticContext = mapOf(
+                        "视频会话标识（去除查询参数）" to sessionKey.substringBefore('?').take(160),
+                        "故障阶段" to ui.value.phase.name,
+                        "原字幕行数" to oldLines.size.toString(),
+                        "识别到人物数量" to segments.map { speaker -> speaker.speaker }.distinct().size.toString(),
+                        "配音引擎" to selectedTts,
+                        "旧配音引擎是否已释放" to oldEngineRetired.toString(),
+                        "错误后的恢复" to "恢复原字幕和原声；保留原有音色分配以便重试",
+                    ),
+                )
                 updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                     if (state.key == sessionKey && videoKey == sessionKey) {
                         state.copy(
