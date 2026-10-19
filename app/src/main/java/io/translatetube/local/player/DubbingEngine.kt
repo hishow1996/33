@@ -212,7 +212,7 @@ class DubbingEngine(
         if ((tts as? TimelineTtsPlayback)?.useDirectTimelinePlayback == true) {
             return activeTimelineUtteranceId != null
         }
-        val activeTrack = track ?: return false
+        val activeTrack = track ?: return activeCueOverrunsWindow
         val finalSamples = activeTrackFinalChunkSampleCount
         if (finalSamples <= 0) return true
         val played = activeTrack.playbackHeadPosition.toLong() and 0xffff_ffffL
@@ -2221,13 +2221,25 @@ class DubbingEngine(
             }
         }
 
-        return DubbingOverrunPolicy.shouldHold(
+        val shouldKeepCurrentCue = DubbingOverrunPolicy.shouldHold(
             currentLineIndex = currentIndex,
             nextLineIndex = nextLineIndex,
             liveUtteranceActive = directTtsActive,
             pcmOutputActive = pcmOutputActive,
             currentAudioFinished = audioFinished,
         )
+        if (shouldKeepCurrentCue) {
+            // The duration estimate or initial timing plan may be optimistic (especially for OEM
+            // System TTS). If voice actually reaches the next cue boundary still active, promote
+            // it to a synchronization hold so later captions are not skipped while this sentence
+            // finishes. PlaybackService observes this flag on the same 50 ms timeline tick.
+            synchronized(playbackControlLock) {
+                if (!released && _currentLine.value == currentIndex) {
+                    activeCueOverrunsWindow = true
+                }
+            }
+        }
+        return shouldKeepCurrentCue
     }
 
     /** 播放某一行（先停上一行）。
