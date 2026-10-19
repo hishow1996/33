@@ -5122,7 +5122,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             } else if (dubLine >= 0 && d.isPrepared(dubLine)) {
                 if (!pm.player.isPlaying) {
                     // seekTo() emits an immediate tick: don't start speech while video is paused.
-                    // Exception: an automatic sync hold pauses video intentionally while this cue continues.
+                    // After the video ends, the explicit drain may finish already-queued speech; no
+                    // timing-overrun path is allowed to pause or hold the video during normal playback.
                     if (d.currentLineIdx() >= 0 && !isDubbingDrainActiveFor(d, st.key)) d.stop()
                 } else if (d.currentLineIdx() != dubLine) {
                     d.playAt(
