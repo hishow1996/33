@@ -19,6 +19,8 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.*
@@ -32,6 +34,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.util.AppLogRecord
 import io.translatetube.local.util.AppLogStore
@@ -54,6 +58,7 @@ fun AppLogsScreen(onBack: () -> Unit) {
     var exporting by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var writerHealth by remember { mutableStateOf(AppLogStore.writerHealth()) }
+    var showActionsMenu by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
@@ -126,170 +131,233 @@ fun AppLogsScreen(onBack: () -> Unit) {
     val warningCount = records.count { it.level == "WARN" }
 
     Column(
-        Modifier.fillMaxSize()
-            .background(BgDark)
-            .systemBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(26.dp))
-            .background(Color(0xFFF3F6FC))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .systemBarsPadding(),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "返回设置", tint = OnBg)
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("应用日志", color = OnBg, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text("本地诊断记录 · 不会自动上传", color = SubText, style = MaterialTheme.typography.bodySmall)
-            }
-            IconButton(onClick = { refreshKey++ }) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新日志", tint = BrandBright)
-            }
-            IconButton(
-                enabled = !exporting,
-                onClick = { exportLauncher.launch("elephant-translate-logs.txt") },
-            ) {
-                Icon(Icons.Filled.FileDownload, contentDescription = "导出诊断日志", tint = BrandBright)
-            }
-            IconButton(onClick = { showClearConfirm = true }) {
-                Icon(Icons.Filled.DeleteOutline, contentDescription = "清理日志", tint = DangerRed)
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                LogSummaryCard("总数", records.size.toString(), Modifier.weight(1f))
-                LogSummaryCard("错误", errorCount.toString(), Modifier.weight(1f), DangerRed)
-                LogSummaryCard("警告", warningCount.toString(), Modifier.weight(1f), WarnYellow)
-                LogSummaryCard("闪退", crashCount.toString(), Modifier.weight(1f), DangerRed)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                LogSummaryCard("未恢复", unresolvedCount.toString(), Modifier.weight(1f), DangerRed)
-                LogSummaryCard("已恢复", recoveredCount.toString(), Modifier.weight(1f), Color(0xFF18794E))
-                Spacer(Modifier.weight(2f))
+                Icon(Icons.Filled.ArrowBack, contentDescription = "返回", tint = Color(0xFF202124))
             }
             Text(
-                "未恢复表示还没有记录到同一故障的成功恢复事件，不代表问题一定仍在发生。闪退筛选也包含系统报告的原生崩溃、ANR 和低内存异常退出。",
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
+                "应用日志",
+                modifier = Modifier.weight(1f),
+                color = Color(0xFF202124),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
             )
-        }
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = if (writerHealth.isHealthy) Color(0xFFEAF7EF) else Color(0xFFFFF0F0),
-            shape = RoundedCornerShape(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    if (writerHealth.isHealthy) Icons.Filled.Info else Icons.Filled.WarningAmber,
-                    contentDescription = null,
-                    tint = if (writerHealth.isHealthy) Color(0xFF18794E) else DangerRed,
-                )
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        if (writerHealth.isHealthy) "日志写入状态正常" else "检测到日志写入失败",
-                        color = if (writerHealth.isHealthy) Color(0xFF18794E) else DangerRed,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                    Text(
-                        when {
-                            writerHealth.failedWriteCount == 0L ->
-                                "诊断记录保存在本机，不会自动上传。"
-                            writerHealth.isHealthy ->
-                                "写入已恢复；本次运行累计失败 ${writerHealth.failedWriteCount} 次。最近原因：${writerHealth.lastFailureDescription}"
-                            else ->
-                                "当前写入仍有问题；本次运行累计失败 ${writerHealth.failedWriteCount} 次。最近原因：${writerHealth.lastFailureDescription}"
+            IconButton(onClick = { refreshKey++ }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "刷新日志", tint = Color(0xFF4B5563))
+            }
+            Box {
+                IconButton(onClick = { showActionsMenu = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", tint = Color(0xFF4B5563))
+                }
+                DropdownMenu(
+                    expanded = showActionsMenu,
+                    onDismissRequest = { showActionsMenu = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(if (exporting) "正在导出…" else "导出日志") },
+                        leadingIcon = { Icon(Icons.Filled.FileDownload, contentDescription = null) },
+                        enabled = !exporting,
+                        onClick = {
+                            showActionsMenu = false
+                            exportLauncher.launch("elephant-translate-logs.txt")
                         },
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("清空日志") },
+                        leadingIcon = { Icon(Icons.Filled.DeleteOutline, contentDescription = null, tint = Color(0xFFB42318)) },
+                        onClick = {
+                            showActionsMenu = false
+                            showClearConfirm = true
+                        },
                     )
                 }
             }
+        }
+        HorizontalDivider(color = Color(0xFFE9EAEC), thickness = 1.dp)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${records.size} 条记录",
+                color = Color(0xFF202124),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "错误 $errorCount  ·  警告 $warningCount  ·  闪退 $crashCount",
+                color = Color(0xFF737980),
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+            )
         }
 
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
             singleLine = true,
-            placeholder = { Text("搜索标签、错误原因、配音引擎或线程") },
+            shape = RoundedCornerShape(14.dp),
+            placeholder = { Text("搜索错误、模块或关键词", maxLines = 1) },
+            leadingIcon = {
+                Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = Color(0xFF8A9099))
+            },
             trailingIcon = {
                 if (searchQuery.isNotBlank()) {
                     TextButton(onClick = { searchQuery = "" }) { Text("清除") }
                 }
             },
-        )
-        Text(
-            "显示 ${visibleRecords.size} / ${records.size} 条记录",
-            color = SubText,
-            style = MaterialTheme.typography.labelSmall,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color(0xFF9CA3AF),
+                unfocusedBorderColor = Color(0xFFE0E3E7),
+                focusedContainerColor = Color(0xFFFAFAFB),
+                unfocusedContainerColor = Color(0xFFFAFAFB),
+                focusedTextColor = Color(0xFF202124),
+                unfocusedTextColor = Color(0xFF202124),
+                focusedPlaceholderColor = Color(0xFF8A9099),
+                unfocusedPlaceholderColor = Color(0xFF8A9099),
+                cursorColor = Color(0xFF202124),
+            ),
         )
 
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(listOf("全部", "错误", "闪退", "警告"), listOf("未恢复", "已恢复")).forEach { rowOptions ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val filters = listOf(
+                "全部" to records.size,
+                "错误" to errorCount,
+                "闪退" to crashCount,
+                "警告" to warningCount,
+                "未恢复" to unresolvedCount,
+                "已恢复" to recoveredCount,
+            )
+            filters.forEach { (name, count) ->
+                FilterChip(
+                    selected = filter == name,
+                    onClick = { filter = name },
+                    label = { Text("$name $count", maxLines = 1) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF202124),
+                        selectedLabelColor = Color.White,
+                        selectedLeadingIconColor = Color.White,
+                        containerColor = Color(0xFFF3F4F6),
+                        labelColor = Color(0xFF454B53),
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = filter == name,
+                        borderColor = Color(0xFFE7E9EC),
+                        selectedBorderColor = Color(0xFF202124),
+                    ),
+                )
+            }
+        }
+
+        if (!writerHealth.isHealthy) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                color = Color(0xFFFFF1F0),
+                shape = RoundedCornerShape(12.dp),
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    rowOptions.forEach { option ->
-                        FilterChip(
-                            selected = filter == option,
-                            onClick = { filter = option },
-                            label = { Text(option) },
-                            modifier = Modifier.weight(1f),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = SurfaceHigh,
-                                selectedLabelColor = BrandBright,
-                            ),
+                    Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Color(0xFFB42318))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "日志写入异常",
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            writerHealth.lastFailureDescription.ifBlank { "部分日志可能未能保存。" },
+                            color = Color(0xFF7A271A),
+                            style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (rowOptions.size == 2) Spacer(Modifier.weight(2f))
                 }
             }
         }
 
-        message?.let {
+        message?.let { text ->
             Text(
-                it,
-                color = if (it.startsWith("导出失败") || it.startsWith("清理失败")) DangerRed else BrandBright,
+                text,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+                color = if (text.startsWith("导出失败") || text.startsWith("清理失败")) {
+                    Color(0xFFB42318)
+                } else {
+                    Color(0xFF357A52)
+                },
                 style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
 
         if (visibleRecords.isEmpty()) {
             Column(
-                Modifier.fillMaxWidth().weight(1f).padding(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                Icon(Icons.Filled.Info, contentDescription = null, tint = MutedGreen, modifier = Modifier.size(42.dp))
-                Spacer(Modifier.height(10.dp))
-                Text("暂无符合条件的日志", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                Icon(
+                    Icons.Filled.Info,
+                    contentDescription = null,
+                    tint = Color(0xFF9AA0A6),
+                    modifier = Modifier.size(38.dp),
+                )
+                Spacer(Modifier.height(12.dp))
                 Text(
                     when {
-                        records.isEmpty() -> "后续检测到的未处理异常和已接入日志的错误会显示在这里。"
-                        searchQuery.isNotBlank() -> "没有找到与“$searchQuery”匹配的日志。"
-                        else -> "切换筛选条件，查看其他运行记录。"
+                        records.isEmpty() -> "暂无日志记录"
+                        searchQuery.isNotBlank() -> "没有找到匹配的记录"
+                        else -> "暂无符合条件的记录"
                     },
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF202124),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
                 )
                 if (records.isEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedButton(onClick = { refreshKey++ }) { Text("重新读取") }
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { refreshKey++ }) { Text("重新读取") }
                 }
             }
         } else {
             LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-                contentPadding = PaddingValues(bottom = 8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(top = 2.dp, bottom = 20.dp),
             ) {
                 items(
                     items = visibleRecords,
@@ -302,99 +370,198 @@ fun AppLogsScreen(onBack: () -> Unit) {
     }
 
     selectedRecord?.let { record ->
-        AlertDialog(
+        Dialog(
             onDismissRequest = { selectedRecord = null },
-            title = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("日志详情", color = OnBg)
-                    Text(
-                        "${record.level} · ${record.tag}",
-                        color = levelColor(record.level),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-            },
-            text = {
-                Column(
-                    Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White)
+                    .systemBarsPadding(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(AppLogStore.formatTime(record.timestampMs), color = SubText, style = MaterialTheme.typography.bodySmall)
-                    Text(record.message.ifBlank { "（无错误摘要）" }, color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                    IconButton(onClick = { selectedRecord = null }) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "返回日志列表", tint = Color(0xFF202124))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "日志详情",
+                            color = Color(0xFF202124),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${record.level} · ${record.tag}",
+                            color = levelColor(record.level),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                HorizontalDivider(color = Color(0xFFE9EAEC))
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(
+                        AppLogStore.formatTime(record.timestampMs),
+                        color = Color(0xFF737980),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        record.message.ifBlank { "（无错误摘要）" },
+                        color = Color(0xFF202124),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+
                     if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
-                            color = if (record.recoveredAtMs != null) Color(0xFFE8F5E9) else Color(0xFFFFF1F0),
-                            shape = RoundedCornerShape(9.dp),
+                            color = if (record.recoveredAtMs != null) Color(0xFFEAF7EF) else Color(0xFFFFF1F0),
+                            shape = RoundedCornerShape(12.dp),
                         ) {
-                            Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Column(
+                                Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
                                 Text(
-                                    if (record.recoveredAtMs != null) "故障状态：已恢复" else "故障状态：尚无恢复成功记录",
-                                    color = if (record.recoveredAtMs != null) Color(0xFF216E39) else DangerRed,
-                                    style = MaterialTheme.typography.labelLarge,
+                                    if (record.recoveredAtMs != null) "已恢复" else "尚无恢复成功记录",
+                                    color = if (record.recoveredAtMs != null) Color(0xFF216E39) else Color(0xFFB42318),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
                                 )
                                 record.recoveredAtMs?.let {
-                                    Text("恢复时间：${AppLogStore.formatTime(it)}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        "恢复时间：${AppLogStore.formatTime(it)}",
+                                        color = Color(0xFF565C63),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
                                 }
-                                Text("关联故障编号：${record.issueKey}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    "故障编号：${record.issueKey}",
+                                    color = Color(0xFF565C63),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                         }
                     }
+
                     if (record.thread.isNotBlank()) {
-                        Text("异常发生线程：${record.thread}", color = SubText, style = MaterialTheme.typography.bodySmall)
+                        DetailSection(title = "发生线程", text = record.thread)
                     }
+
                     val causeChain = record.details.lineSequence()
                         .map { it.trim() }
                         .filter { it.matches(Regex("#\\d+ .+")) }
                         .take(12)
                         .toList()
                     if (causeChain.isNotEmpty()) {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFFFFF7E6),
-                            shape = RoundedCornerShape(10.dp),
-                        ) {
-                            Column(
-                                Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "异常原因",
+                                color = Color(0xFF202124),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFFFFF8EB),
+                                shape = RoundedCornerShape(12.dp),
                             ) {
-                                Text("异常根因链（从外层异常到最深层原因）", color = Color(0xFF8A4B08), style = MaterialTheme.typography.labelLarge)
-                                causeChain.forEach { cause ->
-                                    Text(cause, color = Color(0xFF59380B), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                                Column(
+                                    Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                                ) {
+                                    causeChain.forEach { cause ->
+                                        Text(
+                                            cause,
+                                            color = Color(0xFF59380B),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
+
                     if (record.details.isNotBlank()) {
-                        HorizontalDivider(color = OutlineSoft)
-                        Text("运行上下文、设备信息与完整堆栈", color = OnBg, style = MaterialTheme.typography.labelLarge)
-                        Text(
-                            record.details,
-                            color = SubText,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "完整日志",
+                                color = Color(0xFF202124),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFFF7F8FA),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text(
+                                    record.details,
+                                    modifier = Modifier.padding(14.dp),
+                                    color = Color(0xFF3F4650),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                        }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText(
-                            "应用日志",
-                            "${AppLogStore.formatTime(record.timestampMs)} [${record.level}] ${record.tag}\n${record.message}\n${record.details}",
+
+                HorizontalDivider(color = Color(0xFFE9EAEC))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { selectedRecord = null },
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("关闭") }
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(
+                                android.content.ClipData.newPlainText(
+                                    "应用日志",
+                                    "${AppLogStore.formatTime(record.timestampMs)} [${record.level}] ${record.tag}\n${record.message}\n线程：${record.thread}\n故障编号：${record.issueKey}\n${record.details}",
+                                ),
+                            )
+                            message = "日志详情已复制"
+                            selectedRecord = null
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF202124),
+                            contentColor = Color.White,
                         ),
-                    )
-                    message = "日志详情已复制"
-                    selectedRecord = null
-                }) { Text("复制详情") }
-            },
-            dismissButton = {
-                TextButton(onClick = { selectedRecord = null }) { Text("关闭") }
-            },
-            containerColor = SurfaceDark,
-        )
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("复制详情")
+                    }
+                }
+            }
+        }
     }
 
     if (showClearConfirm) {
@@ -413,7 +580,7 @@ fun AppLogsScreen(onBack: () -> Unit) {
                 }) { Text("确认清理", color = DangerRed) }
             },
             dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("取消") } },
-            containerColor = SurfaceDark,
+            containerColor = Color.White,
         )
     }
 }
@@ -442,63 +609,85 @@ private fun LogSummaryCard(
 @Composable
 private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
     val color = levelColor(record.level)
-    Surface(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).clickable(onClick = onClick),
-        color = Color.White,
-        shape = RoundedCornerShape(15.dp),
-        border = BorderStroke(1.dp, OutlineSoft),
-        tonalElevation = 0.dp,
-    ) {
+    val rootCause = remember(record.details) {
+        record.details.lineSequence()
+            .map { it.trim() }
+            .filter { it.matches(Regex("#\\d+ .+")) }
+            .lastOrNull()
+            ?: record.details.lineSequence().firstOrNull { it.startsWith("- ") }?.take(180).orEmpty()
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 18.dp, vertical = 16.dp),
             verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(
-                Modifier.size(34.dp).clip(CircleShape).background(color.copy(alpha = 0.10f)),
-                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(color),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                when (record.level) {
-                    "FATAL", "ERROR" -> Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = color)
-                    "WARN" -> Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = color)
-                    else -> Icon(Icons.Filled.Info, contentDescription = null, tint = color)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        record.message.ifBlank { record.tag },
+                        modifier = Modifier.weight(1f),
+                        color = Color(0xFF202124),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        AppLogStore.formatTime(record.timestampMs).substringAfterLast(" "),
+                        color = Color(0xFF858B93),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                    )
                 }
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    Text(record.message.ifBlank { record.tag }, color = OnBg, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(record.level, color = color, style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        record.tag,
+                        color = Color(0xFF68707A),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text("·", color = Color(0xFFB1B5BB))
+                    Text(
+                        record.level,
+                        color = color,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
+                        Text("·", color = Color(0xFFB1B5BB))
                         Text(
-                            if (record.recoveredAtMs != null) "已恢复" else "待确认",
-                            color = if (record.recoveredAtMs != null) Color(0xFF216E39) else DangerRed,
+                            if (record.recoveredAtMs != null) "已恢复" else "未恢复",
+                            color = if (record.recoveredAtMs != null) Color(0xFF247347) else Color(0xFFB42318),
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }
                 }
-                Text(
-                    AppLogStore.formatTime(record.timestampMs),
-                    color = SubText,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                Text(
-                    "${record.tag} · ${record.thread.ifBlank { "未知线程" }}",
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (record.details.isNotBlank()) {
-                    val rootCause = record.details.lineSequence()
-                        .map { it.trim() }
-                        .filter { it.matches(Regex("#\\d+ .+")) }
-                        .lastOrNull()
+                if (rootCause.isNotBlank() && (record.level == "ERROR" || record.level == "FATAL" || record.level == "WARN")) {
                     Text(
-                        rootCause ?: record.details.lineSequence().firstOrNull { it.startsWith("- ") }?.take(160).orEmpty(),
-                        color = if (record.level == "ERROR" || record.level == "FATAL") DangerRed else SubText,
+                        rootCause,
+                        color = Color(0xFF626A74),
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -506,6 +695,28 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
                 }
             }
         }
+        HorizontalDivider(
+            modifier = Modifier.padding(start = 39.dp),
+            color = Color(0xFFF0F1F3),
+            thickness = 1.dp,
+        )
+    }
+}
+
+@Composable
+private fun DetailSection(title: String, text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            title,
+            color = Color(0xFF202124),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text,
+            color = Color(0xFF565C63),
+            style = MaterialTheme.typography.bodyMedium,
+        )
     }
 }
 
@@ -513,8 +724,8 @@ private fun isRecoverableLevel(level: String): Boolean =
     level == "WARN" || level == "ERROR" || level == "FATAL"
 
 private fun levelColor(level: String): Color = when (level) {
-    "FATAL" -> DangerRed
-    "ERROR" -> Color(0xFFB91C1C)
-    "WARN" -> WarnYellow
-    else -> BrandBright
+    "FATAL" -> Color(0xFFB42318)
+    "ERROR" -> Color(0xFFC0392B)
+    "WARN" -> Color(0xFFB7791F)
+    else -> Color(0xFF64748B)
 }
