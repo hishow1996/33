@@ -113,3 +113,5 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
+
+# User-requested APK rebuild after adding Microsoft Edge TTS.
