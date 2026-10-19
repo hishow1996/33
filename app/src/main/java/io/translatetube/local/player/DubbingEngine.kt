@@ -2330,7 +2330,7 @@ class DubbingEngine(
                 return
             }
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
-            val spokenCodePointCount = DubbingSyncHoldPolicy.spokenCodePointCount(spokenText).coerceAtLeast(1)
+            val spokenCodePointCount = DubbingSyncHoldPolicy.spokenCodePointCount(spokenText)
             val punctuationPauseMs = DubbingSyncHoldPolicy.punctuationPauseMs(spokenText)
             val estimatedMsPerCodePoint = directTtsMsPerCodePoint
             val estimatedSpeechMs = DubbingSyncHoldPolicy.estimateSpeechDurationMs(
