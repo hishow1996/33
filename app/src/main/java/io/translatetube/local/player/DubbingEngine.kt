@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 系统 TTS 则在对应字幕时间点直接调用 Android 朗读服务，不再预合成 PCM。
  */
 private class DubbingPcmLimitException(message: String) : IllegalStateException(message)
-private class DubbingChunkBoundaryTimeoutException : IllegalStateException("等待配音分段结束超时")
+private class DubbingChunkBoundaryTimeoutException(message: String = "等待配音分段结束超时") : IllegalStateException(message)
 
 private data class DubbingCacheInspection(
     val hasAudio: Boolean?,
@@ -972,7 +972,12 @@ class DubbingEngine(
         }
     }
 
-    private fun recordDubbingFailure(index: Int, stage: String, failure: Throwable) {
+    private fun recordDubbingFailure(
+        index: Int,
+        stage: String,
+        failure: Throwable,
+        extraContext: Map<String, String> = emptyMap(),
+    ) {
         val cue = lines.getOrNull(index)
         val text = cue?.zh.orEmpty()
         runCatching {
@@ -993,7 +998,7 @@ class DubbingEngine(
                     "当前合成语速" to speed.toString(),
                     "音频处理方式" to if (usesImmediateTimelinePlayback) "即时 TTS" else "PCM 合成后播放",
                     "该句额外恢复重试次数" to (synthesisRecoveryRetryCounts[index] ?: 0).toString(),
-                ),
+                ) + extraContext,
             )
         }.onFailure {
             android.util.Log.w("DubbingEngine", "Could not persist detailed dubbing failure log", it)
@@ -1514,16 +1519,20 @@ class DubbingEngine(
             if (updatedTimeoutMs > timeoutMs) timeoutMs = updatedTimeoutMs
 
             val elapsedMs = nowMs - waitStartedMs
-            if (nowMs - lastHeadProgressAtMs >= STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS ||
-                elapsedMs >= timeoutMs
-            ) {
-                android.util.Log.w(
-                    "DubbingEngine",
-                    "Static dubbing chunk boundary timeout: expected=$expectedSampleCount " +
-                        "played=$playedSamples sampleRate=$sampleRate playbackRate=$activePlaybackRate " +
-                        "playState=${sourceTrack.playState} elapsed=${elapsedMs}ms budget=${timeoutMs}ms",
-                )
-                throw DubbingChunkBoundaryTimeoutException()
+            val headStallMs = nowMs - lastHeadProgressAtMs
+            if (headStallMs >= STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS || elapsedMs >= timeoutMs) {
+                val reason = if (headStallMs >= STATIC_CHUNK_HEAD_STALL_TIMEOUT_MS) {
+                    "播放头长时间没有前进"
+                } else {
+                    "等待时间超过本段预计播放窗口"
+                }
+                val errorMessage =
+                    "等待配音分段结束超时：原因=$reason；期望采样点=$expectedSampleCount，" +
+                        "已播放采样点=$playedSamples，采样率=${sampleRate}Hz，播放速率=$activePlaybackRate，" +
+                        "音轨状态=${sourceTrack.playState}，已等待=${elapsedMs}ms，预算=${timeoutMs}ms，" +
+                        "播放头停滞=${headStallMs}ms"
+                android.util.Log.w("DubbingEngine", errorMessage)
+                throw DubbingChunkBoundaryTimeoutException(errorMessage)
             }
             android.os.SystemClock.sleep(2L)
         }
@@ -1793,6 +1802,25 @@ class DubbingEngine(
                                 activeCueOverrunsWindow = false
                                 activeTrackFinalChunkSampleCount = -1
                                 android.util.Log.w("DubbingEngine", "Unable to advance long dubbing cue", error)
+                                recordDubbingFailure(
+                                    lineIndex,
+                                    "长音频分段播放",
+                                    error,
+                                    extraContext = mapOf(
+                                        "分段起始采样点" to chunkStartSample.toString(),
+                                        "分段结束采样点" to chunkEndSample.toString(),
+                                        "分段采样点数" to (chunkEndSample - chunkStartSample).coerceAtLeast(0).toString(),
+                                        "完整配音采样点数" to samples.size.toString(),
+                                        "采样率 Hz" to sampleRate.toString(),
+                                        "当前播放速率" to activePlaybackRate.toString(),
+                                        "播放代次" to generation.toString(),
+                                        "当前播放代次" to playbackGeneration.get().toString(),
+                                        "失败音轨播放状态" to runCatching { sourceTrack.playState.toString() }.getOrDefault("读取失败"),
+                                        "失败音轨播放头" to runCatching { sourceTrack.playbackHeadPosition.toString() }.getOrDefault("读取失败"),
+                                        "失败音轨仍由当前配音持有" to (track === sourceTrack).toString(),
+                                        "分段输出模式" to "AudioTrack.MODE_STATIC",
+                                    ),
+                                )
                                 val detail = error.message ?: error.javaClass.simpleName
                                 markCuePrepared(lineIndex, hasAudio = false)
                                 if (!requestTtsFallback(lineIndex, detail)) {
