@@ -2016,11 +2016,6 @@ class DubbingEngine(
             val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
             val estimatedSpeechMs = spokenText.codePointCount(0, spokenText.length) * 220L
             val timingRate = DubbingSyncHoldPolicy.timelineRate(estimatedSpeechMs, cueDurationMs)
-            val requiresVideoHold = DubbingSyncHoldPolicy.requiresVideoHold(
-                estimatedSpeechMs = estimatedSpeechMs,
-                cueDurationMs = cueDurationMs,
-                baseSpeechRate = speed,
-            )
             if (estimatedSpeechMs > cueDurationMs * DubbingTiming.MAX_SYNC_RATE.toLong()) {
                 android.util.Log.w(
                     "DubbingEngine",
@@ -2029,7 +2024,7 @@ class DubbingEngine(
                 )
             }
             val timelineSpeed = DubbingTiming.normalizePlayerSpeed(playerSpeed)
-            val speechTimelineSpeed = if (requiresVideoHold) 1.0f else timelineSpeed
+            val speechTimelineSpeed = timelineSpeed
             val speechRate = io.translatetube.local.tts.TtsSpeechRatePolicy.normalizeTimeline(
                 speed * timingRate * speechTimelineSpeed,
             )
@@ -2042,7 +2037,7 @@ class DubbingEngine(
                     isActivePlaybackAllowedLocked()
                 ) {
                     activeTimelineUtteranceId = utteranceId
-                    activeCueOverrunsWindow = requiresVideoHold
+                    activeCueOverrunsWindow = false
                     activeTrackFinalChunkSampleCount = -1
                     true
                 } else false
@@ -2177,7 +2172,7 @@ class DubbingEngine(
                     if (plan.overrunsWindow) {
                         android.util.Log.w(
                             "DubbingEngine",
-                            "长句超过安全同步倍率，保留剩余完整音频并等待本句结束：line=${idx + 1}, " +
+                            "长句超过字幕时间窗，保留语音尾段并继续播放视频：line=${idx + 1}, " +
                                 "sourceSamples=${samples.size}, remainingSamples=${samples.size - plan.startSample}, " +
                                 "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, windowMs=${line.endMs - line.startMs}",
                         )
@@ -2298,7 +2293,7 @@ class DubbingEngine(
                     val playbackRate = DubbingSyncHoldPolicy.playbackRate(
                         syncRate = plan.syncRate,
                         playerSpeed = activePlayerSpeed,
-                        willHoldVideo = plan.overrunsWindow,
+            
                     )
                     runCatching {
                         newTrack.setPlaybackParams(
@@ -2600,7 +2595,7 @@ class DubbingEngine(
         val rate = DubbingSyncHoldPolicy.playbackRate(
             syncRate = activeSyncRate,
             playerSpeed = normalized,
-            willHoldVideo = activeCueOverrunsWindow,
+
         )
         if (kotlin.math.abs(rate - activePlaybackRate) < 0.01f) return
         activePlaybackRate = rate

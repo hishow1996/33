@@ -3247,7 +3247,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
             // Normal generated mode prepares a buffer, then continues synthesizing while playing.
             // If repeated measurements show synthesis taking >=2x the timeline gap to the next
             // speech cue, stay on this page until all rows are prepared rather than start repeated gaps.
-            // Immediate mode is untouched and only waits for a usable first cue.
+            // Both modes use a bounded startup wait; slow TTS must not delay the whole video.
             val startupDubbing = dubbing
             if (startupDubbing != null) {
                 val immediateMode = startupDubbing.usesImmediateTimelinePlayback
@@ -3264,11 +3264,12 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         startupDubbing.isPrepared(index) || startupDubbing.isSilent(index)
 
                     val waitStartedNs = System.nanoTime()
+                    // Never wait for the full synthesis queue before allowing video playback.
+                    val maxStartupWaitMs = 3_000L
                     var normalDeadlineNs = waitStartedNs +
-                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
-                    var waitForAllBeforePlayback = startupBuffer.waitForAllBeforePlayback
-                    var lastFullWaitPreparedCount = -1
-
+                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                            startupBuffer.waitTimeoutMs.coerceAtMost(maxStartupWaitMs),
+                        )
                     startupDubbing.prioritizeAround(
                         startupBuffer.lineIndices.first(),
                         lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
@@ -3282,87 +3283,40 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                             synthesisTimelineLagFactor = startupDubbing.synthesisTimelineLagFactor,
                             synthesisSampleCount = startupDubbing.synthesisTimelineLagSampleCount,
                         )
-                        if (!immediateMode && startupBuffer.waitForAllBeforePlayback) {
-                            waitForAllBeforePlayback = true
-                        }
-
-                        if (!waitForAllBeforePlayback && startupBuffer.waitTimeoutMs > 0L) {
+                        if (startupBuffer.waitTimeoutMs > 0L) {
                             val updatedDeadline = waitStartedNs +
-                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupBuffer.waitTimeoutMs)
+                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                                    startupBuffer.waitTimeoutMs.coerceAtMost(maxStartupWaitMs),
+                                )
                             normalDeadlineNs = maxOf(normalDeadlineNs, updatedDeadline)
                         }
 
-                        if (waitForAllBeforePlayback) {
-                            // A severe slowdown was measured on more than one cue. Promote the
-                            // initial window, then let the single synthesis worker finish the rest
-                            // in order. Keep the processing page responsive with a real prepared count.
+                        val minimumBufferReady = startupBuffer.lineIndices
+                            .take(startupBuffer.minimumCueCount)
+                            .all(::cueFinished)
+                        if (minimumBufferReady || System.nanoTime() >= normalDeadlineNs) break
+
+                        if (startupBuffer.lineIndices.isNotEmpty()) {
                             startupDubbing.prioritizeAround(
-                                startupSpeechCueIndices.first(),
-                                lookAhead = minOf(12, maxOf(2, startupSpeechCueIndices.size - 1)),
+                                startupBuffer.lineIndices.first(),
+                                lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
                             )
-                            val preparedNow = startupDubbing.preparedCount.value
-                                .coerceIn(0, finalLines.size)
-                            if (preparedNow != lastFullWaitPreparedCount) {
-                                lastFullWaitPreparedCount = preparedNow
-                                updateUiForSession(key, pipelineGeneration) { state ->
-                                    if (state.key == key) {
-                                        state.copy(
-                                            progress = "检测到合成持续跟不上，先合成全部配音再播放（已准备 " +
-                                                preparedNow + "/" + finalLines.size + " 行）",
-                                        )
-                                    } else state
-                                }
-                            }
-                            // preparedCount is a constant-time terminal-row count. Avoid scanning
-                            // every subtitle repeatedly on older phones while a long video is synthesizing.
-                            if (
-                                startupDubbing.preparedCount.value >= finalLines.size ||
-                                dubbing !== startupDubbing ||
-                                !startupDubbing.isPreparing
-                            ) break
-                        } else {
-                            val minimumBufferReady = startupBuffer.lineIndices
-                                .take(startupBuffer.minimumCueCount)
-                                .all(::cueFinished)
-                            if (minimumBufferReady) break
-                            if (System.nanoTime() >= normalDeadlineNs) break
-                            if (startupBuffer.lineIndices.isNotEmpty()) {
-                                // Raise the queue priority as a slow device asks for a deeper buffer.
-                                startupDubbing.prioritizeAround(
-                                    startupBuffer.lineIndices.first(),
-                                    lookAhead = minOf(12, maxOf(2, startupBuffer.lineIndices.size - 1)),
-                                )
-                            }
                         }
-                        kotlinx.coroutines.delay(if (waitForAllBeforePlayback) 250 else 100)
+                        kotlinx.coroutines.delay(100L)
                     }
 
                     val firstSpeech = startupSpeechCueIndices.first()
                     val firstSpeechReady = cueFinished(firstSpeech)
-                    val allSpeechReady = startupSpeechCueIndices.all(::cueFinished)
-                    val minimumBufferReady = if (waitForAllBeforePlayback) {
-                        allSpeechReady
-                    } else {
-                        startupBuffer.lineIndices
-                            .take(startupBuffer.minimumCueCount)
-                            .all(::cueFinished)
-                    }
+                    val minimumBufferReady = startupBuffer.lineIndices
+                        .take(startupBuffer.minimumCueCount)
+                        .all(::cueFinished)
                     val bufferIncomplete = !minimumBufferReady
                     val measuredLag = startupDubbing.synthesisTimelineLagFactor
                     when {
-                        waitForAllBeforePlayback && allSpeechReady -> {
-                            android.util.Log.i(
-                                "PlaybackService",
-                                "Severe TTS slowdown detected; all speech cues are ready before video playback",
-                            )
-                            updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "全部配音已合成，正在启动视频播放")
-                            }
-                        }
                         !firstSpeechReady -> {
                             android.util.Log.w(
                                 "PlaybackService",
-                                "TTS startup timed out before the first cue; start with original audio audible",
+                                "TTS startup timed out before the first cue; video starts with source audio",
                             )
                             updateUiForSession(key, pipelineGeneration) {
                                 it.copy(progress = "首句配音仍在准备，先开始播放；配音就绪后继续生成")
@@ -3371,20 +3325,20 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         bufferIncomplete && measuredLag.isFinite() && measuredLag >= 1.2f -> {
                             android.util.Log.w(
                                 "PlaybackService",
-                                "TTS synthesis is slower than real time; buffer deadline reached",
+                                "TTS synthesis is slower than real time; bounded startup buffer reached",
                             )
                             updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "配音速度偏慢，已尽量增加首段缓冲；仍未就绪的片段会先保留原声")
+                                it.copy(progress = "配音生成较慢，视频先继续播放；未就绪片段暂时保留原声")
                             }
                         }
                         bufferIncomplete -> {
                             updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "首段缓冲未完全就绪，先开始播放；后续配音继续生成")
+                                it.copy(progress = "首段配音缓冲未完全就绪，先播放视频并继续生成")
                             }
                         }
                         !immediateMode && measuredLag.isFinite() && measuredLag >= 1.2f -> {
                             updateUiForSession(key, pipelineGeneration) {
-                                it.copy(progress = "已准备较长的首段配音缓冲，播放期间继续合成后续字幕")
+                                it.copy(progress = "已准备首段配音缓冲，播放期间继续合成后续字幕")
                             }
                         }
                     }
@@ -4725,9 +4679,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
         }
         engine.onPlaybackStarted = { index ->
-            if (engine.isSyncHoldActiveFor(index)) {
-                scope.launch(Dispatchers.Main) { beginDubbingSyncHold(engine, sessionKey, index) }
-            }
+            // Long cues no longer pause the video; the media playhead continues advancing.
             // Highlight the actual spoken cue, not just the video-time subtitle. AudioTrack
             // startup is asynchronous, so the first cue can otherwise miss its visual emphasis.
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
