@@ -121,3 +121,5 @@ jobs:
 # Stop the in-progress APK build at the user's request; do not start a replacement build.
 
 # Trigger APK build after user confirmed the request again on 2026-10-19.
+
+# Retry APK build after correcting Edge TTS Kotlin string escaping.
