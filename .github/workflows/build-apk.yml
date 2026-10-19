@@ -129,3 +129,5 @@ jobs:
 # Retry APK build after rewriting the online TTS decoder block with balanced braces.
 
 # Explicit APK build trigger after bounded TTS recovery and Edge TTS token correction (2026-10-19).
+
+# Explicit APK build retry after fixing detailed TTS diagnostic interpolation (2026-10-19).
