@@ -214,6 +214,24 @@ class DubbingTimingTest {
     }
 
     @Test
+    fun completeLateCueAppliesRequestedRecoveryRateWithoutTruncatingAudio() {
+        val samples = FloatArray(1_000) { 0.25f }
+        val plan = DubbingTiming.createCompleteCuePlan(
+            sampleCount = samples.size,
+            sampleRate = 1_000,
+            cueDurationMs = 1_000L,
+            playerSpeed = 1.0f,
+            maxSyncRate = DubbingTiming.MAX_CATCH_UP_SYNC_RATE,
+            targetSyncRate = 1.55f,
+        )
+
+        assertEquals(1.55f, plan.syncRate, 0.001f)
+        assertEquals(samples.size, plan.sampleCount)
+        assertFalse(plan.truncated)
+        assertEquals(samples.size, DubbingTiming.slice(samples, plan, 1_000).size)
+    }
+
+    @Test
     fun endedCueDoesNotRestartSpeech() {
         val plan = DubbingTiming.createPlan(
             sampleCount = 2_000, sampleRate = 1_000,
