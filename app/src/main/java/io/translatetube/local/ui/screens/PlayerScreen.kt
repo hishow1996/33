@@ -1283,10 +1283,10 @@ private fun VideoParsingPage(
                             )
                         }
                     }
-                    if (state.phase == Phase.ERROR && !isCancelled) {
+                    if (state.phase == Phase.ERROR) {
                         HorizontalDivider(color = Color(0xFFE9EEF6))
                         DropdownMenuItem(
-                            text = { Text("重试当前处理") },
+                            text = { Text(if (isCancelled) "重新开始处理" else "重试当前处理") },
                             leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
                             onClick = {
                                 parsingMenuExpanded = false
@@ -1854,20 +1854,18 @@ private fun VideoParsingPage(
                                 color = if (isCancelled) Color(0xFF8C6C3F) else Color(0xFF9F4D56),
                                 style = MaterialTheme.typography.bodySmall,
                             )
-                            if (!isCancelled) {
-                                Button(
-                                    onClick = onRetry,
-                                    modifier = Modifier.fillMaxWidth().height(43.dp),
-                                    shape = RoundedCornerShape(13.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF3268F5),
-                                        contentColor = Color.White,
-                                    ),
-                                ) {
-                                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
-                                    Spacer(Modifier.width(7.dp))
-                                    Text("重试当前处理", fontWeight = FontWeight.Bold)
-                                }
+                            Button(
+                                onClick = onRetry,
+                                modifier = Modifier.fillMaxWidth().height(43.dp),
+                                shape = RoundedCornerShape(13.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF3268F5),
+                                    contentColor = Color.White,
+                                ),
+                            ) {
+                                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text(if (isCancelled) "重新开始处理" else "重试当前处理", fontWeight = FontWeight.Bold)
                             }
                         }
                     }
