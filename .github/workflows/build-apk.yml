@@ -137,3 +137,5 @@ jobs:
 # Retry APK build after fixing speaker diarization compiler scope errors (2026-10-19).
 
 # Explicit APK build trigger requested for the latest main-branch dubbing synchronization changes (2026-10-19).
+
+# Re-trigger latest main source APK build on 2026-10-19; workflow-only, no application source changes.
