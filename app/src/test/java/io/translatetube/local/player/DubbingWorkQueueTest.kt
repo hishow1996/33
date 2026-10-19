@@ -28,8 +28,8 @@ class DubbingWorkQueueTest {
         repeat(6) { queue.offerLast(it) }
 
         assertTrue(queue.offerFirst(99))
-        assertEquals(3, queue.readySize)
-        assertEquals(7, queue.totalSize)
+        assertEquals(3, queue.readySize())
+        assertEquals(7, queue.totalSize())
 
         val drained = mutableListOf<Int>()
         queue.drainTo(drained)
@@ -43,7 +43,7 @@ class DubbingWorkQueueTest {
         assertTrue(queue.offerLast(2))
         assertTrue(queue.offerLast(3))
         assertFalse(queue.offerLast(4))
-        assertEquals(3, queue.totalSize)
+        assertEquals(3, queue.totalSize())
     }
 
     @Test
@@ -52,7 +52,7 @@ class DubbingWorkQueueTest {
         assertTrue(queue.offerLast(2))
         assertTrue(queue.offerLast(2))
         assertTrue(queue.offerFirst(2))
-        assertEquals(1, queue.totalSize)
+        assertEquals(1, queue.totalSize())
         assertEquals(2, queue.pollFirst())
         assertNull(queue.pollFirst())
     }
@@ -63,10 +63,10 @@ class DubbingWorkQueueTest {
         repeat(6) { queue.offerLast(it) }
         val result = mutableListOf<Int>()
         while (queue.isNotEmpty()) {
-            assertTrue(queue.readySize <= 2)
+            assertTrue(queue.readySize() <= 2)
             result += queue.pollFirst()!!
         }
         assertEquals((0 until 6).toList(), result)
-        assertEquals(0, queue.totalSize)
+        assertEquals(0, queue.totalSize())
     }
 }
