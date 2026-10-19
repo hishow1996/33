@@ -1649,7 +1649,7 @@ private fun VideoParsingPage(
                         bottomEnd = 22.dp,
                     ),
                 )
-                .padding(horizontal = 12.dp, vertical = if (compactLayout) 8.dp else 10.dp),
+                .padding(horizontal = 12.dp, vertical = if (compactLayout) 9.dp else 11.dp),
         ) {
             Column {
                 visibleStages.forEachIndexed { visibleIndex, index ->
@@ -1689,7 +1689,7 @@ private fun VideoParsingPage(
                                 color = if (active) Color(0xFFE4EDFF) else Color(0xFFFFD6DB),
                                 shape = RoundedCornerShape(17.dp),
                             )
-                            .padding(horizontal = 8.dp, vertical = if (compactLayout) 5.dp else 7.dp),
+                            .padding(horizontal = 8.dp, vertical = if (compactLayout) 6.dp else 7.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(if (compactLayout) 7.dp else 9.dp),
                     ) {
@@ -1724,7 +1724,7 @@ private fun VideoParsingPage(
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     fontSize = if (compactLayout) 12.sp else 13.sp,
                                     fontWeight = if (active || done) FontWeight.Bold else FontWeight.SemiBold,
-                                    lineHeight = if (compactLayout) 14.sp else 17.sp,
+                                    lineHeight = if (compactLayout) 15.sp else 17.sp,
                                 ),
                             )
                             Text(
@@ -1781,7 +1781,7 @@ private fun VideoParsingPage(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .background(stageBadgeBg)
-                                .padding(horizontal = if (compactLayout) 6.dp else 8.dp, vertical = if (compactLayout) 3.dp else 5.dp),
+                                .padding(horizontal = if (compactLayout) 6.dp else 8.dp, vertical = if (compactLayout) 4.dp else 5.dp),
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = if (compactLayout) 9.sp else 10.sp,
                                 fontWeight = FontWeight.Bold,
