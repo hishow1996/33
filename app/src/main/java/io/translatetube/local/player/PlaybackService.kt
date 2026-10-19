@@ -5091,8 +5091,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 positionMs = catchUpLine.startMs,
                                 playerSpeed = pm.playbackSpeed(),
                                 completeCueWhenLate = true,
-                                catchUpSyncRate = DubbingRecoveryRatePolicy.rateForQueueDepth(
-                                    dubbingCatchUpQueueDepth(st.key),
+                                catchUpSyncRate = DubbingRecoveryRatePolicy.rateForBacklog(
+                                    queueDepth = dubbingCatchUpQueueDepth(st.key),
+                                    latenessMs = (pm.position() - catchUpLine.startMs).coerceAtLeast(0L),
                                 ),
                                 playbackAllowed = {
                                     val latest = ui.value
