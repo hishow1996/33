@@ -35,7 +35,7 @@ internal object DubbingSyncHoldPolicy {
         if (estimatedSpeechMs <= 0L || cueDurationMs <= 0L) return 1.0f
         val safeMaxRate = maxSyncRate
             .takeIf { it.isFinite() && it >= 1.0f }
-            ?.coerceAtMost(DubbingTiming.MAX_SYNC_RATE)
+            ?.coerceAtMost(DubbingTiming.MAX_CATCH_UP_SYNC_RATE)
             ?: DubbingTiming.MAX_SYNC_RATE
         return (estimatedSpeechMs.toDouble() / cueDurationMs.toDouble())
             .coerceIn(1.0, safeMaxRate.toDouble())
