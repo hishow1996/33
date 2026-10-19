@@ -149,7 +149,12 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var dubbingSyncHoldWasPlaying = false
     @Volatile private var dubbingSyncHoldStartedAtMs = 0L
     @Volatile private var dubbingSyncHoldPoll: Runnable? = null
-    /** Prevent the ordinary resume listener from restarting the sentence that just completed. */
+    /** Catch-up queue for subtitle starts that pass while an earlier utterance finishes. */
+    private val dubbingCatchUpLock = Any()
+    private val dubbingCatchUpQueue = LinkedHashSet<Int>()
+    @Volatile private var dubbingCatchUpSessionKey = ""
+    private var lastDubbingCatchUpPositionMs = -1L
+    /** Retained for legacy hold-state cleanup; new overrun handling never pauses the player. */
     @Volatile private var resumeAfterDubbingSyncHold = false
     @Volatile private var playerReady = false
     private var session: MediaSession? = null
@@ -400,6 +405,7 @@ class PlaybackService : MediaSessionService() {
             pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
             pm.onEnded = {
             cancelDubbingSyncHold(resumePlayer = false, reason = "player ended")
+            clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
             // AudioTrack is independent from ExoPlayer. Once the player reaches STATE_ENDED its
             // ticker stops, so explicitly stop the last dubbed cue and reset mix volume here.
             safelyControlDubbing("player ended") { dubbing?.stop() }
@@ -415,6 +421,7 @@ class PlaybackService : MediaSessionService() {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     if (!isPlaying && ::pm.isInitialized && !pm.player.playWhenReady) {
                         resumeAfterDubbingSyncHold = false
+                        clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = pm.position())
                     }
                     if (isPlaying && dubbingSyncHoldEngine != null) {
                         // A user play action overrides the automatic hold; normal playback
@@ -447,6 +454,7 @@ class PlaybackService : MediaSessionService() {
                     reason: Int,
                 ) {
                     cancelDubbingSyncHold(resumePlayer = true, reason = "position discontinuity")
+                    clearDubbingCatchUpQueue(sessionKey = ui.value.key, positionMs = newPosition.positionMs)
                     // A seek can land inside the same subtitle cue, so comparing line indexes
                     // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
                     // Media3's new playhead immediately; this also covers seeks from media controls.
@@ -893,6 +901,10 @@ class PlaybackService : MediaSessionService() {
             false
         } else {
             dubbing = engine
+            clearDubbingCatchUpQueue(
+                sessionKey = sessionKey,
+                positionMs = if (::pm.isInitialized) pm.position() else -1L,
+            )
             true
         }
     }
@@ -4772,17 +4784,6 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 )
             }
         }
-        engine.onSyncHoldRequired = { index ->
-            // The engine raises this only when the actual remaining PCM (or the conservative
-            // System-TTS duration estimate) cannot fit its subtitle time slot. Marshal to main,
-            // then re-check engine/session ownership before touching ExoPlayer.
-            dubbingSyncHoldHandler.post {
-                if (isCurrentDubbingEngine(engine, sessionKey) && engine.isSyncHoldActiveFor(index)) {
-                    beginDubbingSyncHold(engine, sessionKey, index)
-                }
-            }
-        }
-
         engine.onFallbackRequested = { _, detail ->
             if (engine.currentTtsName != "系统TTS" || !isCurrentDubbingEngine(engine, sessionKey)) {
                 false
@@ -4931,6 +4932,72 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
     }
 
+    private fun clearDubbingCatchUpQueue(sessionKey: String? = null, positionMs: Long = -1L) {
+        synchronized(dubbingCatchUpLock) {
+            dubbingCatchUpQueue.clear()
+            dubbingCatchUpSessionKey = sessionKey.orEmpty()
+            lastDubbingCatchUpPositionMs = positionMs
+        }
+    }
+
+    private fun peekDubbingCatchUpCue(sessionKey: String): Int? = synchronized(dubbingCatchUpLock) {
+        if (dubbingCatchUpSessionKey == sessionKey) dubbingCatchUpQueue.firstOrNull() else null
+    }
+
+    private fun removeDubbingCatchUpCue(sessionKey: String, index: Int) {
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey == sessionKey && dubbingCatchUpQueue.firstOrNull() == index) {
+                dubbingCatchUpQueue.remove(index)
+            }
+        }
+    }
+
+    private fun hasDubbingCatchUpCues(sessionKey: String): Boolean =
+        peekDubbingCatchUpCue(sessionKey) != null
+
+    /** Record every playable cue whose start time passes while another sentence owns output. */
+    private fun updateDubbingCatchUpQueue(
+        state: PlayerUiState,
+        positionMs: Long,
+        captureMissedCues: Boolean,
+        activeDubbingIndex: Int,
+    ) {
+        val previousPositionMs: Long
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey != state.key) {
+                dubbingCatchUpQueue.clear()
+                dubbingCatchUpSessionKey = state.key
+                lastDubbingCatchUpPositionMs = positionMs
+                return
+            }
+            if (!state.dubbingOn) {
+                dubbingCatchUpQueue.clear()
+                lastDubbingCatchUpPositionMs = positionMs
+                return
+            }
+            val previous = lastDubbingCatchUpPositionMs
+            if (previous < 0L || positionMs < previous) {
+                dubbingCatchUpQueue.clear()
+                lastDubbingCatchUpPositionMs = positionMs
+                return
+            }
+            previousPositionMs = previous
+            lastDubbingCatchUpPositionMs = positionMs
+        }
+        if (!captureMissedCues || positionMs <= previousPositionMs) return
+
+        val crossed = state.lines.indices.filter { index ->
+            if (index == activeDubbingIndex) return@filter false
+            val line = state.lines[index]
+            DubbingTimeline.isPlayableCue(line) && line.startMs > previousPositionMs && line.startMs <= positionMs
+        }.sortedWith(compareBy<Int> { state.lines[it].startMs }.thenBy { it })
+
+        synchronized(dubbingCatchUpLock) {
+            if (dubbingCatchUpSessionKey != state.key || !state.dubbingOn) return
+            crossed.forEach { dubbingCatchUpQueue.add(it) }
+        }
+    }
+
     private fun tickFromPlayerCallback(ms: Long, source: String) {
         try {
             tick(ms)
@@ -4975,17 +5042,22 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         // is loading so the audio executor can skip elapsed speech instead of starting late.
         val previousDubbingLine = d?.currentLineIdx() ?: -1
         d?.updateTimelinePosition(dubLine, ms)
-        val keepingPreviousDubbingCue = d?.shouldContinueCurrentCue(dubLine) == true
-        // Fallback for transient callback/ticker races: if the active sentence no longer fits
-        // the remaining time slot, request the hold while we are still on that same cue.
-        val activeCueIndex = d?.currentLineIdx() ?: -1
-        if (
-            d != null && st.dubbingOn && activeCueIndex >= 0 &&
-            d.isSyncHoldActiveFor(activeCueIndex) &&
-            !isDubbingSyncHoldFor(d, activeCueIndex)
-        ) {
-            beginDubbingSyncHold(d, st.key, activeCueIndex)
+        val keepingTimelineCue = d?.shouldContinueCurrentCue(dubLine) == true
+        // Retire a queue head only after its audio output actually starts.
+        if (d != null && previousDubbingLine >= 0 && d.hasStartedPlaybackFor(previousDubbingLine)) {
+            removeDubbingCatchUpCue(st.key, previousDubbingLine)
         }
+        val queuedHead = peekDubbingCatchUpCue(st.key)
+        val keepingQueuedCue = d != null && queuedHead != null && previousDubbingLine >= 0 &&
+            previousDubbingLine != queuedHead && d.shouldContinueCurrentCue(queuedHead)
+        val keepingPreviousDubbingCue = keepingTimelineCue || keepingQueuedCue
+        updateDubbingCatchUpQueue(
+            state = st,
+            positionMs = ms,
+            captureMissedCues = keepingPreviousDubbingCue || hasDubbingCatchUpCues(st.key) ||
+                (previousDubbingLine >= 0 && previousDubbingLine != dubLine),
+            activeDubbingIndex = previousDubbingLine,
+        )
         // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
         // index uses the same overlap/time-window rules as dubbing, without depending on an engine
         // that may be between old and replacement subtitle sessions.
@@ -4997,10 +5069,49 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
         if (d != null && st.dubbingOn) {
             if (keepingPreviousDubbingCue) {
-                // A live/overrun sentence owns the output until its completion marker fires. Do
-                // not interrupt it at a subtitle boundary or unmute the source under its tail.
+                // Finish the current sentence without pausing video. Captions crossed meanwhile
+                // stay in the ordered catch-up queue instead of being skipped.
                 d.updatePlayerSpeed(pm.playbackSpeed())
                 d.updateVolume(if (st.muteOriginal) 1.0f else 0.35f)
+                d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
+            } else if (peekDubbingCatchUpCue(st.key) != null) {
+                // Play a late cue from its beginning; do not trim it against the advanced video cursor.
+                var catchUpIndex = peekDubbingCatchUpCue(st.key)
+                while (catchUpIndex != null && d.isPrepared(catchUpIndex) && d.isSilent(catchUpIndex)) {
+                    removeDubbingCatchUpCue(st.key, catchUpIndex)
+                    catchUpIndex = peekDubbingCatchUpCue(st.key)
+                }
+                if (catchUpIndex != null) {
+                    val catchUpLine = st.lines.getOrNull(catchUpIndex)
+                    if (catchUpLine == null || !DubbingTimeline.isPlayableCue(catchUpLine)) {
+                        removeDubbingCatchUpCue(st.key, catchUpIndex)
+                    } else if (d.currentLineIdx() != catchUpIndex) {
+                        if (d.isPrepared(catchUpIndex)) {
+                            d.playAt(
+                                catchUpIndex,
+                                if (st.muteOriginal) 1f else 0.35f,
+                                positionMs = catchUpLine.startMs,
+                                playerSpeed = pm.playbackSpeed(),
+                                completeCueWhenLate = true,
+                                playbackAllowed = {
+                                    val latest = ui.value
+                                    ::pm.isInitialized && pm.isPlaying.value &&
+                                        latest.key == st.key && latest.dubbingOn && dubbing === d
+                                },
+                            )
+                        } else {
+                            d.prioritizeAround(catchUpIndex, lookAhead = 8)
+                            if (d.currentLineIdx() >= 0) d.stop()
+                        }
+                    }
+                }
+                val activeCatchUpIndex = d.currentLineIdx()
+                val voiceStarted = d.hasStartedPlaybackFor(activeCatchUpIndex)
+                pm.originalVolume = when {
+                    st.muteOriginal -> 0f
+                    !voiceStarted -> 1f
+                    else -> 0.15f
+                }
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 pm.originalVolume = if (st.muteOriginal) 0f else 1f

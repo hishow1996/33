@@ -83,21 +83,7 @@ class DubbingEngine(
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
     @Volatile var onPlaybackStarted: ((index: Int) -> Unit)? = null
-    /** Requests a video hold when a complete sentence cannot fit the currently remaining time slot. */
-    @Volatile var onSyncHoldRequired: ((index: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
-
-    private fun requestSyncHoldForOverrun(index: Int) {
-        try {
-            onSyncHoldRequired?.invoke(index)
-        } catch (error: Exception) {
-            android.util.Log.w(
-                "DubbingEngine",
-                "Could not request a timeline hold for overlong cue ${index + 1}",
-                error,
-            )
-        }
-    }
     private val firstSynthesisReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
@@ -201,7 +187,7 @@ class DubbingEngine(
     @Volatile private var playbackStartedLine = -1
     /** Exact direct-TTS utterance owned by the current playback generation. */
     @Volatile private var activeTimelineUtteranceId: String? = null
-    /** A too-long PCM cue must finish its remaining samples before another cue can replace it. */
+    /** Keep an overlong cue intact until it finishes; the service queues intervening cues. */
     @Volatile private var activeCueOverrunsWindow = false
     /** Sample count of the current static buffer when it is the final buffer of an overrun cue. */
     @Volatile private var activeTrackFinalChunkSampleCount = -1
@@ -1707,6 +1693,7 @@ class DubbingEngine(
         syncRate: Float,
         lineStartMs: Long,
         lineEndMs: Long,
+        completeCueWhenLate: Boolean = false,
         initialHeadPosition: Int = 0,
     ) {
         if (chunkEndSample <= chunkStartSample) return
@@ -1812,28 +1799,32 @@ class DubbingEngine(
                                 // Re-read the playhead after prefetching. The source can advance
                                 // while AudioTrack initializes, so a cue that is now further ahead
                                 // must skip stale samples instead of replaying delayed speech.
-                                val latestPosition = DubbingStartPositionPolicy.choose(
-                                    lineIndex = lineIndex,
-                                    lineStartMs = lineStartMs,
-                                    lineEndMs = lineEndMs,
-                                    requestedPositionMs = preparedAtMs,
-                                    latestCursor = latestTimelineCursor,
-                                )
-                                if (latestPosition == null) {
-                                    if (track === sourceTrack) track = null
-                                    runCatching { sourceTrack.release() }
-                                    runCatching { createdNextTrack?.release() }
-                                    createdNextTrack = null
-                                    return@execute
+                                val targetSkip = if (completeCueWhenLate) {
+                                    0
+                                } else {
+                                    val latestPosition = DubbingStartPositionPolicy.choose(
+                                        lineIndex = lineIndex,
+                                        lineStartMs = lineStartMs,
+                                        lineEndMs = lineEndMs,
+                                        requestedPositionMs = preparedAtMs,
+                                        latestCursor = latestTimelineCursor,
+                                    )
+                                    if (latestPosition == null) {
+                                        if (track === sourceTrack) track = null
+                                        runCatching { sourceTrack.release() }
+                                        runCatching { createdNextTrack?.release() }
+                                        createdNextTrack = null
+                                        return@execute
+                                    }
+                                    DubbingTiming.lateStartSkipSamples(
+                                        preparedAtMs = preparedAtMs,
+                                        currentPositionMs = latestPosition,
+                                        syncRate = syncRate,
+                                        sampleRate = sampleRate,
+                                        availableSampleCount = samples.size,
+                                    )
                                 }
-                                val targetSkip = DubbingTiming.lateStartSkipSamples(
-                                    preparedAtMs = preparedAtMs,
-                                    currentPositionMs = latestPosition,
-                                    syncRate = syncRate,
-                                    sampleRate = sampleRate,
-                                    availableSampleCount = samples.size,
-                                )
-                                val nextStart = maxOf(chunkEndSample, targetSkip)
+                                val nextStart = if (completeCueWhenLate) chunkEndSample else maxOf(chunkEndSample, targetSkip)
                                 if (nextStart >= samples.size) {
                                     if (track === sourceTrack) track = null
                                     runCatching { sourceTrack.release() }
@@ -1899,6 +1890,7 @@ class DubbingEngine(
                                     syncRate = syncRate,
                                     lineStartMs = lineStartMs,
                                     lineEndMs = lineEndMs,
+                                    completeCueWhenLate = completeCueWhenLate,
                                     initialHeadPosition = headOffset,
                                 )
                                 track = nextTrack
@@ -2295,6 +2287,7 @@ class DubbingEngine(
         positionMs: Long? = null,
         playerSpeed: Float = 1.0f,
         playbackAllowed: (() -> Boolean)? = null,
+        completeCueWhenLate: Boolean = false,
     ) {
         if (released) return
         val line = lines.getOrNull(idx) ?: return
@@ -2339,15 +2332,15 @@ class DubbingEngine(
                 (estimatedSpeechMs.toDouble() / (baseSpeechRate * timelineSpeed).toDouble())
                     .toLong().coerceAtLeast(1L)
             val timingRate = DubbingSyncHoldPolicy.timelineRate(estimatedAtEffectiveRateMs, cueDurationMs)
-            val syncHoldRequired = DubbingSyncHoldPolicy.requiresVideoHold(
+            val predictedOverrun = DubbingSyncHoldPolicy.wouldOverrunCueWindow(
                 estimatedSpeechMs = estimatedAtEffectiveRateMs,
                 cueDurationMs = cueDurationMs,
                 baseSpeechRate = 1.0f,
             )
-            if (syncHoldRequired) {
+            if (predictedOverrun) {
                 android.util.Log.w(
                     "DubbingEngine",
-                    "系统 TTS 长句预计超出可用时间槽，将在播放时保持本句完整：line=${idx + 1}, " +
+                    "系统 TTS 长句预计超出时间槽，将以自适应语速完整朗读并顺序补播后续字幕：line=${idx + 1}, " +
                         "estimatedAtEffectiveRateMs=$estimatedAtEffectiveRateMs, windowMs=$cueDurationMs, " +
                         "maxRate=${DubbingTiming.MAX_SYNC_RATE}",
                 )
@@ -2355,7 +2348,7 @@ class DubbingEngine(
                     io.translatetube.local.util.AppLogStore.warning(
                         appContext,
                         "DubbingTimeline",
-                        "系统 TTS 第 ${idx + 1} 句预计无法在字幕时间槽内读完，将等待本句结束后继续视频",
+                        "系统 TTS 第 ${idx + 1} 句预计超出时间槽，将完整朗读且不暂停视频；期间经过的字幕进入顺序补播",
                         diagnosticContext = mapOf(
                             "字幕行号" to "${idx + 1}/${lines.size}",
                             "配音引擎" to "系统TTS（即时模式）",
@@ -2368,7 +2361,7 @@ class DubbingEngine(
                             "同步倍率" to timingRate.toString(),
                             "用户语速" to baseSpeechRate.toString(),
                             "视频播放速度" to timelineSpeed.toString(),
-                            "处理方式" to "维持单句完整，不让下一句抢播；必要时暂时暂停视频",
+                            "处理方式" to "不暂停视频；维持本句完整输出，并按时间顺序补播等待中的字幕",
                         ),
                     )
                 }
@@ -2385,7 +2378,7 @@ class DubbingEngine(
                     isActivePlaybackAllowedLocked()
                 ) {
                     activeTimelineUtteranceId = utteranceId
-                    activeCueOverrunsWindow = syncHoldRequired
+                    activeCueOverrunsWindow = predictedOverrun
                     activeTrackFinalChunkSampleCount = -1
                     true
                 } else false
@@ -2455,8 +2448,6 @@ class DubbingEngine(
                         _currentLine.value = -1
                     }
                 }
-            } else if (syncHoldRequired) {
-                requestSyncHoldForOverrun(idx)
             }
             return
         }
@@ -2494,25 +2485,38 @@ class DubbingEngine(
                         return@execute
                     }
 
-                    val position = DubbingStartPositionPolicy.choose(
-                        lineIndex = idx,
-                        lineStartMs = line.startMs,
-                        lineEndMs = line.endMs,
-                        requestedPositionMs = positionMs,
-                        latestCursor = latestTimelineCursor,
-                    ) ?: run {
-                        clearUnstartedLineIfCurrent(idx, generation)
-                        return@execute
+                    val position = if (completeCueWhenLate) {
+                        line.startMs
+                    } else {
+                        DubbingStartPositionPolicy.choose(
+                            lineIndex = idx,
+                            lineStartMs = line.startMs,
+                            lineEndMs = line.endMs,
+                            requestedPositionMs = positionMs,
+                            latestCursor = latestTimelineCursor,
+                        ) ?: run {
+                            clearUnstartedLineIfCurrent(idx, generation)
+                            return@execute
+                        }
                     }
                     val currentSpeed = DubbingTiming.normalizePlayerSpeed(activePlayerSpeed)
-                    val plan = DubbingTiming.createPlan(
-                        sampleCount = samples.size,
-                        sampleRate = sr,
-                        lineStartMs = line.startMs,
-                        lineEndMs = line.endMs,
-                        positionMs = position,
-                        playerSpeed = currentSpeed,
-                    )
+                    val plan = if (completeCueWhenLate) {
+                        DubbingTiming.createCompleteCuePlan(
+                            sampleCount = samples.size,
+                            sampleRate = sr,
+                            cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L),
+                            playerSpeed = currentSpeed,
+                        )
+                    } else {
+                        DubbingTiming.createPlan(
+                            sampleCount = samples.size,
+                            sampleRate = sr,
+                            lineStartMs = line.startMs,
+                            lineEndMs = line.endMs,
+                            positionMs = position,
+                            playerSpeed = currentSpeed,
+                        )
+                    }
                     synchronized(playbackControlLock) {
                         if (playbackGeneration.get() == generation && _currentLine.value == idx) {
                             activeCueOverrunsWindow = plan.overrunsWindow
@@ -2525,7 +2529,7 @@ class DubbingEngine(
                         val remainingWindowMs = (line.endMs - position).coerceAtLeast(0L)
                         android.util.Log.w(
                             "DubbingEngine",
-                            "配音剩余音频无法装入当前时间槽，保留完整尾段并请求视频同步等待：line=${idx + 1}, " +
+                            "配音剩余音频无法装入当前时间槽，保留完整尾段并进入顺序补播调度：line=${idx + 1}, " +
                                 "sourceSamples=${samples.size}, remainingSamples=$remainingSamples, " +
                                 "remainingAudioMs=${remainingAudioMs.toLong()}, remainingWindowMs=$remainingWindowMs, " +
                                 "syncRate=${plan.syncRate}, playerSpeed=$currentSpeed, " +
@@ -2535,7 +2539,7 @@ class DubbingEngine(
                             io.translatetube.local.util.AppLogStore.warning(
                                 appContext,
                                 "DubbingTimeline",
-                                "第 ${idx + 1} 句配音经过自适应合成后仍超过时间槽，暂时暂停视频等待本句完成",
+                                "第 ${idx + 1} 句配音经过自适应合成后仍超过时间槽，将完整读完且不暂停视频；期间字幕按顺序补播",
                                 diagnosticContext = mapOf(
                                     "字幕行号" to "${idx + 1}/${lines.size}",
                                     "配音引擎" to (tts?.name ?: "未知引擎"),
@@ -2547,7 +2551,7 @@ class DubbingEngine(
                                     "同步倍率" to plan.syncRate.toString(),
                                     "视频播放速度" to currentSpeed.toString(),
                                     "自适应合成次数" to adaptiveRetryCount.toString(),
-                                    "实际策略" to "保留完整语音，暂停视频等待句子结束，避免下一句漏配音",
+                                    "实际策略" to "保留完整语音，不暂停视频；将时间窗内经过的字幕排队逐句补播",
                                 ),
                             )
                         }
@@ -2625,6 +2629,7 @@ class DubbingEngine(
                     }
 
                     fun alignToLatestTimelinePosition(): Boolean {
+                        if (completeCueWhenLate) return true
                         val latestPosition = DubbingStartPositionPolicy.choose(
                             lineIndex = idx,
                             lineStartMs = line.startMs,
@@ -2720,6 +2725,7 @@ class DubbingEngine(
                         syncRate = plan.syncRate,
                         lineStartMs = line.startMs,
                         lineEndMs = line.endMs,
+                        completeCueWhenLate = completeCueWhenLate,
                         // The first buffer may already have skipped elapsed speech during setup.
                         // Marker positions are track-local, so pass the exact remaining head offset
                         // instead of assuming playback starts at sample zero.
@@ -2743,7 +2749,7 @@ class DubbingEngine(
                             .onFailure {
                                 android.util.Log.w("DubbingEngine", "Could not publish playback diagnostic", it)
                             }
-                        if (plan.overrunsWindow) requestSyncHoldForOverrun(idx)
+                        
                     }
                 } catch (e: Exception) {
                     // play() can fail after this track has already been published. Clear the shared

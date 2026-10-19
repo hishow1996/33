@@ -17,12 +17,12 @@ internal data class DubbingPlaybackPlan(
     val syncRate: Float,
     val playbackRate: Float,
     val truncated: Boolean,
-    /** The remaining audio cannot fit in the remaining media window; keep it intact and hold video. */
+    /** The complete audio does not fit the cue window; preserve it and queue crossed cues without pausing video. */
     val overrunsWindow: Boolean = false,
 )
 
 internal object DubbingTiming {
-    const val MAX_SYNC_RATE = 1.35f
+    const val MAX_SYNC_RATE = 1.8f
     const val MAX_OUTPUT_RATE = 3.0f
     private const val FADE_IN_MS = 8
     private const val FADE_OUT_MS = 30
@@ -76,8 +76,44 @@ internal object DubbingTiming {
         }
     }
 
-    fun createPlan(
+    /**
+     * Plan a late catch-up cue from its beginning. Unlike normal playback, this never discards
+     * a cue merely because its original subtitle window has passed or has only a tiny remainder.
+     */
+    fun createCompleteCuePlan(
         sampleCount: Int,
+        sampleRate: Int,
+        cueDurationMs: Long,
+        playerSpeed: Float,
+        maxSyncRate: Float = MAX_SYNC_RATE,
+    ): DubbingPlaybackPlan {
+        val safePlayerSpeed = normalizePlayerSpeed(playerSpeed)
+        if (sampleCount <= 0 || sampleRate <= 0 || cueDurationMs <= 0L) {
+            return DubbingPlaybackPlan(0, 0, 1.0f, safePlayerSpeed, false)
+        }
+        val safeMaxRate = maxSyncRate
+            .takeIf { it.isFinite() && it >= 1.0f }
+            ?.coerceAtMost(MAX_SYNC_RATE)
+            ?: MAX_SYNC_RATE
+        val audioDurationMs = sampleCount.toDouble() * 1_000.0 / sampleRate.toDouble()
+        val cueMs = cueDurationMs.toDouble()
+        val syncRate = maxOf(1.0, audioDurationMs / cueMs)
+            .coerceAtMost(safeMaxRate.toDouble())
+            .toFloat()
+        val overrunsWindow = audioDurationMs > cueMs * safeMaxRate.toDouble()
+        val outputRate = (syncRate * safePlayerSpeed).coerceIn(0.5f, MAX_OUTPUT_RATE)
+        return DubbingPlaybackPlan(
+            startSample = 0,
+            sampleCount = sampleCount,
+            syncRate = syncRate,
+            playbackRate = outputRate,
+            truncated = false,
+            overrunsWindow = overrunsWindow,
+        )
+    }
+
+    fun createPlan(
+         sampleCount: Int,
         sampleRate: Int,
         lineStartMs: Long,
         lineEndMs: Long,
@@ -121,9 +157,9 @@ internal object DubbingTiming {
         val syncRate = maxOf(1.0, desiredSyncRate)
             .coerceAtMost(safeMaxRate.toDouble()).toFloat()
 
-        // Skip elapsed speech for late starts, then compare the real remaining PCM tail with
-        // the remaining timeline budget. If even the remaining tail no longer fits, preserve it
-        // and signal PlaybackService to hold the video until this sentence truly completes.
+        // Skip elapsed speech during normal playback. If the tail still does not fit, preserve
+        // the full PCM; PlaybackService queues cues crossed before it completes rather than pausing
+        // the video or dropping those cues.
         val offset = floor(elapsedMs.toDouble() * syncRate * sampleRate / 1000.0)
             .toInt().coerceIn(0, sampleCount)
         val budget = ceil(remainingMs.toDouble() * syncRate * sampleRate / 1000.0)

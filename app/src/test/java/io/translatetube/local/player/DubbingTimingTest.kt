@@ -49,7 +49,7 @@ class DubbingTimingTest {
         )
         assertEquals(675, plan.startSample)
         assertEquals(3_325, plan.sampleCount)
-        assertEquals(1.35f, plan.syncRate, 0.001f)
+        assertEquals(1.8f, plan.syncRate, 0.001f)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
     }
@@ -151,7 +151,7 @@ class DubbingTimingTest {
             playerSpeed = 1.0f,
         )
 
-        assertEquals(1.35f, plan.syncRate, 0.001f)
+        assertEquals(1.8f, plan.syncRate, 0.001f)
         assertEquals(samples.size, plan.sampleCount)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)
@@ -166,9 +166,25 @@ class DubbingTimingTest {
             positionMs = 500, playerSpeed = 1.5f,
         )
         assertEquals(675, plan.startSample)
-        assertEquals(1.35f, plan.syncRate, 0.001f)
-        assertEquals(2.025f, plan.playbackRate, 0.001f)
+        assertEquals(1.8f, plan.syncRate, 0.001f)
+        assertEquals(2.7f, plan.playbackRate, 0.001f)
         assertTrue(plan.overrunsWindow)
+    }
+
+    @Test
+    fun lateCueCanPlayItsCompletePcmWhenScheduledForCatchUp() {
+        val samples = FloatArray(3_200) { 0.2f }
+        val plan = DubbingTiming.createCompleteCuePlan(
+            sampleCount = samples.size,
+            sampleRate = 1_000,
+            cueDurationMs = 50L,
+            playerSpeed = 1.0f,
+        )
+        assertEquals(0, plan.startSample)
+        assertEquals(samples.size, plan.sampleCount)
+        assertFalse(plan.truncated)
+        assertTrue(plan.overrunsWindow)
+        assertEquals(samples.size, DubbingTiming.slice(samples, plan, 1_000).size)
     }
 
     @Test
@@ -308,8 +324,8 @@ class DubbingTimingTest {
             maxSyncRate = 10.0f,
         )
 
-        assertEquals(1.35f, plan.syncRate, 0.001f)
-        assertEquals(2.7f, plan.playbackRate, 0.001f)
+        assertEquals(1.8f, plan.syncRate, 0.001f)
+        assertEquals(3.0f, plan.playbackRate, 0.001f)
         assertEquals(10_000, plan.sampleCount)
         assertTrue(plan.overrunsWindow)
         assertFalse(plan.truncated)

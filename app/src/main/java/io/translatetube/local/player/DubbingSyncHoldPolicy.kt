@@ -2,10 +2,10 @@ package io.translatetube.local.player
 
 internal object DubbingSyncHoldPolicy {
     /**
-     * Return true only when speech is still predicted to exceed the cue window after applying
-     * the selected speech rate and maximum safe timeline-rate multiplier.
+     * Detect whether speech is predicted to exceed the cue window after applying the selected
+     * rate. This is an overrun marker only; video playback is never paused for dubbing.
      */
-    fun requiresVideoHold(
+    fun wouldOverrunCueWindow(
         estimatedSpeechMs: Long,
         cueDurationMs: Long,
         baseSpeechRate: Float,
