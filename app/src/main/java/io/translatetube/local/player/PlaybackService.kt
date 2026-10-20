@@ -4136,18 +4136,32 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
-                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在获取视频音频流…")
+                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "YouTube · 正在选择独立音轨…")
                 } else state
             }
             awaitProcessingResumed(sessionKey)
             val stream = NewPipeRepo.audioForAsr(videoId)
-                ?: throw IllegalStateException("无法获取视频音频流")
+                ?: throw IllegalStateException("无法获取视频独立音轨")
+            updateUiForSession(sessionKey) { state ->
+                if (state.key == sessionKey) {
+                    state.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "YouTube · 独立音轨 · 正在下载…",
+                    )
+                } else state
+            }
             awaitProcessingResumed(sessionKey)
             val destination = asrAudioCacheFile(videoId)
             suspend fun downloadStream(url: String): File = try {
-                downloadAudio(url, destination, sessionKey)
+                downloadAudio(url, destination, sessionKey, progressLabel = "YouTube · 独立音轨")
             } catch (manifest: HlsManifestPayloadException) {
-                HlsAudioDownloader.download(url, destination, awaitResume = { awaitProcessingResumed(sessionKey) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
+                HlsAudioDownloader.download(
+                    url,
+                    destination,
+                    awaitResume = { awaitProcessingResumed(sessionKey) },
+                    userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                    initialSourceKind = HlsAudioDownloader.AudioSourceKind.INDEPENDENT,
+                ) { detail ->
                     updateUiForSession(sessionKey) { state ->
                         if (state.key == sessionKey) {
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
@@ -4208,6 +4222,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         destination: File,
         headers: Map<String, String>,
         awaitResume: suspend () -> Unit = {},
+        onSourceType: (HlsAudioDownloader.AudioSourceKind) -> Unit = {},
         onProgressPercent: (Int?, Long) -> Unit = { _, _ -> },
     ): File {
         val work = File(destination.parentFile, destination.name + ".part")
@@ -4234,10 +4249,17 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             ownerJob?.ensureActive()
             val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
+            var audioTrackCount = 0
+            var videoTrackCount = 0
             for (i in 0 until extractor.trackCount) {
                 val fmt = extractor.getTrackFormat(i)
                 val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    videoTrackCount++
+                    continue
+                }
                 if (!mime.startsWith("audio/")) continue
+                audioTrackCount++
                 val channels = runCatching {
                     fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
                 }.getOrDefault(1)
@@ -4252,6 +4274,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             val chosen = AudioTrackSelectionPolicy.choose(audioCandidates)
                 ?: throw IllegalStateException("该视频流中没有可提取的音频轨")
+            val sourceKind = when {
+                videoTrackCount > 0 && audioTrackCount > 0 ->
+                    HlsAudioDownloader.AudioSourceKind.MUXED
+                audioTrackCount > 0 && videoTrackCount == 0 ->
+                    HlsAudioDownloader.AudioSourceKind.INDEPENDENT
+                else -> HlsAudioDownloader.AudioSourceKind.UNKNOWN
+            }
+            onSourceType(sourceKind)
             val trackFormat = extractor.getTrackFormat(chosen)
             val mediaDurationUs = runCatching {
                 if (trackFormat.containsKey(android.media.MediaFormat.KEY_DURATION)) {
@@ -4414,7 +4444,10 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
-                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "正在缓存网页视频音轨…")
+                    state.copy(
+                        phase = Phase.DOWNLOADING_AUDIO,
+                        progress = "音轨类型待确认 · 正在检查网页媒体源…",
+                    )
                 } else state
             }
             val headers = buildMap {
@@ -4441,15 +4474,15 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                     if (state.key == sessionKey) {
                                         val progress = if (downloadedBytes > 0L || totalBytes != null) {
                                             AudioDownloadProgressFormatter.formatProgress(
-                                                label = "yt-dlp 正在下载音轨",
+                                                label = "独立音轨 · yt-dlp 正在下载",
                                                 downloadedBytes = downloadedBytes,
                                                 totalBytes = totalBytes,
                                                 percent = percent.takeIf { it >= 0 },
                                             )
                                         } else if (percent >= 0) {
-                                            "yt-dlp 正在下载音频 $percent%"
+                                            "独立音轨 · yt-dlp 正在下载 $percent%"
                                         } else {
-                                            "yt-dlp 正在下载音频…"
+                                            "独立音轨 · yt-dlp 正在下载…"
                                         }
                                         state.copy(
                                             phase = Phase.DOWNLOADING_AUDIO,
@@ -4476,7 +4509,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
                         updateUiForSession(sessionKey) { state ->
                             if (state.key == sessionKey) {
-                                state.copy(progress = "yt-dlp 音频下载失败，改用流式提取…")
+                                state.copy(progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…")
                             } else state
                         }
                     }
@@ -4494,17 +4527,28 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         // 直链视频优先「流式抽轨」：系统 MediaExtractor 直接读取带请求头的
                         // http 源，边拉边把音频轨写进 m4a/webm，不把整个视频下载到本地。
                         try {
+                            var detectedSourceKind = HlsAudioDownloader.AudioSourceKind.UNKNOWN
                             extractAudioTrackStreaming(
                                 mediaUrl,
                                 destination,
                                 headers,
                                 awaitResume = { awaitProcessingResumed(sessionKey) },
+                                onSourceType = { kind ->
+                                    detectedSourceKind = kind
+                                    updateUiForSession(sessionKey) { state ->
+                                        if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
+                                            state.copy(
+                                                progress = "${kind.displayName} · 正在从网页媒体源提取音轨…",
+                                            )
+                                        } else state
+                                    }
+                                },
                                 onProgressPercent = { percent, extractedBytes ->
                                     updateUiForSession(sessionKey) { state ->
                                         if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
                                             state.copy(
                                                 progress = AudioDownloadProgressFormatter.formatProgress(
-                                                    label = "网页视频音轨提取",
+                                                    label = "${detectedSourceKind.displayName} · 网页媒体流音轨提取",
                                                     downloadedBytes = extractedBytes,
                                                     percent = percent,
                                                 )
@@ -4557,7 +4601,13 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                         state.copy(progress = "音轨流式读取失败，正在下载独立音频文件…")
                                     } else state
                                 }
-                                downloadAudio(mediaUrl, destination, sessionKey, headers)
+                                downloadAudio(
+                                    mediaUrl,
+                                    destination,
+                                    sessionKey,
+                                    headers,
+                                    progressLabel = "独立音轨",
+                                )
                             } else {
                                 android.util.Log.w(
                                     "PlaybackService",
@@ -4649,6 +4699,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         destination: File? = null,
         sessionKey: String,
         requestHeaders: Map<String, String> = emptyMap(),
+        progressLabel: String = "音轨类型待确认 · 音轨",
     ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
@@ -4722,7 +4773,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                             (got * 100.0 / total.toDouble()).toInt().coerceIn(0, 100)
                                         } else null
                                         val progress = AudioDownloadProgressFormatter.formatProgress(
-                                            label = "正在下载音轨",
+                                            label = "${progressLabel} · 正在下载",
                                             downloadedBytes = got,
                                             totalBytes = total.takeIf { it > 0L },
                                             percent = percent,
@@ -4745,7 +4796,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 if (state.key == sessionKey) {
                                     state.copy(
                                         progress = AudioDownloadProgressFormatter.formatProgress(
-                                            label = "音轨下载完成",
+                                            label = "${progressLabel} · 下载完成",
                                             downloadedBytes = got,
                                             totalBytes = total.takeIf { it > 0L },
                                             percent = 100,
