@@ -132,6 +132,43 @@ class HlsAudioDownloaderTest {
     }
 
     @Test
+    fun reportsSelectedExternalAudioAsIndependent() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=500000,AUDIO="audio"
+            video/low.m3u8
+        """.trimIndent()
+
+        val selection = HlsAudioDownloader.selectMediaPlaylistWithKind(
+            "https://cdn.example/path/master.m3u8",
+            master,
+        )
+
+        assertEquals("https://cdn.example/path/audio/en.m3u8", selection?.url)
+        assertEquals(HlsAudioDownloader.AudioSourceKind.INDEPENDENT, selection?.sourceKind)
+    }
+
+    @Test
+    fun reportsMuxedVariantWhenNoSeparateAudioUriExists() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=300000
+            low/index.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=900000
+            high/index.m3u8
+        """.trimIndent()
+
+        val selection = HlsAudioDownloader.selectMediaPlaylistWithKind(
+            "https://cdn.example/path/master.m3u8",
+            master,
+        )
+
+        assertEquals("https://cdn.example/path/low/index.m3u8", selection?.url)
+        assertEquals(HlsAudioDownloader.AudioSourceKind.MUXED, selection?.sourceKind)
+    }
+
+    @Test
     fun choosesLowestBandwidthVariantWhenAudioIsMuxed() {
         val master = """
             #EXTM3U
