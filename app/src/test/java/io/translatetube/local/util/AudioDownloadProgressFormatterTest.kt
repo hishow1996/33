@@ -25,6 +25,50 @@ class AudioDownloadProgressFormatterTest {
     }
 
     @Test
+    fun labelsEstimatedTotalAsApproximate() {
+        assertEquals(
+            "正在提取音轨 1.0 MB / 预计约 4.0 MB · 25%",
+            AudioDownloadProgressFormatter.formatProgress(
+                label = "正在提取音轨",
+                downloadedBytes = 1024L * 1024L,
+                totalBytes = 4L * 1024L * 1024L,
+                percent = 25,
+                totalIsEstimate = true,
+            ),
+        )
+    }
+
+    @Test
+    fun estimatesAudioOutputBytesFromBitrateAndDuration() {
+        assertEquals(
+            1_200_000L,
+            AudioDownloadProgressFormatter.estimateBytesFromBitrateAndDuration(
+                bitRateBitsPerSecond = 96_000L,
+                durationUs = 100_000_000L,
+            ),
+        )
+        assertEquals(
+            null,
+            AudioDownloadProgressFormatter.estimateBytesFromBitrateAndDuration(
+                bitRateBitsPerSecond = null,
+                durationUs = 100_000_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun estimatesTotalBytesFromObservedTimelineProgress() {
+        assertEquals(
+            4_000L,
+            AudioDownloadProgressFormatter.estimateBytesFromObservedProgress(
+                downloadedBytes = 1_000L,
+                elapsedDurationUs = 25_000_000L,
+                totalDurationUs = 100_000_000L,
+            ),
+        )
+    }
+
+    @Test
     fun doesNotInventUnknownTotal() {
         assertEquals(
             "正在下载音轨 1.0 MB",
