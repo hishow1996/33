@@ -26,8 +26,12 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,6 +39,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
@@ -60,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -101,6 +108,7 @@ fun WebVideoScreen(
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
+    var sourcePanelExpanded by remember(initialUrl) { mutableStateOf(false) }
     var pageTitle by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
@@ -698,7 +706,7 @@ fun WebVideoScreen(
                 }
             }
 
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
             AndroidView(
@@ -876,304 +884,390 @@ fun WebVideoScreen(
                 update = { },
             )
 
-            }
 
-            Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            AnimatedVisibility(
-                visible = pageLoading || ytDlpBusy,
-                enter = fadeIn(animationSpec = tween(150)) +
-                    expandVertically(
-                        animationSpec = tween(180, easing = FastOutSlowInEasing),
-                    ),
-                exit = fadeOut(animationSpec = tween(110)) +
-                    shrinkVertically(
-                        animationSpec = tween(150, easing = FastOutSlowInEasing),
-                    ),
+            val targetPanelHeight = if (sourcePanelExpanded) {
+                (maxHeight * 0.66f).coerceAtMost(maxHeight)
+            } else {
+                72.dp.coerceAtMost(maxHeight)
+            }
+            val panelHeight by animateDpAsState(
+                targetValue = targetPanelHeight,
+                animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                label = "webSourcePanelHeight",
+            )
+            Card(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(panelHeight),
+                shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pointerInput(sourcePanelExpanded) {
+                                var dragDistance = 0f
+                                detectVerticalDragGestures(
+                                    onVerticalDrag = { _, dragAmount -> dragDistance += dragAmount },
+                                    onDragEnd = {
+                                        if (dragDistance < -36f) sourcePanelExpanded = true
+                                        else if (dragDistance > 36f) sourcePanelExpanded = false
+                                        dragDistance = 0f
+                                    },
+                                )
+                            }
+                            .clickable { sourcePanelExpanded = !sourcePanelExpanded }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                "检测到的视频源",
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                            )
+                            Text(
+                                when {
+                                    candidatesState.value.isNotEmpty() ->
+                                        "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证"
+                                    pageLoading || ytDlpBusy -> status
+                                    else -> status.ifBlank { "等待检测视频源" }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Icon(
+                            imageVector = if (sourcePanelExpanded) {
+                                Icons.Filled.KeyboardArrowDown
+                            } else {
+                                Icons.Filled.KeyboardArrowUp
+                            },
+                            contentDescription = if (sourcePanelExpanded) "收起视频源列表" else "展开视频源列表",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
+                    if (sourcePanelExpanded) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 14.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AnimatedVisibility(
+                    visible = pageLoading || ytDlpBusy,
+                    enter = fadeIn(animationSpec = tween(150)) +
+                        expandVertically(
+                            animationSpec = tween(180, easing = FastOutSlowInEasing),
+                        ),
+                    exit = fadeOut(animationSpec = tween(110)) +
+                        shrinkVertically(
+                            animationSpec = tween(150, easing = FastOutSlowInEasing),
+                        ),
                 ) {
-                    androidx.compose.material3.CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    Text(
-                        if (ytDlpBusy) "正在解析视频资源…" else "正在加载网页并检测视频…",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                    )
-                    TextButton(onClick = { cancelWebParsing() }) {
-                        Text(if (ytDlpBusy) "取消解析" else "停止加载")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            if (ytDlpBusy) "正在解析视频资源…" else "正在加载网页并检测视频…",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                        )
+                        TextButton(onClick = { cancelWebParsing() }) {
+                            Text(if (ytDlpBusy) "取消解析" else "停止加载")
+                        }
                     }
                 }
-            }
-            if (ytDlpHint != null) {
-                Text(
-                    ytDlpHint.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-                if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
-                    var updatingRules by remember(currentPage) { mutableStateOf(false) }
-                    TextButton(
-                        enabled = !updatingRules && !ytDlpBusy,
-                        onClick = {
-                            updatingRules = true
-                            ytDlpHint = null
-                            status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
-                            ytScope.launch(Dispatchers.IO) {
-                                try {
-                                    val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
-                                    mainHandler.post {
-                                        updatingRules = false
-                                        status = message
-                                    }
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    io.translatetube.local.util.AppLogStore.error(
-                                        appCtx,
-                                        "YtDlp",
-                                        "手动更新网页视频解析规则失败",
-                                        e,
-                                        diagnosticContext = mapOf(
-                                            "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
-                                            "操作" to "用户从网页视频页手动更新规则",
-                                            "当前页面是否仍活跃" to screenActive.get().toString(),
-                                        ),
-                                    )
-                                    mainHandler.post {
-                                        updatingRules = false
-                                        ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
-                                        status = "规则更新失败，可稍后重试。"
-                                    }
-                                }
-                            }
-                        },
-                    ) { Text(if (updatingRules) "更新中…" else "更新 yt-dlp 解析规则") }
-                }
-            }
-            if (
-                !pageLoading &&
-                !ytDlpBusy &&
-                ytDlpAutoAttempts == 0 &&
-                candidatesState.value.none { candidate ->
-                    candidate.url in verifiedUrls &&
-                        WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
-                } &&
-                PikpakShare.parseShareId(currentPage) == null &&
-                WebMediaUrlPolicy.normalizePageUrl(currentPage) != null
-            ) {
-                Text(
-                    "正在优先检测网页视频源；如果现有方式没有找到可用地址，将自动尝试备用解析。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
-            if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
-                val pikpakFolders = pikpakEntries.filter { it.isFolder }
-                    .sortedBy { it.name.lowercase() }
-                val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
-                Text("PikPak 分享清单", style = MaterialTheme.typography.titleMedium)
-                if (pikpakEntries.isEmpty()) {
+                if (ytDlpHint != null) {
                     Text(
-                        "已识别 PikPak 分享链接，正在读取文件清单；若迟迟无结果，请在上方网页里点一下任意文件夹。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Text(
-                        "共 ${pikpakVideos.size} 个视频、${pikpakFolders.size} 个文件夹。视频已加入下方候选列表，点候选卡片即可转写翻译配音。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (pikpakNotice != null) {
-                    Text(
-                        pikpakNotice.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (pikpakNeedsPasscode) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (pikpakNeedsPasscode) {
-                    Text(
-                        "该分享需要提取码：请先在上方网页里输入提取码（会自动记住），再点「展开全部文件夹」。",
+                        ytDlpHint.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+                    if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
+                        var updatingRules by remember(currentPage) { mutableStateOf(false) }
+                        TextButton(
+                            enabled = !updatingRules && !ytDlpBusy,
+                            onClick = {
+                                updatingRules = true
+                                ytDlpHint = null
+                                status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
+                                ytScope.launch(Dispatchers.IO) {
+                                    try {
+                                        val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
+                                        mainHandler.post {
+                                            updatingRules = false
+                                            status = message
+                                        }
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        io.translatetube.local.util.AppLogStore.error(
+                                            appCtx,
+                                            "YtDlp",
+                                            "手动更新网页视频解析规则失败",
+                                            e,
+                                            diagnosticContext = mapOf(
+                                                "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
+                                                "操作" to "用户从网页视频页手动更新规则",
+                                                "当前页面是否仍活跃" to screenActive.get().toString(),
+                                            ),
+                                        )
+                                        mainHandler.post {
+                                            updatingRules = false
+                                            ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
+                                            status = "规则更新失败，可稍后重试。"
+                                        }
+                                    }
+                                }
+                            },
+                        ) { Text(if (updatingRules) "更新中…" else "更新 yt-dlp 解析规则") }
+                    }
                 }
-                TextButton(enabled = !pikpakBusy, onClick = { expandPikpak("") }) {
+                if (
+                    !pageLoading &&
+                    !ytDlpBusy &&
+                    ytDlpAutoAttempts == 0 &&
+                    candidatesState.value.none { candidate ->
+                        candidate.url in verifiedUrls &&
+                            WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
+                    } &&
+                    PikpakShare.parseShareId(currentPage) == null &&
+                    WebMediaUrlPolicy.normalizePageUrl(currentPage) != null
+                ) {
                     Text(
-                        when {
-                            pikpakBusy -> "读取中…"
-                            pikpakEntries.isEmpty() -> "立即读取清单"
-                            else -> "展开全部文件夹"
-                        }
+                        "正在优先检测网页视频源；如果现有方式没有找到可用地址，将自动尝试备用解析。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (pikpakFolders.isNotEmpty()) {
+                // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
+                if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
+                    val pikpakFolders = pikpakEntries.filter { it.isFolder }
+                        .sortedBy { it.name.lowercase() }
+                    val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
+                    Text("PikPak 分享清单", style = MaterialTheme.typography.titleMedium)
+                    if (pikpakEntries.isEmpty()) {
+                        Text(
+                            "已识别 PikPak 分享链接，正在读取文件清单；若迟迟无结果，请在上方网页里点一下任意文件夹。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            "共 ${pikpakVideos.size} 个视频、${pikpakFolders.size} 个文件夹。视频已加入下方候选列表，点候选卡片即可转写翻译配音。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (pikpakNotice != null) {
+                        Text(
+                            pikpakNotice.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (pikpakNeedsPasscode) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (pikpakNeedsPasscode) {
+                        Text(
+                            "该分享需要提取码：请先在上方网页里输入提取码（会自动记住），再点「展开全部文件夹」。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    TextButton(enabled = !pikpakBusy, onClick = { expandPikpak("") }) {
+                        Text(
+                            when {
+                                pikpakBusy -> "读取中…"
+                                pikpakEntries.isEmpty() -> "立即读取清单"
+                                else -> "展开全部文件夹"
+                            }
+                        )
+                    }
+                    if (pikpakFolders.isNotEmpty()) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(132.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(pikpakFolders, key = { "${it.parentId}/${it.id}" }) { folder ->
+                                val alreadyListed = folder.id in pikpakListedParents
+                                Card(
+                                    modifier = Modifier
+                                        .animateItem(
+                                            fadeInSpec = tween(durationMillis = 150),
+                                            placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                            fadeOutSpec = tween(durationMillis = 110),
+                                        )
+                                        .fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (alreadyListed) MaterialTheme.colorScheme.surface
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                    ),
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable(enabled = !pikpakBusy && !alreadyListed) {
+                                                expandPikpak(folder.id)
+                                            }
+                                            .padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text("📁", style = MaterialTheme.typography.titleMedium)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            folder.name.ifBlank { "文件夹" },
+                                            style = MaterialTheme.typography.titleSmall,
+                                            modifier = Modifier.weight(1f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            if (alreadyListed) "已读取" else "展开",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (alreadyListed) MaterialTheme.colorScheme.onSurfaceVariant
+                                            else MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (candidatesState.value.isNotEmpty()) {
+                    Text("检测到的视频", style = MaterialTheme.typography.titleMedium)
+                    // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
+                    val displayCandidates = remember(candidatesState.value, verifiedUrls) {
+                        candidatesState.value
+                            .mapIndexed { index, c -> Pair(c, index) }
+                            .sortedWith(
+                                object : Comparator<Pair<WebVideoCandidate, Int>> {
+                                    override fun compare(
+                                        a: Pair<WebVideoCandidate, Int>,
+                                        b: Pair<WebVideoCandidate, Int>,
+                                    ): Int {
+                                        val aVerified = a.first.url in verifiedUrls
+                                        val bVerified = b.first.url in verifiedUrls
+                                        if (aVerified != bVerified) return if (bVerified) 1 else -1
+                                        val aRank = WebVideoProbePolicy.candidateRank(a.first.url)
+                                        val bRank = WebVideoProbePolicy.candidateRank(b.first.url)
+                                        if (aRank != bRank) return bRank - aRank
+                                        return a.second - b.second
+                                    }
+                                },
+                            )
+                            .map { it.first }
+                    }
                     LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(132.dp),
+                        modifier = Modifier.fillMaxWidth().height(maxHeight * 0.43f),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        items(pikpakFolders, key = { "${it.parentId}/${it.id}" }) { folder ->
-                            val alreadyListed = folder.id in pikpakListedParents
+                        items(displayCandidates, key = { it.url }) { candidate ->
+                            val sourceHint = sourceHints[candidate.url]
+                                ?: WebCandidateVerifier.initialAudioHint(candidate.url)
+                            val hintColor = when (sourceHint.kind) {
+                                WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
+                                WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
+                                WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            val reason = when {
+                                candidate.drmProtected -> "检测到 EME/DRM 标记，不能提取或绕过受保护的媒体音轨。"
+                                else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
+                            }
                             Card(
                                 modifier = Modifier
                                     .animateItem(
-                                        fadeInSpec = tween(durationMillis = 150),
+                                        fadeInSpec = tween(durationMillis = 160),
                                         placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                        fadeOutSpec = tween(durationMillis = 110),
+                                        fadeOutSpec = tween(durationMillis = 120),
                                     )
                                     .fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (alreadyListed) MaterialTheme.colorScheme.surface
-                                    else MaterialTheme.colorScheme.surfaceVariant,
-                                ),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !pikpakBusy && !alreadyListed) {
-                                            expandPikpak(folder.id)
+                                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (candidate.url in verifiedUrls) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(
+                                                "已验证",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
                                         }
-                                        .padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text("📁", style = MaterialTheme.typography.titleMedium)
-                                    Spacer(Modifier.width(8.dp))
+                                    }
                                     Text(
-                                        folder.name.ifBlank { "文件夹" },
-                                        style = MaterialTheme.typography.titleSmall,
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 1,
+                                        sourceHint.message,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = hintColor,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                    Text(
-                                        if (alreadyListed) "已读取" else "展开",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (alreadyListed) MaterialTheme.colorScheme.onSurfaceVariant
-                                        else MaterialTheme.colorScheme.primary,
-                                    )
+                                    Text(candidate.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (reason != null) {
+                                        Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                    }
+                                    Button(
+                                        enabled = reason == null,
+                                        onClick = {
+                                            val mediaUrl = WebMediaUrlPolicy.normalizeMediaUrl(candidate.url)
+                                            if (mediaUrl == null) {
+                                                status = WebMediaUrlPolicy.unsupportedReason(candidate.url)
+                                                    ?: "无法读取该媒体地址。"
+                                            } else {
+                                                val cookie = runCatching { CookieManager.getInstance().getCookie(mediaUrl) }.getOrNull()
+                                                onOpenMedia(
+                                                    mediaUrl,
+                                                    candidate.title.ifBlank { pageTitle },
+                                                    currentPage,
+                                                    cookie,
+                                                    webViewState.value?.settings?.userAgentString,
+                                                )
+                                            }
+                                        },
+                                    ) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("用大象翻译播放")
+                                    }
                                 }
                             }
+                        }
+                    }
+                }
                         }
                     }
                 }
             }
-            if (candidatesState.value.isNotEmpty()) {
-                Text("检测到的视频", style = MaterialTheme.typography.titleMedium)
-                // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
-                val displayCandidates = remember(candidatesState.value, verifiedUrls) {
-                    candidatesState.value
-                        .mapIndexed { index, c -> Pair(c, index) }
-                        .sortedWith(
-                            object : Comparator<Pair<WebVideoCandidate, Int>> {
-                                override fun compare(
-                                    a: Pair<WebVideoCandidate, Int>,
-                                    b: Pair<WebVideoCandidate, Int>,
-                                ): Int {
-                                    val aVerified = a.first.url in verifiedUrls
-                                    val bVerified = b.first.url in verifiedUrls
-                                    if (aVerified != bVerified) return if (bVerified) 1 else -1
-                                    val aRank = WebVideoProbePolicy.candidateRank(a.first.url)
-                                    val bRank = WebVideoProbePolicy.candidateRank(b.first.url)
-                                    if (aRank != bRank) return bRank - aRank
-                                    return a.second - b.second
-                                }
-                            },
-                        )
-                        .map { it.first }
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().height(170.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    items(displayCandidates, key = { it.url }) { candidate ->
-                        val sourceHint = sourceHints[candidate.url]
-                            ?: WebCandidateVerifier.initialAudioHint(candidate.url)
-                        val hintColor = when (sourceHint.kind) {
-                            WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
-                            WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
-                            WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                        val reason = when {
-                            candidate.drmProtected -> "检测到 EME/DRM 标记，不能提取或绕过受保护的媒体音轨。"
-                            else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
-                        }
-                        Card(
-                            modifier = Modifier
-                                .animateItem(
-                                    fadeInSpec = tween(durationMillis = 160),
-                                    placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                    fadeOutSpec = tween(durationMillis = 120),
-                                )
-                                .fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                        ) {
-                            Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
-                                        style = MaterialTheme.typography.titleSmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    if (candidate.url in verifiedUrls) {
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(
-                                            "已验证",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                }
-                                Text(
-                                    sourceHint.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = hintColor,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(candidate.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                if (reason != null) {
-                                    Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                                }
-                                Button(
-                                    enabled = reason == null,
-                                    onClick = {
-                                        val mediaUrl = WebMediaUrlPolicy.normalizeMediaUrl(candidate.url)
-                                        if (mediaUrl == null) {
-                                            status = WebMediaUrlPolicy.unsupportedReason(candidate.url)
-                                                ?: "无法读取该媒体地址。"
-                                        } else {
-                                            val cookie = runCatching { CookieManager.getInstance().getCookie(mediaUrl) }.getOrNull()
-                                            onOpenMedia(
-                                                mediaUrl,
-                                                candidate.title.ifBlank { pageTitle },
-                                                currentPage,
-                                                cookie,
-                                                webViewState.value?.settings?.userAgentString,
-                                            )
-                                        }
-                                    },
-                                ) {
-                                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("用大象翻译播放")
-                                }
-                            }
-                        }
-                    }
-                }
+
             }
         }
     }
