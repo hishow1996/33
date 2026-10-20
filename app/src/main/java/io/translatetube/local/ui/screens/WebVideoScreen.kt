@@ -1077,6 +1077,25 @@ fun WebVideoScreen(
 
                             override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
                                 Log.d(TAG_WEB, "Web console ${message.messageLevel()}: ${message.message()}")
+                                if (message.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) {
+                                    io.translatetube.local.util.AppLogStore.warning(
+                                        context = appCtx,
+                                        tag = "WebPlayerConsole",
+                                        message = "网页播放器 JavaScript 报错",
+                                        diagnosticContext = mapOf(
+                                            "页面主机名" to webSourceHost(currentPage),
+                                            "错误内容" to message.message().take(300),
+                                            "脚本主机名" to webSourceHost(message.sourceId()),
+                                            "脚本行号" to message.lineNumber().toString(),
+                                            "控制台级别" to message.messageLevel().name,
+                                            "页面导航代数" to pageGeneration.get().toString(),
+                                        ),
+                                        issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                            "WebPlayerConsole",
+                                            webSourceHost(currentPage) + "|javascript-error",
+                                        ),
+                                    )
+                                }
                                 return true
                             }
                         }
@@ -1099,6 +1118,27 @@ fun WebVideoScreen(
                                 address = url
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
+                                io.translatetube.local.util.AppLogStore.info(
+                                    context = appCtx,
+                                    tag = "WebSourceDetection",
+                                    message = "网页加载完成，开始执行媒体源探测",
+                                    diagnosticContext = mapOf(
+                                        "页面主机名" to webSourceHost(url),
+                                        "页面标题" to pageTitle.take(120),
+                                        "页面导航代数" to pageGeneration.get().toString(),
+                                        "探测前候选源数量" to candidatesState.value.size.toString(),
+                                        "下一步" to "执行 JavaScript 媒体探测并持续监听网络请求",
+                                    ),
+                                )
+                                io.translatetube.local.util.AppLogStore.resolveIssue(
+                                    context = appCtx,
+                                    issueKey = webPageLoadIssueKey(url),
+                                    message = "网页主文档已成功加载",
+                                    diagnosticContext = mapOf(
+                                        "页面主机名" to webSourceHost(url),
+                                        "页面导航代数" to pageGeneration.get().toString(),
+                                    ),
+                                )
                                 view.evaluateJavascript(PROBE_SCRIPT, null)
                             }
 
@@ -1122,10 +1162,30 @@ fun WebVideoScreen(
                                             durationSeconds = 0.0,
                                             drmProtected = false,
                                         )
-                                        candidatesState.value = WebVideoProbePolicy.mergeCandidates(
-                                            candidatesState.value,
+                                                                                val previousCandidates = candidatesState.value
+                                        val mergedCandidates = WebVideoProbePolicy.mergeCandidates(
+                                            previousCandidates,
                                             listOf(candidate),
                                         )
+                                        val addedCount = (mergedCandidates.size - previousCandidates.size).coerceAtLeast(0)
+                                        candidatesState.value = mergedCandidates
+                                        if (addedCount > 0) {
+                                            io.translatetube.local.util.AppLogStore.info(
+                                                context = appCtx,
+                                                tag = "WebSourceDetection",
+                                                message = "从网页网络请求中捕获到媒体候选源",
+                                                diagnosticContext = mapOf(
+                                                    "页面主机名" to webSourceHost(currentPage),
+                                                    "媒体源主机名" to webSourceHost(resourceUrl),
+                                                    "媒体源类型" to webSourceType(resourceUrl),
+                                                    "请求方法" to request.method,
+                                                    "新增候选数量" to addedCount.toString(),
+                                                    "候选源总数" to mergedCandidates.size.toString(),
+                                                    "来源通道" to "WebView shouldInterceptRequest",
+                                                    "页面导航代数" to requestGeneration.toString(),
+                                                ),
+                                            )
+                                        }
                                         status = "已从网页网络请求中检测到媒体资源。"
                                     }
                                 }
@@ -1140,16 +1200,91 @@ fun WebVideoScreen(
                                 super.onReceivedError(view, request, error)
                                 if (request.isForMainFrame) {
                                     mainHandler.post {
-                                        if (screenActive.get() && request.url.toString() == currentPage) {
+                                        val failedUrl = request.url.toString()
+                                        if (screenActive.get() && failedUrl == currentPage) {
                                             pageLoading = false
-                                            status = "网页加载失败：${error.description}"
+                                            status = "网页加载失败：" + error.description
+                                            io.translatetube.local.util.AppLogStore.warning(
+                                                context = appCtx,
+                                                tag = "WebPageLoad",
+                                                message = "WebView 网页主文档加载失败",
+                                                diagnosticContext = mapOf(
+                                                    "页面主机名" to webSourceHost(failedUrl),
+                                                    "错误代码" to error.errorCode.toString(),
+                                                    "错误详情" to error.description.toString().take(300),
+                                                    "是否主文档请求" to request.isForMainFrame.toString(),
+                                                    "HTTP 方法" to request.method,
+                                                    "页面导航代数" to pageGeneration.get().toString(),
+                                                    "可能影响" to "网页无法加载时，JavaScript 探测与网络媒体源监听可能无法开始",
+                                                ),
+                                                issueKey = webPageLoadIssueKey(failedUrl),
+                                            )
                                         }
                                     }
                                 }
                             }
+
+                            override fun onReceivedHttpError(
+                                view: WebView,
+                                request: WebResourceRequest,
+                                errorResponse: android.webkit.WebResourceResponse,
+                            ) {
+                                super.onReceivedHttpError(view, request, errorResponse)
+                                val failedUrl = request.url.toString()
+                                val isMediaRequest = WebVideoProbePolicy.acceptsMediaUrl(failedUrl) &&
+                                    WebMediaUrlPolicy.looksLikeMediaRequest(failedUrl)
+                                if (!request.isForMainFrame && !isMediaRequest) return
+                                val issueKey = if (request.isForMainFrame) {
+                                    webPageLoadIssueKey(failedUrl)
+                                } else {
+                                    webSourceIssueKey("http-response", failedUrl)
+                                }
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    context = appCtx,
+                                    tag = "WebSourceHttp",
+                                    message = if (request.isForMainFrame) "网页主文档返回 HTTP 错误" else "媒体候选请求返回 HTTP 错误",
+                                    diagnosticContext = mapOf(
+                                        "资源主机名" to webSourceHost(failedUrl),
+                                        "资源类型" to if (request.isForMainFrame) "网页文档" else webSourceType(failedUrl),
+                                        "HTTP 状态码" to errorResponse.statusCode.toString(),
+                                        "HTTP 原因" to errorResponse.reasonPhrase.take(200),
+                                        "HTTP 方法" to request.method,
+                                        "是否主文档请求" to request.isForMainFrame.toString(),
+                                        "响应 Content-Type" to (errorResponse.mimeType ?: "未提供"),
+                                        "页面导航代数" to pageGeneration.get().toString(),
+                                        "可能原因" to when (errorResponse.statusCode) {
+                                            401 -> "需要登录或身份验证"
+                                            403 -> "服务器拒绝访问，可能涉及防盗链、权限或签名限制"
+                                            404 -> "地址不存在或媒体签名已过期"
+                                            429 -> "请求过于频繁或触发站点限流"
+                                            else -> "需结合响应状态、来源类型和候选校验日志进一步判断"
+                                        },
+                                    ),
+                                    issueKey = issueKey,
+                                )
+                            }
+
                         }
                         val initial = WebMediaUrlPolicy.normalizePageUrl(initialUrl)
-                        if (initial != null) loadUrl(initial) else status = "网页地址无效，请返回后检查链接。"
+                        if (initial != null) {
+                            loadUrl(initial)
+                        } else {
+                            status = "网页地址无效，请返回后检查链接。"
+                            io.translatetube.local.util.AppLogStore.warning(
+                                context = appCtx,
+                                tag = "WebPageLoad",
+                                message = "网页视频源检测未启动：初始网页地址无效",
+                                diagnosticContext = mapOf(
+                                    "输入是否为空" to initialUrl.isBlank().toString(),
+                                    "地址是否符合 HTTP/HTTPS 规则" to "否",
+                                    "可能影响" to "未开始 WebView、媒体候选捕获与 yt-dlp 解析",
+                                ),
+                                issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                    "WebPageLoad",
+                                    "invalid-initial-url",
+                                ),
+                            )
+                        }
                     }
                 },
                 update = { },
