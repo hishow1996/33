@@ -1990,6 +1990,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
+        var transientCloudUploadAudio: File? = null
         try {
             awaitProcessingResumed(key, pipelineGeneration)
             awaitRetiredDubbingEngines()
@@ -2433,6 +2434,163 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         )
                     }
                 } else {
+                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
+
+                val asrLines: List<Triple<Long, Long, String>>
+                val detectedAsrLang: String
+                val asrTimelineDurationMs: Long
+                val directCloudPreparation: Triple<io.translatetube.local.asr.CloudTranscription.EncodedAudioInput, Long, File?>? =
+                    if (asrProvider == "elevenlabs" || asrProvider == "cartesia") {
+                        updateUiForSession(key, pipelineGeneration) {
+                            it.copy(
+                                phase = Phase.TRANSCRIBING,
+                                progress = "检查云端可直传音轨格式…",
+                                noModelHint = null,
+                                waitingForTranscriptionEngine = false,
+                                waitingForDubbingEngine = false,
+                            )
+                        }
+                        val preparationOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                        try {
+                            withContext(Dispatchers.IO) {
+                                var stagedCloudAudio: File? = null
+                                var transferredTempFile = false
+                                try {
+                                    if (audioFile is File) {
+                                        val encodedSource =
+                                            io.translatetube.local.asr.CloudTranscription.detectEncodedAudioInput(
+                                                audioFile,
+                                                asrProvider,
+                                            )
+                                        if (encodedSource != null) {
+                                            val mediaInfo = runCatching {
+                                                AudioExtract.probeMediaFile(audioFile)
+                                            }.getOrNull()
+                                            if (mediaInfo != null &&
+                                                mediaInfo.audioTrackCount == 1 &&
+                                                mediaInfo.videoTrackCount == 0 &&
+                                                mediaInfo.durationMs > 0L
+                                            ) {
+                                                return@withContext Triple(
+                                                    encodedSource,
+                                                    mediaInfo.durationMs,
+                                                    null,
+                                                )
+                                            }
+                                        }
+                                        stagedCloudAudio = AudioExtract.remuxAacAudioTrackToM4a(
+                                            this@PlaybackService,
+                                            file = audioFile,
+                                            checkActive = { preparationOwnerJob?.ensureActive() },
+                                            onProgressPercent = { percent ->
+                                                updateUiForSession(key, pipelineGeneration) { state ->
+                                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%")
+                                                    } else state
+                                                }
+                                            },
+                                        )
+                                    } else if (audioFile is Uri) {
+                                        stagedCloudAudio = AudioExtract.remuxAacAudioTrackToM4a(
+                                            this@PlaybackService,
+                                            src = audioFile,
+                                            checkActive = { preparationOwnerJob?.ensureActive() },
+                                            onProgressPercent = { percent ->
+                                                updateUiForSession(key, pipelineGeneration) { state ->
+                                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                                        state.copy(progress = "整理压缩音轨（不解码） $percent%")
+                                                    } else state
+                                                }
+                                            },
+                                        )
+                                    }
+
+                                    val preparedFile = stagedCloudAudio ?: return@withContext null
+                                    val encodedInput =
+                                        io.translatetube.local.asr.CloudTranscription.detectEncodedAudioInput(
+                                            preparedFile,
+                                            asrProvider,
+                                        )
+                                    val mediaInfo = runCatching {
+                                        AudioExtract.probeMediaFile(preparedFile)
+                                    }.getOrNull()
+                                    if (encodedInput != null &&
+                                        mediaInfo != null &&
+                                        mediaInfo.audioTrackCount == 1 &&
+                                        mediaInfo.videoTrackCount == 0 &&
+                                        mediaInfo.durationMs > 0L
+                                    ) {
+                                        transferredTempFile = true
+                                        Triple(encodedInput, mediaInfo.durationMs, preparedFile)
+                                    } else {
+                                        null
+                                    }
+                                } finally {
+                                    if (!transferredTempFile) runCatching { stagedCloudAudio?.delete() }
+                                }
+                            }
+                        } catch (cancelled: java.util.concurrent.CancellationException) {
+                            releaseActiveAsrAudio(leasedAudioPath)
+                            throw cancelled
+                        } catch (error: Exception) {
+                            android.util.Log.i(
+                                "PlaybackService",
+                                "Encoded cloud audio is not suitable for direct upload; using PCM fallback",
+                                error,
+                            )
+                            null
+                        }
+                    } else {
+                        null
+                    }
+                transientCloudUploadAudio = directCloudPreparation?.third
+
+                if (directCloudPreparation != null) {
+                    val encodedInput = directCloudPreparation.first
+                    asrTimelineDurationMs = directCloudPreparation.second
+                    val directResult = try {
+                        withContext(Dispatchers.IO) {
+                            val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                            val result = io.translatetube.local.asr.CloudTranscription.transcribe(
+                                provider = asrProvider,
+                                apiKey = asrApiKey,
+                                language = cloudLanguage,
+                                wavFile = encodedInput.file,
+                                durationMs = directCloudPreparation.second,
+                                checkActive = { ownerJob?.ensureActive() },
+                                onProgress = { message ->
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = message)
+                                        } else state
+                                    }
+                                },
+                                encodedAudio = encodedInput,
+                            )
+                            ownerJob?.ensureActive()
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(progress = "云端转写完成，正在整理字幕…")
+                            }
+                            val language = io.translatetube.local.subs.SubtitleLanguageDetector
+                                .resolveTranscriptionLanguageFromCues(
+                                    result.language,
+                                    result.cues.asSequence().take(120).map { it.third }.asIterable(),
+                                )
+                            result.cues to language
+                        }
+                    } finally {
+                        releaseActiveAsrAudio(leasedAudioPath)
+                        transientCloudUploadAudio?.delete()
+                        transientCloudUploadAudio = null
+                    }
+                    asrLines = directResult.first
+                    detectedAsrLang = directResult.second
+                    if (audioFile is File && (videoId != null || remoteMediaUrl != null)) {
+                        withContext(Dispatchers.IO) {
+                            HlsAudioDownloader.cleanupSegmentCache(audioFile)
+                        }
+                    }
+                } else {
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
                         phase = Phase.TRANSCRIBING,
@@ -2530,11 +2688,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     }
                 }
                 ensureCurrentSession(key, pipelineGeneration)
-                val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
                 // The transcript clock must use the duration of the exact PCM file sent to ASR.
                 // Provider timestamps are relative to this full recording, not to each displayed line.
-                val asrTimelineDurationMs = pcmFile.durationMs
-                val (asrLines, detectedAsrLang) = if (asrProvider == "local") {
+                asrTimelineDurationMs = pcmFile.durationMs
+                val (decodedAsrLines, decodedAsrLang) = if (asrProvider == "local") {
 updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0%") }
                 val segs = withContext(Dispatchers.IO) {
                     vadSegmentsFromFile(
@@ -2799,9 +2956,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         cloudWav.delete()
                     }
                 }
+                asrLines = decodedAsrLines
+                detectedAsrLang = decodedAsrLang
                 ensureCurrentSession(key, pipelineGeneration)
                 transientPcmFile?.file?.delete()
                 transientPcmFile = null
+                }
                 // Only disposable local temporary files may be removed before the transcript checkpoint.
                 // YouTube audio remains cached until its ASR subtitles have been saved successfully.
                 if (audioFile is File && videoId == null && remoteMediaUrl == null) {
@@ -3496,6 +3656,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
         } finally {
             transientPcmFile?.file?.delete()
+            transientCloudUploadAudio?.delete()
             transientAudio?.delete()
         }
     }
