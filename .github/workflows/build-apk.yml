@@ -1,3 +1,4 @@
+# Re-run validation after correcting Kotlin compilation blockers.
 # Validation run for remote audio-track probing and failure diagnosis.
 # Explicit one-time APK build trigger after yt-dlp download progress changes (2026-10-20).
 # Explicit retry after fixing the webpage source-hint compiler error (2026-10-20).
