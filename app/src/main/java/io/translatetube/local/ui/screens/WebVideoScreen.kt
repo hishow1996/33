@@ -930,7 +930,7 @@ fun WebVideoScreen(
             WebVideoProbePolicy.shouldStartAutomaticYtDlp(
                 pageLoaded = !pageLoading,
                 isEligible = ytDlpEligible,
-                isPikpakShare = PikpakShare.parseShareId(currentPage) != null,
+                isPikPakShare = PikpakShare.parseShareId(currentPage) != null,
                 isBusy = ytDlpBusy,
                 autoAttempts = ytDlpAutoAttempts,
                 hasUsableCandidate = hasUsableCandidate,

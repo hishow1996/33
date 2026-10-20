@@ -1299,10 +1299,11 @@ private fun YtDlpUpdateSection() {
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val totalBytes = state.totalBytes
                 val sizeText = when {
-                    state.totalBytes != null && state.totalBytes > 0L ->
+                    totalBytes != null && totalBytes > 0L ->
                         formatYtDlpBytes(state.downloadedBytes) + " / " +
-                            formatYtDlpBytes(state.totalBytes) +
+                            formatYtDlpBytes(totalBytes) +
                             (progress?.let { " · " + it.coerceIn(0, 100) + "%" } ?: "")
                     state.downloadedBytes > 0L ->
                         formatYtDlpBytes(state.downloadedBytes) + " · 总大小未知"
