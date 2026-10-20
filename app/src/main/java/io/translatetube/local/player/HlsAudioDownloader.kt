@@ -28,6 +28,10 @@ internal object HlsAudioDownloader {
     internal data class PlaylistSelection(
         val url: String,
         val sourceKind: AudioSourceKind,
+        /** Declared rendition bitrate; only populated for a muxed video variant, never an audio-only URL. */
+        val declaredBandwidth: Long? = null,
+        /** HLS RESOLUTION declared for the selected muxed variant, e.g. 640x360. */
+        val resolution: String? = null,
     )
 
     private const val MAX_PLAYLIST_BYTES = 2L * 1024L * 1024L
@@ -65,7 +69,12 @@ internal object HlsAudioDownloader {
     private val downloadMutex = kotlinx.coroutines.sync.Mutex()
 
     private data class FetchedText(val finalUrl: String, val text: String)
-    private data class Variant(val uri: String, val bandwidth: Long, val audioGroup: String?)
+    private data class Variant(
+        val uri: String,
+        val bandwidth: Long,
+        val audioGroup: String?,
+        val resolution: String? = null,
+    )
 
     internal data class SegmentSource(
         val url: String,
@@ -176,7 +185,12 @@ internal object HlsAudioDownloader {
                 // A STREAM-INF without a positive declared bandwidth is not a usable variant.
                 // Do not silently assign it Long.MAX_VALUE and accidentally choose it when every
                 // row in the master is malformed.
-                if (bandwidth != null) variants += Variant(line, bandwidth, attrs["AUDIO"])
+                if (bandwidth != null) {
+                    val resolution = attrs["RESOLUTION"]?.takeIf {
+                        Regex("""^\\d{2,5}x\\d{2,5}$""").matches(it)
+                    }
+                    variants += Variant(line, bandwidth, attrs["AUDIO"], resolution)
+                }
                 nextVariant = null
             }
         }
@@ -265,6 +279,25 @@ internal object HlsAudioDownloader {
             .mapNotNull { row -> row["URI"]?.takeIf { it.isNotBlank() } }
             .map { reference -> resolveUrl(playlistUrl, reference) }
             .toSet()
+        val variantAttributesByUrl = mutableMapOf<String, Map<String, String>>()
+        var pendingVariantAttributes: Map<String, String>? = null
+        for (line in lines) {
+            if (line.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true)) {
+                pendingVariantAttributes = parseAttributes(line.substringAfter(':'))
+            } else if (!line.startsWith("#") && pendingVariantAttributes != null) {
+                variantAttributesByUrl[resolveUrl(playlistUrl, line)] = pendingVariantAttributes!!
+                pendingVariantAttributes = null
+            }
+        }
+        // A separate AUDIO rendition does not inherit the video's aggregate bitrate or resolution.
+        // Only expose declared values when the selected URL is itself a mixed audio/video variant.
+        val selectedVariant = variantAttributesByUrl[selectedUrl]
+        val declaredBandwidth = selectedVariant?.get("AVERAGE-BANDWIDTH")?.toLongOrNull()
+            ?.takeIf { it > 0L }
+            ?: selectedVariant?.get("BANDWIDTH")?.toLongOrNull()?.takeIf { it > 0L }
+        val resolution = selectedVariant?.get("RESOLUTION")?.takeIf {
+            Regex("""^\\d{2,5}x\\d{2,5}$""").matches(it)
+        }
         return PlaylistSelection(
             url = selectedUrl,
             sourceKind = if (selectedUrl in independentUrls) {
@@ -272,6 +305,8 @@ internal object HlsAudioDownloader {
             } else {
                 AudioSourceKind.MUXED
             },
+            declaredBandwidth = if (selectedUrl in independentUrls) null else declaredBandwidth,
+            resolution = if (selectedUrl in independentUrls) null else resolution,
         )
     }
 
