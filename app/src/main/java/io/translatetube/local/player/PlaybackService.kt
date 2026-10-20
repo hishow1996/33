@@ -4711,6 +4711,42 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
     }
 
+    /**
+     * Some media servers use chunked transfer encoding and omit Content-Length on the download
+     * response. A one-byte range probe can still reveal the exact entity length from Content-Range.
+     * The probe is only attempted when the main response has no usable size.
+     */
+    private suspend fun probeRemoteMediaTotalBytes(
+        url: String,
+        requestHeaders: Map<String, String>,
+        ownerJob: Job?,
+    ): Long? = withContext(Dispatchers.IO) {
+        ownerJob?.ensureActive()
+        val probeHeaders = HlsAudioDownloader.headersWithoutInheritedRange(requestHeaders) +
+            ("Range" to "bytes=0-0")
+        SafeMediaHttp.execute(
+            url = url,
+            requestHeaders = probeHeaders,
+            userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }
+                ?: SafeMediaHttp.DEFAULT_USER_AGENT,
+            ownerJob = ownerJob,
+        ).use { response ->
+            if (response.code !in setOf(200, 206)) return@use null
+            val rangeTotal = response.header("Content-Range")
+                ?.let { header ->
+                    Regex("""(?i)^bytes\\s+\\d+-\\d+/(\\d+)$""")
+                        .matchEntire(header.trim())
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toLongOrNull()
+                }
+                ?.takeIf { it > 0L }
+            rangeTotal ?: response.header("Content-Length")
+                ?.toLongOrNull()
+                ?.takeIf { it > 0L }
+        }
+    }
+
     private suspend fun downloadAudio(
         url: String,
         destination: File? = null,
@@ -4748,7 +4784,23 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
                             throw IllegalStateException("服务器返回了网页或 JSON，而不是可读取的音频；链接可能过期或需要登录。")
                         }
-                        val total = body.contentLength()
+                        val responseLength = body.contentLength()
+                        val total = if (responseLength > 0L) {
+                            responseLength
+                        } else {
+                            try {
+                                probeRemoteMediaTotalBytes(url, requestHeaders, ownerJob)
+                            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                                throw cancel
+                            } catch (probeError: Exception) {
+                                android.util.Log.d(
+                                    "PlaybackService",
+                                    "音轨响应未提供总长度，范围探测也未取得可用大小",
+                                    probeError,
+                                )
+                                null
+                            } ?: -1L
+                        }
                         body.byteStream().use { ins ->
                             var got = 0L
                             var lastProgressBytes = 0L
