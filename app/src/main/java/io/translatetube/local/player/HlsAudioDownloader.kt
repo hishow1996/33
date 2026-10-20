@@ -1,5 +1,6 @@
 package io.translatetube.local.player
 
+import io.translatetube.local.util.AudioDownloadProgressFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -250,6 +251,10 @@ internal object HlsAudioDownloader {
                     addAll(playlist.segments)
                 }
                 if (sources.isEmpty()) throw IllegalStateException("HLS 清单没有可读取的音频片段。")
+                val knownTotalBytes = sources.map { it.byteRangeLength }
+                    .takeIf { lengths -> lengths.isNotEmpty() && lengths.all { it != null } }
+                    ?.let { lengths -> boundedCacheByteTotal(lengths.mapNotNull { it }) }
+                    ?.takeIf { it > 0L }
 
                 // A hash fingerprint avoids persisting signed URLs while still invalidating a
                 // segment cache when the playlist or any signed segment URL changes.
@@ -288,11 +293,35 @@ internal object HlsAudioDownloader {
                     ownerJob?.ensureActive()
                     val segmentFile = segmentFiles[index]
                     val reusable = reusableSegments[index]
+                    val bytesBeforeSegment = boundedCacheByteTotal(cachedSegments.map { it.length() })
+                    val segmentProgress: (Long, Long?) -> Unit = { segmentBytes, segmentTotal ->
+                        val downloadedSoFar = boundedCacheByteTotal(listOf(bytesBeforeSegment, segmentBytes))
+                        val segmentFraction = if (segmentTotal != null && segmentTotal > 0L) {
+                            (segmentBytes.toDouble() / segmentTotal.toDouble()).coerceIn(0.0, 1.0)
+                        } else {
+                            0.0
+                        }
+                        val percent = if (knownTotalBytes != null) {
+                            (downloadedSoFar.toDouble() * 100.0 / knownTotalBytes.toDouble())
+                                .toInt().coerceIn(0, 100)
+                        } else {
+                            ((index.toDouble() + segmentFraction) * 100.0 / sources.size)
+                                .toInt().coerceIn(0, 99)
+                        }
+                        onProgress(
+                            AudioDownloadProgressFormatter.formatProgress(
+                                label = "正在缓存网页音轨 ${index + 1}/${sources.size}",
+                                downloadedBytes = downloadedSoFar,
+                                totalBytes = knownTotalBytes,
+                                percent = percent,
+                            )
+                        )
+                    }
                     val segment = if (reusable) {
                         segmentFile.setLastModified(System.currentTimeMillis())
                         segmentFile
                     } else {
-                        onProgress("正在缓存网页音轨 ${index + 1}/${sources.size}")
+                        segmentProgress(0L, source.byteRangeLength)
                         downloadSegment(
                             url = source.url,
                             byteRangeStart = source.byteRangeStart,
@@ -304,22 +333,30 @@ internal object HlsAudioDownloader {
                             awaitResume = awaitResume,
                             userAgent = userAgent,
                             onRetry = { attempt ->
-                                onProgress("网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）")
+                                onProgress(
+                                    "网络不稳定，正在重试音轨片段 ${index + 1}/${sources.size}（第 ${attempt} 次）；已缓存 ${AudioDownloadProgressFormatter.formatBytes(bytesBeforeSegment)}"
+                                )
                             },
+                            onBytesProgress = segmentProgress,
                         )
                     }
                     cachedSegments += segment
                     segmentFile.parentFile?.setLastModified(System.currentTimeMillis())
                     pruneSegmentCaches(cacheParent, keep = cacheDirectory)
-                    if (reusable) onProgress("复用网页音轨片段 ${index + 1}/${sources.size}")
+                    segmentProgress(segment.length(), source.byteRangeLength)
                 }
 
                 // Merge on disk, not in memory: this is suitable for older phones with limited RAM.
+                val totalMergedBytes = boundedCacheByteTotal(cachedSegments.map { it.length() })
+                    .takeIf { it > 0L }
+                var assembledBytes = 0L
+                var lastMergeProgressBytes = 0L
+                var lastMergeProgressAtMs = android.os.SystemClock.elapsedRealtime()
                 FileOutputStream(assemblyPart, false).buffered().use { output ->
                     cachedSegments.forEachIndexed { index, segment ->
                         awaitResume()
                         ownerJob?.ensureActive()
-                        onProgress("正在合并网页音轨 ${index + 1}/${cachedSegments.size}")
+                        val label = "正在合并网页音轨 ${index + 1}/${cachedSegments.size}"
                         segment.inputStream().buffered().use { input ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
@@ -328,6 +365,27 @@ internal object HlsAudioDownloader {
                                 val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
                                 if (count < 0) break
                                 output.write(buffer, 0, count)
+                                assembledBytes = boundedCacheByteTotal(listOf(assembledBytes, count.toLong()))
+                                val nowMs = android.os.SystemClock.elapsedRealtime()
+                                if (
+                                    assembledBytes - lastMergeProgressBytes >= 512L * 1024L ||
+                                    nowMs - lastMergeProgressAtMs >= 350L ||
+                                    (totalMergedBytes != null && assembledBytes >= totalMergedBytes)
+                                ) {
+                                    val percent = totalMergedBytes?.let { total ->
+                                        (assembledBytes.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 100)
+                                    }
+                                    onProgress(
+                                        AudioDownloadProgressFormatter.formatProgress(
+                                            label = label,
+                                            downloadedBytes = assembledBytes,
+                                            totalBytes = totalMergedBytes,
+                                            percent = percent,
+                                        )
+                                    )
+                                    lastMergeProgressBytes = assembledBytes
+                                    lastMergeProgressAtMs = nowMs
+                                }
                             }
                         }
                     }
@@ -349,7 +407,14 @@ internal object HlsAudioDownloader {
                 // Keep complete segments until MediaExtractor accepts the merged file. The caller
                 // clears this directory after successful decode; a decode failure can then retry
                 // assembly without downloading every network segment again.
-                onProgress("网页音轨缓存完成，准备解码")
+                onProgress(
+                    AudioDownloadProgressFormatter.formatProgress(
+                        label = "网页音轨缓存完成，准备解码",
+                        downloadedBytes = destination.length(),
+                        totalBytes = destination.length(),
+                        percent = 100,
+                    )
+                )
             }
             return destination
         } catch (error: Throwable) {
@@ -422,6 +487,7 @@ internal object HlsAudioDownloader {
         awaitResume: suspend () -> Unit,
         onRetry: (attemptNumber: Int) -> Unit,
         userAgent: String?,
+        onBytesProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
     ): File {
         val part = File(destination.parentFile, destination.name + ".part")
         val byteRangeEnd = if (byteRangeStart != null && byteRangeLength != null &&
@@ -467,6 +533,8 @@ internal object HlsAudioDownloader {
                         throw IllegalStateException("HLS BYTERANGE 响应长度与清单声明不一致。")
                     }
                     var actualBytes = 0L
+                    var lastProgressBytes = 0L
+                    var lastProgressAtMs = android.os.SystemClock.elapsedRealtime()
                     val payloadPrefix = ByteArray(512)
                     var payloadPrefixSize = 0
                     body.byteStream().use { input ->
@@ -492,10 +560,26 @@ internal object HlsAudioDownloader {
                                 }
                                 actualBytes += count.toLong()
                                 output.write(buffer, 0, count)
+                                val nowMs = android.os.SystemClock.elapsedRealtime()
+                                val progressTotalBytes = expectedBytes.takeIf { it > 0L }
+                                    ?: byteRangeLength?.takeIf { it > 0L }
+                                if (
+                                    actualBytes - lastProgressBytes >= 512L * 1024L ||
+                                    nowMs - lastProgressAtMs >= 350L ||
+                                    (progressTotalBytes != null && actualBytes >= progressTotalBytes)
+                                ) {
+                                    onBytesProgress(actualBytes, progressTotalBytes)
+                                    lastProgressBytes = actualBytes
+                                    lastProgressAtMs = nowMs
+                                }
                             }
                             output.flush()
                         }
                     }
+                    onBytesProgress(
+                        actualBytes,
+                        expectedBytes.takeIf { it > 0L } ?: byteRangeLength?.takeIf { it > 0L },
+                    )
                     if (!AsrAudioCachePolicy.isCompleteDownload(expectedBytes, actualBytes)) {
                         throw IllegalStateException("HLS 片段下载不完整：预期 ${expectedBytes} 字节，实际收到 ${actualBytes} 字节。")
                     }

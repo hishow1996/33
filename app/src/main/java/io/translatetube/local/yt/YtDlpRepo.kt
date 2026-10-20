@@ -1,5 +1,6 @@
 package io.translatetube.local.yt
 
+import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.util.HttpDownloadResponsePolicy
 
 import android.content.Context
@@ -494,14 +495,14 @@ object YtDlpRepo {
      * 不转码不合并（优先 bestaudio），文件由调用方放入 ASR 音频缓存（.bin）。
      * 所有中间产物都留在独立暂存目录，只有校验完成的媒体文件才会发布到缓存路径。
      *
-     * @param onProgress 0..100
+     * Reports both the progress percentage and bytes observed in the active output file.
      */
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun downloadAudio(
         ctx: Context,
         pageUrl: String,
         dest: File,
-        onProgress: (Int) -> Unit = {},
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long?) -> Unit = { _, _, _ -> },
         cookieHeader: String? = null,
     ): File = withContext(Dispatchers.IO) {
         if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
@@ -550,8 +551,20 @@ object YtDlpRepo {
                 }
             }
             try {
-                YoutubeDL.execute(request, processId) { percent, _, _ ->
-                    if (percent >= 0f) onProgress(percent.toInt().coerceIn(0, 100))
+                YoutubeDL.execute(request, processId) { percent, _, outputLine ->
+                    val normalizedPercent = if (percent >= 0f) {
+                        percent.toInt().coerceIn(0, 100)
+                    } else {
+                        -1
+                    }
+                    val downloadedBytes = stagingDir.walkTopDown()
+                        .filter { file -> file.isFile && file.name.startsWith("audio.") }
+                        .maxOfOrNull { file -> file.length().coerceAtLeast(0L) }
+                        ?: 0L
+                    val totalBytes = parseDownloadTotalBytes(outputLine)
+                    if (normalizedPercent >= 0 || downloadedBytes > 0L || totalBytes != null) {
+                        onProgress(normalizedPercent, downloadedBytes, totalBytes)
+                    }
                 }
             } catch (e: java.io.InterruptedIOException) {
                 currentCoroutineContext().ensureActive()
@@ -580,6 +593,29 @@ object YtDlpRepo {
             YoutubeDL.destroyProcessById(processId)
             runCatching { stagingDir.deleteRecursively() }
         }
+    }
+
+    private fun parseDownloadTotalBytes(outputLine: String): Long? {
+        val match = Regex(
+            """(?i)\\bof\\s+~?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(KiB|MiB|GiB|TiB|KB|MB|GB|TB|B)\\b"""
+        ).find(outputLine) ?: return null
+        val amount = match.groupValues[1].toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 }
+            ?: return null
+        val unit = match.groupValues[2].uppercase(Locale.ROOT)
+        val multiplier = when (unit) {
+            "B" -> 1.0
+            "KB" -> 1_000.0
+            "MB" -> 1_000_000.0
+            "GB" -> 1_000_000_000.0
+            "TB" -> 1_000_000_000_000.0
+            "KIB" -> 1024.0
+            "MIB" -> 1024.0 * 1024.0
+            "GIB" -> 1024.0 * 1024.0 * 1024.0
+            "TIB" -> 1024.0 * 1024.0 * 1024.0 * 1024.0
+            else -> return null
+        }
+        val total = amount * multiplier
+        return total.toLong().takeIf { total.isFinite() && total > 0.0 && total <= Long.MAX_VALUE.toDouble() }
     }
 
     /** 是否为适合 yt-dlp 处理的 URL（http/https 均可；主入口 YouTube 仍走 NewPipe，此处含 YouTube 作为风控兜底）。 */

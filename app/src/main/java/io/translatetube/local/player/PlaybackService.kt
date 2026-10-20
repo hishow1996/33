@@ -14,6 +14,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import io.translatetube.local.R
+import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.asr.AudioExtract
 import io.translatetube.local.asr.AudioTrackSelectionPolicy
 import io.translatetube.local.asr.LocalAsrEngine
@@ -4046,7 +4047,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         destination: File,
         headers: Map<String, String>,
         awaitResume: suspend () -> Unit = {},
-        onProgressPercent: (Int) -> Unit = {},
+        onProgressPercent: (Int, Long) -> Unit = { _, _ -> },
     ): File {
         val work = File(destination.parentFile, destination.name + ".part")
         val extractor = android.media.MediaExtractor()
@@ -4136,7 +4137,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         )
                         if (nextPercent != null) {
                             lastProgressPercent = nextPercent
-                            onProgressPercent(nextPercent)
+                            onProgressPercent(nextPercent, work.length())
                         }
                     }
                     extractor.advance()
@@ -4159,7 +4160,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     "音轨提取完成，但无法原子保存缓存文件；原有缓存已保留，请重试。"
                 )
             }
-            onProgressPercent(100)
+            onProgressPercent(100, destination.length())
             return destination
         } catch (t: Throwable) {
             runCatching { muxer?.release() }
@@ -4259,13 +4260,25 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             applicationContext,
                             ytdlpOrigin.pageUrl,
                             destination,
-                            onProgress = { percent ->
+                            onProgress = { percent, downloadedBytes, totalBytes ->
                                 kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey) }
                                 updateUiForSession(sessionKey) { state ->
                                     if (state.key == sessionKey) {
+                                        val progress = if (downloadedBytes > 0L || totalBytes != null) {
+                                            AudioDownloadProgressFormatter.formatProgress(
+                                                label = "yt-dlp 正在下载音轨",
+                                                downloadedBytes = downloadedBytes,
+                                                totalBytes = totalBytes,
+                                                percent = percent.takeIf { it >= 0 },
+                                            )
+                                        } else if (percent >= 0) {
+                                            "yt-dlp 正在下载音频 $percent%"
+                                        } else {
+                                            "yt-dlp 正在下载音频…"
+                                        }
                                         state.copy(
                                             phase = Phase.DOWNLOADING_AUDIO,
-                                            progress = "yt-dlp 正在下载音频 $percent%",
+                                            progress = progress,
                                         )
                                     } else state
                                 }
@@ -4311,10 +4324,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 destination,
                                 headers,
                                 awaitResume = { awaitProcessingResumed(sessionKey) },
-                                onProgressPercent = { percent ->
+                                onProgressPercent = { percent, extractedBytes ->
                                     updateUiForSession(sessionKey) { state ->
                                         if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
-                                            state.copy(progress = "网页视频音轨提取 ${percent}%")
+                                            state.copy(
+                                                progress = AudioDownloadProgressFormatter.formatProgress(
+                                                    label = "网页视频音轨提取",
+                                                    downloadedBytes = extractedBytes,
+                                                    percent = percent,
+                                                )
+                                            )
                                         } else state
                                     }
                                 },
@@ -4489,6 +4508,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         val total = body.contentLength()
                         body.byteStream().use { ins ->
                             var got = 0L
+                            var lastProgressBytes = 0L
+                            var lastProgressAtMs = android.os.SystemClock.elapsedRealtime()
                             val payloadPrefix = ByteArray(512)
                             var payloadPrefixSize = 0
                             writeTarget.outputStream().buffered().use { out ->
@@ -4516,13 +4537,26 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                     }
                                     got += n.toLong()
                                     out.write(buf, 0, n)
-                                    if (total > 0) {
-                                        val progress = "下载音频 %.0f%%".format(
-                                            (got * 100f / total).coerceIn(0f, 100f)
+                                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                                    val shouldPublishProgress =
+                                        got - lastProgressBytes >= 512L * 1024L ||
+                                            nowMs - lastProgressAtMs >= 350L ||
+                                            (total > 0L && got >= total)
+                                    if (shouldPublishProgress) {
+                                        val percent = if (total > 0L) {
+                                            (got * 100.0 / total.toDouble()).toInt().coerceIn(0, 100)
+                                        } else null
+                                        val progress = AudioDownloadProgressFormatter.formatProgress(
+                                            label = "正在下载音轨",
+                                            downloadedBytes = got,
+                                            totalBytes = total.takeIf { it > 0L },
+                                            percent = percent,
                                         )
                                         updateUiForSession(sessionKey) { state ->
                                             if (state.key == sessionKey) state.copy(progress = progress) else state
                                         }
+                                        lastProgressBytes = got
+                                        lastProgressAtMs = nowMs
                                     }
                                 }
                                 out.flush()
@@ -4531,6 +4565,18 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 throw IllegalStateException(
                                     "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
                                 )
+                            }
+                            updateUiForSession(sessionKey) { state ->
+                                if (state.key == sessionKey) {
+                                    state.copy(
+                                        progress = AudioDownloadProgressFormatter.formatProgress(
+                                            label = "音轨下载完成",
+                                            downloadedBytes = got,
+                                            totalBytes = total.takeIf { it > 0L },
+                                            percent = 100,
+                                        )
+                                    )
+                                } else state
                             }
                         }
                     }
