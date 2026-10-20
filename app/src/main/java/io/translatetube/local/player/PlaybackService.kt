@@ -62,6 +62,27 @@ import java.io.OutputStreamWriter
 import java.security.MessageDigest
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
+
+/** Keeps high-frequency native/download progress callbacks from continuously recomposing the processing page. */
+private class ProcessingProgressLimiter(
+    private val minimumIntervalMs: Long = 180L,
+) {
+    private val lock = Any()
+    private var lastPublishedAtMs = 0L
+    private var lastPublishedPercent: Int? = null
+
+    fun shouldPublish(percent: Int? = null, force: Boolean = false): Boolean = synchronized(lock) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val boundedPercent = percent?.takeIf { it in 0..100 }
+        val percentChanged = boundedPercent != null && boundedPercent != lastPublishedPercent
+        if (!force && lastPublishedAtMs != 0L && !percentChanged && now - lastPublishedAtMs < minimumIntervalMs) {
+            return@synchronized false
+        }
+        lastPublishedAtMs = now
+        if (boundedPercent != null) lastPublishedPercent = boundedPercent
+        true
+    }
+}
 private data class PartialAsrTranscript(
     val processedSegments: Int,
     val rows: List<Triple<Long, Long, String>>,
@@ -161,17 +182,24 @@ class PlaybackService : MediaSessionService() {
     // sherpa-onnx OfflineRecognizer is native state and must never decode two videos concurrently.
     private val localAsrMutex = kotlinx.coroutines.sync.Mutex()
 
-    private fun retireDubbing(engine: DubbingEngine?): DubbingEngine? {
+    private fun registerDubbingForRetirement(engine: DubbingEngine?): DubbingEngine? {
         if (engine == null) return null
-        // Register first: releaseAndJoin() is cancellable, but later tasks must still wait for
-        // this engine to finish blocking TTS/native work before initializing a replacement.
+        // Register before releasing so a replacement pipeline cannot race native TTS cleanup.
         retiringDubbingEngines.addIfAbsent(engine)
         if (dubbing === engine) dubbing = null
-        engine.release()
         return engine
     }
 
+    private fun retireDubbing(engine: DubbingEngine?): DubbingEngine? {
+        val retiring = registerDubbingForRetirement(engine) ?: return null
+        retiring.release()
+        return retiring
+    }
+
     private fun retireCurrentDubbing(): DubbingEngine? = retireDubbing(dubbing)
+
+    /** Detach synchronously, then let cancellation perform potentially expensive engine cleanup off the UI thread. */
+    private fun detachCurrentDubbingForRetirement(): DubbingEngine? = registerDubbingForRetirement(dubbing)
 
     private suspend fun awaitRetiredDubbingEngines() {
         while (true) {
@@ -183,8 +211,9 @@ class PlaybackService : MediaSessionService() {
         }
     }
     private var prepJob: Job? = null
-    private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
+    private val processingPauseLock = Any()
     @Volatile private var processingPaused = false
+    private var processingResumeSignal = kotlinx.coroutines.CompletableDeferred(Unit)
     @Volatile private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
@@ -282,26 +311,38 @@ class PlaybackService : MediaSessionService() {
         Phase.TRANSLATING, Phase.SYNTHESIZING,
     )
 
-    /** Processing checkpoints wait here while paused. */
+    /** Processing checkpoints wait here while paused; a deferred signal avoids Mutex races on fast taps. */
     private suspend fun awaitProcessingResumed(
         sessionKey: String,
         pipelineGeneration: Long? = null,
     ) {
-        if (processingPaused) processingPauseGate.withLock { /* resumes when unlocked */ }
+        while (true) {
+            val resumeSignal = synchronized(processingPauseLock) {
+                if (processingPaused) processingResumeSignal else null
+            } ?: break
+            resumeSignal.await()
+        }
         ensureCurrentSession(sessionKey, pipelineGeneration)
     }
 
     fun toggleProcessingPause() {
-        if (!isProcessingPhase(ui.value.phase)) return
-        if (processingPaused) {
-            processingPaused = false
-            if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
-        } else if (processingPauseGate.tryLock()) {
-            processingPaused = true
+        val snapshot = ui.value
+        if (!isProcessingPhase(snapshot.phase)) return
+        val pausedNow = synchronized(processingPauseLock) {
+            if (processingPaused) {
+                processingPaused = false
+                processingResumeSignal.complete(Unit)
+            } else {
+                processingPaused = true
+                processingResumeSignal = kotlinx.coroutines.CompletableDeferred()
+            }
+            processingPaused
         }
+        // Publish the control state immediately instead of waiting for a slow processing stage.
         ui.update { current ->
-            if (current.key == videoKey) current.copy(isProcessingPaused = processingPaused)
-            else current
+            if (current.key == snapshot.key && isProcessingPhase(current.phase)) {
+                current.copy(isProcessingPaused = pausedNow)
+            } else current
         }
     }
 
@@ -311,9 +352,28 @@ class PlaybackService : MediaSessionService() {
             updateProcessingNotification(current)
             return
         }
-        beginPipelineGeneration()
-        processingPaused = false
-        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        val cancelledGeneration = beginPipelineGeneration()
+        synchronized(processingPauseLock) {
+            processingPaused = false
+            processingResumeSignal.complete(Unit)
+        }
+
+        // Register the engine before scheduling cleanup so retries must wait for native TTS to retire.
+        val retiringEngine = detachCurrentDubbingForRetirement()
+        updateUiForSession(current.key) {
+            it.copy(
+                phase = Phase.ERROR,
+                progress = "",
+                error = "已取消处理。点击重试即可重新开始。",
+                muteOriginal = false,
+                noModelHint = null,
+                waitingForTranscriptionEngine = false,
+                waitingForDubbingEngine = false,
+                isProcessingPaused = false,
+            )
+        }
+
+        // Acknowledge cancellation before potentially slow native TTS cleanup or player-volume restoration.
         prepJob?.cancel(kotlinx.coroutines.CancellationException("用户取消视频处理"))
         prepJob = null
         subtitleDownloadJob?.cancel()
@@ -326,19 +386,20 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryJob = null
         dubCollectJob?.cancel()
         dubCollectJob = null
-        runCatching { retireCurrentDubbing() }
-        if (playerReady && ::pm.isInitialized) runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
-        updateUiForSession(current.key) {
-            it.copy(
-                phase = Phase.ERROR,
-                progress = "",
-                error = "已取消处理。点击重试即可重新开始。",
-                muteOriginal = false,
-                noModelHint = null,
-                            waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = false,
-                isProcessingPaused = false,
-            )
+
+        scope.launch(Dispatchers.IO) {
+            runCatching { retiringEngine?.release() }
+                .onFailure { android.util.Log.w("PlaybackService", "Release dubbing engine after cancel failed", it) }
+            if (playerReady && ::pm.isInitialized) {
+                withContext(Dispatchers.Main) {
+                    if (activePipelineGeneration == cancelledGeneration && ui.value.key == current.key &&
+                        playerReady && ::pm.isInitialized
+                    ) {
+                        runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
+                    }
+                }
+            }
+            updateProcessingNotification(ui.value)
         }
     }
 
@@ -1063,8 +1124,10 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
-        processingPaused = false
-        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        synchronized(processingPauseLock) {
+            processingPaused = false
+            processingResumeSignal.complete(Unit)
+        }
         val previousPrepJob = prepJob
         previousPrepJob?.cancel()
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
@@ -2407,6 +2470,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         remoteMediaCookie,
                         key,
                         "复用网页视频音频缓存，避免重复下载…",
+                        pipelineGeneration = pipelineGeneration,
                     )
                     else -> localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -4446,18 +4510,20 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         cookie: String?,
         sessionKey: String,
         cacheHitProgress: String,
+        pipelineGeneration: Long? = null,
     ): File {
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         // Reuse downloaded bytes across rotating signed URLs, but never across page origins or
         // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
         val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
         return asrAudioDownloadLocks.withLock(identity) {
             reusableAsrAudioFile(identity)?.let { cached ->
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cached
             }
-            updateUiForSession(sessionKey) { state ->
+            updateUiForSession(sessionKey, pipelineGeneration) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
@@ -4471,6 +4537,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             }
             val destination = asrAudioCacheFile(identity)
+            val ytDlpProgressLimiter = ProcessingProgressLimiter()
             activeAsrAudioPaths.acquire(destination.absolutePath)
             var leaseTransferred = false
             try {
@@ -4484,26 +4551,32 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             ytdlpOrigin.pageUrl,
                             destination,
                             onProgress = { percent, downloadedBytes, totalBytes ->
-                                kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey) }
-                                updateUiForSession(sessionKey) { state ->
-                                    if (state.key == sessionKey) {
-                                        val progress = if (downloadedBytes > 0L || totalBytes != null) {
-                                            AudioDownloadProgressFormatter.formatProgress(
-                                                label = "独立音轨 · yt-dlp 正在下载",
-                                                downloadedBytes = downloadedBytes,
-                                                totalBytes = totalBytes,
-                                                percent = percent.takeIf { it >= 0 },
+                                ownerJob?.ensureActive()
+                                if (processingPaused) {
+                                    kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey, pipelineGeneration) }
+                                }
+                                ownerJob?.ensureActive()
+                                if (ytDlpProgressLimiter.shouldPublish(percent)) {
+                                    updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                                        if (state.key == sessionKey) {
+                                            val progress = if (downloadedBytes > 0L || totalBytes != null) {
+                                                AudioDownloadProgressFormatter.formatProgress(
+                                                    label = "独立音轨 · yt-dlp 正在下载",
+                                                    downloadedBytes = downloadedBytes,
+                                                    totalBytes = totalBytes,
+                                                    percent = percent.takeIf { it >= 0 },
+                                                )
+                                            } else if (percent >= 0) {
+                                                "独立音轨 · yt-dlp 正在下载 $percent%"
+                                            } else {
+                                                "独立音轨 · yt-dlp 正在下载…"
+                                            }
+                                            state.copy(
+                                                phase = Phase.DOWNLOADING_AUDIO,
+                                                progress = progress,
                                             )
-                                        } else if (percent >= 0) {
-                                            "独立音轨 · yt-dlp 正在下载 $percent%"
-                                        } else {
-                                            "独立音轨 · yt-dlp 正在下载…"
-                                        }
-                                        state.copy(
-                                            phase = Phase.DOWNLOADING_AUDIO,
-                                            progress = progress,
-                                        )
-                                    } else state
+                                        } else state
+                                    }
                                 }
                             },
                             cookieHeader = ytdlpOrigin.cookie,
@@ -4522,7 +4595,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             throw e
                         }
                         android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
-                        updateUiForSession(sessionKey) { state ->
+                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…")
                             } else state
@@ -4531,11 +4604,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 val cachedAudio = try {
                     if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
-                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
-                            updateUiForSession(sessionKey) { state ->
-                                if (state.key == sessionKey) {
-                                    state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
-                                } else state
+                        val hlsProgressLimiter = ProcessingProgressLimiter()
+                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
+                            if (hlsProgressLimiter.shouldPublish()) {
+                                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                                    if (state.key == sessionKey) {
+                                        state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                                    } else state
+                                }
                             }
                         }
                     } else {
@@ -4543,34 +4619,39 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         // http 源，边拉边把音频轨写进 m4a/webm，不把整个视频下载到本地。
                         try {
                             var detectedSourceKind = HlsAudioDownloader.AudioSourceKind.UNKNOWN
+                            val streamProgressLimiter = ProcessingProgressLimiter()
                             extractAudioTrackStreaming(
                                 mediaUrl,
                                 destination,
                                 headers,
-                                awaitResume = { awaitProcessingResumed(sessionKey) },
+                                awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration) },
                                 onSourceType = { kind ->
                                     detectedSourceKind = kind
-                                    updateUiForSession(sessionKey) { state ->
-                                        if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
-                                            state.copy(
-                                                progress = "${kind.displayName} · 正在从网页媒体源提取音轨…",
-                                            )
-                                        } else state
+                                    if (streamProgressLimiter.shouldPublish(force = true)) {
+                                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                                            if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
+                                                state.copy(
+                                                    progress = "${kind.displayName} · 正在从网页媒体源提取音轨…",
+                                                )
+                                            } else state
+                                        }
                                     }
                                 },
                                 onProgressPercent = { percent, extractedBytes, totalBytes, totalIsEstimate ->
-                                    updateUiForSession(sessionKey) { state ->
-                                        if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
-                                            state.copy(
-                                                progress = AudioDownloadProgressFormatter.formatProgress(
-                                                    label = "${detectedSourceKind.displayName} · 网页媒体流音轨提取",
-                                                    downloadedBytes = extractedBytes,
-                                                    totalBytes = totalBytes,
-                                                    percent = percent,
-                                                    totalIsEstimate = totalIsEstimate,
+                                    if (streamProgressLimiter.shouldPublish(percent)) {
+                                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                                            if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
+                                                state.copy(
+                                                    progress = AudioDownloadProgressFormatter.formatProgress(
+                                                        label = "${detectedSourceKind.displayName} · 网页媒体流音轨提取",
+                                                        downloadedBytes = extractedBytes,
+                                                        totalBytes = totalBytes,
+                                                        percent = percent,
+                                                        totalIsEstimate = totalIsEstimate,
+                                                    )
                                                 )
-                                            )
-                                        } else state
+                                            } else state
+                                        }
                                     }
                                 },
                             )
@@ -4595,17 +4676,20 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             }
 
                             if (isOpaqueHlsManifest) {
+                                val fallbackHlsProgressLimiter = ProcessingProgressLimiter()
                                 HlsAudioDownloader.download(
                                     mediaUrl,
                                     destination,
                                     requestHeaders = headers,
-                                    awaitResume = { awaitProcessingResumed(sessionKey) },
+                                    awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration) },
                                     userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                                 ) { detail ->
-                                    updateUiForSession(sessionKey) { state ->
-                                        if (state.key == sessionKey) {
-                                            state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
-                                        } else state
+                                    if (fallbackHlsProgressLimiter.shouldPublish()) {
+                                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                                            if (state.key == sessionKey) {
+                                                state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
+                                            } else state
+                                        }
                                     }
                                 }
                             } else if (
@@ -4613,7 +4697,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                     .isExplicitAudioOnlyResource(mediaUrl)
                             ) {
                                 // A URL explicitly ending in an audio-only extension is safe to fetch whole.
-                                updateUiForSession(sessionKey) { state ->
+                                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                                     if (state.key == sessionKey) {
                                         state.copy(progress = "音轨流式读取失败，正在下载独立音频文件…")
                                     } else state
@@ -4624,6 +4708,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                     sessionKey,
                                     headers,
                                     progressLabel = "独立音轨",
+                                    pipelineGeneration = pipelineGeneration,
                                 )
                             } else {
                                 android.util.Log.w(
@@ -4753,6 +4838,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         sessionKey: String,
         requestHeaders: Map<String, String> = emptyMap(),
         progressLabel: String = "音轨类型待确认 · 音轨",
+        pipelineGeneration: Long? = null,
     ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
@@ -4811,7 +4897,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 val buf = ByteArray(64 * 1024)
                                 while (true) {
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                    awaitProcessingResumed(sessionKey)
+                                    awaitProcessingResumed(sessionKey, pipelineGeneration)
                                     val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
                                     if (n < 0) break
                                     if (payloadPrefixSize < payloadPrefix.size) {
@@ -4847,7 +4933,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                             totalBytes = total.takeIf { it > 0L },
                                             percent = percent,
                                         )
-                                        updateUiForSession(sessionKey) { state ->
+                                        updateUiForSession(sessionKey, pipelineGeneration) { state ->
                                             if (state.key == sessionKey) state.copy(progress = progress) else state
                                         }
                                         lastProgressBytes = got
@@ -4861,7 +4947,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                     "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
                                 )
                             }
-                            updateUiForSession(sessionKey) { state ->
+                            updateUiForSession(sessionKey, pipelineGeneration) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(
                                         progress = AudioDownloadProgressFormatter.formatProgress(
@@ -4897,7 +4983,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
                 if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     if (state.key == sessionKey) {
                         state.copy(progress = "网络不稳定，正在重试音频下载（第 ${attempt + 1} 次）")
                     } else state
@@ -5752,6 +5838,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             sessionRemoteMediaCookie,
                             sessionKey,
                             "复用网页视频音频，正在分析人物声音…",
+                            pipelineGeneration = pipelineGeneration,
                         )
                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                             if (state.key == sessionKey) {
