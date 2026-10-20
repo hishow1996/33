@@ -7,13 +7,7 @@ import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
-/**
- * 网页视频候选验证器（参考 VBrowser 的 sniff-verify 思路）：
- * WebView 探测到的候选 URL 混着广告、统计接口、失效地址，用户无从分辨；
- * 对每个候选后台发一次极小的 HEAD（不支持 HEAD 的站点回退 Range: bytes=0-0 的
- * GET，只拉 1 字节）确认 Content-Type 真的是视频/音频流，验证通过的候选
- * 才进入自动播放与优先展示。
- */
+/** Audio-source categories displayed alongside manually selectable webpage candidates. */
 internal enum class WebCandidateAudioHintKind {
     INDEPENDENT,
     LOW_BITRATE_MUXED,
@@ -28,6 +22,10 @@ internal data class WebCandidateAudioHint(
     val renditionUrl: String? = null,
 )
 
+/**
+ * Validates discovered media candidates and inspects HLS master playlists for audio hints.
+ * Candidate validation affects status/sorting only; it does not choose a media source for the user.
+ */
 internal object WebCandidateVerifier {
 
     private const val MAX_HLS_HINT_BYTES = 256 * 1024
