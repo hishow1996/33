@@ -24,7 +24,7 @@ internal object YtDlpVersionPolicy {
     private const val MAX_LEADING_BYTES = 8192
     private const val MAX_ZIP_ENTRIES = 20_000
     private const val VERSION_MODULE = "yt_dlp/version.py"
-    private val versionAssignment = Regex("""__version__\\s*=\\s*['"]([^'"]+)['"]""")
+        private val versionAssignment = Regex("""__version__\s*=\s*['"]([^'"]+)['"]""")
 
     fun isStableTag(value: String): Boolean = stableTagPattern.matches(value.trim())
 
