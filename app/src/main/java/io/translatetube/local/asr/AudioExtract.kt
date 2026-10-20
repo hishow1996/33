@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.net.Uri
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -12,6 +13,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** 任意音频源 → 16kHz 单声道 PCM；文件形式用于长音频，避免一次性保留多份大数组。 */
@@ -27,6 +29,13 @@ object AudioExtract {
     private const val MAX_CODEC_STALL_MS = 60_000L
 
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
+
+    /** Container metadata read without decoding samples. */
+    data class MediaProbe(
+        val audioTrackCount: Int,
+        val videoTrackCount: Int,
+        val durationMs: Long,
+    )
 
     /** 小端 PCM16 暂存文件。只在需要转写的当前语音段上分配 FloatArray。 */
     data class PcmFile(
@@ -128,6 +137,189 @@ object AudioExtract {
             )
         } finally {
             pcmFile.file.delete()
+        }
+    }
+
+
+    /**
+     * Read audio/video track metadata without running a decoder. Direct cloud uploads use this
+     * to verify that a cached ".bin" is really one supported audio track and to normalize provider
+     * timestamps against the duration of the same track.
+     */
+    fun probeMediaFile(file: File): MediaProbe {
+        if (!file.isFile || file.length() <= 0L) {
+            throw IllegalStateException("音频文件不存在或为空")
+        }
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(file.absolutePath)
+            val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
+            var audioTrackCount = 0
+            var videoTrackCount = 0
+            for (index in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(index)
+                when {
+                    format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true -> {
+                        audioTrackCount++
+                        val channelCount = runCatching {
+                            format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        }.getOrDefault(1)
+                        val isDefault = runCatching {
+                            format.containsKey("is-default") && format.getInteger("is-default") != 0
+                        }.getOrDefault(false)
+                        audioCandidates += AudioTrackSelectionPolicy.Candidate(
+                            index = index,
+                            isDefault = isDefault,
+                            channelCount = channelCount,
+                        )
+                    }
+                    format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true -> {
+                        videoTrackCount++
+                    }
+                }
+            }
+            val selectedTrack = AudioTrackSelectionPolicy.choose(audioCandidates)
+            val durationUs = selectedTrack?.let { index ->
+                val format = extractor.getTrackFormat(index)
+                runCatching {
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                        format.getLong(MediaFormat.KEY_DURATION)
+                    } else 0L
+                }.getOrDefault(0L).coerceAtLeast(0L)
+            } ?: 0L
+            return MediaProbe(
+                audioTrackCount = audioTrackCount,
+                videoTrackCount = videoTrackCount,
+                durationMs = durationUs / 1_000L,
+            )
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    /**
+     * Remux a compressed AAC track into an audio-only M4A container. This copies compressed
+     * packets and timestamps; it does not decode/resample them. Unsupported codecs/containers
+     * return null so the caller can safely fall back to the existing PCM decoder.
+     */
+    fun remuxAacAudioTrackToM4a(
+        ctx: Context,
+        src: Uri? = null,
+        file: File? = null,
+        checkActive: () -> Unit = {},
+        onProgressPercent: (Int) -> Unit = {},
+    ): File? {
+        if (src == null && file == null) return null
+        val destination = try {
+            File.createTempFile("asr-cloud-audio-", ".m4a", ctx.cacheDir)
+        } catch (_: Exception) {
+            return null
+        }
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+        var outputComplete = false
+        try {
+            when {
+                file != null -> extractor.setDataSource(file.absolutePath)
+                src != null -> extractor.setDataSource(ctx, src, null)
+            }
+
+            val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
+            for (index in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(index)
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") != true) continue
+                val channelCount = runCatching {
+                    format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                }.getOrDefault(1)
+                val isDefault = runCatching {
+                    format.containsKey("is-default") && format.getInteger("is-default") != 0
+                }.getOrDefault(false)
+                audioCandidates += AudioTrackSelectionPolicy.Candidate(
+                    index = index,
+                    isDefault = isDefault,
+                    channelCount = channelCount,
+                )
+            }
+            val trackIndex = AudioTrackSelectionPolicy.choose(audioCandidates) ?: return null
+            val inputFormat = extractor.getTrackFormat(trackIndex)
+            // MP4/M4A audio remuxing is broadly available on Android 9 for AAC-LC / AAC tracks.
+            // Never relabel Opus, AC3 or another compressed stream as M4A.
+            if (inputFormat.getString(MediaFormat.KEY_MIME) != "audio/mp4a-latm") return null
+
+            val durationUs = runCatching {
+                if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                    inputFormat.getLong(MediaFormat.KEY_DURATION)
+                } else 0L
+            }.getOrDefault(0L).coerceAtLeast(0L)
+            extractor.selectTrack(trackIndex)
+            muxer = MediaMuxer(destination.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val outputTrack = muxer.addTrack(inputFormat)
+            muxer.start()
+            muxerStarted = true
+
+            val configuredSize = runCatching {
+                inputFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+            }.getOrDefault(256 * 1024)
+            var buffer = ByteBuffer.allocateDirect(configuredSize.coerceIn(64 * 1024, 16 * 1024 * 1024))
+            val info = MediaCodec.BufferInfo()
+            var lastProgress = -1
+            var wroteSample = false
+
+            while (true) {
+                checkActive()
+                val sampleSize = extractor.sampleSize
+                if (sampleSize < 0L) break
+                if (sampleSize > 16L * 1024L * 1024L) {
+                    throw IllegalStateException("AAC 音频帧超过安全上限")
+                }
+                if (sampleSize > buffer.capacity().toLong()) {
+                    buffer = ByteBuffer.allocateDirect(sampleSize.toInt())
+                }
+                buffer.clear()
+                val size = extractor.readSampleData(buffer, 0)
+                if (size < 0) break
+                val presentationTimeUs = extractor.sampleTime.coerceAtLeast(0L)
+                info.set(0, size, presentationTimeUs, extractor.sampleFlags)
+                buffer.position(0)
+                buffer.limit(size)
+                muxer.writeSampleData(outputTrack, buffer, info)
+                wroteSample = true
+
+                if (durationUs > 0L) {
+                    val percent = ((presentationTimeUs.toDouble() / durationUs.toDouble()) * 100.0)
+                        .toInt().coerceIn(0, 99)
+                    if (percent > lastProgress) {
+                        lastProgress = percent
+                        onProgressPercent(percent)
+                    }
+                }
+                if (!extractor.advance()) break
+            }
+
+            checkActive()
+            if (!wroteSample) return null
+            muxer.stop()
+            muxerStarted = false
+            muxer.release()
+            muxer = null
+            if (!destination.isFile || destination.length() <= 44L) return null
+            outputComplete = true
+            onProgressPercent(100)
+            return destination
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Unsupported container details and muxer/device quirks are handled by the caller's
+            // existing decode-to-PCM route, not surfaced as a cloud transcription failure.
+            return null
+        } finally {
+            runCatching { extractor.release() }
+            muxer?.let { activeMuxer ->
+                if (muxerStarted) runCatching { activeMuxer.stop() }
+                runCatching { activeMuxer.release() }
+            }
+            if (!outputComplete) runCatching { destination.delete() }
         }
     }
 
