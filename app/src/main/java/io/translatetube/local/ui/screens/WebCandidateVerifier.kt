@@ -9,9 +9,11 @@ import java.util.concurrent.TimeUnit
 
 /** Audio-source categories displayed alongside manually selectable webpage candidates. */
 internal enum class WebCandidateAudioHintKind {
+    DETECTING,
     INDEPENDENT,
     LOW_BITRATE_MUXED,
     UNKNOWN,
+    FAILED,
 }
 
 /** Audio-extraction information for one manually selectable webpage media candidate. */
@@ -111,6 +113,7 @@ internal object WebCandidateVerifier {
         )
         HlsAudioDownloader.isManifestUrl(url) -> WebCandidateAudioHint(
             message = "正在检测 HLS 清单中的音轨类型…",
+            kind = WebCandidateAudioHintKind.DETECTING,
         )
         hasVideoExtension(url) -> WebCandidateAudioHint(
             message = "直链视频 · 音轨类型待确认",
@@ -145,36 +148,85 @@ internal object WebCandidateVerifier {
                 userAgent?.takeIf { it.isNotBlank() }?.let { header("User-Agent", it) }
             }.build()
             client.newCall(request).execute().use responseUse@ { response ->
-                if (response.code !in 200..299) return@responseUse initial
-                val body = response.body ?: return@responseUse initial
+                if (response.code !in 200..299) {
+                    return@responseUse WebCandidateAudioHint(
+                        message = "HLS 检测失败 · HTTP ${response.code}",
+                        kind = WebCandidateAudioHintKind.FAILED,
+                    )
+                }
+                val body = response.body ?: return@responseUse WebCandidateAudioHint(
+                    message = "HLS 检测失败 · 服务器没有返回清单内容",
+                    kind = WebCandidateAudioHintKind.FAILED,
+                )
                 val manifest = readBoundedPrefix(body.byteStream(), MAX_HLS_HINT_BYTES)
                 if (manifest.lineSequence().none { it.trim().equals("#EXTM3U", ignoreCase = true) }) {
-                    return@responseUse initial
+                    return@responseUse WebCandidateAudioHint(
+                        message = "HLS 检测失败 · 响应内容不是有效的 M3U8 清单",
+                        kind = WebCandidateAudioHintKind.FAILED,
+                    )
                 }
 
                 val finalUrl = response.request.url.toString()
-                val selection = runCatching {
-                    HlsAudioDownloader.selectMediaPlaylistWithKind(finalUrl, manifest)
-                }.getOrNull() ?: return@responseUse WebCandidateAudioHint(
-                    message = "HLS 分段清单 · 音轨类型待确认",
-                )
+                val selection = HlsAudioDownloader.selectMediaPlaylistWithKind(finalUrl, manifest)
+                    ?: return@responseUse WebCandidateAudioHint(
+                        message = "HLS 子清单 · 未发现可比较的画质版本，音轨类型待确认",
+                        kind = WebCandidateAudioHintKind.UNKNOWN,
+                    )
                 when (selection.sourceKind) {
                     HlsAudioDownloader.AudioSourceKind.INDEPENDENT -> WebCandidateAudioHint(
-                        message = "检测到独立音轨 · 提取时优先使用",
+                        message = "检测到独立音轨 · 不需要下载视频画面",
                         kind = WebCandidateAudioHintKind.INDEPENDENT,
                         renditionUrl = selection.url,
                     )
-                    HlsAudioDownloader.AudioSourceKind.MUXED -> WebCandidateAudioHint(
-                        message = "没有独立音轨 · 提取时使用低码率音画混合流",
-                        kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
-                        renditionUrl = selection.url,
-                    )
+                    HlsAudioDownloader.AudioSourceKind.MUXED -> {
+                        val details = buildList {
+                            selection.resolution?.let { add(formatResolution(it)) }
+                            selection.declaredBandwidth?.let { add("清单声明 ${formatDeclaredBandwidth(it)}") }
+                        }.joinToString(" · ")
+                        WebCandidateAudioHint(
+                            message = "混合音视频 · 已选择低码率版本" +
+                                if (details.isNotBlank()) " · $details" else " · 清晰度/码率未知",
+                            kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+                            renditionUrl = selection.url,
+                        )
+                    }
                     HlsAudioDownloader.AudioSourceKind.UNKNOWN -> WebCandidateAudioHint(
-                        message = "HLS 分段清单 · 音轨类型待确认",
+                        message = "HLS 子清单 · 未发现可比较的画质版本，音轨类型待确认",
+                        kind = WebCandidateAudioHintKind.UNKNOWN,
                     )
                 }
             }
-        }.getOrDefault(initial)
+        }.getOrElse { error ->
+            failedAudioHint(url, error)
+        }
+    }
+
+    /** Converts request/parser errors into a terminal state so the UI never spins forever. */
+    fun failedAudioHint(url: String, error: Throwable): WebCandidateAudioHint {
+        val detail = when (error) {
+            is java.net.SocketTimeoutException -> "请求超时"
+            is java.net.UnknownHostException -> "域名无法访问"
+            is javax.net.ssl.SSLException -> "HTTPS 连接失败"
+            is java.io.IOException -> "网络请求失败"
+            else -> error.message?.takeIf { it.isNotBlank() }?.take(64) ?: error.javaClass.simpleName
+        }
+        val prefix = if (HlsAudioDownloader.isManifestUrl(url)) "HLS 检测失败" else "音轨检测失败"
+        return WebCandidateAudioHint(
+            message = "$prefix · $detail",
+            kind = WebCandidateAudioHintKind.FAILED,
+        )
+    }
+
+    private fun formatResolution(value: String): String {
+        val height = value.substringAfter('x', "").toIntOrNull()
+        return if (height != null && height > 0) "${height}p" else value
+    }
+
+    private fun formatDeclaredBandwidth(bitsPerSecond: Long): String = when {
+        bitsPerSecond >= 1_000_000L ->
+            String.format(java.util.Locale.ROOT, "%.2f Mbps", bitsPerSecond / 1_000_000.0)
+        bitsPerSecond >= 1_000L -> "${bitsPerSecond / 1_000L} kbps"
+        else -> "$bitsPerSecond bps"
     }
 
     private fun readBoundedPrefix(input: java.io.InputStream, maxBytes: Int): String {
