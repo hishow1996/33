@@ -888,7 +888,7 @@ fun WebVideoScreen(
             )
 
 
-            val minPanelHeight = 72.dp.coerceAtMost(maxHeight)
+            val minPanelHeight = 80.dp.coerceAtMost(maxHeight)
             val maxPanelHeight = (maxHeight * 0.92f)
                 .coerceAtLeast(minPanelHeight)
                 .coerceAtMost(maxHeight)
@@ -923,11 +923,11 @@ fun WebVideoScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
             ) {
                 Column(Modifier.fillMaxSize()) {
-                    // 显示明确的拖拽把手；把手与标题区域都支持连续拖动。
+                    // 仅顶部把手支持连续拖动，避免标题和视频源列表误触发面板移动。
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(12.dp)
+                            .height(24.dp)
                             .then(panelDragModifier)
                             .then(panelClickModifier),
                         contentAlignment = Alignment.Center,
@@ -944,7 +944,6 @@ fun WebVideoScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .then(panelDragModifier)
                             .then(panelClickModifier)
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1235,7 +1234,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 177.dp).coerceAtLeast(80.dp)),
+                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 189.dp).coerceAtLeast(80.dp)),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
