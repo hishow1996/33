@@ -163,23 +163,24 @@ internal object HlsAudioDownloader {
             return null
         }
 
-        // Start with the lowest-bandwidth variant, but do not choose its video-only URL when it
-        // references an audio group absent from the master playlist. Try the next viable variant
-        // instead, and only use a variant URL directly when it is muxed or its group has a URI-less
-        // member. This prevents a later MediaExtractor failure caused by downloading video without
-        // the audio rendition the master explicitly associates with it.
-        for (variant in variants.sortedBy { it.bandwidth }) {
-            val group = variant.audioGroup ?: return resolveUrl(playlistUrl, variant.uri)
+        val sortedVariants = variants.sortedBy { it.bandwidth }
+
+        // Prefer a separately declared audio rendition even when the lowest-bitrate video variant
+        // is muxed. Returning that muxed variant immediately used to download video packets from
+        // the network and only discard them later during transcription.
+        val externalAudioCandidates = ArrayList<Pair<Variant, Map<String, String>>>()
+        for (variant in sortedVariants) {
+            val group = variant.audioGroup ?: continue
             val groupRows = audioRows.filter { row -> row["GROUP-ID"] == group }
             if (groupRows.isEmpty()) continue
-            // A missing URI attribute means audio is muxed into the variant. An explicitly empty
-            // URI is different: it's a malformed external-rendition declaration, not a muxed row.
+
+            // An explicitly empty URI is malformed, unlike a missing URI (which means muxed audio).
             if (groupRows.any { it.containsKey("URI") && it["URI"].isNullOrBlank() }) {
                 throw IllegalStateException("HLS 音轨组 $group 声明了空 URI，无法读取音轨。")
             }
 
             val externalAudio = groupRows.filter { !it["URI"].isNullOrBlank() }
-            if (externalAudio.isEmpty()) return resolveUrl(playlistUrl, variant.uri)
+            if (externalAudio.isEmpty()) continue
 
             val selectedAudio = externalAudio.minWithOrNull(
                 compareBy<Map<String, String>>(
@@ -187,8 +188,30 @@ internal object HlsAudioDownloader {
                     { if (it["AUTOSELECT"].equals("YES", ignoreCase = true)) 0 else 1 },
                 )
             ) ?: continue
-            return resolveUrl(playlistUrl, selectedAudio.getValue("URI"))
+            externalAudioCandidates += variant to selectedAudio
         }
+
+        // If multiple video variants point at external audio, use the group associated with the
+        // lowest-bandwidth viable variant. Only the audio URI itself is returned and downloaded.
+        externalAudioCandidates.minByOrNull { it.first.bandwidth }?.let { (_, audio) ->
+            return resolveUrl(playlistUrl, audio.getValue("URI"))
+        }
+
+        // No separate audio rendition exists. Use the lowest-bandwidth media variant that can
+        // actually carry audio in-band; skip variants whose declared audio group is missing.
+        for (variant in sortedVariants) {
+            val group = variant.audioGroup ?: return resolveUrl(playlistUrl, variant.uri)
+            val groupRows = audioRows.filter { row -> row["GROUP-ID"] == group }
+            if (groupRows.isEmpty()) continue
+            if (groupRows.any { it.containsKey("URI") && it["URI"].isNullOrBlank() }) {
+                throw IllegalStateException("HLS 音轨组 $group 声明了空 URI，无法读取音轨。")
+            }
+            if (groupRows.none { !it["URI"].isNullOrBlank() }) {
+                // URI-less AUDIO group entries denote audio muxed into this media variant.
+                return resolveUrl(playlistUrl, variant.uri)
+            }
+        }
+
         throw IllegalStateException("HLS 主清单引用了不存在或不可用的音轨组，无法安全选择音频。")
     }
 
