@@ -304,6 +304,7 @@ internal object HlsAudioDownloader {
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
                 var sourceKind = initialSourceKind
+                onProgress("${sourceKind.displayName} · 正在检查 HLS 清单，判断是否独立音轨…")
 
                 while (true) {
                     awaitResume()
