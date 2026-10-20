@@ -88,7 +88,8 @@ android {
     }
     packaging {
         resources.excludes += "META-INF/*"
-        jniLibs.useLegacyPackaging = false
+        // youtubedl-android 从 nativeLibraryDir 直接运行 libpython.so，必须解压原生库
+        jniLibs.useLegacyPackaging = true
     }
 }
 
