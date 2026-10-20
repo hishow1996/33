@@ -1016,11 +1016,11 @@ fun WebVideoScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Text(
-                            ytDlpHint.orEmpty(),
+                            if (candidatesState.value.isNotEmpty()) "解析规则需更新" else ytDlpHint.orEmpty(),
                             modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
-                            maxLines = 2,
+                            maxLines = if (candidatesState.value.isNotEmpty()) 1 else 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
@@ -1203,7 +1203,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(viewportMaxHeight * 0.32f),
+                        modifier = Modifier.fillMaxWidth().height(viewportMaxHeight * 0.34f),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
