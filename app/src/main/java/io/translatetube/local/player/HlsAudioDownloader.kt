@@ -19,6 +19,17 @@ import java.security.MessageDigest
  * deliberately does not decrypt encrypted playlists or bypass DRM.
  */
 internal object HlsAudioDownloader {
+    internal enum class AudioSourceKind(val displayName: String) {
+        INDEPENDENT("独立音轨"),
+        MUXED("音画混合流"),
+        UNKNOWN("音轨类型待确认"),
+    }
+
+    internal data class PlaylistSelection(
+        val url: String,
+        val sourceKind: AudioSourceKind,
+    )
+
     private const val MAX_PLAYLIST_BYTES = 2L * 1024L * 1024L
     private const val MAX_SEGMENTS = 10_000
     private const val MAX_MASTER_DEPTH = 4
@@ -215,15 +226,52 @@ internal object HlsAudioDownloader {
         throw IllegalStateException("HLS 主清单引用了不存在或不可用的音轨组，无法安全选择音频。")
     }
 
+
+    /**
+     * Attach source-type metadata to a master-playlist choice. Media playlists by themselves
+     * cannot reliably tell whether their segments carry audio only or muxed audio/video.
+     */
+    internal fun selectMediaPlaylistWithKind(
+        playlistUrl: String,
+        body: String,
+    ): PlaylistSelection? {
+        val selectedUrl = selectMediaPlaylistUrl(playlistUrl, body) ?: return null
+        val lines = body.removePrefix("\uFEFF")
+            .lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .toList()
+        val audioRows = lines
+            .filter { it.startsWith("#EXT-X-MEDIA:", ignoreCase = true) }
+            .map { parseAttributes(it.substringAfter(':')) }
+            .filter { it["TYPE"].equals("AUDIO", ignoreCase = true) }
+        val independentUrls = audioRows
+            .mapNotNull { row -> row["URI"]?.takeIf { it.isNotBlank() } }
+            .map { reference -> resolveUrl(playlistUrl, reference) }
+            .toSet()
+        return PlaylistSelection(
+            url = selectedUrl,
+            sourceKind = if (selectedUrl in independentUrls) {
+                AudioSourceKind.INDEPENDENT
+            } else {
+                AudioSourceKind.MUXED
+            },
+        )
+    }
+
     suspend fun download(
         playlistUrl: String,
         destination: File,
         requestHeaders: Map<String, String> = emptyMap(),
         awaitResume: suspend () -> Unit = {},
         userAgent: String? = null,
+        initialSourceKind: AudioSourceKind = AudioSourceKind.UNKNOWN,
         onProgress: (String) -> Unit = {},
     ): File = downloadMutex.withLock {
-        downloadLocked(playlistUrl, destination, requestHeaders, awaitResume, userAgent, onProgress)
+        downloadLocked(
+            playlistUrl, destination, requestHeaders, awaitResume, userAgent,
+            initialSourceKind, onProgress,
+        )
     }
 
     private suspend fun downloadLocked(
@@ -232,6 +280,7 @@ internal object HlsAudioDownloader {
         requestHeaders: Map<String, String>,
         awaitResume: suspend () -> Unit,
         userAgent: String?,
+        initialSourceKind: AudioSourceKind,
         onProgress: (String) -> Unit,
     ): File {
         val ownerJob = currentCoroutineContext()[Job]
@@ -254,18 +303,24 @@ internal object HlsAudioDownloader {
                 awaitResume()
                 ensurePlaylistIsUnencrypted(fetched.text)
                 var masterDepth = 0
+                var sourceKind = initialSourceKind
 
                 while (true) {
                     awaitResume()
                     ownerJob?.ensureActive()
-                    val next = selectMediaPlaylistUrl(fetched.finalUrl, fetched.text) ?: break
+                    val selection = selectMediaPlaylistWithKind(fetched.finalUrl, fetched.text) ?: break
+                    sourceKind = selection.sourceKind
+                    onProgress("${sourceKind.displayName} · 已识别 HLS 音轨来源，准备下载分段")
                     masterDepth++
                     if (masterDepth > MAX_MASTER_DEPTH) {
                         throw IllegalStateException("HLS 主清单嵌套层数过多，已停止解析。")
                     }
-                    fetched = fetchText(parseHttpUrl(next), mediaHeaders, rootOrigin, ownerJob, userAgent)
+                    fetched = fetchText(parseHttpUrl(selection.url), mediaHeaders, rootOrigin, ownerJob, userAgent)
                     awaitResume()
                     ensurePlaylistIsUnencrypted(fetched.text)
+                }
+                if (sourceKind == AudioSourceKind.UNKNOWN) {
+                    onProgress("${sourceKind.displayName} · 已读取 HLS 清单，正在核对音频分段")
                 }
 
                 val playlist = parseMediaPlaylist(fetched.finalUrl, fetched.text)
@@ -333,7 +388,7 @@ internal object HlsAudioDownloader {
                         }
                         onProgress(
                             AudioDownloadProgressFormatter.formatProgress(
-                                label = "正在缓存网页音轨 ${index + 1}/${sources.size}",
+                                label = "${sourceKind.displayName} · 正在缓存网页音轨 ${index + 1}/${sources.size}",
                                 downloadedBytes = downloadedSoFar,
                                 totalBytes = knownTotalBytes,
                                 percent = percent,
@@ -379,7 +434,7 @@ internal object HlsAudioDownloader {
                     cachedSegments.forEachIndexed { index, segment ->
                         awaitResume()
                         ownerJob?.ensureActive()
-                        val label = "正在合并网页音轨 ${index + 1}/${cachedSegments.size}"
+                        val label = "${sourceKind.displayName} · 正在合并音轨 ${index + 1}/${cachedSegments.size}"
                         segment.inputStream().buffered().use { input ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
@@ -432,7 +487,7 @@ internal object HlsAudioDownloader {
                 // assembly without downloading every network segment again.
                 onProgress(
                     AudioDownloadProgressFormatter.formatProgress(
-                        label = "网页音轨缓存完成，准备解码",
+                        label = "${sourceKind.displayName} · 音轨缓存完成，准备转写",
                         downloadedBytes = destination.length(),
                         totalBytes = destination.length(),
                         percent = 100,
