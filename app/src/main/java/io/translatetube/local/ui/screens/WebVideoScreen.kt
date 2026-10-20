@@ -468,11 +468,40 @@ fun WebVideoScreen(
         if (ytDlpBusy) return
         if (!screenActive.get() || !io.translatetube.local.yt.YtDlpRepo.isEligible(target)) {
             ytDlpHint = "该网页地址暂不适用于 yt-dlp 解析"
+            if (screenActive.get()) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    context = appCtx,
+                    tag = "WebVideoParse",
+                    message = "未启动 yt-dlp 备用解析：该站点不符合解析器支持条件",
+                    diagnosticContext = mapOf(
+                        "页面主机名" to webSourceHost(target),
+                        "候选源数量" to candidatesState.value.size.toString(),
+                        "已验证可用源数量" to verifiedUrls.size.toString(),
+                        "是否为 PikPak 分享页" to (PikpakShare.parseShareId(target) != null).toString(),
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "WebVideoParse",
+                        webSourceHost(target) + "|yt-dlp-ineligible",
+                    ),
+                )
+            }
             return
         }
         ytDlpBusy = true
         ytDlpHint = null
         status = "正在用 yt-dlp 解析该网站视频（首次使用需解包运行时，请稍候）…"
+        io.translatetube.local.util.AppLogStore.info(
+            context = appCtx,
+            tag = "WebVideoParse",
+            message = "启动 yt-dlp 网页视频备用解析",
+            diagnosticContext = mapOf(
+                "页面主机名" to webSourceHost(target),
+                "候选源数量" to candidatesState.value.size.toString(),
+                "已验证可用源数量" to verifiedUrls.size.toString(),
+                "启动方式" to if (ytDlpAutoAttempts > 0) "未发现可用直链后自动兜底" else "手动或失败后重试",
+                "规则更新后是否已自动重试" to rulesUpdatedForRetry.toString(),
+            ),
+        )
         val requestGeneration = pageGeneration.get()
         val runGeneration = ytDlpRunGeneration.incrementAndGet()
         val job = ytScope.launch(Dispatchers.IO) {
@@ -489,7 +518,38 @@ fun WebVideoScreen(
                     if (rulesUpdatedForRetry) status = "更新解析规则后重试成功"
                     ytDlpBusy = false
                     ytDlpJob = null
-                    status = "yt-dlp 解析成功：${media.title}"
+                    status = "yt-dlp 解析成功：" + media.title
+                    val parseIssueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "WebVideoParse",
+                        webSourceHost(target) + "|yt-dlp",
+                    )
+                    val parseDiagnostics = mapOf(
+                        "页面主机名" to webSourceHost(target),
+                        "解析器" to "yt-dlp",
+                        "解析结果" to "成功",
+                        "媒体标题" to media.title.take(120),
+                        "媒体地址类型" to webSourceType(media.mediaUrl),
+                        "解析运行代数" to runGeneration.toString(),
+                        "页面导航代数" to requestGeneration.toString(),
+                    )
+                    io.translatetube.local.util.AppLogStore.info(
+                        context = appCtx,
+                        tag = "WebVideoParse",
+                        message = "yt-dlp 成功提取网页媒体地址",
+                        diagnosticContext = parseDiagnostics,
+                    )
+                    io.translatetube.local.util.AppLogStore.resolveIssue(
+                        context = appCtx,
+                        issueKey = parseIssueKey,
+                        message = "yt-dlp 网页视频解析已恢复成功",
+                        diagnosticContext = parseDiagnostics,
+                    )
+                    io.translatetube.local.util.AppLogStore.resolveIssue(
+                        context = appCtx,
+                        issueKey = webNoSourceIssueKey(target),
+                        message = "备用解析成功取得可播放媒体地址",
+                        diagnosticContext = parseDiagnostics,
+                    )
                     onOpenMedia(
                         media.mediaUrl,
                         media.title.ifBlank { pageTitle },
@@ -515,6 +575,10 @@ fun WebVideoScreen(
                         "规则更新后是否已自动重试" to rulesUpdatedForRetry.toString(),
                         "当前页面是否仍活跃" to screenActive.get().toString(),
                         "候选视频数量" to candidatesState.value.size.toString(),
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "WebVideoParse",
+                        webSourceHost(target) + "|yt-dlp",
                     ),
                 )
                 Log.w(TAG_WEB, "yt-dlp resolve failed for $target", e)
@@ -725,11 +789,35 @@ fun WebVideoScreen(
             candidate.url in verifiedUrls &&
                 WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
         }
+        val ytDlpEligible = io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)
+        if (screenActive.get() && !hasUsableCandidate && !noSourceLoggedForPage) {
+            noSourceLoggedForPage = true
+            io.translatetube.local.util.AppLogStore.warning(
+                context = appCtx,
+                tag = "WebSourceDetection",
+                message = "网页媒体源检测等待结束，仍没有确认可直接播放的候选源",
+                diagnosticContext = mapOf(
+                    "页面主机名" to webSourceHost(currentPage),
+                    "页面标题" to pageTitle.take(120),
+                    "检测等待时间" to "网页加载完成后等待约 8 秒",
+                    "候选源总数" to candidatesState.value.size.toString(),
+                    "已验证可访问的候选源数" to verifiedUrls.size.toString(),
+                    "候选媒体类型分布" to candidatesState.value.groupingBy { webSourceType(it.url) }.eachCount().toString(),
+                    "音轨类型检测结果分布" to sourceHints.values.groupingBy { it.kind.name }.eachCount().toString(),
+                    "带 DRM 标记的候选数" to candidatesState.value.count { it.drmProtected }.toString(),
+                    "是否支持 yt-dlp 备用解析" to ytDlpEligible.toString(),
+                    "是否为 PikPak 分享页" to (PikpakShare.parseShareId(currentPage) != null).toString(),
+                    "可能原因" to "可能是 DRM/blob/MSE 播放器、登录或签名限制、媒体请求被拒，或网页尚未暴露可访问的媒体地址；需结合下方 HTTP 和候选校验日志判断",
+                    "页面导航代数" to pageGeneration.get().toString(),
+                ),
+                issueKey = webNoSourceIssueKey(currentPage),
+            )
+        }
         if (
             screenActive.get() &&
             WebVideoProbePolicy.shouldStartAutomaticYtDlp(
                 pageLoaded = !pageLoading,
-                isEligible = io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage),
+                isEligible = ytDlpEligible,
                 isPikPakShare = PikpakShare.parseShareId(currentPage) != null,
                 isBusy = ytDlpBusy,
                 autoAttempts = ytDlpAutoAttempts,
