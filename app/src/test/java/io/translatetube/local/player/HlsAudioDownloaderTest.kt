@@ -693,4 +693,46 @@ class HlsAudioDownloaderTest {
         assertTrue(error?.message.orEmpty().contains("空 URI"))
     }
 
+
+    @Test
+    fun selectsLowestBandwidthMuxedVariantAndExposesDeclaredMetadata() {
+        val master = """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=4500000,AVERAGE-BANDWIDTH=3900000,RESOLUTION=1920x1080
+            video/1080.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=650000,AVERAGE-BANDWIDTH=430000,RESOLUTION=640x360
+            video/360.m3u8
+        """.trimIndent()
+
+        val selection = HlsAudioDownloader.selectMediaPlaylistWithKind(
+            "https://cdn.example/master.m3u8",
+            master,
+        )
+
+        assertEquals("https://cdn.example/video/360.m3u8", selection?.url)
+        assertEquals(HlsAudioDownloader.AudioSourceKind.MUXED, selection?.sourceKind)
+        assertEquals(430000L, selection?.declaredBandwidth)
+        assertEquals("640x360", selection?.resolution)
+    }
+
+    @Test
+    fun independentAudioDoesNotInheritVideoVariantBitrateOrResolution() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/eng.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=4500000,AVERAGE-BANDWIDTH=3900000,RESOLUTION=1920x1080,AUDIO="audio"
+            video/1080.m3u8
+        """.trimIndent()
+
+        val selection = HlsAudioDownloader.selectMediaPlaylistWithKind(
+            "https://cdn.example/master.m3u8",
+            master,
+        )
+
+        assertEquals("https://cdn.example/audio/eng.m3u8", selection?.url)
+        assertEquals(HlsAudioDownloader.AudioSourceKind.INDEPENDENT, selection?.sourceKind)
+        assertNull(selection?.declaredBandwidth)
+        assertNull(selection?.resolution)
+    }
+
 }
