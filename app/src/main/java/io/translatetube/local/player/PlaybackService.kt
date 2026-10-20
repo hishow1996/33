@@ -4047,7 +4047,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         destination: File,
         headers: Map<String, String>,
         awaitResume: suspend () -> Unit = {},
-        onProgressPercent: (Int, Long) -> Unit = { _, _ -> },
+        onProgressPercent: (Int?, Long) -> Unit = { _, _ -> },
     ): File {
         val work = File(destination.parentFile, destination.name + ".part")
         val extractor = android.media.MediaExtractor()
@@ -4098,6 +4098,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 } else 0L
             }.getOrDefault(0L).coerceAtLeast(0L)
             var lastProgressPercent = -1
+            var lastReportedOutputBytes = 0L
+            var lastReportedProgressAtMs = android.os.SystemClock.elapsedRealtime()
             val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
             val outputFormat = when (AudioTrackContainerPolicy.choose(trackMime)) {
                 AudioTrackContainerPolicy.Container.WEBM ->
@@ -4129,16 +4131,28 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     info.set(0, size, extractor.sampleTime, extractor.sampleFlags)
                     muxer.writeSampleData(muxerTrack, buffer, info)
                     extractedSampleBytes += size.toLong()
-                    if (size > 0 && mediaDurationUs > 0L) {
-                        val nextPercent = io.translatetube.local.asr.MediaTimelineProgressPolicy.nextPercent(
+                    val nextPercent = if (size > 0 && mediaDurationUs > 0L) {
+                        io.translatetube.local.asr.MediaTimelineProgressPolicy.nextPercent(
                             positionUs = info.presentationTimeUs,
                             durationUs = mediaDurationUs,
                             previousPercent = lastProgressPercent,
                         )
-                        if (nextPercent != null) {
-                            lastProgressPercent = nextPercent
-                            onProgressPercent(nextPercent, work.length())
-                        }
+                    } else {
+                        null
+                    }
+                    if (nextPercent != null) lastProgressPercent = nextPercent
+                    val outputBytes = work.length()
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    val shouldPublishByteProgress = outputBytes > lastReportedOutputBytes &&
+                        (outputBytes - lastReportedOutputBytes >= 512L * 1024L ||
+                            nowMs - lastReportedProgressAtMs >= 350L)
+                    if (nextPercent != null || shouldPublishByteProgress) {
+                        onProgressPercent(
+                            nextPercent ?: lastProgressPercent.takeIf { it >= 0 },
+                            outputBytes,
+                        )
+                        lastReportedOutputBytes = outputBytes
+                        lastReportedProgressAtMs = nowMs
                     }
                     extractor.advance()
                 }

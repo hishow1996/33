@@ -595,10 +595,10 @@ object YtDlpRepo {
         }
     }
 
-    private fun parseDownloadTotalBytes(outputLine: String): Long? {
+    private fun parseDownloadTotalBytes(outputLine: String?): Long? {
         val match = Regex(
-            """(?i)\\bof\\s+~?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(KiB|MiB|GiB|TiB|KB|MB|GB|TB|B)\\b"""
-        ).find(outputLine) ?: return null
+            """(?i)\bof\s+~?\s*([0-9]+(?:\.[0-9]+)?)\s*(KiB|MiB|GiB|TiB|KB|MB|GB|TB|B)\b"""
+        ).find(outputLine.orEmpty()) ?: return null
         val amount = match.groupValues[1].toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 }
             ?: return null
         val unit = match.groupValues[2].uppercase(Locale.ROOT)
