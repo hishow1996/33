@@ -1234,7 +1234,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 189.dp).coerceAtLeast(80.dp)),
+                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 96.dp).coerceAtLeast(80.dp)),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
