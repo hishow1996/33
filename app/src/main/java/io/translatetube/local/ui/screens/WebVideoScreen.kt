@@ -110,6 +110,13 @@ private fun webSourceIssueIdentity(rawUrl: String): String =
         listOfNotNull(uri.host, uri.path).joinToString("|")
     }.getOrDefault(webSourceHost(rawUrl))
 
+/** One-way per-candidate identifier lets related detection/verification errors be matched without logging signed URLs. */
+private fun webSourceFingerprint(rawUrl: String): String =
+    io.translatetube.local.util.AppLogStore.stableIssueKey(
+        "WebSourceCandidate",
+        rawUrl,
+    )
+
 private fun webSourceIssueKey(stage: String, rawUrl: String): String =
     io.translatetube.local.util.AppLogStore.stableIssueKey(
         "WebSourceDetection",
@@ -225,6 +232,7 @@ fun WebVideoScreen(
                     val diagnostics = mapOf(
                         "页面主机名" to webSourceHost(hintPageUrl),
                         "媒体源主机名" to webSourceHost(candidateUrl),
+                        "候选源诊断编号" to webSourceFingerprint(candidateUrl),
                         "媒体源类型" to webSourceType(candidateUrl),
                         "音轨类型识别结果" to hint.kind.name,
                         "检测说明" to hint.message,
@@ -358,6 +366,7 @@ fun WebVideoScreen(
                 val diagnostics = mapOf(
                     "页面主机名" to webSourceHost(verificationPageUrl),
                     "媒体源主机名" to webSourceHost(candidateUrl),
+                    "候选源诊断编号" to webSourceFingerprint(candidateUrl),
                     "媒体源类型" to webSourceType(candidateUrl),
                     "校验方式" to result.method,
                     "校验结果" to if (result.verified) "通过" else "未通过",
@@ -1353,6 +1362,7 @@ fun WebVideoScreen(
                                                 diagnosticContext = mapOf(
                                                     "页面主机名" to webSourceHost(currentPage),
                                                     "媒体源主机名" to webSourceHost(resourceUrl),
+                                                    "候选源诊断编号" to webSourceFingerprint(resourceUrl),
                                                     "媒体源类型" to webSourceType(resourceUrl),
                                                     "请求方法" to request.method,
                                                     "新增候选数量" to addedCount.toString(),
@@ -1421,6 +1431,7 @@ fun WebVideoScreen(
                                     message = if (request.isForMainFrame) "网页主文档返回 HTTP 错误" else "媒体候选请求返回 HTTP 错误",
                                     diagnosticContext = mapOf(
                                         "资源主机名" to webSourceHost(failedUrl),
+                                        "候选源诊断编号" to if (request.isForMainFrame) "网页主文档" else webSourceFingerprint(failedUrl),
                                         "资源类型" to if (request.isForMainFrame) "网页文档" else webSourceType(failedUrl),
                                         "HTTP 状态码" to errorResponse.statusCode.toString(),
                                         "HTTP 原因" to errorResponse.reasonPhrase.take(200),
@@ -1932,6 +1943,7 @@ fun WebVideoScreen(
                                                     diagnosticContext = mapOf(
                                                         "页面主机名" to webSourceHost(currentPage),
                                                         "媒体源主机名" to webSourceHost(candidate.url),
+                                                        "候选源诊断编号" to webSourceFingerprint(candidate.url),
                                                         "媒体源类型" to webSourceType(candidate.url),
                                                         "失败原因" to reasonText,
                                                         "是否带 DRM 标记" to candidate.drmProtected.toString(),
@@ -1950,6 +1962,7 @@ fun WebVideoScreen(
                                                     diagnosticContext = mapOf(
                                                         "页面主机名" to webSourceHost(currentPage),
                                                         "媒体源主机名" to webSourceHost(mediaUrl),
+                                                        "候选源诊断编号" to webSourceFingerprint(mediaUrl),
                                                         "媒体源类型" to webSourceType(mediaUrl),
                                                         "媒体源标题" to candidate.title.take(120),
                                                         "音轨类型识别结果" to hint.kind.name,
