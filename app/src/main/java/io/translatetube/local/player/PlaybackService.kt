@@ -4208,6 +4208,122 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     }
 
 
+    private fun remoteAudioBaseDiagnostics(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        stage: String,
+    ): Map<String, String> {
+        val uri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
+        val extension = uri?.lastPathSegment.orEmpty().substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+        val mediaType = when (extension) {
+            "m3u8" -> "HLS/M3U8 清单"
+            "mpd" -> "DASH/MPD 清单"
+            "mp4", "m4v", "webm", "mkv", "mov", "flv", "ts" -> "视频或混合媒体"
+            "mp3", "m4a", "aac", "ogg", "opus", "flac", "wav" -> "纯音频候选"
+            else -> "扩展名无法确认"
+        }
+        return mapOf(
+            "处理阶段" to stage.take(120),
+            "媒体源主机名" to uri?.host?.take(120).orEmpty().ifBlank { "未知" },
+            "媒体源类型" to mediaType,
+            "媒体源扩展名提示" to extension.ifBlank { "无" },
+            "媒体源诊断编号" to io.translatetube.local.util.AppLogStore.stableIssueKey("WebAudioSource", mediaUrl),
+            "页面主机名" to runCatching { android.net.Uri.parse(referrer).host }.getOrNull()?.take(120).orEmpty().ifBlank { "未知" },
+            "是否携带 Cookie" to (!cookie.isNullOrBlank()).toString(),
+            "是否携带 Referer" to referrer.startsWith("http", ignoreCase = true).toString(),
+        )
+    }
+
+    private fun logRemoteAudioFailure(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        stage: String,
+        failure: Throwable,
+        extra: Map<String, String> = emptyMap(),
+        tag: String = "WebAudioExtraction",
+    ) {
+        val diagnosis = RemoteAudioFailurePolicy.classify(failure)
+        val sourceUri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
+        val sourceIdentity = listOf(sourceUri?.host.orEmpty(), sourceUri?.path.orEmpty(), diagnosis.code).joinToString("|")
+        io.translatetube.local.util.AppLogStore.error(
+            context = applicationContext,
+            tag = tag,
+            message = "网页视频音轨处理失败：\${diagnosis.label}",
+            failure = failure,
+            diagnosticContext = remoteAudioBaseDiagnostics(mediaUrl, referrer, cookie, stage) + mapOf(
+                "失败分类代码" to diagnosis.code,
+                "可能原因" to diagnosis.likelyCause,
+                "建议排查方向" to diagnosis.nextStep,
+                "异常根因类型" to generateSequence(failure) { it.cause }.take(8).last().javaClass.name,
+            ) + extra,
+            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(tag, sourceIdentity),
+        )
+    }
+
+    private fun validateRemoteAudioFile(
+        mediaUrl: String,
+        referrer: String,
+        cookie: String?,
+        stage: String,
+        file: java.io.File,
+    ): io.translatetube.local.asr.AudioExtract.MediaProbe {
+        val probe = try {
+            io.translatetube.local.asr.AudioExtract.probeMediaFile(file)
+        } catch (error: Exception) {
+            file.delete()
+            val wrapped = IllegalStateException(
+                "媒体数据已下载，但 Android MediaExtractor 无法读取缓存文件（\${error.message ?: error.javaClass.simpleName}）",
+                error,
+            )
+            logRemoteAudioFailure(
+                mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核", wrapped,
+                mapOf("缓存文件大小字节" to file.length().toString()),
+                tag = "WebAudioTrackProbe",
+            )
+            throw wrapped
+        }
+        val details = mapOf(
+            "缓存文件大小字节" to file.length().toString(),
+            "实际检测到的音轨数" to probe.audioTrackCount.toString(),
+            "实际检测到的视频轨数" to probe.videoTrackCount.toString(),
+            "媒体时长毫秒" to probe.durationMs.toString(),
+            "全部音轨明细" to probe.audioTrackDetails.joinToString("；").ifBlank { "没有识别到音轨" },
+            "最终选中音频 MIME" to probe.selectedAudioMimeType.orEmpty().ifBlank { "未识别" },
+            "最终选中音频语言" to probe.selectedAudioLanguage.orEmpty().ifBlank { "未提供" },
+            "最终选中音频采样率" to (probe.selectedAudioSampleRateHz?.toString() ?: "未提供"),
+            "最终选中音频声道数" to (probe.selectedAudioChannelCount?.toString() ?: "未提供"),
+            "最终选中音频码率 bps" to (probe.selectedAudioBitrate?.toString() ?: "未提供"),
+            "Android 解码器兼容性" to when (probe.selectedAudioDecoderAvailable) {
+                true -> "已找到匹配解码器"
+                false -> "未找到匹配解码器"
+                null -> "无法明确判断"
+            },
+        )
+        if (probe.audioTrackCount <= 0) {
+            file.delete()
+            val failure = IllegalStateException("下载结果中没有可读取的音频轨，候选媒体源可能是纯视频或错误内容")
+            logRemoteAudioFailure(mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核", failure, details, "WebAudioTrackProbe")
+            throw failure
+        }
+        if (probe.selectedAudioDecoderAvailable == false) {
+            file.delete()
+            val failure = IllegalStateException(
+                "音轨存在，但当前 Android 设备没有发现可用的音频解码器（\${probe.selectedAudioMimeType ?: "未知编码"}）",
+            )
+            logRemoteAudioFailure(mediaUrl, referrer, cookie, "$stage · 音频解码器兼容性检查", failure, details, "WebAudioTrackProbe")
+            throw failure
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            context = applicationContext,
+            tag = "WebAudioTrackProbe",
+            message = "网页媒体下载结果已通过真实音轨与编码兼容性检查",
+            diagnosticContext = remoteAudioBaseDiagnostics(mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核") + details,
+        )
+        return probe
+    }
+
     /**
      * Download a direct or finite HLS webpage media URL into a bounded cache for Whisper.
      * The referrer/cookie are obtained from the current WebView session and are never persisted.
@@ -4473,11 +4589,13 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             val destination = asrAudioCacheFile(identity)
             activeAsrAudioPaths.acquire(destination.absolutePath)
             var leaseTransferred = false
+            var extractionStage = "网页媒体音轨获取"
             try {
                 // yt-dlp 源优先：直接下纯音频（bestaudio）进转写，比流式拉整视频省流量省电；
                 // 失败（站点不支持纯音频/网络异常/产物异常）自动回落现有 HLS/直链管线。
                 val ytdlpOrigin = io.translatetube.local.yt.YtDlpRepo.claimForMediaUrl(mediaUrl)
                 if (ytdlpOrigin != null) {
+                    extractionStage = "yt-dlp bestaudio 纯音频下载"
                     try {
                         val directAudio = io.translatetube.local.yt.YtDlpRepo.downloadAudio(
                             applicationContext,
@@ -4508,6 +4626,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             },
                             cookieHeader = ytdlpOrigin.cookie,
                         )
+                        validateRemoteAudioFile(
+                            mediaUrl, referrer, cookie, "yt-dlp bestaudio 纯音频下载", directAudio,
+                        )
                         pruneAsrAudioCache(asrAudioCacheDirectory(), keep = directAudio)
                         leaseTransferred = true
                         return@withLock directAudio
@@ -4531,6 +4652,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 val cachedAudio = try {
                     if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
+                        extractionStage = "HLS 主清单音轨分段下载"
                         HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
                             updateUiForSession(sessionKey) { state ->
                                 if (state.key == sessionKey) {
@@ -4541,6 +4663,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     } else {
                         // 直链视频优先「流式抽轨」：系统 MediaExtractor 直接读取带请求头的
                         // http 源，边拉边把音频轨写进 m4a/webm，不把整个视频下载到本地。
+                        extractionStage = "远程容器流式读取并提取音轨"
                         try {
                             var detectedSourceKind = HlsAudioDownloader.AudioSourceKind.UNKNOWN
                             extractAudioTrackStreaming(
@@ -4595,6 +4718,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             }
 
                             if (isOpaqueHlsManifest) {
+                                extractionStage = "无扩展名 HLS 清单音轨分段下载"
                                 HlsAudioDownloader.download(
                                     mediaUrl,
                                     destination,
@@ -4612,6 +4736,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 io.translatetube.local.web.WebMediaUrlPolicy
                                     .isExplicitAudioOnlyResource(mediaUrl)
                             ) {
+                                extractionStage = "纯音频直链下载兜底"
                                 // A URL explicitly ending in an audio-only extension is safe to fetch whole.
                                 updateUiForSession(sessionKey) { state ->
                                     if (state.key == sessionKey) {
@@ -4641,9 +4766,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 } catch (mediaError: Exception) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (mediaError is kotlinx.coroutines.CancellationException) throw mediaError
-
+                    logRemoteAudioFailure(
+                        mediaUrl, referrer, cookie, extractionStage, mediaError,
+                        mapOf(
+                            "转写缓存文件存在" to destination.isFile.toString(),
+                            "转写缓存文件大小字节" to destination.length().toString(),
+                        ),
+                    )
                     throw mediaError
                 }
+                validateRemoteAudioFile(mediaUrl, referrer, cookie, extractionStage, cachedAudio)
                 pruneAsrAudioCache(asrAudioCacheDirectory(), keep = cachedAudio)
                 leaseTransferred = true
                 cachedAudio

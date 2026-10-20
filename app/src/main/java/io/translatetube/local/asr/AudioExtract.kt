@@ -3,6 +3,7 @@ package io.translatetube.local.asr
 import android.content.Context
 import android.media.AudioFormat
 import android.media.MediaCodec
+import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -35,6 +36,15 @@ object AudioExtract {
         val audioTrackCount: Int,
         val videoTrackCount: Int,
         val durationMs: Long,
+        /** Audio MIME, language, sample rate, channel count and bitrate per detected track. */
+        val audioTrackDetails: List<String> = emptyList(),
+        val selectedAudioMimeType: String? = null,
+        val selectedAudioLanguage: String? = null,
+        val selectedAudioSampleRateHz: Int? = null,
+        val selectedAudioChannelCount: Int? = null,
+        val selectedAudioBitrate: Int? = null,
+        /** null means Android could not conclusively answer the decoder lookup. */
+        val selectedAudioDecoderAvailable: Boolean? = null,
     )
 
     /** 小端 PCM16 暂存文件。只在需要转写的当前语音段上分配 FloatArray。 */
@@ -154,43 +164,68 @@ object AudioExtract {
         try {
             extractor.setDataSource(file.absolutePath)
             val audioCandidates = ArrayList<AudioTrackSelectionPolicy.Candidate>()
+            val audioTrackDetails = ArrayList<String>()
             var audioTrackCount = 0
             var videoTrackCount = 0
             for (index in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(index)
+                val mime = format.getString(MediaFormat.KEY_MIME).orEmpty().ifBlank { "unknown" }
+                val language = runCatching { format.getString("language").orEmpty() }.getOrDefault("")
+                val channelCount = runCatching { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(0)
+                val sampleRate = runCatching { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(0)
+                val bitrate = runCatching { format.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrDefault(0)
+                val isDefault = runCatching {
+                    format.containsKey("is-default") && format.getInteger("is-default") != 0
+                }.getOrDefault(false)
                 when {
-                    format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true -> {
+                    mime.startsWith("audio/") -> {
                         audioTrackCount++
-                        val channelCount = runCatching {
-                            format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        }.getOrDefault(1)
-                        val isDefault = runCatching {
-                            format.containsKey("is-default") && format.getInteger("is-default") != 0
-                        }.getOrDefault(false)
                         audioCandidates += AudioTrackSelectionPolicy.Candidate(
-                            index = index,
-                            isDefault = isDefault,
-                            channelCount = channelCount,
+                            index = index, isDefault = isDefault, channelCount = channelCount.coerceAtLeast(1),
                         )
+                        audioTrackDetails += buildList {
+                            add("轨道=$index")
+                            add("MIME=$mime")
+                            if (language.isNotBlank()) add("语言=$language")
+                            if (sampleRate > 0) add("采样率=${sampleRate}Hz")
+                            if (channelCount > 0) add("声道=$channelCount")
+                            if (bitrate > 0) add("码率=${bitrate}bps")
+                            if (isDefault) add("默认音轨=true")
+                        }.joinToString(", ")
                     }
-                    format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true -> {
-                        videoTrackCount++
-                    }
+                    mime.startsWith("video/") -> videoTrackCount++
                 }
             }
             val selectedTrack = AudioTrackSelectionPolicy.choose(audioCandidates)
-            val durationUs = selectedTrack?.let { index ->
-                val format = extractor.getTrackFormat(index)
+            val selectedFormat = selectedTrack?.let(extractor::getTrackFormat)
+            val durationUs = selectedFormat?.let { format ->
                 runCatching {
-                    if (format.containsKey(MediaFormat.KEY_DURATION)) {
-                        format.getLong(MediaFormat.KEY_DURATION)
-                    } else 0L
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else 0L
                 }.getOrDefault(0L).coerceAtLeast(0L)
             } ?: 0L
+            val decoderAvailable = selectedFormat?.let { format ->
+                runCatching {
+                    !MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format).isNullOrBlank()
+                }.getOrNull()
+            }
             return MediaProbe(
                 audioTrackCount = audioTrackCount,
                 videoTrackCount = videoTrackCount,
                 durationMs = durationUs / 1_000L,
+                audioTrackDetails = audioTrackDetails.take(12) +
+                    (if (audioTrackDetails.size > 12) listOf("其余 ${audioTrackDetails.size - 12} 条音轨已省略") else emptyList()),
+                selectedAudioMimeType = selectedFormat?.getString(MediaFormat.KEY_MIME),
+                selectedAudioLanguage = selectedFormat?.let { runCatching { it.getString("language") }.getOrNull() },
+                selectedAudioSampleRateHz = selectedFormat?.let {
+                    runCatching { it.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrNull()
+                },
+                selectedAudioChannelCount = selectedFormat?.let {
+                    runCatching { it.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrNull()
+                },
+                selectedAudioBitrate = selectedFormat?.let {
+                    runCatching { it.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrNull()
+                },
+                selectedAudioDecoderAvailable = decoderAvailable,
             )
         } finally {
             runCatching { extractor.release() }
