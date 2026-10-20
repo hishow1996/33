@@ -117,7 +117,7 @@ internal object WebCandidateVerifier {
         }
 
         val head = probe("HEAD", rangeGet = false)
-        if (head.httpStatus in 200..299) {
+        if (head.httpStatus?.let { it in 200..299 } == true) {
             if (isMediaContentType(head.contentType) || hasMediaExtension(url)) {
                 return head.copy(
                     verified = true,
@@ -134,7 +134,7 @@ internal object WebCandidateVerifier {
 
         // HEAD 不可用、无内容类型或被服务器拒绝时，仅请求 1 字节确认媒体响应。
         val range = probe("Range GET", rangeGet = true)
-        if (range.httpStatus in 200..299 &&
+        if (range.httpStatus?.let { it in 200..299 } == true &&
             (isMediaContentType(range.contentType) || hasMediaExtension(url))
         ) {
             return range.copy(
