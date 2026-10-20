@@ -187,7 +187,7 @@ internal object HlsAudioDownloader {
                 // row in the master is malformed.
                 if (bandwidth != null) {
                     val resolution = attrs["RESOLUTION"]?.takeIf {
-                        Regex("""^\\d{2,5}x\\d{2,5}$""").matches(it)
+                        Regex("""^\d{2,5}x\d{2,5}$""").matches(it)
                     }
                     variants += Variant(line, bandwidth, attrs["AUDIO"], resolution)
                 }
@@ -296,7 +296,7 @@ internal object HlsAudioDownloader {
             ?.takeIf { it > 0L }
             ?: selectedVariant?.get("BANDWIDTH")?.toLongOrNull()?.takeIf { it > 0L }
         val resolution = selectedVariant?.get("RESOLUTION")?.takeIf {
-            Regex("""^\\d{2,5}x\\d{2,5}$""").matches(it)
+            Regex("""^\d{2,5}x\d{2,5}$""").matches(it)
         }
         return PlaylistSelection(
             url = selectedUrl,
