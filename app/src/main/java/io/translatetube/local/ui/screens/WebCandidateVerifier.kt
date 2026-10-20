@@ -134,18 +134,14 @@ internal object WebCandidateVerifier {
 
         // HEAD 不可用、无内容类型或被服务器拒绝时，仅请求 1 字节确认媒体响应。
         val range = probe("Range GET", rangeGet = true)
-        val common = mapOf(
-            "headStatus" to head.httpStatus,
-            "headContentType" to head.contentType,
-        )
         if (range.httpStatus in 200..299 &&
             (isMediaContentType(range.contentType) || hasMediaExtension(url))
         ) {
             return range.copy(
                 verified = true,
                 reason = "Range GET 响应可访问，Content-Type 或媒体扩展名符合媒体源特征",
-                headStatus = common["headStatus"],
-                headContentType = common["headContentType"].orEmpty(),
+                headStatus = head.httpStatus,
+                headContentType = head.contentType,
             )
         }
 
