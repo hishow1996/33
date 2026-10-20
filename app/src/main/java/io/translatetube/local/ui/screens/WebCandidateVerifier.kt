@@ -93,6 +93,12 @@ internal object WebCandidateVerifier {
         return ext in MEDIA_EXTENSIONS
     }
 
+    private fun hasVideoExtension(url: String): Boolean {
+        val path = url.substringBefore('?').substringBefore('#')
+        val ext = path.substringAfterLast('.', "").lowercase()
+        return ext in setOf("mp4", "m4v", "webm", "flv", "mkv", "mov", "ts", "avi")
+    }
+
     /**
      * Initial hint shown immediately, before an HLS master has been inspected. Direct video files
      * are deliberately not called audio-only or low-bitrate: their tracks cannot be proven from
