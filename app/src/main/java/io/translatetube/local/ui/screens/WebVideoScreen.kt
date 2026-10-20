@@ -1217,7 +1217,7 @@ fun WebVideoScreen(
                 if (candidatesState.value.isNotEmpty()) {
                     // 面板标题已说明视频源，避免重复占用一行。
                     // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
-                    val displayCandidates = remember(candidatesState.value, verifiedUrls) {
+                    val displayCandidates = remember(candidatesState.value, verifiedUrls, sourceHints) {
                         candidatesState.value
                             .mapIndexed { index, c -> Pair(c, index) }
                             .sortedWith(
@@ -1226,6 +1226,15 @@ fun WebVideoScreen(
                                         a: Pair<WebVideoCandidate, Int>,
                                         b: Pair<WebVideoCandidate, Int>,
                                     ): Int {
+                                        fun extractionRank(url: String): Int = when (sourceHints[url]?.kind) {
+                                            WebCandidateAudioHintKind.INDEPENDENT -> 2
+                                            WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> 1
+                                            else -> 0
+                                        }
+                                        val aExtractionRank = extractionRank(a.first.url)
+                                        val bExtractionRank = extractionRank(b.first.url)
+                                        if (aExtractionRank != bExtractionRank) return bExtractionRank - aExtractionRank
+
                                         val aVerified = a.first.url in verifiedUrls
                                         val bVerified = b.first.url in verifiedUrls
                                         if (aVerified != bVerified) return if (bVerified) 1 else -1
@@ -1298,7 +1307,7 @@ fun WebVideoScreen(
                                             sourceHint.message,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = hintColor,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
