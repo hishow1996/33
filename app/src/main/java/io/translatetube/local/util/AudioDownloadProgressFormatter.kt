@@ -21,22 +21,51 @@ internal object AudioDownloadProgressFormatter {
         return String.format(Locale.ROOT, pattern, value, units[unitIndex])
     }
 
+    /** Approximate output bytes from an audio track's declared bitrate and duration. */
+    fun estimateBytesFromBitrateAndDuration(
+        bitRateBitsPerSecond: Long?,
+        durationUs: Long,
+    ): Long? {
+        val bitRate = bitRateBitsPerSecond?.takeIf { it > 0L } ?: return null
+        if (durationUs <= 0L) return null
+        val estimate = bitRate.toDouble() * durationUs.toDouble() / 8_000_000.0
+        if (!estimate.isFinite() || estimate < 1.0 || estimate >= Long.MAX_VALUE.toDouble()) return null
+        return estimate.toLong().coerceAtLeast(1L)
+    }
+
+    /**
+     * Projects the final size from bytes produced over the media timeline processed so far.
+     * This is only an estimate and should be displayed as such.
+     */
+    fun estimateBytesFromObservedProgress(
+        downloadedBytes: Long,
+        elapsedDurationUs: Long,
+        totalDurationUs: Long,
+    ): Long? {
+        if (downloadedBytes <= 0L || elapsedDurationUs <= 0L || totalDurationUs <= 0L) return null
+        val estimate = downloadedBytes.toDouble() * totalDurationUs.toDouble() / elapsedDurationUs.toDouble()
+        if (!estimate.isFinite() || estimate < 1.0 || estimate >= Long.MAX_VALUE.toDouble()) return null
+        return estimate.toLong().coerceAtLeast(downloadedBytes)
+    }
+
     /**
      * Shows the received byte count, an exact total only when known, and a real measurable
-     * percentage when available. Unknown totals are intentionally not estimated or invented.
+     * percentage when available. Estimated totals are explicitly labeled and never presented
+     * as exact server-provided lengths.
      */
     fun formatProgress(
         label: String,
         downloadedBytes: Long,
         totalBytes: Long? = null,
         percent: Int? = null,
+        totalIsEstimate: Boolean = false,
     ): String {
         val downloaded = downloadedBytes.coerceAtLeast(0L)
         val validTotal = totalBytes?.takeIf { it > 0L && it >= downloaded }
-        val sizeText = if (validTotal != null) {
-            "${formatBytes(downloaded)} / ${formatBytes(validTotal)}"
-        } else {
-            formatBytes(downloaded)
+        val sizeText = when {
+            validTotal == null -> formatBytes(downloaded)
+            totalIsEstimate -> "${formatBytes(downloaded)} / 预计约 ${formatBytes(validTotal)}"
+            else -> "${formatBytes(downloaded)} / ${formatBytes(validTotal)}"
         }
         val percentText = percent?.let { " · ${it.coerceIn(0, 100)}%" }.orEmpty()
         return "$label $sizeText$percentText"
