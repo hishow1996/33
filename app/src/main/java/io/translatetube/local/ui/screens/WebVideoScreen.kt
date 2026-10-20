@@ -108,7 +108,7 @@ fun WebVideoScreen(
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
-    var sourcePanelExpanded by remember(initialUrl) { mutableStateOf(false) }
+    var sourcePanelMode by remember(initialUrl) { mutableStateOf(0) } // 0=收起，1=半展开，2=完全展开
     var pageTitle by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
@@ -251,6 +251,7 @@ fun WebVideoScreen(
     var ytDlpBusy by remember(initialUrl) { mutableStateOf(false) }
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
     var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
+    var ytDlpDetailsExpanded by remember(currentPage) { mutableStateOf(false) }
     var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
 
     fun hideFullScreenView() {
@@ -886,11 +887,10 @@ fun WebVideoScreen(
             )
 
 
-            val targetPanelHeight = if (sourcePanelExpanded) {
-                // 展开面板时优先保留更多网页可视区域。
-                (maxHeight * 0.52f).coerceAtMost(maxHeight)
-            } else {
-                72.dp.coerceAtMost(maxHeight)
+            val targetPanelHeight = when (sourcePanelMode) {
+                2 -> (maxHeight * 0.88f).coerceAtMost(maxHeight)
+                1 -> (maxHeight * 0.62f).coerceAtMost(maxHeight)
+                else -> 72.dp.coerceAtMost(maxHeight)
             }
             val panelHeight by animateDpAsState(
                 targetValue = targetPanelHeight,
@@ -910,18 +910,27 @@ fun WebVideoScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(sourcePanelExpanded) {
+                            .pointerInput(sourcePanelMode) {
                                 var dragDistance = 0f
                                 detectVerticalDragGestures(
                                     onVerticalDrag = { _, dragAmount -> dragDistance += dragAmount },
                                     onDragEnd = {
-                                        if (dragDistance < -36f) sourcePanelExpanded = true
-                                        else if (dragDistance > 36f) sourcePanelExpanded = false
+                                        if (dragDistance < -36f) {
+                                            sourcePanelMode = (sourcePanelMode + 1).coerceAtMost(2)
+                                        } else if (dragDistance > 36f) {
+                                            sourcePanelMode = (sourcePanelMode - 1).coerceAtLeast(0)
+                                        }
                                         dragDistance = 0f
                                     },
                                 )
                             }
-                            .clickable { sourcePanelExpanded = !sourcePanelExpanded }
+                            .clickable {
+                                sourcePanelMode = when (sourcePanelMode) {
+                                    0 -> 1
+                                    1 -> 2
+                                    else -> 0
+                                }
+                            }
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -949,17 +958,21 @@ fun WebVideoScreen(
                             )
                         }
                         Icon(
-                            imageVector = if (sourcePanelExpanded) {
+                            imageVector = if (sourcePanelMode > 0) {
                                 Icons.Filled.KeyboardArrowDown
                             } else {
                                 Icons.Filled.KeyboardArrowUp
                             },
-                            contentDescription = if (sourcePanelExpanded) "收起视频源列表" else "展开视频源列表",
+                            contentDescription = when (sourcePanelMode) {
+                                0 -> "展开视频源列表"
+                                1 -> "进一步展开视频源列表"
+                                else -> "收起视频源列表"
+                            },
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(28.dp),
                         )
                     }
-                    if (sourcePanelExpanded) {
+                    if (sourcePanelMode > 0) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1016,11 +1029,13 @@ fun WebVideoScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Text(
-                            if (candidatesState.value.isNotEmpty()) "解析规则需更新" else ytDlpHint.orEmpty(),
-                            modifier = Modifier.weight(1f),
+                            if (ytDlpDetailsExpanded) ytDlpHint.orEmpty() else "yt-dlp 解析失败 · 点击查看原因",
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { ytDlpDetailsExpanded = !ytDlpDetailsExpanded },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
-                            maxLines = if (candidatesState.value.isNotEmpty()) 1 else 2,
+                            maxLines = if (ytDlpDetailsExpanded) 3 else 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
@@ -1078,9 +1093,11 @@ fun WebVideoScreen(
                     WebMediaUrlPolicy.normalizePageUrl(currentPage) != null
                 ) {
                     Text(
-                        "正在优先检测网页视频源；如果现有方式没有找到可用地址，将自动尝试备用解析。",
-                        style = MaterialTheme.typography.bodySmall,
+                        "候选源验证中，必要时将尝试备用解析。",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
@@ -1203,7 +1220,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(viewportMaxHeight * 0.34f),
+                        modifier = Modifier.fillMaxWidth().height((panelHeight - 150.dp).coerceAtLeast(180.dp)),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
