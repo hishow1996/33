@@ -4223,7 +4223,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         headers: Map<String, String>,
         awaitResume: suspend () -> Unit = {},
         onSourceType: (HlsAudioDownloader.AudioSourceKind) -> Unit = {},
-        onProgressPercent: (Int?, Long) -> Unit = { _, _ -> },
+        onProgressPercent: (Int?, Long, Long?, Boolean) -> Unit = { _, _, _, _ -> },
     ): File {
         val work = File(destination.parentFile, destination.name + ".part")
         val extractor = android.media.MediaExtractor()
@@ -4289,6 +4289,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 } else 0L
             }.getOrDefault(0L).coerceAtLeast(0L)
             var lastProgressPercent = -1
+            val audioBitRateBitsPerSecond = runCatching {
+                trackFormat.getInteger(android.media.MediaFormat.KEY_BIT_RATE).toLong()
+            }.getOrNull()
             var lastReportedOutputBytes = 0L
             var lastReportedProgressAtMs = android.os.SystemClock.elapsedRealtime()
             val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
@@ -4338,9 +4341,21 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         (outputBytes - lastReportedOutputBytes >= 512L * 1024L ||
                             nowMs - lastReportedProgressAtMs >= 350L)
                     if (nextPercent != null || shouldPublishByteProgress) {
+                        val estimatedTotalBytes =
+                            AudioDownloadProgressFormatter.estimateBytesFromBitrateAndDuration(
+                                bitRateBitsPerSecond = audioBitRateBitsPerSecond,
+                                durationUs = mediaDurationUs,
+                            ) ?: AudioDownloadProgressFormatter.estimateBytesFromObservedProgress(
+                                downloadedBytes = outputBytes,
+                                elapsedDurationUs = info.presentationTimeUs.coerceAtLeast(0L),
+                                totalDurationUs = mediaDurationUs,
+                            )
+                        val safeEstimatedTotalBytes = estimatedTotalBytes?.coerceAtLeast(outputBytes)
                         onProgressPercent(
                             nextPercent ?: lastProgressPercent.takeIf { it >= 0 },
                             outputBytes,
+                            safeEstimatedTotalBytes,
+                            safeEstimatedTotalBytes != null,
                         )
                         lastReportedOutputBytes = outputBytes
                         lastReportedProgressAtMs = nowMs
@@ -4365,7 +4380,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     "音轨提取完成，但无法原子保存缓存文件；原有缓存已保留，请重试。"
                 )
             }
-            onProgressPercent(100, destination.length())
+            onProgressPercent(100, destination.length(), destination.length(), false)
             return destination
         } catch (t: Throwable) {
             runCatching { muxer?.release() }
@@ -4543,14 +4558,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                         } else state
                                     }
                                 },
-                                onProgressPercent = { percent, extractedBytes ->
+                                onProgressPercent = { percent, extractedBytes, totalBytes, totalIsEstimate ->
                                     updateUiForSession(sessionKey) { state ->
                                         if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
                                             state.copy(
                                                 progress = AudioDownloadProgressFormatter.formatProgress(
                                                     label = "${detectedSourceKind.displayName} · 网页媒体流音轨提取",
                                                     downloadedBytes = extractedBytes,
+                                                    totalBytes = totalBytes,
                                                     percent = percent,
+                                                    totalIsEstimate = totalIsEstimate,
                                                 )
                                             )
                                         } else state
