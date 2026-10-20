@@ -41,6 +41,7 @@ object YtDlpRepo {
     private const val MAX_PYPI_METADATA_BYTES = 8L * 1024L * 1024L
     private const val MAX_RESOLVE_JSON_CHARS = 4 * 1024 * 1024
     private const val MAX_RESOLVE_FORMATS = 500
+    private const val VERSION_COMMAND_TIMEOUT_SECONDS = 25L
 
     /**
      * 与 App 内 WebView 一致的移动端 Chrome UA。yt-dlp 默认 UA（python-* 类）
@@ -110,37 +111,34 @@ object YtDlpRepo {
 
         _updateState.value = _updateState.value.copy(checking = true, error = null)
         try {
-            // A manual check must read the installed executable before the network probes so
-            // "current version" remains available even when every upstream version source fails.
-            var localVersionError: String? = null
-            var currentVersion: String? = null
+            // Local runtime initialization and upstream stable-version lookup are independent.
+            // Keep the runtime failure available to the settings page instead of hiding it.
+            var runtimeInitError: String? = null
             if (force) {
                 try {
                     ensureReady(appCtx)
-                    currentVersion = readInstalledBinaryVersion(appCtx)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
-                } catch (localError: Exception) {
-                    Log.w(TAG, "Could not directly read the installed yt-dlp version", localError)
-                    currentVersion = runCatching { YoutubeDL.version(appCtx) }
-                        .getOrNull()
-                        ?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
-                        ?: prefs.getString("current_version", null)
-                            ?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
-                    if (currentVersion == null) {
-                        localVersionError =
-                            "无法直接读取本机 yt-dlp 二进制版本：${localError.message ?: localError.javaClass.simpleName}"
-                    }
+                } catch (initError: Exception) {
+                    Log.w(TAG, "yt-dlp runtime initialization failed during a manual version check", initError)
+                    runtimeInitError = "运行时初始化失败：" + describeError(initError)
                 }
+            }
+
+            val local = detectLocalVersion(appCtx, allowProcess = true)
+            local.version?.let { prefs.edit().putString("current_version", it).apply() }
+            val currentVersion = local.version
+                ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+                    ?.trim()
+                    ?.takeIf { YtDlpVersionPolicy.isInstalledBuild(it) }
+                ?: prefs.getString("current_version", null)
+                    ?.trim()
+                    ?.takeIf { YtDlpVersionPolicy.isInstalledBuild(it) }
+            val localVersionError: String? = if (currentVersion == null) {
+                "无法读取本机 yt-dlp 版本：" +
+                    listOfNotNull(runtimeInitError, local.failure).joinToString("；")
             } else {
-                currentVersion = if (inited) {
-                    runCatching { readInstalledBinaryVersion(appCtx) }
-                        .onFailure { Log.w(TAG, "Could not read installed yt-dlp version during automatic check", it) }
-                        .getOrNull()
-                } else null
-                currentVersion = currentVersion?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
-                    ?: prefs.getString("current_version", null)
-                        ?.takeIf { YtDlpVersionPolicy.isStableTag(it) }
+                null
             }
 
             val latestKnown = fetchLatestReleaseTag()
@@ -151,12 +149,15 @@ object YtDlpRepo {
                     current = currentVersion,
                     latest = prefs.getString("latest_version", null),
                     checking = false,
-                    error = "无法获取 yt-dlp 上游稳定版：$diagnostic",
+                    error = listOfNotNull(
+                        "无法获取 yt-dlp 上游稳定版：$diagnostic",
+                        localVersionError,
+                    ).joinToString("；"),
                 )
                 return@withContext
             }
 
-            val hasUpdate = currentVersion != null && currentVersion != latestKnown
+            val hasUpdate = YtDlpVersionPolicy.isUpdateAvailable(currentVersion, latestKnown)
             val checkedAt = System.currentTimeMillis()
             prefs.edit()
                 .putLong("last_check_ms", checkedAt)
@@ -341,6 +342,70 @@ object YtDlpRepo {
         null
     }
 
+    /** Local-version probing result; failure summarizes the attempts when version is null. */
+    private data class LocalVersionResult(val version: String?, val failure: String?)
+
+    /** Compress an exception and its cause chain into one settings-friendly line. */
+    private fun describeError(error: Throwable): String =
+        generateSequence(error) { it.cause?.takeIf { cause -> cause !== it } }
+            .take(4)
+            .map { (it.message?.takeIf { message -> message.isNotBlank() } ?: it.javaClass.simpleName).take(200) }
+            .distinct()
+            .joinToString(" ← ")
+
+    /**
+     * Detect the local script version without depending on one mechanism:
+     * 1) read yt_dlp/version.py from the unpacked zipapp without launching Python;
+     * 2) fall back to python yt-dlp --version if allowed;
+     * 3) if the runtime is not unpacked yet, inspect the bundled raw resource.
+     */
+    private fun detectLocalVersion(ctx: Context, allowProcess: Boolean): LocalVersionResult {
+        val appCtx = ctx.applicationContext
+        val failures = mutableListOf<String>()
+
+        fun attempt(label: String, read: () -> String?): String? = try {
+            val version = read()?.trim()
+            if (version != null && YtDlpVersionPolicy.isInstalledBuild(version)) {
+                version
+            } else {
+                failures += "$label：没有读到可识别的版本号"
+                null
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "$label failed", error)
+            failures += "$label：" + describeError(error)
+            null
+        }
+
+        val installedScript = File(
+            File(File(appCtx.noBackupFilesDir, YoutubeDL.baseName), YoutubeDL.ytdlpDirName),
+            YoutubeDL.ytdlpBin,
+        )
+        val version: String? = if (installedScript.isFile) {
+            attempt("读取已解包的 yt-dlp 文件") {
+                installedScript.inputStream().use { YtDlpVersionPolicy.versionFromZipapp(it) }
+            } ?: if (allowProcess) {
+                attempt("运行 yt-dlp --version") { readInstalledBinaryVersion(appCtx) }
+            } else {
+                null
+            }
+        } else {
+            failures += "yt-dlp 运行时尚未解包（${installedScript.absolutePath}）"
+            attempt("读取安装包内置的 yt-dlp") { readBundledScriptVersion(appCtx) }
+        }
+        if (version != null) Log.i(TAG, "Detected local yt-dlp version=$version")
+        return LocalVersionResult(version, if (version == null) failures.joinToString("；") else null)
+    }
+
+    /** The youtubedl-android library bundles yt-dlp as a raw APK resource. */
+    private fun readBundledScriptVersion(ctx: Context): String? {
+        val appCtx = ctx.applicationContext
+        val resources = appCtx.resources
+        val resourceId = resources.getIdentifier("ytdlp", "raw", appCtx.packageName)
+        check(resourceId != 0) { "安装包里没有找到内置的 yt-dlp 资源" }
+        return resources.openRawResource(resourceId).use { YtDlpVersionPolicy.versionFromZipapp(it) }
+    }
+
     /**
      * Read the actual yt-dlp script installed by youtubedl-android.
      *
@@ -360,8 +425,10 @@ object YtDlpRepo {
         val ffmpegDir = File(packagesDir, "ffmpeg")
         val aria2cDir = File(packagesDir, "aria2c")
 
+        val nativeFiles = nativeLibDir.list()?.sorted()?.joinToString(",").orEmpty().ifBlank { "（空）" }
         check(pythonPath.isFile) {
-            "找不到内置 Python：${pythonPath.absolutePath}"
+            "找不到内置 Python：${pythonPath.absolutePath}；原生库目录内容：$nativeFiles" +
+                "（目录为空说明安装包没有解压原生库，需要 jniLibs.useLegacyPackaging = true）"
         }
         check(ytdlpPath.isFile) {
             "找不到已解包的 yt-dlp 文件：${ytdlpPath.absolutePath}"
@@ -406,7 +473,7 @@ object YtDlpRepo {
             start()
         }
 
-        val deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+        val deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(VERSION_COMMAND_TIMEOUT_SECONDS)
         var exitCode: Int? = null
         try {
             while (System.nanoTime() < deadlineNanos) {
@@ -427,7 +494,7 @@ object YtDlpRepo {
         if (exitCode == null) {
             process.destroy()
             runCatching { reader.join(500) }
-            throw IllegalStateException("本机 yt-dlp --version 执行超时（8 秒）")
+            throw IllegalStateException("本机 yt-dlp --version 执行超时（$VERSION_COMMAND_TIMEOUT_SECONDS 秒）")
         }
 
         reader.join(1_000)
@@ -440,7 +507,7 @@ object YtDlpRepo {
         check(exitCode == 0) {
             "本机 yt-dlp --version 退出码为 $exitCode；输出：${outputText.take(180).ifBlank { "（无输出）" }}"
         }
-        val version = YtDlpVersionPolicy.installedVersionFromOutput(outputText)
+        val version = YtDlpVersionPolicy.installedBuildFromOutput(outputText)
             ?: throw IllegalStateException(
                 "本机 yt-dlp 已执行，但版本输出无法识别：${outputText.take(180).ifBlank { "（无输出）" }}",
             )
@@ -458,10 +525,10 @@ object YtDlpRepo {
             // Record first use and the actual version of the installed executable.
             // YoutubeDL.version() alone can be null until its own updater has run once.
             val appCtx = ctx.applicationContext
-            val currentVersion = runCatching { readInstalledBinaryVersion(appCtx) }
-                .onFailure { Log.w(TAG, "Could not read installed yt-dlp version after runtime init", it) }
-                .getOrNull()
-                ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()?.takeIf { it.isNotBlank() }
+            val currentVersion = detectLocalVersion(appCtx, allowProcess = false).version
+                ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+                    ?.trim()
+                    ?.takeIf { YtDlpVersionPolicy.isInstalledBuild(it) }
             val prefs = appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE)
             val editor = prefs.edit().putBoolean("used", true)
             if (currentVersion != null) editor.putString("current_version", currentVersion)
@@ -645,12 +712,12 @@ object YtDlpRepo {
         }
         // Re-read the binary after the updater finishes; its metadata API can be null/stale
         // when the bundled version has never been changed by the dependency's update method.
-        val currentVersion = runCatching { readInstalledBinaryVersion(appCtx) }
-            .onFailure { Log.w(TAG, "Could not read installed yt-dlp version after update", it) }
-            .getOrNull()
-            ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()?.takeIf { it.isNotBlank() }
+        val currentVersion = detectLocalVersion(appCtx, allowProcess = true).version
+            ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()
+                ?.trim()
+                ?.takeIf { YtDlpVersionPolicy.isInstalledBuild(it) }
         val latestKnown = _updateState.value.latest
-        val hasUpdate = currentVersion != null && latestKnown != null && currentVersion != latestKnown
+        val hasUpdate = YtDlpVersionPolicy.isUpdateAvailable(currentVersion, latestKnown)
         val prefs = appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE)
         val editor = prefs.edit().putBoolean("has_update", hasUpdate)
         if (currentVersion != null) editor.putString("current_version", currentVersion)
