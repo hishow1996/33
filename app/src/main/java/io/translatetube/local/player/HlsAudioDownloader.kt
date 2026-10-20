@@ -69,12 +69,7 @@ internal object HlsAudioDownloader {
     private val downloadMutex = kotlinx.coroutines.sync.Mutex()
 
     private data class FetchedText(val finalUrl: String, val text: String)
-    private data class Variant(
-        val uri: String,
-        val bandwidth: Long,
-        val audioGroup: String?,
-        val resolution: String? = null,
-    )
+    private data class Variant(val uri: String, val bandwidth: Long, val audioGroup: String?)
 
     internal data class SegmentSource(
         val url: String,
@@ -185,12 +180,7 @@ internal object HlsAudioDownloader {
                 // A STREAM-INF without a positive declared bandwidth is not a usable variant.
                 // Do not silently assign it Long.MAX_VALUE and accidentally choose it when every
                 // row in the master is malformed.
-                if (bandwidth != null) {
-                    val resolution = attrs["RESOLUTION"]?.takeIf {
-                        Regex("""^\d{2,5}x\d{2,5}$""").matches(it)
-                    }
-                    variants += Variant(line, bandwidth, attrs["AUDIO"], resolution)
-                }
+                if (bandwidth != null) variants += Variant(line, bandwidth, attrs["AUDIO"])
                 nextVariant = null
             }
         }
