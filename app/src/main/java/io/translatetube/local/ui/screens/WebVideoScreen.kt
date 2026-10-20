@@ -147,7 +147,7 @@ fun WebVideoScreen(
 
     // Independently inspect source hints. This labels each source but never switches the
     // user's choice; HLS probes are bounded to three concurrent requests and a small response prefix.
-    LaunchedEffect(candidatesState.value) {
+    LaunchedEffect(candidatesState.value, sourceHintAttempts) {
         val freshUrls = candidatesState.value
             .map { it.url }
             .distinct()
@@ -166,12 +166,16 @@ fun WebVideoScreen(
                             cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
                             userAgent = webViewState.value?.settings?.userAgentString,
                         )
-                    }.getOrElse { WebCandidateVerifier.initialAudioHint(candidateUrl) }
+                    }.getOrElse { WebCandidateVerifier.failedAudioHint(candidateUrl, it) }
                     mainHandler.post {
                         if (!screenActive.get() || pageGeneration.get() != hintPageGeneration) return@post
                         val oldHint = sourceHints[candidateUrl]
-                        if (oldHint == null || oldHint.kind == WebCandidateAudioHintKind.UNKNOWN ||
-                            hint.kind != WebCandidateAudioHintKind.UNKNOWN
+                        if (oldHint == null ||
+                            oldHint.kind in setOf(
+                                WebCandidateAudioHintKind.UNKNOWN,
+                                WebCandidateAudioHintKind.DETECTING,
+                                WebCandidateAudioHintKind.FAILED,
+                            ) || hint.kind != WebCandidateAudioHintKind.UNKNOWN
                         ) {
                             sourceHints = sourceHints + (candidateUrl to hint)
                         }
@@ -183,7 +187,7 @@ fun WebVideoScreen(
                                     kind = WebCandidateAudioHintKind.INDEPENDENT,
                                 )
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> WebCandidateAudioHint(
-                                    message = "低码率音画混合流 · 可用于提取音轨",
+                                    message = hint.message,
                                     kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
                                 )
                                 else -> null
@@ -191,8 +195,12 @@ fun WebVideoScreen(
                             if (renditionHint != null) {
                                 sourceHintAttempts = sourceHintAttempts + renditionUrl
                                 val previous = sourceHints[renditionUrl]
-                                if (previous == null || previous.kind == WebCandidateAudioHintKind.UNKNOWN ||
-                                    renditionHint.kind != WebCandidateAudioHintKind.UNKNOWN
+                                if (previous == null ||
+                                    previous.kind in setOf(
+                                        WebCandidateAudioHintKind.UNKNOWN,
+                                        WebCandidateAudioHintKind.DETECTING,
+                                        WebCandidateAudioHintKind.FAILED,
+                                    ) || renditionHint.kind != WebCandidateAudioHintKind.UNKNOWN
                                 ) {
                                     sourceHints = sourceHints + (renditionUrl to renditionHint)
                                 }
@@ -1240,6 +1248,8 @@ fun WebVideoScreen(
                             val hintColor = when (sourceHint.kind) {
                                 WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
+                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primary
+                                WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.error
                                 WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
                             val reason = when {
@@ -1297,6 +1307,20 @@ fun WebVideoScreen(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
+                                        if (sourceHint.kind == WebCandidateAudioHintKind.FAILED) {
+                                            Text(
+                                                "重新检测",
+                                                modifier = Modifier
+                                                    .clickable {
+                                                        sourceHintAttempts = sourceHintAttempts - candidate.url
+                                                        sourceHints = sourceHints +
+                                                            (candidate.url to WebCandidateVerifier.initialAudioHint(candidate.url))
+                                                    }
+                                                    .padding(vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
                                         if (reason != null) {
                                             Text(
                                                 reason,
