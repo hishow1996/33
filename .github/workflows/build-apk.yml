@@ -154,3 +154,4 @@ jobs:
 # Workaround: pin the APK build to the explicit Ubuntu 22.04 hosted-runner label after ubuntu-latest jobs remained queued without runner assignment.
 
 # Trigger one-time APK build requested by user
+# Trigger one-time APK build requested by user - latest main UI panel build (2026-10-20).
