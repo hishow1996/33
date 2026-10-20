@@ -68,6 +68,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -108,7 +109,7 @@ fun WebVideoScreen(
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
-    var sourcePanelMode by remember(initialUrl) { mutableStateOf(0) } // 0=收起，1=半展开，2=完全展开
+    var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(72f) } // 当前面板高度（dp），可连续拖动
     var pageTitle by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
@@ -887,16 +888,14 @@ fun WebVideoScreen(
             )
 
 
-            val targetPanelHeight = when (sourcePanelMode) {
-                2 -> (maxHeight * 0.88f).coerceAtMost(maxHeight)
-                1 -> (maxHeight * 0.62f).coerceAtMost(maxHeight)
-                else -> 72.dp.coerceAtMost(maxHeight)
-            }
-            val panelHeight by animateDpAsState(
-                targetValue = targetPanelHeight,
-                animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-                label = "webSourcePanelHeight",
-            )
+            val minPanelHeight = 72.dp.coerceAtMost(maxHeight)
+            val maxPanelHeight = (maxHeight * 0.92f)
+                .coerceAtLeast(minPanelHeight)
+                .coerceAtMost(maxHeight)
+            val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
+            val panelContentThreshold = minPanelHeight + 72.dp.coerceAtMost(maxPanelHeight - minPanelHeight)
+            val panelContentVisible = targetPanelHeight >= panelContentThreshold
+            val density = LocalDensity.current
             Card(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -910,25 +909,21 @@ fun WebVideoScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(sourcePanelMode) {
-                                var dragDistance = 0f
+                            .pointerInput(minPanelHeight, maxPanelHeight, density) {
                                 detectVerticalDragGestures(
-                                    onVerticalDrag = { _, dragAmount -> dragDistance += dragAmount },
-                                    onDragEnd = {
-                                        if (dragDistance < -36f) {
-                                            sourcePanelMode = (sourcePanelMode + 1).coerceAtMost(2)
-                                        } else if (dragDistance > 36f) {
-                                            sourcePanelMode = (sourcePanelMode - 1).coerceAtLeast(0)
-                                        }
-                                        dragDistance = 0f
+                                    onVerticalDrag = { _, dragAmount ->
+                                        val deltaDp = with(density) { dragAmount.toDp().value }
+                                        sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
+                                            .coerceIn(minPanelHeight.value, maxPanelHeight.value)
                                     },
                                 )
                             }
                             .clickable {
-                                sourcePanelMode = when (sourcePanelMode) {
-                                    0 -> 1
-                                    1 -> 2
-                                    else -> 0
+                                // 点击标题仍可快速展开/收起；拖动则可停在任意高度。
+                                sourcePanelHeightDp = if (targetPanelHeight > minPanelHeight + 8.dp) {
+                                    minPanelHeight.value
+                                } else {
+                                    (minPanelHeight + (maxPanelHeight - minPanelHeight) * 0.58f).value
                                 }
                             }
                             .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -958,21 +953,21 @@ fun WebVideoScreen(
                             )
                         }
                         Icon(
-                            imageVector = if (sourcePanelMode > 0) {
+                            imageVector = if (targetPanelHeight > minPanelHeight + 8.dp) {
                                 Icons.Filled.KeyboardArrowDown
                             } else {
                                 Icons.Filled.KeyboardArrowUp
                             },
-                            contentDescription = when (sourcePanelMode) {
-                                0 -> "展开视频源列表"
-                                1 -> "进一步展开视频源列表"
-                                else -> "收起视频源列表"
+                            contentDescription = if (targetPanelHeight > minPanelHeight + 8.dp) {
+                                "收起视频源列表"
+                            } else {
+                                "展开视频源列表"
                             },
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(28.dp),
                         )
                     }
-                    if (sourcePanelMode > 0) {
+                    if (panelContentVisible) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1220,7 +1215,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height((panelHeight - 150.dp).coerceAtLeast(180.dp)),
+                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 165.dp).coerceAtLeast(80.dp)),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
