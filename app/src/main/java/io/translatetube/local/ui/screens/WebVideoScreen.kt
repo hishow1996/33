@@ -887,7 +887,8 @@ fun WebVideoScreen(
 
 
             val targetPanelHeight = if (sourcePanelExpanded) {
-                (maxHeight * 0.66f).coerceAtMost(maxHeight)
+                // 展开面板时优先保留更多网页可视区域。
+                (maxHeight * 0.52f).coerceAtMost(maxHeight)
             } else {
                 72.dp.coerceAtMost(maxHeight)
             }
@@ -921,7 +922,7 @@ fun WebVideoScreen(
                                 )
                             }
                             .clickable { sourcePanelExpanded = !sourcePanelExpanded }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
@@ -967,7 +968,15 @@ fun WebVideoScreen(
                                 .padding(horizontal = 14.dp, vertical = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (candidatesState.value.isEmpty() && !pageLoading && !ytDlpBusy) {
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 AnimatedVisibility(
                     visible = pageLoading || ytDlpBusy,
                     enter = fadeIn(animationSpec = tween(150)) +
@@ -1001,49 +1010,60 @@ fun WebVideoScreen(
                     }
                 }
                 if (ytDlpHint != null) {
-                    Text(
-                        ytDlpHint.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
-                        var updatingRules by remember(currentPage) { mutableStateOf(false) }
-                        TextButton(
-                            enabled = !updatingRules && !ytDlpBusy,
-                            onClick = {
-                                updatingRules = true
-                                ytDlpHint = null
-                                status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
-                                ytScope.launch(Dispatchers.IO) {
-                                    try {
-                                        val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
-                                        mainHandler.post {
-                                            updatingRules = false
-                                            status = message
-                                        }
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Exception) {
-                                        io.translatetube.local.util.AppLogStore.error(
-                                            appCtx,
-                                            "YtDlp",
-                                            "手动更新网页视频解析规则失败",
-                                            e,
-                                            diagnosticContext = mapOf(
-                                                "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
-                                                "操作" to "用户从网页视频页手动更新规则",
-                                                "当前页面是否仍活跃" to screenActive.get().toString(),
-                                            ),
-                                        )
-                                        mainHandler.post {
-                                            updatingRules = false
-                                            ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
-                                            status = "规则更新失败，可稍后重试。"
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            ytDlpHint.orEmpty(),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
+                            var updatingRules by remember(currentPage) { mutableStateOf(false) }
+                            TextButton(
+                                modifier = Modifier.heightIn(min = 32.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                enabled = !updatingRules && !ytDlpBusy,
+                                onClick = {
+                                    updatingRules = true
+                                    ytDlpHint = null
+                                    status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
+                                    ytScope.launch(Dispatchers.IO) {
+                                        try {
+                                            val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
+                                            mainHandler.post {
+                                                updatingRules = false
+                                                status = message
+                                            }
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            io.translatetube.local.util.AppLogStore.error(
+                                                appCtx,
+                                                "YtDlp",
+                                                "手动更新网页视频解析规则失败",
+                                                e,
+                                                diagnosticContext = mapOf(
+                                                    "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
+                                                    "操作" to "用户从网页视频页手动更新规则",
+                                                    "当前页面是否仍活跃" to screenActive.get().toString(),
+                                                ),
+                                            )
+                                            mainHandler.post {
+                                                updatingRules = false
+                                                ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
+                                                status = "规则更新失败，可稍后重试。"
+                                            }
                                         }
                                     }
-                                }
-                            },
-                        ) { Text(if (updatingRules) "更新中…" else "更新 yt-dlp 解析规则") }
+                                },
+                            ) { Text(if (updatingRules) "更新中…" else "更新规则", maxLines = 1) }
+                        }
                     }
                 }
                 if (
@@ -1159,7 +1179,7 @@ fun WebVideoScreen(
                     }
                 }
                 if (candidatesState.value.isNotEmpty()) {
-                    Text("检测到的视频", style = MaterialTheme.typography.titleMedium)
+                    // 面板标题已说明视频源，避免重复占用一行。
                     // 验证通过的候选排最前（后台已确认是可播放的流），其次是 m3u8/mpd 清单
                     val displayCandidates = remember(candidatesState.value, verifiedUrls) {
                         candidatesState.value
@@ -1183,7 +1203,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(viewportMaxHeight * 0.43f),
+                        modifier = Modifier.fillMaxWidth().height(viewportMaxHeight * 0.32f),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
@@ -1208,35 +1228,62 @@ fun WebVideoScreen(
                                     .fillMaxWidth(),
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                             ) {
-                                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
+                                                modifier = Modifier.weight(1f),
+                                                style = MaterialTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            if (candidate.url in verifiedUrls) {
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(
+                                                    "已验证",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
+                                        }
                                         Text(
-                                            candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
-                                            style = MaterialTheme.typography.titleSmall,
+                                            sourceHint.message,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = hintColor,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
-                                        if (candidate.url in verifiedUrls) {
-                                            Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            candidate.url,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (reason != null) {
                                             Text(
-                                                "已验证",
+                                                reason,
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.primary,
+                                                color = MaterialTheme.colorScheme.error,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
                                             )
                                         }
                                     }
-                                    Text(
-                                        sourceHint.message,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = hintColor,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(candidate.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    if (reason != null) {
-                                        Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                                    }
                                     Button(
+                                        modifier = Modifier
+                                            .widthIn(min = 100.dp)
+                                            .defaultMinSize(minHeight = 36.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                         enabled = reason == null,
                                         onClick = {
                                             val mediaUrl = WebMediaUrlPolicy.normalizeMediaUrl(candidate.url)
@@ -1255,9 +1302,9 @@ fun WebVideoScreen(
                                             }
                                         },
                                     ) {
-                                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                                        Spacer(Modifier.width(8.dp))
-                                        Text("用大象翻译播放")
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("翻译播放", maxLines = 1)
                                     }
                                 }
                             }
