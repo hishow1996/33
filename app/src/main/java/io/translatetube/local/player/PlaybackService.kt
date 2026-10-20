@@ -4272,14 +4272,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         val probe = try {
             io.translatetube.local.asr.AudioExtract.probeMediaFile(file)
         } catch (error: Exception) {
-            file.delete()
+            val originalSizeBytes = file.length()
             val wrapped = IllegalStateException(
                 "媒体数据已下载，但 Android MediaExtractor 无法读取缓存文件（${error.message ?: error.javaClass.simpleName}）",
                 error,
             )
             logRemoteAudioFailure(
                 mediaUrl, referrer, cookie, "$stage · 实际媒体文件复核", wrapped,
-                mapOf("缓存文件大小字节" to file.length().toString()),
+                mapOf("缓存文件大小字节" to originalSizeBytes.toString()),
                 tag = "WebAudioTrackProbe",
             )
             throw wrapped
