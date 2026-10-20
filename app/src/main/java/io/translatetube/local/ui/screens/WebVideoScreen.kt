@@ -236,6 +236,9 @@ fun WebVideoScreen(
                         "媒体源类型" to webSourceType(candidateUrl),
                         "音轨类型识别结果" to hint.kind.name,
                         "检测说明" to hint.message,
+                        "HLS 内部所选流主机名" to (hint.renditionUrl?.let { webSourceHost(it) } ?: "无"),
+                        "HLS 内部所选流类型" to (hint.renditionUrl?.let { webSourceType(it) } ?: "未选择"),
+                        "HLS 内部所选流诊断编号" to (hint.renditionUrl?.let { webSourceFingerprint(it) } ?: "无"),
                         "异常类型" to (actualHintFailure?.javaClass?.name ?: "检测模块未抛出异常"),
                         "异常详情" to (actualHintFailure?.message?.take(300) ?: "详见检测说明"),
                         "页面导航代数" to hintPageGeneration.toString(),
@@ -1354,7 +1357,10 @@ fun WebVideoScreen(
                                         )
                                         val addedCount = (mergedCandidates.size - previousCandidates.size).coerceAtLeast(0)
                                         candidatesState.value = mergedCandidates
-                                        if (addedCount > 0) {
+                                        // The per-candidate type classification below carries individual fingerprints.
+                                        // Only log the first network-intercept discovery here to avoid flooding a bounded log
+                                        // with a separate identical event for every segment/resource on a complex page.
+                                        if (addedCount > 0 && previousCandidates.isEmpty()) {
                                             io.translatetube.local.util.AppLogStore.info(
                                                 context = appCtx,
                                                 tag = "WebSourceDetection",
