@@ -4250,7 +4250,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         io.translatetube.local.util.AppLogStore.error(
             context = applicationContext,
             tag = tag,
-            message = "网页视频音轨处理失败：\${diagnosis.label}",
+            message = "网页视频音轨处理失败：${diagnosis.label}",
             failure = failure,
             diagnosticContext = remoteAudioBaseDiagnostics(mediaUrl, referrer, cookie, stage) + mapOf(
                 "失败分类代码" to diagnosis.code,
@@ -4274,7 +4274,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         } catch (error: Exception) {
             file.delete()
             val wrapped = IllegalStateException(
-                "媒体数据已下载，但 Android MediaExtractor 无法读取缓存文件（\${error.message ?: error.javaClass.simpleName}）",
+                "媒体数据已下载，但 Android MediaExtractor 无法读取缓存文件（${error.message ?: error.javaClass.simpleName}）",
                 error,
             )
             logRemoteAudioFailure(
@@ -4310,7 +4310,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (probe.selectedAudioDecoderAvailable == false) {
             file.delete()
             val failure = IllegalStateException(
-                "音轨存在，但当前 Android 设备没有发现可用的音频解码器（\${probe.selectedAudioMimeType ?: "未知编码"}）",
+                "音轨存在，但当前 Android 设备没有发现可用的音频解码器（${probe.selectedAudioMimeType ?: "未知编码"}）",
             )
             logRemoteAudioFailure(mediaUrl, referrer, cookie, "$stage · 音频解码器兼容性检查", failure, details, "WebAudioTrackProbe")
             throw failure

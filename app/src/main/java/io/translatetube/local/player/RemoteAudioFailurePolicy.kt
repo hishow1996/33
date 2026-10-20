@@ -20,7 +20,7 @@ internal object RemoteAudioFailurePolicy {
         val chain = generateSequence(failure) { it.cause }.take(8).toList()
         val text = chain.joinToString(" ") { it.javaClass.name + " " + it.message.orEmpty() }
             .lowercase(Locale.ROOT)
-        fun has(vararg terms: String) = terms.any(text::contains)
+        fun has(vararg terms: String) = terms.any { text.contains(it) }
         fun http(code: Int) = Regex("""\bhttp\s*[:=]?\s*$code\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)
 
         return when {
