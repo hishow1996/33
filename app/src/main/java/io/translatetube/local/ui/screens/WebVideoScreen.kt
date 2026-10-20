@@ -59,6 +59,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -93,6 +94,7 @@ internal data class WebVideoCandidate(
 @Composable
 fun WebVideoScreen(
     initialUrl: String,
+    visible: Boolean = true,
     onBack: () -> Unit,
     onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?, userAgent: String?) -> Unit,
 ) {
@@ -119,6 +121,18 @@ fun WebVideoScreen(
     val sourceProbeSemaphore = remember(initialUrl) { kotlinx.coroutines.sync.Semaphore(permits = 3) }
     val verifierScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
     val verifyClient = remember(initialUrl) { WebCandidateVerifier.buildClient() }
+
+    // The caller keeps this screen composed beneath the processing page. Pause its WebView
+    // while hidden, but retain the same instance, detected candidates and scroll position.
+    LaunchedEffect(visible) {
+        screenActive.set(visible)
+        val view = webViewState.value
+        if (visible) {
+            view?.onResume()
+        } else {
+            view?.onPause()
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose { verifierScope.cancel() }
@@ -621,6 +635,9 @@ fun WebVideoScreen(
     }
 
     Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = if (visible) 1f else 0f },
         topBar = {
             TopAppBar(
                 title = { Text("网页视频", maxLines = 1, overflow = TextOverflow.Ellipsis) },
