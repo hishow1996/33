@@ -156,3 +156,4 @@ jobs:
 # Trigger one-time APK build requested by user
 # Trigger one-time APK build requested by user - latest main UI panel build (2026-10-20).
 # Retry APK build after fixing WebVideoScreen viewport height receiver compile error (2026-10-20).
+# User-requested APK build trigger for latest main source ca652a241fd79707293cce1574bbb35751bee6bf (2026-10-20).
