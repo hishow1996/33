@@ -837,10 +837,32 @@ fun WebVideoScreen(
                 // page with thousands of video elements cannot grow the native heap indefinitely.
                 if (!WebVideoProbePolicy.acceptsPayload(payload)) {
                     Log.w(TAG_WEB, "Ignoring empty or oversized video probe payload")
+                    if (payload.isNotBlank() && payload.trim() !in setOf("[]", "null") &&
+                        payload.length > WebVideoProbePolicy.MAX_PAYLOAD_CHARS
+                    ) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            context = appCtx,
+                            tag = "WebSourceProbe",
+                            message = "网页 JavaScript 媒体探测数据超过允许范围",
+                            diagnosticContext = mapOf(
+                                "页面主机名" to webSourceHost(currentPage),
+                                "探测数据字符数" to payload.length.toString(),
+                                "最大允许字符数" to WebVideoProbePolicy.MAX_PAYLOAD_CHARS.toString(),
+                                "处理结果" to "为防止异常大响应占用内存，已丢弃该批探测结果",
+                                "页面导航代数" to pageGeneration.get().toString(),
+                            ),
+                            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                "WebSourceProbe",
+                                webSourceHost(currentPage) + "|oversized-payload",
+                            ),
+                        )
+                    }
                     return
                 }
-                val found = runCatching {
+                var reportedRows = 0
+                val parsedPayload = runCatching {
                     val array = JSONArray(payload)
+                    reportedRows = array.length()
                     (0 until minOf(array.length(), WebVideoProbePolicy.MAX_ROWS_PER_PAYLOAD)).mapNotNull { index ->
                         val item = array.optJSONObject(index) ?: return@mapNotNull null
                         val url = item.optString("url").trim()
@@ -853,12 +875,66 @@ fun WebVideoScreen(
                             drmProtected = item.optBoolean("drm", false),
                         )
                     }.distinctBy { it.url }
-                }.getOrDefault(emptyList())
+                }
+                val found = parsedPayload.getOrElse { failure ->
+                    io.translatetube.local.util.AppLogStore.warning(
+                        context = appCtx,
+                        tag = "WebSourceProbe",
+                        message = "解析网页 JavaScript 媒体探测数据失败",
+                        failure = failure,
+                        diagnosticContext = mapOf(
+                            "页面主机名" to webSourceHost(currentPage),
+                            "探测数据字符数" to payload.length.toString(),
+                            "解析异常类型" to failure.javaClass.name,
+                            "解析异常详情" to (failure.message ?: "无异常消息").take(300),
+                            "页面导航代数" to pageGeneration.get().toString(),
+                        ),
+                        issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                            "WebSourceProbe",
+                            webSourceHost(currentPage) + "|payload-parse",
+                        ),
+                    )
+                    emptyList()
+                }
                 val bridgeGeneration = pageGeneration.get()
                 mainHandler.post {
                     if (!screenActive.get() || pageGeneration.get() != bridgeGeneration) return@post
-                    val merged = WebVideoProbePolicy.mergeCandidates(candidatesState.value, found)
+                    val previousCandidates = candidatesState.value
+                    val merged = WebVideoProbePolicy.mergeCandidates(previousCandidates, found)
+                    val addedCount = (merged.size - previousCandidates.size).coerceAtLeast(0)
                     candidatesState.value = merged
+                    if (addedCount > 0) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            context = appCtx,
+                            tag = "WebSourceProbe",
+                            message = "网页 JavaScript 探测发现媒体候选源",
+                            diagnosticContext = mapOf(
+                                "页面主机名" to webSourceHost(currentPage),
+                                "页面标题" to pageTitle.take(120),
+                                "网页报告的资源行数" to reportedRows.toString(),
+                                "成功解析为可用候选的行数" to found.size.toString(),
+                                "新增候选数量" to addedCount.toString(),
+                                "候选源总数" to merged.size.toString(),
+                                "媒体资源类型分布" to found.groupingBy { webSourceType(it.url) }.eachCount().toString(),
+                                "带 DRM 标记的候选数" to found.count { it.drmProtected }.toString(),
+                                "来源通道" to "JavaScript DOM / 页面网络 hook",
+                                "页面导航代数" to bridgeGeneration.toString(),
+                            ),
+                        )
+                    } else if (reportedRows > 0 && found.isEmpty()) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            context = appCtx,
+                            tag = "WebSourceProbe",
+                            message = "网页探测有返回内容，但未筛选出符合条件的媒体地址",
+                            diagnosticContext = mapOf(
+                                "页面主机名" to webSourceHost(currentPage),
+                                "网页报告的资源行数" to reportedRows.toString(),
+                                "筛选后候选数量" to found.size.toString(),
+                                "筛选规则" to "只保留允许的 HTTP/HTTPS 媒体候选地址；完整 URL 未写入日志",
+                                "页面导航代数" to bridgeGeneration.toString(),
+                            ),
+                        )
+                    }
                     status = if (merged.isEmpty()) {
                         "网页已加载，但暂未检测到媒体地址。DRM、blob/MSE 或封闭式播放器可能无法提取。"
                     } else {
