@@ -22,6 +22,8 @@ internal data class WebCandidateAudioHint(
     val kind: WebCandidateAudioHintKind = WebCandidateAudioHintKind.UNKNOWN,
     /** Rendition selected inside an inspected HLS master; it may also appear as another list item. */
     val renditionUrl: String? = null,
+    /** Original detection exception; used to write the real stack trace to local diagnostic logs. */
+    val failure: Throwable? = null,
 )
 
 /** Detailed HTTP evidence for a candidate source check, without retaining its full URL. */
@@ -295,6 +297,7 @@ internal object WebCandidateVerifier {
         return WebCandidateAudioHint(
             message = "$prefix · $detail",
             kind = WebCandidateAudioHintKind.FAILED,
+            failure = error,
         )
     }
 
