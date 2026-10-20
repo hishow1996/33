@@ -26,8 +26,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.rememberScrollState
@@ -893,9 +893,26 @@ fun WebVideoScreen(
                 .coerceAtLeast(minPanelHeight)
                 .coerceAtMost(maxHeight)
             val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
-            val panelContentThreshold = minPanelHeight + 72.dp.coerceAtMost(maxPanelHeight - minPanelHeight)
+            val panelContentThreshold = minPanelHeight + 84.dp.coerceAtMost(maxPanelHeight - minPanelHeight)
             val panelContentVisible = targetPanelHeight >= panelContentThreshold
             val density = LocalDensity.current
+            val panelDragModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { _, dragAmount ->
+                        val deltaDp = with(density) { dragAmount.toDp().value }
+                        sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
+                            .coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                    },
+                )
+            }
+            val panelClickModifier = Modifier.clickable {
+                // 点击快速展开/收起；上下拖动则可以精确停在任意高度。
+                sourcePanelHeightDp = if (targetPanelHeight > minPanelHeight + 8.dp) {
+                    minPanelHeight.value
+                } else {
+                    (minPanelHeight + (maxPanelHeight - minPanelHeight) * 0.58f).value
+                }
+            }
             Card(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -906,26 +923,29 @@ fun WebVideoScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
             ) {
                 Column(Modifier.fillMaxSize()) {
+                    // 显示明确的拖拽把手；把手与标题区域都支持连续拖动。
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .then(panelDragModifier)
+                            .then(panelClickModifier),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 36.dp, height = 4.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                    shape = RoundedCornerShape(2.dp),
+                                ),
+                        )
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(minPanelHeight, maxPanelHeight, density) {
-                                detectVerticalDragGestures(
-                                    onVerticalDrag = { _, dragAmount ->
-                                        val deltaDp = with(density) { dragAmount.toDp().value }
-                                        sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
-                                            .coerceIn(minPanelHeight.value, maxPanelHeight.value)
-                                    },
-                                )
-                            }
-                            .clickable {
-                                // 点击标题仍可快速展开/收起；拖动则可停在任意高度。
-                                sourcePanelHeightDp = if (targetPanelHeight > minPanelHeight + 8.dp) {
-                                    minPanelHeight.value
-                                } else {
-                                    (minPanelHeight + (maxPanelHeight - minPanelHeight) * 0.58f).value
-                                }
-                            }
+                            .then(panelDragModifier)
+                            .then(panelClickModifier)
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1215,7 +1235,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 165.dp).coerceAtLeast(80.dp)),
+                        modifier = Modifier.fillMaxWidth().height((targetPanelHeight - 177.dp).coerceAtLeast(80.dp)),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
