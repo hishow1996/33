@@ -47,6 +47,13 @@ object CloudTranscription {
         val language: String,
     )
 
+    /** A supported encoded source file that can be sent directly to a cloud STT API. */
+    data class EncodedAudioInput(
+        val file: File,
+        val fileName: String,
+        val mimeType: String,
+    )
+
     internal data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
 
     /** One Kawa upload with a one-second leading context window and a non-overlapping cue ownership window. */
@@ -217,6 +224,74 @@ object CloudTranscription {
         }
     }
 
+
+    /**
+     * Identify the actual container from its signature rather than trusting the cache ".bin"
+     * suffix. Kawa is intentionally excluded: it still needs bounded PCM16/WAV chunks under its
+     * documented upload-size limit.
+     */
+    fun detectEncodedAudioInput(file: File, provider: String): EncodedAudioInput? {
+        if (provider != "elevenlabs" && provider != "cartesia") return null
+        if (!file.isFile || file.length() < 8L) return null
+
+        val header = ByteArray(16)
+        val count = FileInputStream(file).use { input ->
+            var offset = 0
+            while (offset < header.size) {
+                val read = input.read(header, offset, header.size - offset)
+                if (read <= 0) break
+                offset += read
+            }
+            offset
+        }
+        fun ascii(offset: Int, length: Int): String =
+            if (count >= offset + length) String(header, offset, length, Charset.forName("US-ASCII")) else ""
+
+        val detected = when {
+            count >= 12 && ascii(0, 4) == "RIFF" && ascii(8, 4) == "WAVE" ->
+                "wav" to "audio/wav"
+            count >= 12 && ascii(0, 4) == "FORM" &&
+                (ascii(8, 4) == "AIFF" || ascii(8, 4) == "AIFC") ->
+                "aiff" to "audio/aiff"
+            count >= 4 && ascii(0, 4) == "fLaC" ->
+                "flac" to "audio/flac"
+            count >= 4 && ascii(0, 4) == "OggS" ->
+                "ogg" to "audio/ogg"
+            count >= 4 &&
+                (header[0].toInt() and 0xff) == 0x1a &&
+                (header[1].toInt() and 0xff) == 0x45 &&
+                (header[2].toInt() and 0xff) == 0xdf &&
+                (header[3].toInt() and 0xff) == 0xa3 ->
+                "webm" to "audio/webm"
+            count >= 8 && ascii(4, 4) == "ftyp" ->
+                "m4a" to "audio/mp4"
+            count >= 2 &&
+                (header[0].toInt() and 0xff) == 0xff &&
+                ((header[1].toInt() and 0xff) and 0xf6) == 0xf0 ->
+                "aac" to "audio/aac"
+            count >= 3 && ascii(0, 3) == "ID3" ->
+                "mp3" to "audio/mpeg"
+            count >= 2 &&
+                (header[0].toInt() and 0xff) == 0xff &&
+                ((header[1].toInt() and 0xff) and 0xe0) == 0xe0 ->
+                "mp3" to "audio/mpeg"
+            else -> null
+        } ?: return null
+
+        val (extension, mimeType) = detected
+        val supported = when (provider) {
+            "elevenlabs" -> extension in setOf("aac", "aiff", "flac", "m4a", "mp3", "ogg", "wav", "webm")
+            "cartesia" -> extension in setOf("flac", "m4a", "mp3", "ogg", "wav", "webm")
+            else -> false
+        }
+        if (!supported) return null
+        return EncodedAudioInput(
+            file = file,
+            fileName = "source-audio.$extension",
+            mimeType = mimeType,
+        )
+    }
+
     /**
      * Validate the canonical WAV produced by this app before uploading it. A stale/truncated cache
      * should fail locally instead of spending bandwidth or cloud transcription quota.
@@ -350,11 +425,17 @@ object CloudTranscription {
         durationMs: Long,
         checkActive: () -> Unit = {},
         onProgress: (String) -> Unit = {},
+        encodedAudio: EncodedAudioInput? = null,
     ): Result {
         require(provider == "elevenlabs" || provider == "cartesia" || provider == "kawa") { "未知云端转写服务" }
         require(apiKey.isNotBlank()) { "请先在设置 → 转写引擎中填写 API Key" }
-        require(wavFile.isFile && wavFile.length() > 44L) { "待转写音频为空" }
-        validatePcm16MonoWav(wavFile)
+        require(encodedAudio == null || provider != "kawa") { "Kawa 必须使用分段 PCM16 WAV 音频" }
+        val minimumBytes = if (encodedAudio == null) 45L else 1L
+        require(wavFile.isFile && wavFile.length() >= minimumBytes) { "待转写音频为空" }
+        if (encodedAudio == null || provider == "kawa") validatePcm16MonoWav(wavFile)
+        if (encodedAudio != null && encodedAudio.file.absoluteFile != wavFile.absoluteFile) {
+            throw IOException("直传音频与请求文件不一致")
+        }
         if (durationMs <= 0L) throw IOException("待转写音频时长无效，无法建立字幕时间轴")
         checkActive()
         val ownerJob = currentCoroutineContext()[Job]
@@ -366,7 +447,11 @@ object CloudTranscription {
         onProgress("正在上传音频并提交 $providerName 转写任务…")
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
-            .addFormDataPart("file", wavFile.name, wavFile.asRequestBody("audio/wav".toMediaType()))
+            .addFormDataPart(
+                "file",
+                encodedAudio?.fileName ?: wavFile.name,
+                wavFile.asRequestBody((encodedAudio?.mimeType ?: "audio/wav").toMediaType()),
+            )
             .apply {
                 if (provider == "elevenlabs") {
                     addFormDataPart("model_id", "scribe_v2")
