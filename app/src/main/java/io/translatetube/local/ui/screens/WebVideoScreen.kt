@@ -726,8 +726,8 @@ fun WebVideoScreen(
         if (pikpakBusy) return
         pikpakBusy = true
         pikpakNotice = "正在读取 PikPak 分享清单…"
-        val deviceUuid = PikPakShare.deviceIdentifier(appCtx)
-        val passcodeToken = pikpakPasscodeToken.ifBlank { PikPakShare.capturedPasscodeToken }
+        val deviceUuid = PikpakShare.deviceIdentifier(appCtx)
+        val passcodeToken = pikpakPasscodeToken.ifBlank { PikpakShare.capturedPasscodeToken }
         val enumerationPageUrl = currentPage
         val enumerationGeneration = pageGeneration.get()
         val hasCapturedHeaders = pikpakCapturedHeaders.isNotEmpty()
@@ -736,7 +736,7 @@ fun WebVideoScreen(
         else pikpakEnumeratedParents - rootParentId
         pikpakScope.launch(Dispatchers.IO) {
             try {
-                val result = PikPakShare.enumerateAll(
+                val result = PikpakShare.enumerateAll(
                     shareId = shareId,
                     rootParentId = rootParentId,
                     passcodeToken = passcodeToken,
@@ -800,8 +800,8 @@ fun WebVideoScreen(
                 mainHandler.post {
                     if (!screenActive.get() || pageGeneration.get() != enumerationGeneration) return@post
                     pikpakBusy = false
-                    if (PikPakShare.capturedPasscodeToken.isNotBlank()) {
-                        pikpakPasscodeToken = PikPakShare.capturedPasscodeToken
+                    if (PikpakShare.capturedPasscodeToken.isNotBlank()) {
+                        pikpakPasscodeToken = PikpakShare.capturedPasscodeToken
                     }
                     if (result.needsPasscode) pikpakNeedsPasscode = true
                     if (result.entries.isNotEmpty()) {
@@ -911,7 +911,7 @@ fun WebVideoScreen(
             WebVideoProbePolicy.shouldStartAutomaticYtDlp(
                 pageLoaded = !pageLoading,
                 isEligible = ytDlpEligible,
-                isPikPakShare = PikpakShare.parseShareId(currentPage) != null,
+                isPikpakShare = PikpakShare.parseShareId(currentPage) != null,
                 isBusy = ytDlpBusy,
                 autoAttempts = ytDlpAutoAttempts,
                 hasUsableCandidate = hasUsableCandidate,
