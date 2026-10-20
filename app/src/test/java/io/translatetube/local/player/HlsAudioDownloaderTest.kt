@@ -98,6 +98,40 @@ class HlsAudioDownloaderTest {
     }
 
     @Test
+    fun prefersExternalAudioEvenWhenLowestBandwidthVariantIsMuxed() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="external",NAME="English",DEFAULT=YES,AUTOSELECT=YES,URI="audio/only.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=180000,AUDIO="muxed"
+            video/low-muxed.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,AUDIO="external"
+            video/high-with-audio-group.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://cdn.example/path/audio/only.m3u8",
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master),
+        )
+    }
+
+    @Test
+    fun prefersExternalAudioWhenLowerBandwidthVariantReferencesMissingGroup() {
+        val master = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="clean",NAME="English",DEFAULT=YES,URI="audio/clean.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=120000,AUDIO="missing"
+            video/low-invalid-group.m3u8
+            #EXT-X-STREAM-INF:BANDWIDTH=350000,AUDIO="clean"
+            video/valid-group.m3u8
+        """.trimIndent()
+
+        assertEquals(
+            "https://cdn.example/path/audio/clean.m3u8",
+            HlsAudioDownloader.selectMediaPlaylistUrl("https://cdn.example/path/master.m3u8", master),
+        )
+    }
+
+    @Test
     fun choosesLowestBandwidthVariantWhenAudioIsMuxed() {
         val master = """
             #EXTM3U
