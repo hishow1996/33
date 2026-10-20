@@ -135,6 +135,7 @@ fun WebVideoScreen(
             .distinct()
             .filter { it !in sourceHintAttempts }
         if (freshUrls.isEmpty()) return@LaunchedEffect
+        val hintPageGeneration = pageGeneration.get()
         sourceHintAttempts = sourceHintAttempts + freshUrls
         freshUrls.forEach { candidateUrl ->
             verifierScope.launch {
@@ -149,7 +150,7 @@ fun WebVideoScreen(
                         )
                     }.getOrElse { WebCandidateVerifier.initialAudioHint(candidateUrl) }
                     mainHandler.post {
-                        if (!screenActive.get()) return@post
+                        if (!screenActive.get() || pageGeneration.get() != hintPageGeneration) return@post
                         val oldHint = sourceHints[candidateUrl]
                         if (oldHint == null || oldHint.kind == WebCandidateAudioHintKind.UNKNOWN ||
                             hint.kind != WebCandidateAudioHintKind.UNKNOWN
