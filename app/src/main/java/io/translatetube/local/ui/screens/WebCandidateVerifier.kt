@@ -151,8 +151,10 @@ internal object WebCandidateVerifier {
                 val finalUrl = response.request.url.toString()
                 val selection = runCatching {
                     HlsAudioDownloader.selectMediaPlaylistWithKind(finalUrl, manifest)
-                }.getOrNull()
-                when (selection?.sourceKind) {
+                }.getOrNull() ?: return@responseUse WebCandidateAudioHint(
+                    message = "HLS 分段清单 · 音轨类型待确认",
+                )
+                when (selection.sourceKind) {
                     HlsAudioDownloader.AudioSourceKind.INDEPENDENT -> WebCandidateAudioHint(
                         message = "检测到独立音轨 · 提取时优先使用",
                         kind = WebCandidateAudioHintKind.INDEPENDENT,
@@ -163,7 +165,7 @@ internal object WebCandidateVerifier {
                         kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
                         renditionUrl = selection.url,
                     )
-                    else -> WebCandidateAudioHint(
+                    HlsAudioDownloader.AudioSourceKind.UNKNOWN -> WebCandidateAudioHint(
                         message = "HLS 分段清单 · 音轨类型待确认",
                     )
                 }
