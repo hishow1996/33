@@ -240,6 +240,7 @@ class HlsAudioDownloaderTest {
             ),
             parsed.segments,
         )
+        assertEquals(listOf(1.0, 1.0), parsed.segmentDurationsSeconds)
     }
 
     @Test
@@ -545,6 +546,26 @@ class HlsAudioDownloaderTest {
             HlsAudioDownloader.parseMediaPlaylist("https://cdn.example/index.m3u8", emptyMapUri)
         }.exceptionOrNull() is IllegalStateException)
     }
+    @Test
+    fun estimatesPlaylistTotalFromCompletedAudioSegmentSamples() {
+        assertEquals(
+            12_000L,
+            HlsAudioDownloader.estimateTotalBytesFromSamples(
+                sampledBytes = 3_000L,
+                sampledDurationSeconds = 5.0,
+                totalDurationSeconds = 20.0,
+            ),
+        )
+        assertEquals(
+            null,
+            HlsAudioDownloader.estimateTotalBytesFromSamples(
+                sampledBytes = 0L,
+                sampledDurationSeconds = 5.0,
+                totalDurationSeconds = 20.0,
+            ),
+        )
+    }
+
     @Test
     fun segmentCacheBudgetAccountingCannotOverflowLongTotals() {
         val budget = 160L * 1024L * 1024L
