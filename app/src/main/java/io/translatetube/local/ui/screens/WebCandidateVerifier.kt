@@ -24,6 +24,18 @@ internal data class WebCandidateAudioHint(
     val renditionUrl: String? = null,
 )
 
+/** Detailed HTTP evidence for a candidate source check, without retaining its full URL. */
+internal data class WebCandidateVerificationResult(
+    val verified: Boolean,
+    val method: String,
+    val httpStatus: Int? = null,
+    val contentType: String = "",
+    val reason: String,
+    val headStatus: Int? = null,
+    val headContentType: String = "",
+    val failure: Throwable? = null,
+)
+
 /**
  * Validates discovered media candidates and inspects HLS master playlists for audio hints.
  * Candidate validation affects status/sorting only; it does not choose a media source for the user.
@@ -57,29 +69,102 @@ internal object WebCandidateVerifier {
         referer: String,
         cookie: String?,
         userAgent: String?,
-    ): Boolean {
+    ): Boolean = verifyDetailed(client, url, referer, cookie, userAgent).verified
+
+    /**
+     * Keeps the same HEAD-first / one-byte Range GET decision as [verify], but retains
+     * the HTTP status, content type, method and exception so the app log can explain a rejection.
+     */
+    fun verifyDetailed(
+        client: OkHttpClient,
+        url: String,
+        referer: String,
+        cookie: String?,
+        userAgent: String?,
+    ): WebCandidateVerificationResult {
         val headers = buildMap {
             if (referer.startsWith("http")) put("Referer", referer)
             cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             userAgent?.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
         }
-        val headCode = runCatching {
-            client.newCall(
-                Request.Builder().url(url).head().apply { headers.forEach { (k, v) -> header(k, v) } }.build()
-            ).execute().use { it.code to (it.headers["Content-Type"] ?: "") }
-        }.getOrNull()
-        if (headCode != null && headCode.first in 200..299) {
-            if (isMediaContentType(headCode.second) || hasMediaExtension(url)) return true
-            if (headCode.second.isNotBlank() && !isMediaContentType(headCode.second)) return false
+
+        fun probe(method: String, rangeGet: Boolean): WebCandidateVerificationResult {
+            return try {
+                val builder = Request.Builder().url(url)
+                if (rangeGet) {
+                    builder.get().header("Range", "bytes=0-0")
+                } else {
+                    builder.head()
+                }
+                headers.forEach { (name, value) -> builder.header(name, value) }
+                client.newCall(builder.build()).execute().use { response ->
+                    WebCandidateVerificationResult(
+                        verified = false,
+                        method = method,
+                        httpStatus = response.code,
+                        contentType = response.header("Content-Type").orEmpty(),
+                        reason = "HTTP ${response.code}",
+                    )
+                }
+            } catch (failure: Exception) {
+                WebCandidateVerificationResult(
+                    verified = false,
+                    method = method,
+                    reason = "请求异常：${failure.javaClass.simpleName}",
+                    failure = failure,
+                )
+            }
         }
-        // HEAD 被拒或无类型信息：Range GET 只拉 1 字节确认
-        val rangeHeaders = headers + ("Range" to "bytes=0-0")
-        val getCode = runCatching {
-            client.newCall(
-                Request.Builder().url(url).get().apply { rangeHeaders.forEach { (k, v) -> header(k, v) } }.build()
-            ).execute().use { it.code to (it.headers["Content-Type"] ?: "") }
-        }.getOrNull() ?: return false
-        return getCode.first in 200..299 && (isMediaContentType(getCode.second) || hasMediaExtension(url))
+
+        val head = probe("HEAD", rangeGet = false)
+        if (head.httpStatus in 200..299) {
+            if (isMediaContentType(head.contentType) || hasMediaExtension(url)) {
+                return head.copy(
+                    verified = true,
+                    reason = "HEAD 响应可访问，Content-Type 或媒体扩展名符合媒体源特征",
+                )
+            }
+            if (head.contentType.isNotBlank() && !isMediaContentType(head.contentType)) {
+                return head.copy(
+                    verified = false,
+                    reason = "HEAD 返回的 Content-Type 不是媒体类型",
+                )
+            }
+        }
+
+        // HEAD 不可用、无内容类型或被服务器拒绝时，仅请求 1 字节确认媒体响应。
+        val range = probe("Range GET", rangeGet = true)
+        val common = mapOf(
+            "headStatus" to head.httpStatus,
+            "headContentType" to head.contentType,
+        )
+        if (range.httpStatus in 200..299 &&
+            (isMediaContentType(range.contentType) || hasMediaExtension(url))
+        ) {
+            return range.copy(
+                verified = true,
+                reason = "Range GET 响应可访问，Content-Type 或媒体扩展名符合媒体源特征",
+                headStatus = common["headStatus"],
+                headContentType = common["headContentType"].orEmpty(),
+            )
+        }
+
+        val statusReason = when (range.httpStatus) {
+            401 -> "Range GET 返回 HTTP 401：请求未通过身份验证，可能需要登录或 Cookie"
+            403 -> "Range GET 返回 HTTP 403：服务器拒绝访问，可能有防盗链、权限或签名限制"
+            404 -> "Range GET 返回 HTTP 404：媒体地址不存在或已过期"
+            410 -> "Range GET 返回 HTTP 410：资源已失效"
+            429 -> "Range GET 返回 HTTP 429：请求过于频繁，可能触发站点限流"
+            null -> "Range GET 没有收到有效 HTTP 响应"
+            else -> "Range GET 未能确认媒体响应（HTTP ${range.httpStatus}）"
+        }
+        return range.copy(
+            verified = false,
+            reason = if (range.failure != null) "Range GET 请求异常" else statusReason,
+            headStatus = head.httpStatus,
+            headContentType = head.contentType,
+            failure = range.failure ?: head.failure,
+        )
     }
 
     private fun isMediaContentType(contentType: String): Boolean {
