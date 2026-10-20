@@ -1135,7 +1135,7 @@ private fun PiperModelSection() {
     }
 }
 
-/** yt-dlp 解析规则版本管理：自动检测（上午/下午/晚上各一次）+ 应用内更新。 */
+/** yt-dlp 解析规则版本管理：版本自动检测、真实下载进度与安全安装。 */
 @Composable
 private fun YtDlpUpdateSection() {
     val ctx = LocalContext.current
@@ -1143,122 +1143,189 @@ private fun YtDlpUpdateSection() {
     val state by io.translatetube.local.yt.YtDlpRepo.updateState.collectAsState()
     var updating by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    val isUpdating = updating || state.updateRunning
 
     // 进入设置页时补一次检查：时段内去重回填状态，跨时段则真查
     LaunchedEffect(Unit) {
         runCatching { io.translatetube.local.yt.YtDlpRepo.checkForUpdate(ctx.applicationContext) }
     }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("解析规则版本", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-            val desc = when {
-                state.checking -> "正在检查上游稳定版并读取本机版本…"
-                state.error != null && state.latest == null -> "版本检测失败，查看下方原因后可重试"
-                state.current == null && state.latest != null ->
-                    "已获取最新版本 ${state.latest}，暂时无法读取本机版本"
-                state.current == null -> "尚未读取到本机 yt-dlp 版本，点击“检查更新”重试"
-                state.hasUpdate && state.latest != null ->
-                    "发现新版本 ${state.latest}（当前 ${state.current}）"
-                state.latest != null -> "当前 ${state.current} · 已是最新"
-                else -> "当前 ${state.current}"
-            }
-            Text(desc, color = if (state.hasUpdate) BrandBright else SubText, style = MaterialTheme.typography.bodySmall)
-            if (state.hasUpdate) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("解析规则版本", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                val desc = when {
+                    state.checking -> "正在检查上游稳定版并读取本机版本…"
+                    state.error != null && state.latest == null -> "版本检测失败，查看下方原因后可重试"
+                    state.current == null && state.latest != null ->
+                        "已获取最新版本 " + state.latest + "，暂时无法读取本机版本"
+                    state.current == null -> "尚未读取到本机 yt-dlp 版本，点击“检查更新”重试"
+                    state.hasUpdate && state.latest != null ->
+                        "发现新版本 " + state.latest + "（当前 " + state.current + "）"
+                    state.latest != null -> "当前 " + state.current + " · 已是最新"
+                    else -> "当前 " + state.current
+                }
                 Text(
-                    "网站改版后旧规则可能解析失败，建议更新（约 30MB）",
-                    color = SubText, style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            message?.let {
-                Text(
-                    it,
-                    color = if (it.startsWith("检查失败") || it.startsWith("更新失败")) DangerRed else BrandBright,
+                    desc,
+                    color = if (state.hasUpdate) BrandBright else SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
-            }
-            if (message == null) {
-                state.error?.let {
+                if (state.hasUpdate) {
                     Text(
-                        "最近一次检测提示：$it",
-                        color = DangerRed,
+                        "网站改版后旧规则可能解析失败，建议更新（约 30MB）",
+                        color = SubText,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                message?.let {
+                    Text(
+                        it,
+                        color = if (it.startsWith("检查失败") || it.startsWith("更新失败") ||
+                            it.startsWith("yt-dlp 更新失败")
+                        ) DangerRed else BrandBright,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (message == null) {
+                    state.error?.let {
+                        Text(
+                            "最近一次检测提示：$it",
+                            color = DangerRed,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+
+            if (state.hasUpdate) {
+                TextButton(
+                    enabled = !isUpdating,
+                    onClick = {
+                        updating = true
+                        message = null
+                        scope.launch {
+                            try {
+                                message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
+                            } catch (e: Exception) {
+                                io.translatetube.local.util.AppLogStore.error(
+                                    ctx.applicationContext,
+                                    "YtDlp",
+                                    "更新网页视频解析规则失败",
+                                    e,
+                                    diagnosticContext = mapOf(
+                                        "操作" to "设置页执行规则更新",
+                                        "更新前本机版本" to state.current.orEmpty().ifBlank { "未知" },
+                                        "检查到的最新版本" to state.latest.orEmpty().ifBlank { "未知" },
+                                        "更新阶段" to state.updateStage.orEmpty().ifBlank { "未知" },
+                                        "已下载字节数" to state.downloadedBytes.toString(),
+                                        "总字节数" to (state.totalBytes?.toString() ?: "未知"),
+                                    ),
+                                )
+                                message = "更新失败：" + (e.message ?: "网络错误")
+                            } finally {
+                                updating = false
+                            }
+                        }
+                    },
+                ) { Text(if (isUpdating) "更新中…" else "立即更新") }
+            } else {
+                TextButton(
+                    enabled = !state.checking && !isUpdating,
+                    onClick = {
+                        message = null
+                        scope.launch {
+                            try {
+                                io.translatetube.local.yt.YtDlpRepo.checkForUpdate(
+                                    ctx.applicationContext,
+                                    force = true,
+                                )
+                                val checked = io.translatetube.local.yt.YtDlpRepo.updateState.value
+                                message = when {
+                                    checked.current != null && checked.latest != null && !checked.hasUpdate ->
+                                        "检查结果：已是最新版本"
+                                    checked.hasUpdate && checked.latest != null ->
+                                        "检查结果：发现新版本 " + checked.latest
+                                    checked.latest != null && checked.current == null ->
+                                        checked.error?.let { "检查失败：" + it }
+                                            ?: "已获取最新版本 " + checked.latest + "，暂时无法读取本机版本"
+                                    else -> checked.error?.let { "检查失败：" + it }
+                                        ?: "检查失败：无法获取上游版本信息，请检查网络后重试"
+                                }
+                            } catch (e: Exception) {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    ctx.applicationContext,
+                                    "YtDlp",
+                                    "检查网页视频解析规则更新失败",
+                                    e,
+                                    diagnosticContext = mapOf(
+                                        "操作" to "设置页强制检查规则版本",
+                                        "本机版本" to state.current.orEmpty().ifBlank { "未知" },
+                                        "已知最新版本" to state.latest.orEmpty().ifBlank { "未知" },
+                                        "是否正在检查" to state.checking.toString(),
+                                    ),
+                                )
+                                message = "检查失败：" + (e.message ?: "网络错误")
+                            }
+                        }
+                    },
+                ) { Text(if (state.checking) "检查中…" else "检查更新") }
             }
         }
-        if (state.hasUpdate) {
-            TextButton(
-                enabled = !updating,
-                onClick = {
-                    updating = true
-                    message = null
-                    scope.launch {
-                        try {
-                            message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
-                        } catch (e: Exception) {
-                            io.translatetube.local.util.AppLogStore.error(
-                                ctx.applicationContext,
-                                "YtDlp",
-                                "更新网页视频解析规则失败",
-                                e,
-                                diagnosticContext = mapOf(
-                                    "操作" to "设置页执行规则更新",
-                                    "更新前本机版本" to state.current.orEmpty().ifBlank { "未知" },
-                                    "检查到的最新版本" to state.latest.orEmpty().ifBlank { "未知" },
-                                    "更新中的状态" to state.checking.toString(),
-                                ),
-                            )
-message = "更新失败：${e.message ?: "网络错误"}"
-                        } finally {
-                            updating = false
-                        }
-                    }
-                },
-            ) { Text(if (updating) "更新中…" else "立即更新") }
-        } else {
-            TextButton(
-                enabled = !state.checking,
-                onClick = {
-                    message = null
-                    scope.launch {
-                        try {
-                            io.translatetube.local.yt.YtDlpRepo.checkForUpdate(
-                                ctx.applicationContext,
-                                force = true,
-                            )
-                            val checked = io.translatetube.local.yt.YtDlpRepo.updateState.value
-                            message = when {
-                                checked.current != null && checked.latest != null && !checked.hasUpdate ->
-                                    "检查结果：已是最新版本"
-                                checked.hasUpdate && checked.latest != null ->
-                                    "检查结果：发现新版本 ${checked.latest}"
-                                checked.latest != null && checked.current == null ->
-                                    checked.error?.let { "检查失败：$it" }
-                                        ?: "已获取最新版本 ${checked.latest}，暂时无法读取本机版本"
-                                else -> checked.error?.let { "检查失败：$it" }
-                                    ?: "检查失败：无法获取上游版本信息，请检查网络后重试"
-                            }
-                        } catch (e: Exception) {
-                            io.translatetube.local.util.AppLogStore.warning(
-                                ctx.applicationContext,
-                                "YtDlp",
-                                "检查网页视频解析规则更新失败",
-                                e,
-                                diagnosticContext = mapOf(
-                                    "操作" to "设置页强制检查规则版本",
-                                    "本机版本" to state.current.orEmpty().ifBlank { "未知" },
-                                    "已知最新版本" to state.latest.orEmpty().ifBlank { "未知" },
-                                    "是否正在检查" to state.checking.toString(),
-                                ),
-                            )
-message = "检查失败：${e.message ?: "网络错误"}"
-                        }
-                    }
-                },
-            ) { Text(if (state.checking) "检查中…" else "检查更新") }
+
+        if (isUpdating) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                val progress = state.updateProgress
+                if (progress != null) {
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0, 100) / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = BrandBright,
+                    )
+                } else {
+                    // 总大小未知时显示不定进度，不编造百分比。
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = BrandBright,
+                    )
+                }
+                Text(
+                    state.updateStage ?: "正在准备更新…",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                val sizeText = when {
+                    state.totalBytes != null && state.totalBytes > 0L ->
+                        formatYtDlpBytes(state.downloadedBytes) + " / " +
+                            formatYtDlpBytes(state.totalBytes) +
+                            (progress?.let { " · " + it.coerceIn(0, 100) + "%" } ?: "")
+                    state.downloadedBytes > 0L ->
+                        formatYtDlpBytes(state.downloadedBytes) + " · 总大小未知"
+                    else -> null
+                }
+                sizeText?.let {
+                    Text(it, color = SubText, style = MaterialTheme.typography.labelSmall)
+                }
+            }
         }
     }
+}
+
+private fun formatYtDlpBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val units = arrayOf("KB", "MB", "GB")
+    var value = bytes.toDouble()
+    var unitIndex = -1
+    while (value >= 1024.0 && unitIndex < units.lastIndex) {
+        value /= 1024.0
+        unitIndex++
+    }
+    return String.format(java.util.Locale.ROOT, "%.2f %s", value, units[unitIndex])
 }
 
 @Composable
