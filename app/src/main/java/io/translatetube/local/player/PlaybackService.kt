@@ -4734,7 +4734,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             if (response.code !in setOf(200, 206)) return@use null
             val rangeTotal = response.header("Content-Range")
                 ?.let { header ->
-                    Regex("""(?i)^bytes\\s+\\d+-\\d+/(\\d+)$""")
+                    Regex("""(?i)^bytes\s+\d+-\d+/(\d+)$""")
                         .matchEntire(header.trim())
                         ?.groupValues
                         ?.getOrNull(1)
