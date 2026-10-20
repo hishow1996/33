@@ -711,45 +711,138 @@ fun WebVideoScreen(
         val shareId = pikpakShareId ?: PikpakShare.parseShareId(currentPage)
         if (shareId == null) {
             pikpakNotice = "未识别到 PikPak 分享链接。"
+            io.translatetube.local.util.AppLogStore.warning(
+                context = appCtx,
+                tag = "PikPakSourceDetection",
+                message = "无法读取分享清单：当前页面未识别为 PikPak 分享链接",
+                diagnosticContext = mapOf(
+                    "页面主机名" to webSourceHost(currentPage),
+                    "页面导航代数" to pageGeneration.get().toString(),
+                ),
+            )
             return
         }
         pikpakShareId = shareId
         if (pikpakBusy) return
         pikpakBusy = true
         pikpakNotice = "正在读取 PikPak 分享清单…"
-        val deviceUuid = PikpakShare.deviceIdentifier(appCtx)
-        val passcodeToken = pikpakPasscodeToken.ifBlank { PikpakShare.capturedPasscodeToken }
+        val deviceUuid = PikPakShare.deviceIdentifier(appCtx)
+        val passcodeToken = pikpakPasscodeToken.ifBlank { PikPakShare.capturedPasscodeToken }
+        val enumerationPageUrl = currentPage
+        val enumerationGeneration = pageGeneration.get()
+        val hasCapturedHeaders = pikpakCapturedHeaders.isNotEmpty()
         // 增量枚举：完整枚举过的子树跳过（点具体文件夹时强制重读该子树）
         val skipParents = if (rootParentId.isBlank()) pikpakEnumeratedParents
         else pikpakEnumeratedParents - rootParentId
         pikpakScope.launch(Dispatchers.IO) {
-            val result = PikpakShare.enumerateAll(
-                shareId = shareId,
-                rootParentId = rootParentId,
-                passcodeToken = passcodeToken,
-                deviceUuid = deviceUuid,
-                skipParents = skipParents,
-            )
-            mainHandler.post {
-                if (!screenActive.get()) return@post
-                pikpakBusy = false
-                if (PikpakShare.capturedPasscodeToken.isNotBlank()) {
-                    pikpakPasscodeToken = PikpakShare.capturedPasscodeToken
+            try {
+                val result = PikPakShare.enumerateAll(
+                    shareId = shareId,
+                    rootParentId = rootParentId,
+                    passcodeToken = passcodeToken,
+                    deviceUuid = deviceUuid,
+                    skipParents = skipParents,
+                )
+                val listIssueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                    "PikPakSourceDetection",
+                    webSourceHost(enumerationPageUrl) + "|enumerate",
+                )
+                val diagnostics = mapOf(
+                    "分享页主机名" to webSourceHost(enumerationPageUrl),
+                    "目录范围" to if (rootParentId.isBlank()) "根目录" else "指定子目录",
+                    "是否提供提取码令牌" to passcodeToken.isNotBlank().toString(),
+                    "是否捕获到网页请求头" to hasCapturedHeaders.toString(),
+                    "是否需要提取码" to result.needsPasscode.toString(),
+                    "读取到的条目数" to result.entries.size.toString(),
+                    "其中视频数" to result.entries.count { it.isVideo }.toString(),
+                    "其中文件夹数" to result.entries.count { it.isFolder }.toString(),
+                    "已访问目录数" to result.visitedParents.size.toString(),
+                    "错误详情" to (result.error?.take(400) ?: "无"),
+                    "页面导航代数" to enumerationGeneration.toString(),
+                )
+                when {
+                    result.needsPasscode -> io.translatetube.local.util.AppLogStore.warning(
+                        context = appCtx,
+                        tag = "PikPakSourceDetection",
+                        message = "读取 PikPak 清单需要有效提取码",
+                        diagnosticContext = diagnostics,
+                        issueKey = listIssueKey,
+                    )
+                    result.error != null -> io.translatetube.local.util.AppLogStore.warning(
+                        context = appCtx,
+                        tag = "PikPakSourceDetection",
+                        message = if (result.entries.isNotEmpty()) "PikPak 清单部分读取失败" else "PikPak 清单读取失败",
+                        diagnosticContext = diagnostics,
+                        issueKey = listIssueKey,
+                    )
+                    result.entries.isEmpty() && result.visitedParents.isEmpty() -> io.translatetube.local.util.AppLogStore.warning(
+                        context = appCtx,
+                        tag = "PikPakSourceDetection",
+                        message = "PikPak 清单请求完成，但没有返回可枚举条目",
+                        diagnosticContext = diagnostics,
+                        issueKey = listIssueKey,
+                    )
+                    else -> {
+                        io.translatetube.local.util.AppLogStore.info(
+                            context = appCtx,
+                            tag = "PikPakSourceDetection",
+                            message = "PikPak 分享清单读取完成",
+                            diagnosticContext = diagnostics,
+                        )
+                        io.translatetube.local.util.AppLogStore.resolveIssue(
+                            context = appCtx,
+                            issueKey = listIssueKey,
+                            message = "PikPak 分享清单读取已恢复成功",
+                            diagnosticContext = diagnostics,
+                        )
+                    }
                 }
-                if (result.needsPasscode) pikpakNeedsPasscode = true
-                if (result.entries.isNotEmpty()) {
-                    pikpakListedParents = pikpakListedParents + result.visitedParents
-                    pikpakEnumeratedParents = pikpakEnumeratedParents + result.visitedParents
-                    mergePikpakEntries(result.entries)
+                mainHandler.post {
+                    if (!screenActive.get() || pageGeneration.get() != enumerationGeneration) return@post
+                    pikpakBusy = false
+                    if (PikPakShare.capturedPasscodeToken.isNotBlank()) {
+                        pikpakPasscodeToken = PikPakShare.capturedPasscodeToken
+                    }
+                    if (result.needsPasscode) pikpakNeedsPasscode = true
+                    if (result.entries.isNotEmpty()) {
+                        pikpakListedParents = pikpakListedParents + result.visitedParents
+                        pikpakEnumeratedParents = pikpakEnumeratedParents + result.visitedParents
+                        mergePikpakEntries(result.entries)
+                    }
+                    pikpakNotice = when {
+                        result.entries.isNotEmpty() && result.error == null ->
+                            "清单已更新：共 " + pikpakEntries.count { it.isVideo } + " 个视频、" +
+                                pikpakEntries.count { it.isFolder } + " 个文件夹。点下方候选或文件夹继续。"
+                        result.entries.isNotEmpty() -> "部分读取成功：" + result.error
+                        result.visitedParents.isNotEmpty() && result.error == null ->
+                            "此前已读取过这些目录，无新增内容。"
+                        else -> result.error ?: "未读取到文件，可在网页里点开文件夹后自动读取。"
+                    }
                 }
-                pikpakNotice = when {
-                    result.entries.isNotEmpty() && result.error == null ->
-                        "清单已更新：共 ${pikpakEntries.count { it.isVideo }} 个视频、" +
-                            "${pikpakEntries.count { it.isFolder }} 个文件夹。点下方候选或文件夹继续。"
-                    result.entries.isNotEmpty() -> "部分读取成功：${result.error}"
-                    result.visitedParents.isNotEmpty() && result.error == null ->
-                        "此前已读取过这些目录，无新增内容。"
-                    else -> result.error ?: "未读取到文件，可在网页里点开文件夹后自动读取。"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    context = appCtx,
+                    tag = "PikPakSourceDetection",
+                    message = "执行 PikPak 分享目录枚举时发生异常",
+                    failure = error,
+                    diagnosticContext = mapOf(
+                        "分享页主机名" to webSourceHost(enumerationPageUrl),
+                        "目录范围" to if (rootParentId.isBlank()) "根目录" else "指定子目录",
+                        "是否提供提取码令牌" to passcodeToken.isNotBlank().toString(),
+                        "是否捕获到网页请求头" to hasCapturedHeaders.toString(),
+                        "页面导航代数" to enumerationGeneration.toString(),
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "PikPakSourceDetection",
+                        webSourceHost(enumerationPageUrl) + "|enumerate",
+                    ),
+                )
+                mainHandler.post {
+                    if (!screenActive.get() || pageGeneration.get() != enumerationGeneration) return@post
+                    pikpakBusy = false
+                    pikpakNotice = "读取分享清单失败：" + (error.message ?: error.javaClass.simpleName)
                 }
             }
         }
@@ -1822,10 +1915,45 @@ fun WebVideoScreen(
                                         onClick = {
                                             val mediaUrl = WebMediaUrlPolicy.normalizeMediaUrl(candidate.url)
                                             if (mediaUrl == null) {
-                                                status = WebMediaUrlPolicy.unsupportedReason(candidate.url)
+                                                val reasonText = WebMediaUrlPolicy.unsupportedReason(candidate.url)
                                                     ?: "无法读取该媒体地址。"
+                                                status = reasonText
+                                                io.translatetube.local.util.AppLogStore.warning(
+                                                    context = appCtx,
+                                                    tag = "WebSourceSelection",
+                                                    message = "用户选择的网页候选源无法转换为可播放媒体地址",
+                                                    diagnosticContext = mapOf(
+                                                        "页面主机名" to webSourceHost(currentPage),
+                                                        "媒体源主机名" to webSourceHost(candidate.url),
+                                                        "媒体源类型" to webSourceType(candidate.url),
+                                                        "失败原因" to reasonText,
+                                                        "是否带 DRM 标记" to candidate.drmProtected.toString(),
+                                                        "候选源是否通过可访问性校验" to (candidate.url in verifiedUrls).toString(),
+                                                    ),
+                                                    issueKey = webSourceIssueKey("selection", candidate.url),
+                                                )
                                             } else {
                                                 val cookie = runCatching { CookieManager.getInstance().getCookie(mediaUrl) }.getOrNull()
+                                                val hint = sourceHints[candidate.url]
+                                                    ?: WebCandidateVerifier.initialAudioHint(candidate.url)
+                                                io.translatetube.local.util.AppLogStore.info(
+                                                    context = appCtx,
+                                                    tag = "WebSourceSelection",
+                                                    message = "用户选择网页候选媒体源进入翻译播放",
+                                                    diagnosticContext = mapOf(
+                                                        "页面主机名" to webSourceHost(currentPage),
+                                                        "媒体源主机名" to webSourceHost(mediaUrl),
+                                                        "媒体源类型" to webSourceType(mediaUrl),
+                                                        "媒体源标题" to candidate.title.take(120),
+                                                        "音轨类型识别结果" to hint.kind.name,
+                                                        "音轨类型说明" to hint.message,
+                                                        "是否通过 HEAD/Range 校验" to (candidate.url in verifiedUrls).toString(),
+                                                        "是否带 DRM 标记" to candidate.drmProtected.toString(),
+                                                        "是否存在站点 Cookie" to (!cookie.isNullOrBlank()).toString(),
+                                                        "候选源总数" to candidatesState.value.size.toString(),
+                                                        "页面导航代数" to pageGeneration.get().toString(),
+                                                    ),
+                                                )
                                                 onOpenMedia(
                                                     mediaUrl,
                                                     candidate.title.ifBlank { pageTitle },
@@ -1833,6 +1961,7 @@ fun WebVideoScreen(
                                                     cookie,
                                                     webViewState.value?.settings?.userAgentString,
                                                 )
+                                            }
                                             }
                                         },
                                     ) {
