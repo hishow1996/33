@@ -45,6 +45,21 @@ internal object HlsAudioDownloader {
         return total
     }
 
+    /** Estimate a playlist's final media bytes from downloaded samples and their durations. */
+    internal fun estimateTotalBytesFromSamples(
+        sampledBytes: Long,
+        sampledDurationSeconds: Double,
+        totalDurationSeconds: Double,
+    ): Long? {
+        if (sampledBytes <= 0L ||
+            !sampledDurationSeconds.isFinite() || sampledDurationSeconds <= 0.0 ||
+            !totalDurationSeconds.isFinite() || totalDurationSeconds <= 0.0
+        ) return null
+        val estimate = sampledBytes.toDouble() * totalDurationSeconds / sampledDurationSeconds
+        if (!estimate.isFinite() || estimate < 1.0 || estimate >= Long.MAX_VALUE.toDouble()) return null
+        return estimate.toLong().coerceAtLeast(sampledBytes)
+    }
+
     // Cache pruning is folder-wide. Serialize HLS downloads so one task cannot treat another
     // task's in-progress segment directory as stale data and delete it during pruning.
     private val downloadMutex = kotlinx.coroutines.sync.Mutex()
@@ -70,6 +85,7 @@ internal object HlsAudioDownloader {
     internal data class MediaPlaylist(
         val initSegment: SegmentSource?,
         val segments: List<SegmentSource>,
+        val segmentDurationsSeconds: List<Double> = emptyList(),
     )
 
     private data class ByteRangeSpec(val length: Long, val offset: Long?)
@@ -334,6 +350,11 @@ internal object HlsAudioDownloader {
                     .takeIf { lengths -> lengths.isNotEmpty() && lengths.all { it != null } }
                     ?.let { lengths -> boundedCacheByteTotal(lengths.mapNotNull { it }) }
                     ?.takeIf { it > 0L }
+                val initSegmentOffset = if (playlist.initSegment != null) 1 else 0
+                val totalMediaDurationSeconds = playlist.segmentDurationsSeconds.sum()
+                var completedMediaBytes = 0L
+                var completedMediaDurationSeconds = 0.0
+                var initSegmentBytes = 0L
 
                 // A hash fingerprint avoids persisting signed URLs while still invalidating a
                 // segment cache when the playlist or any signed segment URL changes.
@@ -375,6 +396,27 @@ internal object HlsAudioDownloader {
                     val bytesBeforeSegment = boundedCacheByteTotal(cachedSegments.map { it.length() })
                     val segmentProgress: (Long, Long?) -> Unit = { segmentBytes, segmentTotal ->
                         val downloadedSoFar = boundedCacheByteTotal(listOf(bytesBeforeSegment, segmentBytes))
+                        val mediaIndex = index - initSegmentOffset
+                        val mediaDurationSeconds = playlist.segmentDurationsSeconds.getOrNull(mediaIndex) ?: 0.0
+                        val currentSampleBytes = segmentTotal?.takeIf {
+                            it > 0L && mediaIndex >= 0 && mediaDurationSeconds > 0.0
+                        }
+                        val sampledBytes = if (currentSampleBytes != null) {
+                            boundedCacheByteTotal(listOf(completedMediaBytes, currentSampleBytes))
+                        } else completedMediaBytes
+                        val sampledDurationSeconds = completedMediaDurationSeconds +
+                            if (currentSampleBytes != null) mediaDurationSeconds else 0.0
+                        val estimatedMediaBytes = if (knownTotalBytes == null) {
+                            estimateTotalBytesFromSamples(
+                                sampledBytes = sampledBytes,
+                                sampledDurationSeconds = sampledDurationSeconds,
+                                totalDurationSeconds = totalMediaDurationSeconds,
+                            )
+                        } else null
+                        val estimatedTotalBytes = estimatedMediaBytes?.let {
+                            boundedCacheByteTotal(listOf(initSegmentBytes, it)).coerceAtLeast(downloadedSoFar)
+                        }
+                        val totalForDisplay = knownTotalBytes ?: estimatedTotalBytes
                         val segmentFraction = if (segmentTotal != null && segmentTotal > 0L) {
                             (segmentBytes.toDouble() / segmentTotal.toDouble()).coerceIn(0.0, 1.0)
                         } else {
@@ -391,8 +433,9 @@ internal object HlsAudioDownloader {
                             AudioDownloadProgressFormatter.formatProgress(
                                 label = "${sourceKind.displayName} · 正在缓存网页音轨 ${index + 1}/${sources.size}",
                                 downloadedBytes = downloadedSoFar,
-                                totalBytes = knownTotalBytes,
+                                totalBytes = totalForDisplay,
                                 percent = percent,
+                                totalIsEstimate = knownTotalBytes == null && estimatedTotalBytes != null,
                             )
                         )
                     }
@@ -422,7 +465,17 @@ internal object HlsAudioDownloader {
                     cachedSegments += segment
                     segmentFile.parentFile?.setLastModified(System.currentTimeMillis())
                     pruneSegmentCaches(cacheParent, keep = cacheDirectory)
-                    segmentProgress(segment.length(), source.byteRangeLength)
+                    segmentProgress(segment.length(), source.byteRangeLength ?: segment.length())
+                    val mediaIndex = index - initSegmentOffset
+                    if (mediaIndex < 0) {
+                        initSegmentBytes = segment.length()
+                    } else {
+                        val durationSeconds = playlist.segmentDurationsSeconds.getOrNull(mediaIndex) ?: 0.0
+                        completedMediaBytes = boundedCacheByteTotal(listOf(completedMediaBytes, segment.length()))
+                        if (durationSeconds.isFinite() && durationSeconds > 0.0) {
+                            completedMediaDurationSeconds += durationSeconds
+                        }
+                    }
                 }
 
                 // Merge on disk, not in memory: this is suitable for older phones with limited RAM.
@@ -768,6 +821,7 @@ internal object HlsAudioDownloader {
 
         var initSegment: SegmentSource? = null
         val segments = mutableListOf<SegmentSource>()
+        val segmentDurationsSeconds = mutableListOf<Double>()
         var pendingByteRange: ByteRangeSpec? = null
         var previousRangeUrl: String? = null
         var previousRangeEndExclusive: Long? = null
@@ -848,6 +902,7 @@ internal object HlsAudioDownloader {
                         SegmentSource(resolved, start, range.length)
                     }
                     segments += source
+                    segmentDurationsSeconds += requireNotNull(pendingDurationSeconds)
                     mediaSegmentSeen = true
                     pendingDurationSeconds = null
                     if (range != null) {
@@ -870,7 +925,7 @@ internal object HlsAudioDownloader {
             throw IllegalStateException("该 HLS 是直播或尚未结束的动态清单；当前只缓存完整视频，不会误把直播片段当成完整视频。")
         }
         if (segments.isEmpty()) throw IllegalStateException("HLS 清单没有完整媒体片段。")
-        return MediaPlaylist(initSegment, segments)
+        return MediaPlaylist(initSegment, segments, segmentDurationsSeconds)
     }
 
     private fun fetchText(
