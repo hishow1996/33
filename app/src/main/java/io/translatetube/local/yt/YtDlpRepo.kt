@@ -537,7 +537,9 @@ object YtDlpRepo {
         val outputTemplate = File(stagingDir, "audio.%(ext)s").absolutePath
         try {
             val request = YoutubeDLRequest(pageUrl.trim()).apply {
-                addOption("-f", "bestaudio/best")
+                // Only select an audio-only format. If none exists, fail so PlaybackService can
+                // fall back to track extraction instead of silently downloading a muxed video.
+                addOption("-f", "bestaudio")
                 addOption("--no-playlist")
                 addOption("--socket-timeout", "20")
                 addOption("--retries", "3")
