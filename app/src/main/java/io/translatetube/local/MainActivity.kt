@@ -5,8 +5,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
@@ -199,10 +201,55 @@ class MainActivity : ComponentActivity() {
                 }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
                 var logsReturnScreen by remember { mutableStateOf(Screen.SETTINGS) }
+                // Preserve the source page independently from the temporary media URL selected
+                // for playback so returning from parsing never launches source detection again.
+                var webDetectionUrl by remember { mutableStateOf(playReq.value?.webPageUrl) }
+                var returnToWebAfterPlayer by remember { mutableStateOf(false) }
+                var lastHomeBackPressedAt by remember { mutableLongStateOf(0L) }
                 val req by playReq
                 val pendingTask by pendingResumeTaskState
                 val playback by PlaybackService.ui.collectAsState()
                 var startedPendingGeneration by remember { mutableStateOf<Long?>(null) }
+
+                LaunchedEffect(req?.webPageUrl) {
+                    req?.webPageUrl?.let { url ->
+                        webDetectionUrl = url
+                        returnToWebAfterPlayer = false
+                    }
+                }
+
+                // Use one back policy for the phone gesture and hardware button. On Home, a
+                // deliberate second back within two seconds exits instead of accidental closing.
+                BackHandler {
+                    when (screen) {
+                        Screen.PLAYER -> {
+                            PlaybackService.instance?.saveProgress()
+                            screen = if (returnToWebAfterPlayer && !webDetectionUrl.isNullOrBlank()) {
+                                Screen.WEB
+                            } else {
+                                Screen.HOME
+                            }
+                        }
+                        Screen.WEB -> screen = Screen.HOME
+                        Screen.SETTINGS -> screen = previousScreen
+                        Screen.API -> screen = Screen.SETTINGS
+                        Screen.LOGS -> screen = logsReturnScreen
+                        Screen.STORAGE -> screen = Screen.SETTINGS
+                        Screen.HOME -> {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - lastHomeBackPressedAt <= 2_000L) {
+                                this@MainActivity.finish()
+                            } else {
+                                lastHomeBackPressedAt = now
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "再返回一次退出应用",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    }
+                }
 
                 // Clear a persisted recovery entry only after the matching run reaches READY.
                 LaunchedEffect(pendingTask?.generation, playback.key, playback.phase) {
@@ -249,41 +296,22 @@ class MainActivity : ComponentActivity() {
                                 alpha = pageMotion.value
                             },
                     ) {
-                        when (displayedScreen) {
-                            Screen.HOME -> HomeScreen(
-                                onPlay = { r -> rememberPlayRequest(r) },
-                                onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
-                                pendingResumeTaskKey = pendingTask?.sourceKey,
-                                onResumeTask = { taskKey ->
-                                    val request = when {
-                                        taskKey.startsWith("youtube:") -> PlayRequest(videoId = taskKey.removePrefix("youtube:"))
-                                        taskKey.startsWith("webpage:") -> PlayRequest(webPageUrl = taskKey.removePrefix("webpage:"))
-                                        taskKey.startsWith("remote:") -> PlayRequest(mediaUrl = taskKey.removePrefix("remote:"))
-                                        taskKey.startsWith("local:") -> PlayRequest(localUri = taskKey.removePrefix("local:"))
-                                        else -> null
-                                    }
-                                    if (request != null) {
-                                        rememberPlayRequest(request)
-                                        screen = if (request.webPageUrl != null) Screen.WEB else Screen.PLAYER
-                                    }
-                                },
+                        // Keep the WebView mounted underneath the player so navigating back
+                        // restores its candidate list and page state without triggering a reload.
+                        val keepWebDetectionMounted = displayedScreen == Screen.WEB ||
+                            (
+                                returnToWebAfterPlayer &&
+                                    !webDetectionUrl.isNullOrBlank() &&
+                                    displayedScreen != Screen.HOME &&
+                                    (displayedScreen == Screen.PLAYER || previousScreen == Screen.PLAYER)
                             )
-                            Screen.PLAYER -> PlayerScreen(
-                                videoId = req?.videoId,
-                                localUri = req?.localUri?.let(Uri::parse),
-                                mediaUrl = req?.mediaUrl,
-                                mediaTitle = req?.mediaTitle.orEmpty(),
-                                mediaReferrer = req?.mediaReferrer.orEmpty(),
-                                mediaCookie = req?.mediaCookie,
-                                mediaUserAgent = req?.mediaUserAgent,
-                                requestToken = req?.ts ?: 0L,
+                        if (keepWebDetectionMounted) {
+                            WebVideoScreen(
+                                initialUrl = webDetectionUrl.orEmpty(),
+                                visible = displayedScreen == Screen.WEB,
                                 onBack = { screen = Screen.HOME },
-                                onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
-                            )
-                            Screen.WEB -> WebVideoScreen(
-                                initialUrl = req?.webPageUrl.orEmpty(),
-                                onBack = { playReq.value = null; screen = Screen.HOME },
                                 onOpenMedia = { url, title, referrer, cookie, userAgent ->
+                                    returnToWebAfterPlayer = true
                                     advancePlayRequest(
                                         PlayRequest(
                                             mediaUrl = url,
@@ -296,6 +324,69 @@ class MainActivity : ComponentActivity() {
                                     screen = Screen.PLAYER
                                 },
                             )
+                        }
+
+                        when (displayedScreen) {
+                            Screen.HOME -> HomeScreen(
+                                onPlay = { request ->
+                                    returnToWebAfterPlayer = false
+                                    webDetectionUrl = request.webPageUrl
+                                    rememberPlayRequest(request)
+                                },
+                                onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
+                                pendingResumeTaskKey = pendingTask?.sourceKey,
+                                onResumeTask = { taskKey ->
+                                    val live = PlaybackService.ui.value
+                                    val currentRequest = playReq.value
+                                    val savedTask = pendingResumeTaskState.value ?: loadPendingResumeTask()
+                                    val belongsToExistingRun = live.phase != Phase.IDLE &&
+                                        live.key.isNotBlank() &&
+                                        currentRequest?.key == live.key &&
+                                        (
+                                            taskKey == live.key ||
+                                                taskKey == savedTask?.sourceKey ||
+                                                taskKey == savedTask?.activeKey
+                                            )
+                                    if (belongsToExistingRun) {
+                                        // Never mint a new request token for a live run; doing so can
+                                        // restart parsing and send the user to source detection again.
+                                        screen = Screen.PLAYER
+                                    } else {
+                                        val request = when {
+                                            taskKey.startsWith("youtube:") -> PlayRequest(videoId = taskKey.removePrefix("youtube:"))
+                                            taskKey.startsWith("webpage:") -> PlayRequest(webPageUrl = taskKey.removePrefix("webpage:"))
+                                            taskKey.startsWith("remote:") -> PlayRequest(mediaUrl = taskKey.removePrefix("remote:"))
+                                            taskKey.startsWith("local:") -> PlayRequest(localUri = taskKey.removePrefix("local:"))
+                                            else -> null
+                                        }
+                                        if (request != null) {
+                                            returnToWebAfterPlayer = false
+                                            webDetectionUrl = request.webPageUrl
+                                            rememberPlayRequest(request)
+                                            screen = if (request.webPageUrl != null) Screen.WEB else Screen.PLAYER
+                                        }
+                                    }
+                                },
+                            )
+                            Screen.PLAYER -> PlayerScreen(
+                                videoId = req?.videoId,
+                                localUri = req?.localUri?.let(Uri::parse),
+                                mediaUrl = req?.mediaUrl,
+                                mediaTitle = req?.mediaTitle.orEmpty(),
+                                mediaReferrer = req?.mediaReferrer.orEmpty(),
+                                mediaCookie = req?.mediaCookie,
+                                mediaUserAgent = req?.mediaUserAgent,
+                                requestToken = req?.ts ?: 0L,
+                                onBack = {
+                                    screen = if (returnToWebAfterPlayer && !webDetectionUrl.isNullOrBlank()) {
+                                        Screen.WEB
+                                    } else {
+                                        Screen.HOME
+                                    }
+                                },
+                                onGoSettings = { previousScreen = Screen.PLAYER; screen = Screen.SETTINGS },
+                            )
+                            Screen.WEB -> Unit
                             Screen.SETTINGS -> SettingsScreen(
                                 onBack = { screen = previousScreen },
                                 onApiManager = { screen = Screen.API },
