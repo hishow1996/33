@@ -85,6 +85,43 @@ import org.json.JSONArray
 
 private const val TAG_WEB = "WebVideoScreen"
 
+private fun webSourceHost(rawUrl: String): String =
+    runCatching { android.net.Uri.parse(rawUrl).host }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?.take(120)
+        ?: "未知"
+
+private fun webSourceType(rawUrl: String): String {
+    val path = runCatching { android.net.Uri.parse(rawUrl).path.orEmpty() }.getOrDefault("")
+    val extension = path.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+    return when (extension) {
+        "m3u8" -> "HLS/M3U8 清单"
+        "mpd" -> "DASH/MPD 清单"
+        "mp4", "m4v", "webm", "flv", "mkv", "mov", "ts", "avi" -> "视频直链"
+        "mp3", "m4a", "aac", "ogg", "opus", "flac", "wav" -> "音频直链"
+        else -> "接口或未知类型"
+    }
+}
+
+private fun webSourceIssueKey(stage: String, rawUrl: String): String =
+    io.translatetube.local.util.AppLogStore.stableIssueKey(
+        "WebSourceDetection",
+        webSourceHost(rawUrl) + "|" + webSourceType(rawUrl) + "|" + stage,
+    )
+
+private fun webNoSourceIssueKey(pageUrl: String): String =
+    io.translatetube.local.util.AppLogStore.stableIssueKey(
+        "WebSourceDetection",
+        webSourceHost(pageUrl) + "|no-usable-candidate",
+    )
+
+private fun webPageLoadIssueKey(pageUrl: String): String =
+    io.translatetube.local.util.AppLogStore.stableIssueKey(
+        "WebPageLoad",
+        webSourceHost(pageUrl) + "|main-frame",
+    )
+
 internal data class WebVideoCandidate(
     val url: String,
     val title: String,
@@ -104,11 +141,14 @@ fun WebVideoScreen(
     onBack: () -> Unit,
     onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?, userAgent: String?) -> Unit,
 ) {
+    val appCtx = LocalContext.current.applicationContext
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
     var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(72f) } // 当前面板高度（dp），可连续拖动
     var pageTitle by remember { mutableStateOf("") }
+    var verificationAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    var noSourceLoggedForPage by remember(initialUrl) { mutableStateOf(false) }
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
@@ -154,19 +194,61 @@ fun WebVideoScreen(
             .filter { it !in sourceHintAttempts }
         if (freshUrls.isEmpty()) return@LaunchedEffect
         val hintPageGeneration = pageGeneration.get()
+        val hintPageUrl = currentPage
         sourceHintAttempts = sourceHintAttempts + freshUrls
         freshUrls.forEach { candidateUrl ->
             verifierScope.launch {
                 sourceProbeSemaphore.withPermit {
-                    val hint = runCatching {
+                    var hintFailure: Exception? = null
+                    val hint = try {
                         WebCandidateVerifier.inspectAudioHint(
                             client = verifyClient,
                             url = candidateUrl,
-                            referer = currentPage,
+                            referer = hintPageUrl,
                             cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
                             userAgent = webViewState.value?.settings?.userAgentString,
                         )
-                    }.getOrElse { WebCandidateVerifier.failedAudioHint(candidateUrl, it) }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        hintFailure = error
+                        WebCandidateVerifier.failedAudioHint(candidateUrl, error)
+                    }
+                    val issueKey = webSourceIssueKey("audio-hint", candidateUrl)
+                    val diagnostics = mapOf(
+                        "页面主机名" to webSourceHost(hintPageUrl),
+                        "媒体源主机名" to webSourceHost(candidateUrl),
+                        "媒体源类型" to webSourceType(candidateUrl),
+                        "音轨类型识别结果" to hint.kind.name,
+                        "检测说明" to hint.message,
+                        "异常类型" to (hintFailure?.javaClass?.name ?: "检测模块未抛出异常"),
+                        "异常详情" to (hintFailure?.message?.take(300) ?: "详见检测说明"),
+                        "页面导航代数" to hintPageGeneration.toString(),
+                        "检测方式" to if (WebCandidateAudioHintKind.DETECTING == hint.kind) "等待 HLS 检测" else "读取候选源音轨提示",
+                    )
+                    if (hint.kind == WebCandidateAudioHintKind.FAILED) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            context = appCtx,
+                            tag = "WebSourceAudioHint",
+                            message = "网页媒体源音轨类型识别失败",
+                            failure = hintFailure,
+                            diagnosticContext = diagnostics,
+                            issueKey = issueKey,
+                        )
+                    } else {
+                        io.translatetube.local.util.AppLogStore.info(
+                            context = appCtx,
+                            tag = "WebSourceAudioHint",
+                            message = "网页媒体源音轨类型检测完成",
+                            diagnosticContext = diagnostics,
+                        )
+                        io.translatetube.local.util.AppLogStore.resolveIssue(
+                            context = appCtx,
+                            issueKey = issueKey,
+                            message = "网页媒体源音轨类型检测已恢复正常",
+                            diagnosticContext = diagnostics,
+                        )
+                    }
                     mainHandler.post {
                         if (!screenActive.get() || pageGeneration.get() != hintPageGeneration) return@post
                         val oldHint = sourceHints[candidateUrl]
@@ -231,29 +313,106 @@ fun WebVideoScreen(
         onDispose { pikpakScope.cancel() }
     }
 
-    // 监听候选变化，对未验证的候选后台校验
-    LaunchedEffect(candidatesState.value) {
+    // 监听候选变化，对未验证的候选后台校验，并保留 HEAD/Range 的具体证据。
+    LaunchedEffect(candidatesState.value, verifiedUrls, verificationAttempts) {
         val pending = candidatesState.value
             .map { it.url }
-            .filter { WebMediaUrlPolicy.normalizeMediaUrl(it) != null && it !in verifiedUrls }
+            .distinct()
+            .filter {
+                WebMediaUrlPolicy.normalizeMediaUrl(it) != null &&
+                    it !in verifiedUrls &&
+                    it !in verificationAttempts
+            }
+        if (pending.isEmpty()) return@LaunchedEffect
+        val verificationPageUrl = currentPage
+        val verificationGeneration = pageGeneration.get()
+        verificationAttempts = verificationAttempts + pending
         pending.forEach { candidateUrl ->
             verifierScope.launch {
-                val ok = runCatching {
-                    WebCandidateVerifier.verify(
+                val result = try {
+                    WebCandidateVerifier.verifyDetailed(
                         client = verifyClient,
                         url = candidateUrl,
-                        referer = currentPage,
+                        referer = verificationPageUrl,
                         cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
                         userAgent = webViewState.value?.settings?.userAgentString,
                     )
-                }.getOrDefault(false)
-                if (ok) mainHandler.post { verifiedUrls = verifiedUrls + candidateUrl }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    WebCandidateVerificationResult(
+                        verified = false,
+                        method = "检测执行异常",
+                        reason = "候选源校验代码异常",
+                        failure = error,
+                    )
+                }
+                val issueKey = webSourceIssueKey("candidate-verify", candidateUrl)
+                val diagnostics = mapOf(
+                    "页面主机名" to webSourceHost(verificationPageUrl),
+                    "媒体源主机名" to webSourceHost(candidateUrl),
+                    "媒体源类型" to webSourceType(candidateUrl),
+                    "校验方式" to result.method,
+                    "校验结果" to if (result.verified) "通过" else "未通过",
+                    "校验原因" to result.reason,
+                    "最终 HTTP 状态码" to (result.httpStatus?.toString() ?: "未返回"),
+                    "最终 Content-Type" to result.contentType.ifBlank { "未返回" },
+                    "HEAD 状态码" to (result.headStatus?.toString() ?: "未返回"),
+                    "HEAD Content-Type" to result.headContentType.ifBlank { "未返回" },
+                    "页面导航代数" to verificationGeneration.toString(),
+                    "候选总数" to candidatesState.value.size.toString(),
+                    "带 Cookie 请求" to (!runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull().isNullOrBlank()).toString(),
+                )
+                val hasHttpError =
+                    result.httpStatus?.let { it in 400..599 } == true ||
+                        result.headStatus?.let { it in 400..599 } == true
+                if (result.verified) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        context = appCtx,
+                        tag = "WebSourceVerify",
+                        message = "网页候选媒体源校验通过",
+                        diagnosticContext = diagnostics,
+                    )
+                    io.translatetube.local.util.AppLogStore.resolveIssue(
+                        context = appCtx,
+                        issueKey = issueKey,
+                        message = "候选媒体源重新通过可访问性校验",
+                        diagnosticContext = diagnostics,
+                    )
+                    io.translatetube.local.util.AppLogStore.resolveIssue(
+                        context = appCtx,
+                        issueKey = webNoSourceIssueKey(verificationPageUrl),
+                        message = "已检测到可访问的网页媒体源",
+                        diagnosticContext = diagnostics,
+                    )
+                } else if (result.failure != null || hasHttpError) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        context = appCtx,
+                        tag = "WebSourceVerify",
+                        message = "网页候选媒体源可访问性校验失败",
+                        failure = result.failure,
+                        diagnosticContext = diagnostics,
+                        issueKey = issueKey,
+                    )
+                } else {
+                    io.translatetube.local.util.AppLogStore.info(
+                        context = appCtx,
+                        tag = "WebSourceVerify",
+                        message = "候选地址未被判定为可播放媒体源",
+                        diagnosticContext = diagnostics,
+                    )
+                }
+                if (result.verified) {
+                    mainHandler.post {
+                        if (!screenActive.get() || pageGeneration.get() != verificationGeneration) return@post
+                        verifiedUrls = verifiedUrls + candidateUrl
+                    }
+                }
             }
         }
     }
 
     // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
-    val appCtx = LocalContext.current.applicationContext
     val ytScope = rememberCoroutineScope()
     var ytDlpBusy by remember(initialUrl) { mutableStateOf(false) }
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
@@ -419,6 +578,8 @@ fun WebVideoScreen(
         candidatesState.value = emptyList()
         sourceHints = emptyMap()
         sourceHintAttempts = emptySet()
+        verificationAttempts = emptySet()
+        noSourceLoggedForPage = false
         // PikPak 清单跟随整页导航重置（SPA 内点文件夹不触发导航，清单保留）
         pikpakShareId = null
         pikpakPasscodeToken = ""
@@ -433,6 +594,19 @@ fun WebVideoScreen(
         address = target
         pageTitle = ""
         status = "正在打开网页并检测 HTML5 视频…"
+        io.translatetube.local.util.AppLogStore.info(
+            context = appCtx,
+            tag = "WebSourceDetection",
+            message = "开始新一轮网页视频源检测",
+            diagnosticContext = mapOf(
+                "页面主机名" to webSourceHost(target),
+                "页面地址类型" to "网页页面",
+                "检测方式" to "WebView 页面、JavaScript 探测、网络请求拦截、HEAD/Range 校验、HLS 音轨类型识别",
+                "页面导航代数" to pageGeneration.get().toString(),
+                "是否支持 yt-dlp 备用解析" to io.translatetube.local.yt.YtDlpRepo.isEligible(target).toString(),
+                "是否为 PikPak 分享页" to (PikpakShare.parseShareId(target) != null).toString(),
+            ),
+        )
     }
 
     // PikPak 清单条目合并：按文件 id 去重（hook 与主动枚举两来源的 parentId 可能不一致，
