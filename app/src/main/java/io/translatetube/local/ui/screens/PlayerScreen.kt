@@ -1546,7 +1546,7 @@ private fun VideoParsingPage(
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(48.dp)
+                                .height(36.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (state.isProcessingPaused) Brush.linearGradient(listOf(Color(0xFF3268F5), Color(0xFF517EF8))) else Brush.linearGradient(listOf(Color.White, Color(0xFFF9FBFF))))
                                 .border(1.dp, Color(0xFFCBDCFF), RoundedCornerShape(14.dp))
@@ -1573,7 +1573,7 @@ private fun VideoParsingPage(
                         Box(
                             Modifier
                                 .weight(1f)
-                                .height(48.dp)
+                                .height(36.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(Brush.linearGradient(listOf(Color.White, Color(0xFFFFF5F6))))
                                 .border(1.dp, Color(0xFFFFD6DB), RoundedCornerShape(14.dp))
