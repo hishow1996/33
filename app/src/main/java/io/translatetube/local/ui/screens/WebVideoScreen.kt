@@ -73,6 +73,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 
 private const val TAG_WEB = "WebVideoScreen"
@@ -114,6 +115,9 @@ fun WebVideoScreen(
     // ---- 候选验证（参考 VBrowser 思路）：后台 HEAD/Range 请求确认候选真的是视频流，
     // 过滤广告/接口/失效地址，验证通过的 m3u8 自动进入播放。 ----
     var verifiedUrls by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    var sourceHints by remember(initialUrl) { mutableStateOf<Map<String, WebCandidateAudioHint>>(emptyMap()) }
+    var sourceHintAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
+    val sourceProbeSemaphore = remember(initialUrl) { kotlinx.coroutines.sync.Semaphore(permits = 3) }
     val verifierScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
     var manualChose by remember(initialUrl) { mutableStateOf(false) }
     var autoPlayedUrl by remember(initialUrl) { mutableStateOf<String?>(null) }
@@ -121,6 +125,64 @@ fun WebVideoScreen(
 
     DisposableEffect(Unit) {
         onDispose { verifierScope.cancel() }
+    }
+
+    // Independently inspect source hints. This labels each source but never switches the
+    // user's choice; HLS probes are bounded to three concurrent requests and a small response prefix.
+    LaunchedEffect(candidatesState.value) {
+        val freshUrls = candidatesState.value
+            .map { it.url }
+            .distinct()
+            .filter { it !in sourceHintAttempts }
+        if (freshUrls.isEmpty()) return@LaunchedEffect
+        sourceHintAttempts = sourceHintAttempts + freshUrls
+        freshUrls.forEach { candidateUrl ->
+            verifierScope.launch {
+                sourceProbeSemaphore.withPermit {
+                    val hint = runCatching {
+                        WebCandidateVerifier.inspectAudioHint(
+                            client = verifyClient,
+                            url = candidateUrl,
+                            referer = currentPage,
+                            cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
+                            userAgent = webViewState.value?.settings?.userAgentString,
+                        )
+                    }.getOrElse { WebCandidateVerifier.initialAudioHint(candidateUrl) }
+                    mainHandler.post {
+                        if (!screenActive.get()) return@post
+                        val oldHint = sourceHints[candidateUrl]
+                        if (oldHint == null || oldHint.kind == WebCandidateAudioHintKind.UNKNOWN ||
+                            hint.kind != WebCandidateAudioHintKind.UNKNOWN
+                        ) {
+                            sourceHints = sourceHints + (candidateUrl to hint)
+                        }
+                        val renditionUrl = hint.renditionUrl
+                        if (!renditionUrl.isNullOrBlank()) {
+                            val renditionHint = when (hint.kind) {
+                                WebCandidateAudioHintKind.INDEPENDENT -> WebCandidateAudioHint(
+                                    message = "独立音轨 · 已由主清单确认",
+                                    kind = WebCandidateAudioHintKind.INDEPENDENT,
+                                )
+                                WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> WebCandidateAudioHint(
+                                    message = "低码率音画混合流 · 可用于提取音轨",
+                                    kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+                                )
+                                else -> null
+                            }
+                            if (renditionHint != null) {
+                                sourceHintAttempts = sourceHintAttempts + renditionUrl
+                                val previous = sourceHints[renditionUrl]
+                                if (previous == null || previous.kind == WebCandidateAudioHintKind.UNKNOWN ||
+                                    renditionHint.kind != WebCandidateAudioHintKind.UNKNOWN
+                                ) {
+                                    sourceHints = sourceHints + (renditionUrl to renditionHint)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---- PikPak 分享清单（mypikpak.com/s/...）：网页 hook 结构化捕获文件树 +
@@ -349,6 +411,8 @@ fun WebVideoScreen(
         ytDlpHint = null
         pageLoading = true
         candidatesState.value = emptyList()
+        sourceHints = emptyMap()
+        sourceHintAttempts = emptySet()
         // PikPak 清单跟随整页导航重置（SPA 内点文件夹不触发导航，清单保留）
         pikpakShareId = null
         pikpakPasscodeToken = ""
@@ -601,6 +665,8 @@ fun WebVideoScreen(
                                 pageLoading = true
                                 candidatesState.value = emptyList()
                                 verifiedUrls = emptySet()
+                                sourceHints = emptyMap()
+                                sourceHintAttempts = emptySet()
                                 manualChose = false
                                 autoPlayedUrl = null
                                 runCatching { view.stopLoading() }
@@ -1041,6 +1107,13 @@ fun WebVideoScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(displayCandidates, key = { it.url }) { candidate ->
+                        val sourceHint = sourceHints[candidate.url]
+                            ?: WebCandidateVerifier.initialAudioHint(candidate.url)
+                        val hintColor = when (sourceHint.kind) {
+                            WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
+                            WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
+                            WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                         val reason = when {
                             candidate.drmProtected -> "检测到 EME/DRM 标记，不能提取或绕过受保护的媒体音轨。"
                             else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
@@ -1072,6 +1145,13 @@ fun WebVideoScreen(
                                         )
                                     }
                                 }
+                                Text(
+                                    sourceHint.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = hintColor,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                                 Text(candidate.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 if (reason != null) {
                                     Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
