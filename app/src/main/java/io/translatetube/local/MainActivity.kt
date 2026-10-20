@@ -237,7 +237,7 @@ class MainActivity : ComponentActivity() {
                         Screen.STORAGE -> screen = Screen.SETTINGS
                         Screen.HOME -> {
                             val now = android.os.SystemClock.elapsedRealtime()
-                            if (now - lastHomeBackPressedAt <= 2_000L) {
+                            if (lastHomeBackPressedAt > 0L && now - lastHomeBackPressedAt <= 2_000L) {
                                 this@MainActivity.finish()
                             } else {
                                 lastHomeBackPressedAt = now
