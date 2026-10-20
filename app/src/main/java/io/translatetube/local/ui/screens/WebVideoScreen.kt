@@ -104,22 +104,28 @@ private fun webSourceType(rawUrl: String): String {
     }
 }
 
+private fun webSourceIssueIdentity(rawUrl: String): String =
+    runCatching {
+        val uri = android.net.Uri.parse(rawUrl)
+        listOfNotNull(uri.host, uri.path).joinToString("|")
+    }.getOrDefault(webSourceHost(rawUrl))
+
 private fun webSourceIssueKey(stage: String, rawUrl: String): String =
     io.translatetube.local.util.AppLogStore.stableIssueKey(
         "WebSourceDetection",
-        webSourceHost(rawUrl) + "|" + webSourceType(rawUrl) + "|" + stage,
+        webSourceIssueIdentity(rawUrl) + "|" + webSourceType(rawUrl) + "|" + stage,
     )
 
 private fun webNoSourceIssueKey(pageUrl: String): String =
     io.translatetube.local.util.AppLogStore.stableIssueKey(
         "WebSourceDetection",
-        webSourceHost(pageUrl) + "|no-usable-candidate",
+        webSourceIssueIdentity(pageUrl) + "|no-usable-candidate",
     )
 
 private fun webPageLoadIssueKey(pageUrl: String): String =
     io.translatetube.local.util.AppLogStore.stableIssueKey(
         "WebPageLoad",
-        webSourceHost(pageUrl) + "|main-frame",
+        webSourceIssueIdentity(pageUrl) + "|main-frame",
     )
 
 internal data class WebVideoCandidate(
@@ -368,12 +374,6 @@ fun WebVideoScreen(
                     result.httpStatus?.let { it in 400..599 } == true ||
                         result.headStatus?.let { it in 400..599 } == true
                 if (result.verified) {
-                    io.translatetube.local.util.AppLogStore.info(
-                        context = appCtx,
-                        tag = "WebSourceVerify",
-                        message = "网页候选媒体源校验通过",
-                        diagnosticContext = diagnostics,
-                    )
                     io.translatetube.local.util.AppLogStore.resolveIssue(
                         context = appCtx,
                         issueKey = issueKey,
