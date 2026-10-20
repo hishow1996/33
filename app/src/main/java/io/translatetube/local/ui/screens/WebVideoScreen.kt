@@ -1969,7 +1969,6 @@ fun WebVideoScreen(
                                                     webViewState.value?.settings?.userAgentString,
                                                 )
                                             }
-                                            }
                                         },
                                     ) {
                                         Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
