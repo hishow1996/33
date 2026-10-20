@@ -112,15 +112,12 @@ fun WebVideoScreen(
     var ytDlpJob by remember(initialUrl) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     // 自动「更新规则后重试」是否已用过（每次页面导航只自动自救一次，防循环）
     var rulesUpdatedForRetry by remember(initialUrl) { mutableStateOf(false) }
-    // ---- 候选验证（参考 VBrowser 思路）：后台 HEAD/Range 请求确认候选真的是视频流，
-    // 过滤广告/接口/失效地址，验证通过的 m3u8 自动进入播放。 ----
+    // ---- 候选验证：后台 HEAD/Range 请求确认媒体源是否可访问；来源由用户手动选择。 ----
     var verifiedUrls by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     var sourceHints by remember(initialUrl) { mutableStateOf<Map<String, WebCandidateAudioHint>>(emptyMap()) }
     var sourceHintAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     val sourceProbeSemaphore = remember(initialUrl) { kotlinx.coroutines.sync.Semaphore(permits = 3) }
     val verifierScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
-    var manualChose by remember(initialUrl) { mutableStateOf(false) }
-    var autoPlayedUrl by remember(initialUrl) { mutableStateOf<String?>(null) }
     val verifyClient = remember(initialUrl) { WebCandidateVerifier.buildClient() }
 
     DisposableEffect(Unit) {
@@ -223,28 +220,6 @@ fun WebVideoScreen(
                 }.getOrDefault(false)
                 if (ok) mainHandler.post { verifiedUrls = verifiedUrls + candidateUrl }
             }
-        }
-    }
-
-    // 唯一验证通过的流清单（m3u8/mpd）自动进入播放；用户手动选择后不再自动
-    LaunchedEffect(verifiedUrls, manualChose) {
-        if (manualChose || autoPlayedUrl != null) return@LaunchedEffect
-        val manifest = candidatesState.value.firstOrNull {
-            it.url in verifiedUrls && WebVideoProbePolicy.candidateRank(it.url) > 0
-        } ?: return@LaunchedEffect
-        delay(2500L)
-        if (manualChose) return@LaunchedEffect
-        autoPlayedUrl = manifest.url
-        val normalized = WebMediaUrlPolicy.normalizeMediaUrl(manifest.url)
-        if (normalized != null && screenActive.get()) {
-            val cookie = runCatching { CookieManager.getInstance().getCookie(normalized) }.getOrNull()
-            onOpenMedia(
-                normalized,
-                manifest.title.ifBlank { pageTitle },
-                currentPage,
-                cookie,
-                webViewState.value?.settings?.userAgentString,
-            )
         }
     }
 
@@ -668,8 +643,6 @@ fun WebVideoScreen(
                                 verifiedUrls = emptySet()
                                 sourceHints = emptyMap()
                                 sourceHintAttempts = emptySet()
-                                manualChose = false
-                                autoPlayedUrl = null
                                 runCatching { view.stopLoading() }
                                 view.reload()
                             }
@@ -1160,7 +1133,6 @@ fun WebVideoScreen(
                                 Button(
                                     enabled = reason == null,
                                     onClick = {
-                                        manualChose = true
                                         val mediaUrl = WebMediaUrlPolicy.normalizeMediaUrl(candidate.url)
                                         if (mediaUrl == null) {
                                             status = WebMediaUrlPolicy.unsupportedReason(candidate.url)
