@@ -27,6 +27,20 @@ class WebCandidateVerifierTest {
     }
 
     @Test
+    fun audioDetectionFailureRetainsTheOriginalExceptionForDiagnostics() {
+        val original = java.net.SocketTimeoutException("read timed out")
+
+        val hint = WebCandidateVerifier.failedAudioHint(
+            "https://cdn.example/master.m3u8",
+            original,
+        )
+
+        assertEquals(WebCandidateAudioHintKind.FAILED, hint.kind)
+        assertTrue(hint.failure === original)
+        assertEquals("read timed out", hint.failure?.message)
+    }
+
+    @Test
     fun directVideoDoesNotGetAnUnverifiedBitrateLabel() {
         val hint = WebCandidateVerifier.initialAudioHint("https://cdn.example/movie.mp4")
 
