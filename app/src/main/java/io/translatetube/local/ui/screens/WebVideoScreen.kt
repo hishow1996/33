@@ -709,6 +709,7 @@ fun WebVideoScreen(
             BoxWithConstraints(
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
+            val viewportMaxHeight = maxHeight
             AndroidView(
                 modifier = Modifier.matchParentSize(),
                 factory = { ctx ->
@@ -1182,7 +1183,7 @@ fun WebVideoScreen(
                             .map { it.first }
                     }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(maxHeight * 0.43f),
+                        modifier = Modifier.fillMaxWidth().height(viewportMaxHeight * 0.43f),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
