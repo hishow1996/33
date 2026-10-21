@@ -258,13 +258,22 @@ internal object WebCandidateVerifier {
                 diagnostics["是否发生重定向"] = (response.priorResponse != null).toString()
                 diagnostics.putAll(safeUrlDiagnostics(response.request.url.toString(), "最终响应地址"))
                 if (response.code !in 200..299) {
+                    // HTTP errors often return a short useful reason or JSON error code.
+                    // Keep only a sanitized summary and never persist raw HTML/response bodies.
+                    val errorBody = response.body?.let { body ->
+                        runCatching { readBoundedPrefix(body.byteStream(), 4 * 1024) }.getOrDefault("")
+                    }.orEmpty()
+                    diagnostics["HTTP 错误响应体摘要"] = summarizeHttpErrorBody(errorBody)
+                    diagnostics["HTTP 错误响应体实际读取字节数"] =
+                        errorBody.toByteArray(Charsets.UTF_8).size.toString()
                     // A failed HTTP status is a detection failure even though OkHttp does not
                     // throw for it. Preserve a real diagnostic cause so the caller can persist
                     // this failure in the app log instead of recording only a UI hint.
                     val failure = java.io.IOException(
                         "HLS 主清单请求失败：HTTP ${response.code} ${response.message}; " +
                             "Content-Type=${response.header("Content-Type") ?: "未提供"}; " +
-                            "Content-Range=${response.header("Content-Range") ?: "未提供"}"
+                            "Content-Range=${response.header("Content-Range") ?: "未提供"}; " +
+                            "响应摘要=${diagnostics["HTTP 错误响应体摘要"]}"
                     )
                     return@responseUse WebCandidateAudioHint(
                         message = "HLS 检测失败 · HTTP ${response.code}",
@@ -429,6 +438,58 @@ internal object WebCandidateVerifier {
             "${label}文件扩展名" to extension,
             "${label}查询参数名（不含值）" to queryNames.joinToString(", ").ifBlank { "无" }.take(300),
         )
+    }
+
+    /** Return a useful HTTP error summary without persisting response HTML or credentials. */
+    private fun summarizeHttpErrorBody(value: String): String {
+        val prefix = value.removePrefix("\uFEFF").trim()
+        if (prefix.isBlank()) return "响应体为空"
+        if (
+            prefix.startsWith("<!doctype html", ignoreCase = true) ||
+            prefix.startsWith("<html", ignoreCase = true) ||
+            prefix.startsWith("<")
+        ) {
+            val title = Regex("""(?is)<title[^>]*>(.*?)</title>""")
+                .find(prefix)?.groupValues?.getOrNull(1)
+                ?.replace(Regex("""<[^>]+>"""), " ")
+                ?.trim()
+            return title?.takeIf { it.isNotBlank() }?.let {
+                "HTML 错误页标题：" + sanitizeDiagnosticSnippet(it)
+            } ?: "HTML 错误页（正文未记录）"
+        }
+        if (prefix.startsWith("{") || prefix.startsWith("[")) {
+            val fields = Regex(
+                """"(code|type|error|message|detail|title|success)"\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+)""",
+                RegexOption.IGNORE_CASE,
+            ).findAll(prefix).take(8).map { match ->
+                val key = match.groupValues[1]
+                val rawValue = match.groupValues[2].trim('"')
+                    .replace("\\n", " ")
+                    .replace("\\\"", "\"")
+                key + "=" + sanitizeDiagnosticSnippet(rawValue)
+            }.toList()
+            return if (fields.isNotEmpty()) {
+                "JSON 错误字段：" + fields.joinToString("; ").take(240)
+            } else {
+                "JSON 错误响应（未识别常见错误字段；正文未记录）"
+            }
+        }
+        val firstLine = prefix.lineSequence().firstOrNull(String::isNotBlank).orEmpty()
+        return sanitizeDiagnosticSnippet(firstLine).ifBlank { "服务器返回了文本，但摘要为空" }
+    }
+
+    /** Redact URLs and credential-like values from short server messages before saving them. */
+    private fun sanitizeDiagnosticSnippet(value: String): String {
+        var safe = value
+        safe = Regex("""(?i)\b(Bearer|Basic)\s+\S+""")
+            .replace(safe) { it.groupValues[1] + " [已隐藏]" }
+        safe = Regex("""(?i)\b(token|api[_-]?key|signature|sig|authorization|cookie|secret|password|credential|session|jwt|expires)\b\s*[:=]\s*["']?[^&\s,"'<>]+""")
+            .replace(safe) { it.groupValues[1] + "=[已隐藏]" }
+        safe = Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE)
+            .replace(safe, "[URL 已隐藏]")
+        safe = Regex("""(?<![A-Za-z0-9])[A-Za-z0-9_./+=-]{48,}(?![A-Za-z0-9])""")
+            .replace(safe, "[长令牌已隐藏]")
+        return safe.replace(Regex("""\s+"""), " ").trim().take(240)
     }
 
     /** Classifies the response prefix without copying potentially sensitive HTML/JSON into logs. */
