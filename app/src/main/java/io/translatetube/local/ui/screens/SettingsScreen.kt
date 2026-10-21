@@ -915,7 +915,7 @@ private fun Section(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
-                    if (title != "转写引擎" && title != "配音设置") {
+                    if (title != "转写引擎" && title != "配音设置" && title != "视频源（yt-dlp）") {
                         Text(
                             subtitle,
                             color = SubText,
@@ -1135,7 +1135,7 @@ private fun PiperModelSection() {
     }
 }
 
-/** yt-dlp 解析规则版本管理：版本自动检测、真实下载进度与安全安装。 */
+/** yt-dlp 解析规则版本管理：简化重复状态文案，聚焦版本、操作和真实进度。 */
 @Composable
 private fun YtDlpUpdateSection() {
     val ctx = LocalContext.current
@@ -1145,63 +1145,72 @@ private fun YtDlpUpdateSection() {
     var message by remember { mutableStateOf<String?>(null) }
     val isUpdating = updating || state.updateRunning
 
-    // 进入设置页时补一次检查：时段内去重回填状态，跨时段则真查
+    // 进入设置页时补一次检查：时段内去重回填状态，跨时段则真查。
     LaunchedEffect(Unit) {
         runCatching { io.translatetube.local.yt.YtDlpRepo.checkForUpdate(ctx.applicationContext) }
     }
 
+    val isErrorMessage = message?.startsWith("检查失败") == true ||
+        message?.startsWith("更新失败") == true ||
+        message?.startsWith("yt-dlp 更新失败") == true
+    val hasError = isErrorMessage || (message == null && state.error != null && state.latest == null)
+    val statusText = when {
+        isUpdating -> "正在更新规则"
+        message != null -> message!!
+        state.checking -> "正在检查版本…"
+        state.error != null && state.latest == null -> state.error!!
+        state.current == null && state.latest != null -> "已获取上游版本，本机版本暂不可读"
+        state.hasUpdate -> "发现新版本"
+        state.current != null && state.latest != null -> "已是最新版本"
+        state.current != null -> "本机版本已就绪"
+        else -> "尚未检查版本"
+    }
+    val statusColor = when {
+        hasError -> DangerRed
+        state.hasUpdate -> BrandBright
+        else -> OnBg
+    }
+    val versionSummary = when {
+        state.current != null && state.latest != null && state.hasUpdate ->
+            "本机 ${state.current}  ·  最新 ${state.latest}  ·  更新包约 30 MB"
+        state.current != null -> "本机版本 ${state.current}"
+        state.latest != null -> "最新版本 ${state.latest}  ·  本机版本暂不可读"
+        else -> null
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("解析规则版本", color = OnBg, style = MaterialTheme.typography.bodyMedium)
-                val desc = when {
-                    state.checking -> "正在检查上游稳定版并读取本机版本…"
-                    state.error != null && state.latest == null -> "版本检测失败，查看下方原因后可重试"
-                    state.current == null && state.latest != null ->
-                        "已获取最新版本 " + state.latest + "，暂时无法读取本机版本"
-                    state.current == null -> "尚未读取到本机 yt-dlp 版本，点击“检查更新”重试"
-                    state.hasUpdate && state.latest != null ->
-                        "发现新版本 " + state.latest + "（当前 " + state.current + "）"
-                    state.latest != null -> "当前 " + state.current + " · 已是最新"
-                    else -> "当前 " + state.current
-                }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Text(
-                    desc,
-                    color = if (state.hasUpdate) BrandBright else SubText,
-                    style = MaterialTheme.typography.bodySmall,
+                    text = statusText,
+                    color = statusColor,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
-                if (state.hasUpdate) {
+                versionSummary?.let {
                     Text(
-                        "网站改版后旧规则可能解析失败，建议更新（约 30MB）",
+                        text = it,
                         color = SubText,
                         style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
-                }
-                message?.let {
-                    Text(
-                        it,
-                        color = if (it.startsWith("检查失败") || it.startsWith("更新失败") ||
-                            it.startsWith("yt-dlp 更新失败")
-                        ) DangerRed else BrandBright,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (message == null) {
-                    state.error?.let {
-                        Text(
-                            "最近一次检测提示：$it",
-                            color = DangerRed,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
                 }
             }
 
+            Spacer(Modifier.width(8.dp))
             if (state.hasUpdate) {
-                TextButton(
+                Button(
                     enabled = !isUpdating,
                     onClick = {
                         updating = true
@@ -1230,7 +1239,11 @@ private fun YtDlpUpdateSection() {
                             }
                         }
                     },
-                ) { Text(if (isUpdating) "更新中…" else "立即更新") }
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp),
+                    modifier = Modifier.heightIn(min = 40.dp),
+                ) {
+                    Text("更新规则", maxLines = 1)
+                }
             } else {
                 TextButton(
                     enabled = !state.checking && !isUpdating,
@@ -1245,14 +1258,14 @@ private fun YtDlpUpdateSection() {
                                 val checked = io.translatetube.local.yt.YtDlpRepo.updateState.value
                                 message = when {
                                     checked.current != null && checked.latest != null && !checked.hasUpdate ->
-                                        "检查结果：已是最新版本"
+                                        "检查完成 · 已是最新版本"
                                     checked.hasUpdate && checked.latest != null ->
-                                        "检查结果：发现新版本 " + checked.latest
+                                        "检查完成 · 发现新版本"
                                     checked.latest != null && checked.current == null ->
-                                        checked.error?.let { "检查失败：" + it }
-                                            ?: "已获取最新版本 " + checked.latest + "，暂时无法读取本机版本"
-                                    else -> checked.error?.let { "检查失败：" + it }
-                                        ?: "检查失败：无法获取上游版本信息，请检查网络后重试"
+                                        checked.error?.let { "版本检测失败：" + it }
+                                            ?: "已获取上游版本，本机版本暂不可读"
+                                    else -> checked.error
+                                        ?: "无法获取上游版本，请检查网络后重试"
                                 }
                             } catch (e: Exception) {
                                 io.translatetube.local.util.AppLogStore.warning(
@@ -1271,14 +1284,18 @@ private fun YtDlpUpdateSection() {
                             }
                         }
                     },
-                ) { Text(if (state.checking) "检查中…" else "检查更新") }
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    modifier = Modifier.heightIn(min = 40.dp),
+                ) {
+                    Text("检查更新", maxLines = 1)
+                }
             }
         }
 
         if (isUpdating) {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 val progress = state.updateProgress
                 if (progress != null) {
@@ -1294,10 +1311,13 @@ private fun YtDlpUpdateSection() {
                         color = BrandBright,
                     )
                 }
+
                 Text(
                     state.updateStage ?: "正在准备更新…",
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
                 val totalBytes = state.totalBytes
                 val sizeText = when {
@@ -1310,7 +1330,11 @@ private fun YtDlpUpdateSection() {
                     else -> null
                 }
                 sizeText?.let {
-                    Text(it, color = SubText, style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        text = it,
+                        color = SubText,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
         }
