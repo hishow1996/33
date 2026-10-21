@@ -46,6 +46,7 @@ import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.VideoEntity
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.web.WebMediaUrlPolicy
+import io.translatetube.local.web.SharedLinkTextParser
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
@@ -266,7 +267,10 @@ fun HomeScreen(
                 Button(
                     interactionSource = playButtonInteraction,
                     onClick = {
-                        val input = link.trim()
+                        val rawInput = link.trim()
+                        // Bilibili and other apps copy a title/description together with the URL.
+                        // Extract the first HTTP(S) URL before routing it through existing parsers.
+                        val input = SharedLinkTextParser.extractFirstHttpUrl(rawInput) ?: rawInput
                         val id = io.translatetube.local.yt.NewPipeRepo.extractVideoId(input)
                             ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(input)) input else null
                         if (id != null) {

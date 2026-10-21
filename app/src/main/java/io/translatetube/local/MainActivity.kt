@@ -30,6 +30,7 @@ import io.translatetube.local.ui.theme.TranslateTubeTheme
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.Phase
 import io.translatetube.local.yt.NewPipeRepo
+import io.translatetube.local.web.SharedLinkTextParser
 
 enum class Screen { HOME, PLAYER, WEB, SETTINGS, API, LOGS, STORAGE }
 
@@ -422,12 +423,13 @@ class MainActivity : ComponentActivity() {
         when (intent.action) {
             Intent.ACTION_SEND -> {
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
-                val id = NewPipeRepo.extractVideoId(text)
-                    ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(text.trim())) text.trim() else null
+                val input = SharedLinkTextParser.extractFirstHttpUrl(text) ?: text.trim()
+                val id = NewPipeRepo.extractVideoId(input)
+                    ?: if (Regex("^[A-Za-z0-9_-]{11}$").matches(input)) input else null
                 if (id != null) {
                     rememberPlayRequest(PlayRequest(videoId = id))
                 } else {
-                    io.translatetube.local.web.WebMediaUrlPolicy.normalizePageUrl(text)?.let { url ->
+                    io.translatetube.local.web.WebMediaUrlPolicy.normalizePageUrl(input)?.let { url ->
                         rememberPlayRequest(PlayRequest(webPageUrl = url))
                     }
                 }
