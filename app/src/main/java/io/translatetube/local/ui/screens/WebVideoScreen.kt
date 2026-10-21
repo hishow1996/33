@@ -295,8 +295,10 @@ fun WebVideoScreen(
                         if (!renditionUrl.isNullOrBlank()) {
                             val renditionHint = when (hint.kind) {
                                 WebCandidateAudioHintKind.INDEPENDENT -> WebCandidateAudioHint(
-                                    message = "独立音轨 · 已由主清单确认",
+                                    message = "独立音轨 · 已由主清单确认" +
+                                        (hint.mediaInfo?.audioSummary()?.let { " · $it" } ?: ""),
                                     kind = WebCandidateAudioHintKind.INDEPENDENT,
+                                    mediaInfo = hint.mediaInfo,
                                 )
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> WebCandidateAudioHint(
                                     message = hint.message,
@@ -1881,7 +1883,10 @@ fun WebVideoScreen(
                                     ): Int {
                                         fun extractionRank(url: String): Int = when (sourceHints[url]?.kind) {
                                             WebCandidateAudioHintKind.INDEPENDENT -> 2
-                                            WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> 1
+                                            WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+                                            WebCandidateAudioHintKind.MUXED_DIRECT -> 1
+                                            // Confirmed silent: nothing to transcribe, so sink it.
+                                            WebCandidateAudioHintKind.NO_AUDIO -> -1
                                             else -> 0
                                         }
                                         val aExtractionRank = extractionRank(a.first.url)
@@ -1910,6 +1915,8 @@ fun WebVideoScreen(
                             val hintColor = when (sourceHint.kind) {
                                 WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
+                                WebCandidateAudioHintKind.MUXED_DIRECT -> MaterialTheme.colorScheme.tertiary
+                                WebCandidateAudioHintKind.NO_AUDIO -> MaterialTheme.colorScheme.error
                                 WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primary
                                 WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.error
                                 WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -1960,7 +1967,7 @@ fun WebVideoScreen(
                                             sourceHint.message,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = hintColor,
-                                            maxLines = 2,
+                                            maxLines = 3,
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
@@ -2036,6 +2043,7 @@ fun WebVideoScreen(
                                                         "媒体源标题" to candidate.title.take(120),
                                                         "音轨类型识别结果" to hint.kind.name,
                                                         "音轨类型说明" to hint.message,
+                                                        "视频码率 bps" to (hint.mediaInfo?.videoBitrateBps?.toString() ?: "未检测到"),
                                                         "是否通过 HEAD/Range 校验" to (candidate.url in verifiedUrls).toString(),
                                                         "是否带 DRM 标记" to candidate.drmProtected.toString(),
                                                         "是否存在站点 Cookie" to (!cookie.isNullOrBlank()).toString(),

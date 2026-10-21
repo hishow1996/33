@@ -7,27 +7,6 @@ import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
-/** Audio-source categories displayed alongside manually selectable webpage candidates. */
-internal enum class WebCandidateAudioHintKind {
-    DETECTING,
-    INDEPENDENT,
-    LOW_BITRATE_MUXED,
-    UNKNOWN,
-    FAILED,
-}
-
-/** Audio-extraction information for one manually selectable webpage media candidate. */
-internal data class WebCandidateAudioHint(
-    val message: String,
-    val kind: WebCandidateAudioHintKind = WebCandidateAudioHintKind.UNKNOWN,
-    /** Rendition selected inside an inspected HLS master; it may also appear as another list item. */
-    val renditionUrl: String? = null,
-    /** Original detection exception; used to write the real stack trace to local diagnostic logs. */
-    val failure: Throwable? = null,
-    /** Safe, structured request/response evidence for the in-app diagnostics page. */
-    val diagnosticContext: Map<String, String> = emptyMap(),
-)
-
 /** Detailed HTTP evidence for a candidate source check, without retaining its full URL. */
 internal data class WebCandidateVerificationResult(
     val verified: Boolean,
@@ -186,10 +165,17 @@ internal object WebCandidateVerifier {
         return ext in setOf("mp4", "m4v", "webm", "flv", "mkv", "mov", "ts", "avi")
     }
 
+    /** MP4-family direct links have a readable header; other containers are not parsed yet. */
+    internal fun isProbeableDirectVideo(url: String): Boolean {
+        if (HlsAudioDownloader.isManifestUrl(url) || WebMediaUrlPolicy.isExplicitAudioOnlyResource(url)) return false
+        val path = url.substringBefore('?').substringBefore('#')
+        return path.substringAfterLast('.', "").lowercase() in setOf("mp4", "m4v", "mov")
+    }
+
     /**
-     * Initial hint shown immediately, before an HLS master has been inspected. Direct video files
-     * are deliberately not called audio-only or low-bitrate: their tracks cannot be proven from
-     * the URL alone.
+     * Initial hint shown immediately, before the source has been inspected. A source is never
+     * called audio-only or low-bitrate from its URL alone: its tracks can only be proven by
+     * reading the HLS master or the MP4 header.
      */
     fun initialAudioHint(url: String): WebCandidateAudioHint = when {
         WebMediaUrlPolicy.isExplicitAudioOnlyResource(url) -> WebCandidateAudioHint(
@@ -198,6 +184,10 @@ internal object WebCandidateVerifier {
         )
         HlsAudioDownloader.isManifestUrl(url) -> WebCandidateAudioHint(
             message = "正在检测 HLS 清单中的音轨类型…",
+            kind = WebCandidateAudioHintKind.DETECTING,
+        )
+        isProbeableDirectVideo(url) -> WebCandidateAudioHint(
+            message = "正在读取文件头，检测音轨和视频码率…",
             kind = WebCandidateAudioHintKind.DETECTING,
         )
         hasVideoExtension(url) -> WebCandidateAudioHint(
@@ -222,7 +212,13 @@ internal object WebCandidateVerifier {
         userAgent: String?,
     ): WebCandidateAudioHint {
         val initial = initialAudioHint(url)
-        if (!HlsAudioDownloader.isManifestUrl(url)) return initial
+        if (!HlsAudioDownloader.isManifestUrl(url)) {
+            return if (isProbeableDirectVideo(url)) {
+                inspectDirectMp4(client, url, referer, cookie, userAgent)
+            } else {
+                initial
+            }
+        }
 
         // Keep structured request evidence even when parsing throws half-way through. Never store
         // query values: HLS URLs commonly carry short-lived signatures and authentication tokens.
@@ -333,24 +329,29 @@ internal object WebCandidateVerifier {
                     selection.declaredBandwidth?.toString() ?: "未声明/独立音轨不继承视频码率"
                 diagnostics["选中流分辨率"] = selection.resolution ?: "未声明/不适用"
                 diagnostics.putAll(safeUrlDiagnostics(selection.url, "选中媒体地址"))
-                when (selection.sourceKind) {
-                    HlsAudioDownloader.AudioSourceKind.INDEPENDENT -> WebCandidateAudioHint(
-                        message = "检测到独立音轨 · 不需要下载视频画面",
-                        kind = WebCandidateAudioHintKind.INDEPENDENT,
-                        renditionUrl = selection.url,
+                // Track details (audio codec/channels/language, video bitrate and resolution) come
+                // from the same master text. A parser problem must not turn a good selection
+                // into a failed check, so it degrades to a hint without those details.
+                val description = runCatching {
+                    HlsMasterSummaryParser.describe(
+                        summary = HlsMasterSummaryParser.parse(manifest),
+                        masterUrl = finalUrl,
+                        selectedUrl = selection.url,
+                        independentAudio = selection.sourceKind == HlsAudioDownloader.AudioSourceKind.INDEPENDENT,
+                        declaredBandwidth = selection.declaredBandwidth,
+                        declaredResolution = selection.resolution,
                     )
-                    HlsAudioDownloader.AudioSourceKind.MUXED -> {
-                        val details = buildList {
-                            selection.resolution?.let { add(formatResolution(it)) }
-                            selection.declaredBandwidth?.let { add("清单声明 ${formatDeclaredBandwidth(it)}") }
-                        }.joinToString(" · ")
-                        WebCandidateAudioHint(
-                            message = "混合音视频 · 已选择低码率版本" +
-                                if (details.isNotBlank()) " · $details" else " · 清晰度/码率未知",
-                            kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
-                            renditionUrl = selection.url,
-                        )
-                    }
+                }.getOrElse {
+                    HlsTrackDescription(
+                        info = WebCandidateMediaInfo(container = "HLS", hasAudio = true),
+                        audioOnlyVariant = false,
+                    )
+                }
+                when (selection.sourceKind) {
+                    HlsAudioDownloader.AudioSourceKind.INDEPENDENT ->
+                        WebCandidateAudioHints.forHls(description, independentAudio = true, renditionUrl = selection.url)
+                    HlsAudioDownloader.AudioSourceKind.MUXED ->
+                        WebCandidateAudioHints.forHls(description, independentAudio = false, renditionUrl = selection.url)
                     HlsAudioDownloader.AudioSourceKind.UNKNOWN -> WebCandidateAudioHint(
                         message = "HLS 子清单 · 未发现可比较的画质版本，音轨类型待确认",
                         kind = WebCandidateAudioHintKind.UNKNOWN,
@@ -364,6 +365,63 @@ internal object WebCandidateVerifier {
             onFailure = { error ->
                 failedAudioHint(url, error, diagnostics)
             },
+        )
+    }
+
+    /**
+     * Reads the header of a direct MP4/MOV link with a few small range requests (never the media
+     * data) to report whether it has an audio track and what the video bitrate is. Other
+     * containers and servers without Range support get an honest "cannot parse" hint, not a guess.
+     */
+    private fun inspectDirectMp4(
+        client: OkHttpClient,
+        url: String,
+        referer: String,
+        cookie: String?,
+        userAgent: String?,
+    ): WebCandidateAudioHint {
+        val diagnostics = linkedMapOf<String, String>()
+        diagnostics["检测步骤"] = "直链 MP4 文件头音轨检测"
+        diagnostics["请求方法"] = "GET（分段 Range）"
+        diagnostics["是否携带 Referer"] = referer.startsWith("http", ignoreCase = true).toString()
+        diagnostics["是否携带 Cookie"] = (!cookie.isNullOrBlank()).toString()
+        diagnostics["是否携带自定义 User-Agent"] = (!userAgent.isNullOrBlank()).toString()
+        diagnostics.putAll(safeUrlDiagnostics(url, "请求地址"))
+
+        val headers = buildMap {
+            if (referer.startsWith("http")) put("Referer", referer)
+            cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
+            userAgent?.takeIf { it.isNotBlank() }?.let { put("User-Agent", it) }
+        }
+        // Reading a faststart header can take a few seconds on a slow link, so this probe gets
+        // a longer overall limit than the quick HEAD/Range verification client.
+        val probeClient = client.newBuilder()
+            .callTimeout(25, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+
+        return runCatching {
+            when (val result = Mp4SourceInspector.inspect(OkHttpRangeReader(probeClient, url, headers))) {
+                is Mp4InspectResult.Parsed -> WebCandidateAudioHints.forDirectMp4(result.info)
+                is Mp4InspectResult.NotMp4 -> WebCandidateAudioHint(
+                    message = when (result.container) {
+                        null -> "直链视频 · 文件头不是 MP4/MOV 结构，音轨类型待确认"
+                        "网页/文本" -> "该地址返回的是网页或文本，不是视频文件"
+                        else -> "直链视频 · 实际是 ${result.container} 格式，暂不解析音轨 · 音轨类型待确认"
+                    },
+                    diagnosticContext = mapOf(
+                        "检测结果" to result.reason,
+                        "识别到的容器" to (result.container ?: "未识别"),
+                    ),
+                )
+                is Mp4InspectResult.Unreadable -> WebCandidateAudioHint(
+                    message = "直链视频 · ${result.reason} · 音轨类型待确认",
+                    diagnosticContext = mapOf("检测结果" to result.reason),
+                )
+            }
+        }.fold(
+            onSuccess = { hint -> hint.copy(diagnosticContext = diagnostics + hint.diagnosticContext) },
+            onFailure = { error -> failedAudioHint(url, error, diagnostics) },
         )
     }
 
@@ -504,18 +562,6 @@ internal object WebCandidateVerifier {
             prefix.startsWith("<?xml", ignoreCase = true) -> "XML 响应（不是标准 M3U8 开头）"
             else -> "普通文本/未知内容（不是标准 M3U8 开头）"
         }
-    }
-
-    private fun formatResolution(value: String): String {
-        val height = value.substringAfter('x', "").toIntOrNull()
-        return if (height != null && height > 0) "${height}p" else value
-    }
-
-    private fun formatDeclaredBandwidth(bitsPerSecond: Long): String = when {
-        bitsPerSecond >= 1_000_000L ->
-            String.format(java.util.Locale.ROOT, "%.2f Mbps", bitsPerSecond / 1_000_000.0)
-        bitsPerSecond >= 1_000L -> "${bitsPerSecond / 1_000L} kbps"
-        else -> "$bitsPerSecond bps"
     }
 
     private fun readBoundedPrefix(input: java.io.InputStream, maxBytes: Int): String {
