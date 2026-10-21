@@ -219,6 +219,9 @@ fun WebVideoScreen(
         if (freshUrls.isEmpty()) return@LaunchedEffect
         val hintPageGeneration = pageGeneration.get()
         val hintPageUrl = currentPage
+        // WebView methods (including settings) may only be called on the main thread, and the
+        // probes below run on Dispatchers.IO. Read the UA here, where we are on the main thread.
+        val hintUserAgent = webViewState.value?.settings?.userAgentString
         sourceHintAttempts = sourceHintAttempts + freshUrls
         freshUrls.forEach { candidateUrl ->
             verifierScope.launch {
@@ -230,7 +233,7 @@ fun WebVideoScreen(
                             url = candidateUrl,
                             referer = hintPageUrl,
                             cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
-                            userAgent = webViewState.value?.settings?.userAgentString,
+                            userAgent = hintUserAgent,
                         )
                     } catch (cancelled: CancellationException) {
                         throw cancelled
@@ -369,6 +372,9 @@ fun WebVideoScreen(
         if (pending.isEmpty()) return@LaunchedEffect
         val verificationPageUrl = currentPage
         val verificationGeneration = pageGeneration.get()
+        // Main-thread read: the verification below runs on Dispatchers.IO, where touching the
+        // WebView throws "A WebView method was called on thread ...".
+        val verificationUserAgent = webViewState.value?.settings?.userAgentString
         verificationAttempts = verificationAttempts + pending
         pending.forEach { candidateUrl ->
             verifierScope.launch {
@@ -378,7 +384,7 @@ fun WebVideoScreen(
                         url = candidateUrl,
                         referer = verificationPageUrl,
                         cookie = runCatching { CookieManager.getInstance().getCookie(candidateUrl) }.getOrNull(),
-                        userAgent = webViewState.value?.settings?.userAgentString,
+                        userAgent = verificationUserAgent,
                     )
                 } catch (cancelled: CancellationException) {
                     throw cancelled
