@@ -443,7 +443,6 @@ fun WebVideoScreen(
     var pikpakEnumeratedParents by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     var pikpakNeedsPasscode by remember(initialUrl) { mutableStateOf(false) }
     var pikpakBusy by remember(initialUrl) { mutableStateOf(false) }
-    var pikpakResolvingVideoId by remember(initialUrl) { mutableStateOf<String?>(null) }
     var pikpakNotice by remember(initialUrl) { mutableStateOf<String?>(null) }
     val pikpakScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
 
@@ -822,7 +821,6 @@ fun WebVideoScreen(
         pikpakEnumeratedParents = emptySet()
         pikpakNeedsPasscode = false
         pikpakBusy = false
-        pikpakResolvingVideoId = null
         pikpakNotice = null
         currentPage = target
         address = target
@@ -843,8 +841,10 @@ fun WebVideoScreen(
         )
     }
 
-    // PikPak 清单只保存文件/文件夹元数据，不自动把视频直链加入候选源，也不触发批量音轨检测。
-    // 单击某个视频的播放按钮时，才请求该文件最新的 file_info 直链。
+    // PikPak 清单条目合并：按文件 id 去重（hook 与主动枚举两来源的 parentId 可能不一致，
+    // 同一文件保留信息更全的一条：有直链优先、有真实父目录优先），
+    // 视频条目自动并入候选列表（标题=文件名），并把 API 刚下发的直链直接标记已验证
+    // （跳过对 CDN 的批量 HEAD 校验，PikPak 清单可能上百条，逐条验证既慢又易触发限流）。
     fun mergePikpakEntries(incoming: List<PikpakEntry>) {
         val merged = (incoming + pikpakEntries)
             .groupBy { it.id }
@@ -855,6 +855,22 @@ fun WebVideoScreen(
             }
             .take(900)
         pikpakEntries = merged
+        val videoCandidates = merged
+            .filter { it.isVideo && it.downloadUrl.isNotBlank() }
+            .map {
+                WebVideoCandidate(
+                    url = it.downloadUrl,
+                    title = it.name,
+                    poster = "",
+                    durationSeconds = 0.0,
+                    drmProtected = false,
+                )
+            }
+        if (videoCandidates.isNotEmpty()) {
+            candidatesState.value =
+                WebVideoProbePolicy.mergeCandidates(candidatesState.value, videoCandidates)
+            verifiedUrls = verifiedUrls + videoCandidates.map { it.url }
+        }
     }
 
     // 主动展开 PikPak 分享目录（rootParentId="" 为整棵树；传文件夹 id 则展开该子树）。
@@ -970,7 +986,7 @@ fun WebVideoScreen(
                     pikpakNotice = when {
                         result.entries.isNotEmpty() && result.error == null ->
                             "清单已更新：共 " + pikpakEntries.count { it.isVideo } + " 个视频、" +
-                                pikpakEntries.count { it.isFolder } + " 个文件夹。点击视频播放或进入文件夹继续。"
+                                pikpakEntries.count { it.isFolder } + " 个文件夹。点下方候选或文件夹继续。"
                         result.entries.isNotEmpty() -> "部分读取成功：" + result.error
                         result.visitedParents.isNotEmpty() && result.error == null ->
                             "此前已读取过这些目录，无新增内容。"
@@ -1002,83 +1018,6 @@ fun WebVideoScreen(
                     pikpakBusy = false
                     pikpakNotice = "读取分享清单失败：" + (error.message ?: error.javaClass.simpleName)
                 }
-            }
-        }
-    }
-
-    // 只在用户点击具体视频时解析直链；清单浏览阶段不调用 file_info。
-    fun playPikpakVideo(entry: PikpakEntry) {
-        if (pikpakResolvingVideoId != null) return
-        val shareId = pikpakShareId ?: PikpakShare.parseShareId(currentPage)
-        if (shareId.isNullOrBlank()) {
-            pikpakNotice = "未识别到 PikPak 分享链接，请重新打开分享页。"
-            return
-        }
-        if (pikpakNeedsPasscode) {
-            pikpakNotice = "请先在上方官方网页输入提取码并完成验证。"
-            return
-        }
-
-        val targetPage = currentPage
-        val targetGeneration = pageGeneration.get()
-        val passcodeToken = pikpakPasscodeToken.ifBlank { PikpakShare.capturedPasscodeToken }
-        val passCode = pikpakPassCode
-        val deviceUuid = PikpakShare.deviceIdentifier(appCtx)
-        val userAgent = webViewState.value?.settings?.userAgentString
-        pikpakResolvingVideoId = entry.id
-        pikpakNotice = "正在解析所选视频资源…"
-
-        pikpakScope.launch(Dispatchers.IO) {
-            val mediaUrl = runCatching {
-                PikpakShare.resolveVideoUrl(
-                    shareId = shareId,
-                    fileId = entry.id,
-                    passcodeToken = passcodeToken,
-                    passCode = passCode,
-                    deviceUuid = deviceUuid,
-                    fallbackUrl = entry.downloadUrl,
-                )
-            }.getOrNull()
-
-            if (mediaUrl.isNullOrBlank()) {
-                io.translatetube.local.util.AppLogStore.warning(
-                    context = appCtx,
-                    tag = "PikPakPlayback",
-                    message = "用户点击播放时未能解析所选 PikPak 视频直链",
-                    diagnosticContext = mapOf(
-                        "文件名" to entry.name.take(160),
-                        "文件编号" to entry.id.take(120),
-                        "分享页主机名" to webSourceHost(targetPage),
-                        "是否有提取码令牌" to passcodeToken.isNotBlank().toString(),
-                    ),
-                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
-                        "PikPakPlayback",
-                        webSourceHost(targetPage) + "|" + entry.id,
-                    ),
-                )
-            }
-
-            mainHandler.post {
-                if (!screenActive.get() ||
-                    pageGeneration.get() != targetGeneration ||
-                    currentPage != targetPage
-                ) return@post
-
-                pikpakResolvingVideoId = null
-                if (mediaUrl.isNullOrBlank()) {
-                    pikpakNotice = "视频资源解析失败，请确认分享权限/提取码后重试。"
-                    return@post
-                }
-
-                pikpakNotice = "已解析所选视频，正在打开播放器…"
-                val cookie = runCatching { CookieManager.getInstance().getCookie(mediaUrl) }.getOrNull()
-                onOpenMedia(
-                    mediaUrl,
-                    entry.name.ifBlank { "PikPak 视频" },
-                    targetPage,
-                    cookie,
-                    userAgent,
-                )
             }
         }
     }
@@ -1155,8 +1094,6 @@ fun WebVideoScreen(
         object {
             @JavascriptInterface
             fun reportVideos(payload: String) {
-                // On PikPak share pages, merely listing files must not start video-resource parsing.
-                if (PikpakShare.parseShareId(currentPage) != null) return
                 // The bridge is callable by page JavaScript. Bound parsing and retained rows so a
                 // page with thousands of video elements cannot grow the native heap indefinitely.
                 if (!WebVideoProbePolicy.acceptsPayload(payload)) {
@@ -1715,8 +1652,7 @@ fun WebVideoScreen(
                             ): android.webkit.WebResourceResponse? {
                                 val resourceUrl = request.url.toString()
                                 val requestGeneration = pageGeneration.get()
-                                if (PikpakShare.parseShareId(currentPage) == null &&
-                                    WebVideoProbePolicy.acceptsMediaUrl(resourceUrl) &&
+                                if (WebVideoProbePolicy.acceptsMediaUrl(resourceUrl) &&
                                     WebMediaUrlPolicy.looksLikeMediaRequest(resourceUrl)
                                 ) {
                                     mainHandler.post {
@@ -2117,7 +2053,7 @@ fun WebVideoScreen(
                     // 分享页的加载/清单状态也放在空白区域，视频源面板里只留可操作的文件与候选源。
                     if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
                         val pikpakFolders = pikpakEntries.filter { it.isFolder }
-                        val pikpakVideos = pikpakEntries.filter { it.isVideo }.sortedBy { it.name.lowercase() }
+                        val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
                         Text(
                             when {
                                 pikpakBusy -> "正在读取 PikPak 分享清单…"
@@ -2172,7 +2108,7 @@ fun WebVideoScreen(
                 if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
                     val pikpakFolders = pikpakEntries.filter { it.isFolder }
                         .sortedBy { it.name.lowercase() }
-                    val pikpakVideos = pikpakEntries.filter { it.isVideo }.sortedBy { it.name.lowercase() }
+                    val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
                     if (pikpakNeedsPasscode) {
                         Text(
                             "请在上方官方分享网页的提取码输入框中手动验证。验证成功后，应用会自动继续读取；不要在此处重复输入。",
@@ -2231,60 +2167,6 @@ fun WebVideoScreen(
                                             color = if (alreadyListed) MaterialTheme.colorScheme.onSurfaceVariant
                                             else MaterialTheme.colorScheme.primary,
                                         )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (pikpakVideos.isNotEmpty()) {
-                        Text(
-                            "视频文件",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(132.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            items(pikpakVideos, key = { "pikpak-video/${it.id}" }) { video ->
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    ),
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.PlayArrow,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                        Text(
-                                            video.name.ifBlank { "视频文件" },
-                                            modifier = Modifier.weight(1f),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        TextButton(
-                                            enabled = !pikpakBusy &&
-                                                !pikpakNeedsPasscode &&
-                                                pikpakResolvingVideoId == null,
-                                            onClick = { playPikpakVideo(video) },
-                                        ) {
-                                            Text(
-                                                if (pikpakResolvingVideoId == video.id) "解析中…" else "播放",
-                                                maxLines = 1,
-                                            )
-                                        }
                                     }
                                 }
                             }
@@ -2612,10 +2494,6 @@ private val NET_HOOK_SCRIPT = """
       var MEDIA_RE_PROTOCOL_REL = /\/\/[^"'\s\\<>]+?\.(m3u8|mp4|mpd|flv)[^"'\s\\<>]*/g;
       var reportNet = function(text) {
         try {
-          // PikPak share APIs may contain signed video links before the user chooses a file.
-          // Keep collecting the structured file listing below, but defer media URL probing to playback.
-          var hostName = String(target.location && target.location.hostname || '');
-          if (/(^|\.)mypikpak\.com$/i.test(hostName) || /(^|\.)pikpak\.com$/i.test(hostName)) return;
           if (!text) return;
           var text2 = String(text);
           if (text2.length > 2097152) return;
