@@ -24,6 +24,8 @@ internal data class WebCandidateAudioHint(
     val renditionUrl: String? = null,
     /** Original detection exception; used to write the real stack trace to local diagnostic logs. */
     val failure: Throwable? = null,
+    /** Safe, structured request/response evidence for the in-app diagnostics page. */
+    val diagnosticContext: Map<String, String> = emptyMap(),
 )
 
 /** Detailed HTTP evidence for a candidate source check, without retaining its full URL. */
@@ -222,6 +224,18 @@ internal object WebCandidateVerifier {
         val initial = initialAudioHint(url)
         if (!HlsAudioDownloader.isManifestUrl(url)) return initial
 
+        // Keep structured request evidence even when parsing throws half-way through. Never store
+        // query values: HLS URLs commonly carry short-lived signatures and authentication tokens.
+        val diagnostics = linkedMapOf<String, String>()
+        diagnostics["检测步骤"] = "HLS 主清单音轨类型检测"
+        diagnostics["请求方法"] = "GET"
+        diagnostics["请求 Range"] = "bytes=0-${MAX_HLS_HINT_BYTES - 1}"
+        diagnostics["是否携带 Referer"] = referer.startsWith("http", ignoreCase = true).toString()
+        diagnostics["是否携带 Cookie"] = (!cookie.isNullOrBlank()).toString()
+        diagnostics["是否携带自定义 User-Agent"] = (!userAgent.isNullOrBlank()).toString()
+        diagnostics["检测清单最大读取字节数"] = MAX_HLS_HINT_BYTES.toString()
+        diagnostics.putAll(safeUrlDiagnostics(url, "请求地址"))
+
         return runCatching {
             val request = Request.Builder().url(url).get().apply {
                 header("Range", "bytes=0-" + (MAX_HLS_HINT_BYTES - 1))
@@ -231,12 +245,26 @@ internal object WebCandidateVerifier {
                 userAgent?.takeIf { it.isNotBlank() }?.let { header("User-Agent", it) }
             }.build()
             client.newCall(request).execute().use responseUse@ { response ->
+                diagnostics["HTTP 状态码"] = response.code.toString()
+                diagnostics["HTTP 状态说明"] = response.message.ifBlank { "服务器未提供" }
+                diagnostics["响应 Content-Type"] = response.header("Content-Type").orEmpty().ifBlank { "未提供" }
+                diagnostics["响应 Content-Length"] = response.header("Content-Length")
+                    ?: response.body?.contentLength()?.takeIf { it >= 0L }?.toString()
+                    ?: "未提供"
+                diagnostics["响应 Content-Range"] = response.header("Content-Range").orEmpty().ifBlank { "未提供" }
+                diagnostics["响应 Accept-Ranges"] = response.header("Accept-Ranges").orEmpty().ifBlank { "未提供" }
+                diagnostics["响应 Retry-After"] = response.header("Retry-After").orEmpty().ifBlank { "未提供" }
+                diagnostics["响应 Server"] = response.header("Server").orEmpty().ifBlank { "未提供" }
+                diagnostics["是否发生重定向"] = (response.priorResponse != null).toString()
+                diagnostics.putAll(safeUrlDiagnostics(response.request.url.toString(), "最终响应地址"))
                 if (response.code !in 200..299) {
                     // A failed HTTP status is a detection failure even though OkHttp does not
                     // throw for it. Preserve a real diagnostic cause so the caller can persist
                     // this failure in the app log instead of recording only a UI hint.
                     val failure = java.io.IOException(
-                        "HLS 主清单请求失败：HTTP ${response.code} ${response.message}".trim()
+                        "HLS 主清单请求失败：HTTP ${response.code} ${response.message}; " +
+                            "Content-Type=${response.header("Content-Type") ?: "未提供"}; " +
+                            "Content-Range=${response.header("Content-Range") ?: "未提供"}"
                     )
                     return@responseUse WebCandidateAudioHint(
                         message = "HLS 检测失败 · HTTP ${response.code}",
@@ -252,7 +280,27 @@ internal object WebCandidateVerifier {
                     ),
                 )
                 val manifest = readBoundedPrefix(body.byteStream(), MAX_HLS_HINT_BYTES)
-                if (manifest.lineSequence().none { it.trim().equals("#EXTM3U", ignoreCase = true) }) {
+                val manifestLines = manifest.removePrefix("\uFEFF")
+                    .lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
+                diagnostics["实际读取清单字节数"] = manifest.toByteArray(Charsets.UTF_8).size.toString()
+                diagnostics["响应内容特征"] = classifyManifestPayload(manifest)
+                diagnostics["是否包含 #EXTM3U"] = manifestLines.any {
+                    it.equals("#EXTM3U", ignoreCase = true)
+                }.toString()
+                diagnostics["EXT-X-STREAM-INF 数量"] = manifestLines.count {
+                    it.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true)
+                }.toString()
+                diagnostics["AUDIO 类型 EXT-X-MEDIA 数量"] = manifestLines.count {
+                    it.startsWith("#EXT-X-MEDIA:", ignoreCase = true) &&
+                        it.substringAfter(':').contains("TYPE=\"AUDIO\"", ignoreCase = true)
+                }.toString()
+                diagnostics["EXTINF 片段数量"] = manifestLines.count {
+                    it.startsWith("#EXTINF:", ignoreCase = true)
+                }.toString()
+                diagnostics["是否包含 EXT-X-ENDLIST"] = manifestLines.any {
+                    it.equals("#EXT-X-ENDLIST", ignoreCase = true)
+                }.toString()
+                if (manifestLines.none { it.equals("#EXTM3U", ignoreCase = true) }) {
                     return@responseUse WebCandidateAudioHint(
                         message = "HLS 检测失败 · 响应内容不是有效的 M3U8 清单",
                         kind = WebCandidateAudioHintKind.FAILED,
@@ -268,6 +316,14 @@ internal object WebCandidateVerifier {
                         message = "HLS 子清单 · 未发现可比较的画质版本，音轨类型待确认",
                         kind = WebCandidateAudioHintKind.UNKNOWN,
                     )
+                diagnostics["最终判断"] = selection.sourceKind.displayName
+                diagnostics["选择的音轨来源"] = if (
+                    selection.sourceKind == HlsAudioDownloader.AudioSourceKind.INDEPENDENT
+                ) "独立音轨地址" else "音画混合流地址"
+                diagnostics["选中流声明带宽 bps"] =
+                    selection.declaredBandwidth?.toString() ?: "未声明/独立音轨不继承视频码率"
+                diagnostics["选中流分辨率"] = selection.resolution ?: "未声明/不适用"
+                diagnostics.putAll(safeUrlDiagnostics(selection.url, "选中媒体地址"))
                 when (selection.sourceKind) {
                     HlsAudioDownloader.AudioSourceKind.INDEPENDENT -> WebCandidateAudioHint(
                         message = "检测到独立音轨 · 不需要下载视频画面",
@@ -292,26 +348,101 @@ internal object WebCandidateVerifier {
                     )
                 }
             }
-        }.getOrElse { error ->
-            failedAudioHint(url, error)
-        }
+        }.fold(
+            onSuccess = { hint ->
+                hint.copy(diagnosticContext = diagnostics + hint.diagnosticContext)
+            },
+            onFailure = { error ->
+                failedAudioHint(url, error, diagnostics)
+            },
+        )
     }
 
     /** Converts request/parser errors into a terminal state so the UI never spins forever. */
-    fun failedAudioHint(url: String, error: Throwable): WebCandidateAudioHint {
+    fun failedAudioHint(
+        url: String,
+        error: Throwable,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ): WebCandidateAudioHint {
         val detail = when (error) {
-            is java.net.SocketTimeoutException -> "请求超时"
-            is java.net.UnknownHostException -> "域名无法访问"
-            is javax.net.ssl.SSLException -> "HTTPS 连接失败"
-            is java.io.IOException -> "网络请求失败"
-            else -> error.message?.takeIf { it.isNotBlank() }?.take(64) ?: error.javaClass.simpleName
-        }
+            is java.net.SocketTimeoutException -> "请求超时：${error.message.orEmpty()}"
+            is java.net.UnknownHostException -> "域名无法解析或不可访问：${error.message.orEmpty()}"
+            is javax.net.ssl.SSLException -> "HTTPS/TLS 连接失败：${error.message.orEmpty()}"
+            is java.net.ConnectException -> "连接服务器失败：${error.message.orEmpty()}"
+            is java.io.EOFException -> "响应提前结束或内容为空：${error.message.orEmpty()}"
+            is java.io.IOException -> "网络/HTTP 请求失败：${error.message.orEmpty()}"
+            is IllegalStateException -> error.message?.takeIf { it.isNotBlank() } ?: "状态校验失败"
+            is IllegalArgumentException -> error.message?.takeIf { it.isNotBlank() } ?: "请求参数或清单格式无效"
+            else -> error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.name
+        }.take(220)
         val prefix = if (HlsAudioDownloader.isManifestUrl(url)) "HLS 检测失败" else "音轨检测失败"
         return WebCandidateAudioHint(
             message = "$prefix · $detail",
             kind = WebCandidateAudioHintKind.FAILED,
             failure = error,
+            diagnosticContext = diagnosticContext + mapOf(
+                "失败异常类型" to error.javaClass.name,
+                "失败异常消息" to (error.message ?: "无异常消息").take(800),
+                "失败分类" to when (error) {
+                    is java.net.SocketTimeoutException -> "网络超时"
+                    is java.net.UnknownHostException -> "DNS/域名解析"
+                    is javax.net.ssl.SSLException -> "TLS/证书/HTTPS"
+                    is java.net.ConnectException -> "TCP 连接"
+                    is java.io.EOFException -> "空响应/提前结束"
+                    is java.io.IOException -> "I/O/HTTP 请求"
+                    is IllegalArgumentException -> "参数或格式校验"
+                    else -> "清单解析或未知异常"
+                },
+            ),
         )
+    }
+
+    /**
+     * Gives engineers enough URL identity to reproduce a failure without storing query values,
+     * which often contain expiring credentials. Long/suspicious path segments are also masked.
+     */
+    private fun safeUrlDiagnostics(rawUrl: String, label: String): Map<String, String> {
+        val uri = runCatching { java.net.URI(rawUrl) }.getOrNull()
+            ?: return mapOf(label to "URL 无法解析")
+        val pathSegments = uri.rawPath.orEmpty().split('/').filter(String::isNotBlank)
+        val sensitivePathToken = Regex("""(?i)(token|signature|auth|secret|password|credential|session|jwt|expires|access.?key)""")
+        val safePath = pathSegments.map { segment ->
+            when {
+                sensitivePathToken.containsMatchIn(segment) -> "[疑似凭据路径段已隐藏]"
+                segment.length > 48 -> "[长路径段已隐藏:${segment.length}字符]"
+                else -> segment
+            }
+        }.joinToString("/", prefix = "/")
+        val queryNames = uri.rawQuery.orEmpty()
+            .split('&')
+            .filter(String::isNotBlank)
+            .map { it.substringBefore('=').take(80) }
+            .distinct()
+        val extension = pathSegments.lastOrNull()?.substringAfterLast('.', "")
+            ?.takeIf { it.isNotBlank() && it.length <= 12 }
+            ?.lowercase(java.util.Locale.ROOT)
+            ?: "无"
+        return mapOf(
+            "$label协议" to uri.scheme.orEmpty().ifBlank { "未知" },
+            "$label主机名" to uri.host.orEmpty().ifBlank { "未知" },
+            "$label路径（已脱敏）" to safePath.take(240),
+            "$label文件扩展名" to extension,
+            "$label查询参数名（不含值）" to queryNames.joinToString(", ").ifBlank { "无" }.take(300),
+        )
+    }
+
+    /** Classifies the response prefix without copying potentially sensitive HTML/JSON into logs. */
+    private fun classifyManifestPayload(value: String): String {
+        val prefix = value.removePrefix("\uFEFF").trimStart()
+        return when {
+            prefix.isBlank() -> "空白响应"
+            prefix.startsWith("#EXTM3U", ignoreCase = true) -> "M3U8 清单文本"
+            prefix.startsWith("<!doctype html", ignoreCase = true) ||
+                prefix.startsWith("<html", ignoreCase = true) -> "HTML 网页（常见于登录页/防护拦截页）"
+            prefix.startsWith("{") || prefix.startsWith("[") -> "JSON 响应（可能为接口错误信息）"
+            prefix.startsWith("<?xml", ignoreCase = true) -> "XML 响应（不是标准 M3U8 开头）"
+            else -> "普通文本/未知内容（不是标准 M3U8 开头）"
+        }
     }
 
     private fun formatResolution(value: String): String {
