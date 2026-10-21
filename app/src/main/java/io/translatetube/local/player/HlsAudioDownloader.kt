@@ -677,7 +677,8 @@ internal object HlsAudioDownloader {
                 ).use { response ->
                     if (response.code !in 200..299) {
                         throw IllegalStateException(
-                            "HLS 音轨片段请求失败；" + responseEvidence(response, "音轨片段请求")
+                            "HLS 音轨片段 ${destination.name} 请求失败；" +
+                                responseEvidence(response, "音轨片段请求")
                         )
                     }
                     try {
@@ -688,8 +689,14 @@ internal object HlsAudioDownloader {
                             contentRangeHeader = response.header("Content-Range"),
                         )
                     } catch (validationFailure: Exception) {
+                        val requestedRange = if (byteRangeStart != null && byteRangeEnd != null) {
+                            "bytes=${byteRangeStart}-${byteRangeEnd}"
+                        } else {
+                            "未请求 Range"
+                        }
                         throw IllegalStateException(
-                            (validationFailure.message ?: "HLS 音轨片段 HTTP 响应校验失败") +
+                            "HLS 音轨片段 ${destination.name} 响应校验失败；请求 Range=${requestedRange}；" +
+                                (validationFailure.message ?: "HLS 音轨片段 HTTP 响应校验失败") +
                                 "；" + responseEvidence(response, "音轨片段响应校验"),
                             validationFailure,
                         )
@@ -986,13 +993,24 @@ internal object HlsAudioDownloader {
      */
     private fun responseEvidence(response: okhttp3.Response, stage: String): String {
         val body = response.body
-        val bodySummary = summarizeHlsErrorText(
-            body?.let { responseBody ->
-                runCatching { safeReadResponsePrefix(responseBody.byteStream(), 4 * 1024) }
-                    .getOrElse { "读取响应体失败：${it.javaClass.simpleName}" }
-            }.orEmpty(),
-            body?.contentType()?.toString().orEmpty(),
-        )
+        val contentType = body?.contentType()?.toString().orEmpty()
+        val textLikeContent = contentType.isBlank() ||
+            contentType.contains("text", ignoreCase = true) ||
+            contentType.contains("json", ignoreCase = true) ||
+            contentType.contains("xml", ignoreCase = true) ||
+            contentType.contains("mpegurl", ignoreCase = true) ||
+            contentType.contains("javascript", ignoreCase = true)
+        val bodySummary = if (!textLikeContent) {
+            "二进制或媒体响应（正文未读取）"
+        } else {
+            summarizeHlsErrorText(
+                body?.let { responseBody ->
+                    runCatching { safeReadResponsePrefix(responseBody.byteStream(), 4 * 1024) }
+                        .getOrElse { "读取响应体失败：${it.javaClass.simpleName}" }
+                }.orEmpty(),
+                contentType,
+            )
+        }
         return buildString {
             append(stage).append("：")
             append("HTTP ").append(response.code).append(' ').append(response.message).append("；")
