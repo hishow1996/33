@@ -95,6 +95,31 @@ internal object PikpakShare {
         return match.groupValues[1]
     }
 
+    /**
+     * 从任意粘贴文本（链接 + 密码行 + 杂讯混排）提取 PikPak 提取码。
+     * 支持「密码: bubq」「提取码：xx」「口令 xx」「pass code: xx」「code: xx」，
+     * 以及链接自身查询参数 ?p= / ?code= / ?pass_code=。
+     * 返回原始码值（不做大小写转换——PikPak 区分大小写）。
+     */
+    fun extractPassCode(text: String): String? {
+        if (text.isBlank()) return null
+        // 1) 链接查询参数优先：https://.../s/xxx?p=abc / ?code=abc / ?pass_code=abc
+        val urlPattern = Regex("""https?://[^\s\"'<>]+""", RegexOption.IGNORE_CASE)
+        for (url in urlPattern.findAll(text)) {
+            for (key in listOf("pass_code", "code", "p")) {
+                val query = Regex("""[?&]$key=([A-Za-z0-9_-]{2,32})""", RegexOption.IGNORE_CASE).find(url.value)
+                if (query != null) return query.groupValues[1]
+            }
+        }
+        // 2) 文本里的密码标签行
+        val labelPattern = Regex(
+            """(?:密码|提取码|提取碼|访问码|訪問碼|口令|pass[ _-]?code|code)\s*[:：\s]\s*([A-Za-z0-9_-]{2,32})""",
+            RegexOption.IGNORE_CASE,
+        )
+        val labeled = labelPattern.findAll(text).firstOrNull { it.groupValues[1].let { v -> v.isNotBlank() && !v.equals("code", true) } }
+        return labeled?.groupValues?.get(1)
+    }
+
     /** 持久化的自生成设备 ID（32 位 hex，PikPak 接受客户端自造设备标识）。 */
     fun deviceIdentifier(context: Context): String {
         val prefs = context.getSharedPreferences("pikpak_share", Context.MODE_PRIVATE)
@@ -158,6 +183,7 @@ internal object PikpakShare {
         shareId: String,
         rootParentId: String = "",
         passcodeToken: String = "",
+        passCode: String = "",
         deviceUuid: String = "",
         skipParents: Set<String> = emptySet(),
         maxFolders: Int = 120,
@@ -188,6 +214,10 @@ internal object PikpakShare {
                 val url = "$DRIVE_BASE/drive/v1/share/detail".toHttpUrl().newBuilder()
                     .addQueryParameter("share_id", shareId)
                     .addQueryParameter("pass_code_token", passcodeToken)
+                    .apply {
+                        // 明文提取码直传（实测 detail 接口接受 pass_code 并直接放行文件列表）
+                        if (passCode.isNotBlank()) addQueryParameter("pass_code", passCode)
+                    }
                     .addQueryParameter("limit", "100")
                     .addQueryParameter("thumbnail_size", "SIZE_LARGE")
                     .addQueryParameter("order", "3")
@@ -287,7 +317,7 @@ internal object PikpakShare {
                 val updated = entries.map { entry ->
                     if (entry.isVideo && entry.downloadUrl.isBlank() && fileInfoQuota > 0) {
                         fileInfoQuota--
-                        fetchFileInfo(shareId, entry.id, passcodeToken, deviceId, detailCaptcha)?.let { fetched ->
+                        fetchFileInfo(shareId, entry.id, passcodeToken, passCode, deviceId, detailCaptcha)?.let { fetched ->
                             PikpakEntry(entry.id, entry.name, entry.parentId, entry.isFolder,
                                 fetched.isVideo, fetched.downloadUrl, fetched.sizeBytes)
                         } ?: entry
@@ -370,6 +400,7 @@ internal object PikpakShare {
         shareId: String,
         fileId: String,
         passcodeToken: String,
+        passCode: String = "",
         deviceId: String,
         captcha: String,
     ): PikpakEntry? {
@@ -377,6 +408,9 @@ internal object PikpakShare {
             .addQueryParameter("share_id", shareId)
             .addQueryParameter("file_id", fileId)
             .addQueryParameter("pass_code_token", passcodeToken)
+            .apply {
+                if (passCode.isNotBlank()) addQueryParameter("pass_code", passCode)
+            }
             .addQueryParameter("client_id", CLIENT_ID)
             .addQueryParameter("captcha_token", captcha)
             .build()

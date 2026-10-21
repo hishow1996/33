@@ -328,6 +328,8 @@ fun WebVideoScreen(
     // 复用网页自带凭证主动递归枚举文件夹，视频条目直接并入候选列表点播。 ----
     var pikpakShareId by remember(initialUrl) { mutableStateOf<String?>(null) }
     var pikpakPasscodeToken by remember(initialUrl) { mutableStateOf("") }
+    /** 粘贴文本里提取到的明文提取码（「密码: bubq」/?p=），detail 接口直传放行。 */
+    var pikpakPassCode by remember(initialUrl) { mutableStateOf("") }
     var pikpakCapturedHeaders by remember(initialUrl) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var pikpakEntries by remember(initialUrl) { mutableStateOf<List<PikpakEntry>>(emptyList()) }
     var pikpakListedParents by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
@@ -678,6 +680,7 @@ fun WebVideoScreen(
         // PikPak 清单跟随整页导航重置（SPA 内点文件夹不触发导航，清单保留）
         pikpakShareId = null
         pikpakPasscodeToken = ""
+        pikpakPassCode = ""
         pikpakCapturedHeaders = emptyMap()
         pikpakEntries = emptyList()
         pikpakListedParents = emptySet()
@@ -771,6 +774,7 @@ fun WebVideoScreen(
                     shareId = shareId,
                     rootParentId = rootParentId,
                     passcodeToken = passcodeToken,
+                    passCode = pikpakPassCode,
                     deviceUuid = deviceUuid,
                     skipParents = skipParents,
                 )
@@ -834,7 +838,12 @@ fun WebVideoScreen(
                     if (PikpakShare.capturedPasscodeToken.isNotBlank()) {
                         pikpakPasscodeToken = PikpakShare.capturedPasscodeToken
                     }
-                    if (result.needsPasscode) pikpakNeedsPasscode = true
+                    if (result.needsPasscode) {
+                        pikpakNeedsPasscode = true
+                        if (pikpakPassCode.isBlank()) {
+                            pikpakNotice = "该分享需要提取码：把分享文案整段（含「密码: xxx」）粘贴到地址栏打开即可自动带码。"
+                        }
+                    }
                     if (result.entries.isNotEmpty()) {
                         pikpakListedParents = pikpakListedParents + result.visitedParents
                         pikpakEnumeratedParents = pikpakEnumeratedParents + result.visitedParents
@@ -1165,6 +1174,9 @@ fun WebVideoScreen(
                 IconButton(onClick = {
                     val rawAddress = address.trim()
                     val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
+                    // 粘贴文本里带提取码（「密码: bubq」/「?p=」等）时先记下，
+                    // 进入 PikPak 分享页后自动带入，无需网页手动输码。
+                    pikpakPassCode = PikpakShare.extractPassCode(rawAddress).orEmpty()
                     val normalized = WebMediaUrlPolicy.normalizePageUrl(inputUrl)
                     if (normalized == null) {
                         status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
