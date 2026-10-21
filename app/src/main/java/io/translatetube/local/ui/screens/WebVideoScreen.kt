@@ -169,6 +169,10 @@ fun WebVideoScreen(
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
+    // Preserve the device WebView's real Chromium version; only remove the WebView marker for PikPak.
+    var defaultWebViewUserAgent by remember(initialUrl) { mutableStateOf<String?>(null) }
+    // One recovery reload per page URL prevents blank-page retries from looping indefinitely.
+    var pikpakBlankRetryUrl by remember(initialUrl) { mutableStateOf<String?>(null) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val screenActive = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(true) }
     val pageGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
@@ -669,21 +673,27 @@ fun WebVideoScreen(
     }
 
     /**
-     * mypikpak.com 分享页：保持手机版布局（用户要求），但用无 WebView 标记的
-     * 移动 Chrome UA——系统 WebView 默认 UA 带「; wv)」尾巴，部分站点前端检测到
-     * 后走降级分支导致页面空白；普通移动 Chrome UA 与手机浏览器行为一致。
-     * 其余站点保持系统默认 UA（不影响既有嗅探行为）。
+     * PikPak 需要手机版浏览器识别，但不能伪造固定 Chrome 版本：服务器可能据此下发
+     * 当前 WebView 内核无法执行的新脚本。保留系统 UA 的真实内核版本，只移除 Android
+     * WebView 标记「; wv)」和仅供 WebView 使用的「Version/4.0」。离开 PikPak 后恢复原 UA。
      */
     fun applyPikpakUserAgent(target: String) {
         val webView = webViewState.value ?: return
-        val isPikpak = target.contains("mypikpak.com", ignoreCase = true)
-        if (isPikpak) {
-            runCatching {
-                webView.settings.userAgentString =
-                    "Mozilla/5.0 (Linux; Android 9; COR-AL10) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        val host = runCatching {
+            android.net.Uri.parse(target).host?.lowercase(java.util.Locale.ROOT).orEmpty()
+        }.getOrDefault("")
+        val isPikpak = host == "mypikpak.com" || host.endsWith(".mypikpak.com") ||
+            host == "pikpak.com" || host.endsWith(".pikpak.com")
+        val nativeAgent = defaultWebViewUserAgent ?: webView.settings.userAgentString
+        runCatching {
+            webView.settings.userAgentString = if (isPikpak) {
+                nativeAgent
+                    .replace("; wv)", ")", ignoreCase = true)
+                    .replace("Version/4.0 ", "", ignoreCase = true)
+            } else {
+                nativeAgent
             }
-        }
+        }.onFailure { Log.w(TAG_WEB, "Unable to set page-specific WebView user agent", it) }
     }
 
     fun resetForNavigation(target: String) {
@@ -1238,6 +1248,9 @@ fun WebVideoScreen(
                 factory = { ctx ->
                     WebView(ctx).apply {
                         webViewState.value = this
+                        if (defaultWebViewUserAgent == null) {
+                            defaultWebViewUserAgent = settings.userAgentString
+                        }
                         isClickable = true
                         isFocusable = true
                         isFocusableInTouchMode = true
@@ -1401,9 +1414,9 @@ fun WebVideoScreen(
                                 super.onPageStarted(view, url, favicon)
                                 resetForNavigation(url)
                                 pageLoadToken++
-                                // 尽早挂上网络 hook：站点视频接口多在 DOM 就绪前就发起 XHR/fetch，
-                                // 等到 onPageFinished 再注入就抓不到响应了。
-                                if (screenActive.get()) {
+                                // 普通视频站仍尽早挂 hook；PikPak 分享页先让官方 SPA 完成初始化，
+                                // 再挂接后续人工密码验证/文件夹点击产生的请求，避免过早改写 fetch/XHR。
+                                if (screenActive.get() && PikpakShare.parseShareId(url) == null) {
                                     runCatching { view.evaluateJavascript(NET_HOOK_SCRIPT, null) }
                                 }
                             }
@@ -1436,6 +1449,97 @@ fun WebVideoScreen(
                                         "页面导航代数" to pageGeneration.get().toString(),
                                     ),
                                 )
+                                val isPikpakSharePage = PikpakShare.parseShareId(url) != null
+                                if (isPikpakSharePage) {
+                                    // 密码验证发生在页面显示之后，因此在 DOM 完成后挂 hook 仍能捕获验证令牌；
+                                    // 不让捕获脚本参与 PikPak 首屏的启动时序。
+                                    runCatching { view.evaluateJavascript(NET_HOOK_SCRIPT, null) }
+                                        .onFailure { Log.w(TAG_WEB, "PikPak request hook injection failed", it) }
+
+                                    val renderGeneration = pageGeneration.get()
+                                    mainHandler.postDelayed({
+                                        if (!screenActive.get() || pageGeneration.get() != renderGeneration || currentPage != url) {
+                                            return@postDelayed
+                                        }
+                                        val inspectScript = """
+                                            (function(){
+                                              var b = document.body;
+                                              var r = document.querySelector('#app,#root,#__next,[data-reactroot]');
+                                              return {
+                                                title: document.title || '',
+                                                readyState: document.readyState || '',
+                                                bodyTextLength: b ? ((b.innerText || '').trim().length) : 0,
+                                                bodyChildCount: b ? b.children.length : 0,
+                                                bodyHtmlLength: b ? (b.innerHTML || '').length : 0,
+                                                appRootFound: !!r,
+                                                appRootChildCount: r ? r.children.length : -1,
+                                                appRootHtmlLength: r ? (r.innerHTML || '').length : -1
+                                              };
+                                            })()
+                                        """.trimIndent()
+                                        view.evaluateJavascript(inspectScript) { raw ->
+                                            if (screenActive.get() && pageGeneration.get() == renderGeneration && currentPage == url) {
+                                                val metrics = runCatching { org.json.JSONObject(raw ?: "{}") }.getOrNull()
+                                                if (metrics != null) {
+                                                    val bodyTextLength = metrics.optInt("bodyTextLength", 0)
+                                                    val bodyChildCount = metrics.optInt("bodyChildCount", 0)
+                                                    val bodyHtmlLength = metrics.optInt("bodyHtmlLength", 0)
+                                                    val appRootFound = metrics.optBoolean("appRootFound", false)
+                                                    val appRootChildCount = metrics.optInt("appRootChildCount", -1)
+                                                    val appRootHtmlLength = metrics.optInt("appRootHtmlLength", -1)
+                                                    val likelyBlank = bodyTextLength == 0 && (
+                                                        (appRootFound && appRootChildCount == 0 && appRootHtmlLength < 80) ||
+                                                            (!appRootFound && bodyChildCount == 0 && bodyHtmlLength < 150)
+                                                        )
+                                                    val renderDiagnostics = mapOf(
+                                                        "页面主机名" to webSourceHost(url),
+                                                        "页面标题" to metrics.optString("title"),
+                                                        "文档状态" to metrics.optString("readyState"),
+                                                        "正文文本长度" to bodyTextLength.toString(),
+                                                        "正文子元素数" to bodyChildCount.toString(),
+                                                        "正文 HTML 长度" to bodyHtmlLength.toString(),
+                                                        "应用根节点是否存在" to appRootFound.toString(),
+                                                        "应用根节点子元素数" to appRootChildCount.toString(),
+                                                        "应用根节点 HTML 长度" to appRootHtmlLength.toString(),
+                                                        "WebView 内核版本" to runCatching { WebView.getCurrentWebViewPackage()?.versionName }.getOrNull().orEmpty().ifBlank { "未知" },
+                                                        "UA 是否仍带 WebView 标记" to view.settings.userAgentString.contains("; wv)", ignoreCase = true).toString(),
+                                                        "页面导航代数" to renderGeneration.toString(),
+                                                    )
+                                                    val renderIssueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                                        "PikPakPageRender", webSourceIssueIdentity(url),
+                                                    )
+                                                    if (likelyBlank) {
+                                                        io.translatetube.local.util.AppLogStore.warning(
+                                                            context = appCtx,
+                                                            tag = "PikPakPageRender",
+                                                            message = "PikPak 页面加载回调已完成，但页面主体疑似未渲染（白屏）",
+                                                            diagnosticContext = renderDiagnostics,
+                                                            issueKey = renderIssueKey,
+                                                        )
+                                                        if (pikpakBlankRetryUrl != url) {
+                                                            pikpakBlankRetryUrl = url
+                                                            status = "PikPak 页面未正常显示，正在自动刷新一次…"
+                                                            mainHandler.postDelayed({
+                                                                if (screenActive.get() && pageGeneration.get() == renderGeneration && currentPage == url) {
+                                                                    view.reload()
+                                                                }
+                                                            }, 300L)
+                                                        } else {
+                                                            status = "PikPak 页面仍为空白。请先更新系统 Android System WebView/Chrome，再点刷新；已记录诊断信息。"
+                                                        }
+                                                    } else {
+                                                        io.translatetube.local.util.AppLogStore.resolveIssue(
+                                                            context = appCtx,
+                                                            issueKey = renderIssueKey,
+                                                            message = "PikPak 页面主体已正常渲染",
+                                                            diagnosticContext = renderDiagnostics,
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }, 1800L)
+                                }
                                 view.evaluateJavascript(PROBE_SCRIPT, null)
                             }
 
@@ -1564,6 +1668,20 @@ fun WebVideoScreen(
                                     ),
                                     issueKey = issueKey,
                                 )
+                                if (request.isForMainFrame) {
+                                    val failedStatus = errorResponse.statusCode
+                                    val failedGeneration = pageGeneration.get()
+                                    mainHandler.postDelayed({
+                                        if (screenActive.get() && pageGeneration.get() == failedGeneration && currentPage == failedUrl) {
+                                            pageLoading = false
+                                            status = if (PikpakShare.parseShareId(failedUrl) != null) {
+                                                "PikPak 官方页面返回 HTTP $failedStatus，服务器可能限制了访问；请点刷新重试。"
+                                            } else {
+                                                "网页返回 HTTP $failedStatus，请检查链接或稍后刷新重试。"
+                                            }
+                                        }
+                                    }, 350L)
+                                }
                             }
 
                         }
