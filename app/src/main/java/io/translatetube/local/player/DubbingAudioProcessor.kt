@@ -21,8 +21,10 @@ class DubbingAudioProcessor(private val bus: DubbingTrackBus) : BaseAudioProcess
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         bus.configure(inputAudioFormat.sampleRate)
-        // 输出与输入同格式：NOT_SET 语义为 BASE（透传），由父类处理缓冲交换
-        return AudioProcessor.AudioFormat.NOT_SET
+        // 输出格式=输入格式：处理器保持活跃（isActive 的判定是输出格式 != NOT_SET，
+        // 返回 NOT_SET 会让整条混流链被 ExoPlayer 跳过——配音完全静音的根因），
+        // 逐样本透传相加在 queueInput 完成。
+        return inputAudioFormat
     }
 
     override fun onFlush() {

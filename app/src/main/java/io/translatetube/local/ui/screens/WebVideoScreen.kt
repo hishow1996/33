@@ -665,7 +665,26 @@ fun WebVideoScreen(
         ytDlpJob = job
     }
 
+    /**
+     * mypikpak.com 分享页：保持手机版布局（用户要求），但用无 WebView 标记的
+     * 移动 Chrome UA——系统 WebView 默认 UA 带「; wv)」尾巴，部分站点前端检测到
+     * 后走降级分支导致页面空白；普通移动 Chrome UA 与手机浏览器行为一致。
+     * 其余站点保持系统默认 UA（不影响既有嗅探行为）。
+     */
+    fun applyPikpakUserAgent(target: String) {
+        val webView = webViewState.value ?: return
+        val isPikpak = target.contains("mypikpak.com", ignoreCase = true)
+        if (isPikpak) {
+            runCatching {
+                webView.settings.userAgentString =
+                    "Mozilla/5.0 (Linux; Android 9; COR-AL10) AppleWebKit/537.36 " +
+                        "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            }
+        }
+    }
+
     fun resetForNavigation(target: String) {
+        applyPikpakUserAgent(target)
         pageGeneration.incrementAndGet()
         ytDlpRunGeneration.incrementAndGet()
         ytDlpJob?.cancel()
@@ -1229,6 +1248,13 @@ fun WebVideoScreen(
                         settings.loadsImagesAutomatically = true
                         settings.useWideViewPort = true
                         settings.loadWithOverviewMode = true
+                        // 渲染保险：SPA 分享页可能引用 http 混合资源/依赖第三方 cookie
+                        // （默认 WebView 会静默拦掉，造成页面空白半成品）。
+                        settings.mixedContentMode =
+                            android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        runCatching {
+                            android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        }
                         settings.setSupportZoom(false)
                         settings.setSupportMultipleWindows(false)
                         addJavascriptInterface(bridge, "ElephantVideoBridge")
@@ -1797,10 +1823,37 @@ fun WebVideoScreen(
                     }
                     if (pikpakNeedsPasscode) {
                         Text(
-                            "该分享需要提取码：请先在上方网页里输入提取码（会自动记住），再点「展开全部文件夹」。",
+                            "该分享需要提取码：网页打不开也没关系，直接在下面输入提取码即可读取清单。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
+                        var passcodeInput by remember(initialUrl) {
+                            mutableStateOf(pikpakPassCode)
+                        }
+                        androidx.compose.foundation.layout.Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.OutlinedTextField(
+                                value = passcodeInput,
+                                onValueChange = { passcodeInput = it.trim() },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("提取码，如 bubq") },
+                                shape = RoundedCornerShape(10.dp),
+                            )
+                            TextButton(
+                                enabled = !pikpakBusy && passcodeInput.isNotBlank(),
+                                onClick = {
+                                    pikpakPassCode = passcodeInput.trim()
+                                    pikpakNeedsPasscode = false
+                                    expandPikpak("")
+                                },
+                                modifier = Modifier.padding(start = 6.dp),
+                            ) {
+                                Text("带码读取")
+                            }
+                        }
                     }
                     TextButton(enabled = !pikpakBusy, onClick = { expandPikpak("") }) {
                         Text(

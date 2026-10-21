@@ -137,6 +137,9 @@ private data class YouTubeStreamChoices(
     val defaultQuality: YouTubeQualitySource,
 )
 
+/** ASR 转写时间戳普遍偏晚（首句尤其明显）：默认提前 300ms 对冲系统偏差。 */
+private const val DEFAULT_SUBTITLE_LEAD_MS = 300L
+
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var pm: PlayerManager
@@ -5975,7 +5978,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     private fun subtitleTimingOffsetMs(): Long =
         getSharedPreferences("settings", MODE_PRIVATE)
-            .getLong("subtitle_offset_ms", 0L)
+            .getLong("subtitle_offset_ms", DEFAULT_SUBTITLE_LEAD_MS)
             .coerceIn(-2_000L, 2_000L)
 
     private fun tick(ms: Long) {
