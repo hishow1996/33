@@ -987,7 +987,10 @@ internal object HlsAudioDownloader {
     private fun responseEvidence(response: okhttp3.Response, stage: String): String {
         val body = response.body
         val bodySummary = summarizeHlsErrorText(
-            body?.let { safeReadResponsePrefix(it.byteStream(), 4 * 1024) }.orEmpty(),
+            body?.let { responseBody ->
+                runCatching { safeReadResponsePrefix(responseBody.byteStream(), 4 * 1024) }
+                    .getOrElse { "读取响应体失败：${it.javaClass.simpleName}" }
+            }.orEmpty(),
             body?.contentType()?.toString().orEmpty(),
         )
         return buildString {
