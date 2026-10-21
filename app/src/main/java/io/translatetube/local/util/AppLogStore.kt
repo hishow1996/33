@@ -553,7 +553,7 @@ object AppLogStore {
                     recentEvents.joinToString(separator = "\n")
                 } else ""
                 val safeDetails = redact(
-                    enrichDetails(context, level, details, threadName, diagnosticContext, trail),
+                    enrichDetails(context, level, tag, details, threadName, diagnosticContext, trail),
                 ).take(MAX_DETAIL_CHARS)
                 val effectiveIssueKey = issueKey?.takeIf { it.isNotBlank() }
                     ?: if (isIssueLevel(level)) stableIssueKey(tag, message) else ""
@@ -589,6 +589,7 @@ object AppLogStore {
     private fun enrichDetails(
         context: Context,
         level: String,
+        tag: String,
         details: String,
         threadName: String,
         diagnosticContext: Map<String, String>,

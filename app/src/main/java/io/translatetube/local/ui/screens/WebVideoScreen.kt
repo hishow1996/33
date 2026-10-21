@@ -859,7 +859,10 @@ fun WebVideoScreen(
             .filter { it.isVideo && it.downloadUrl.isNotBlank() }
             .map {
                 WebVideoCandidate(
-                    url = it.downloadUrl,
+                    // HLS 播放链优先：分段清单是全量内容（播放完整、音轨提取走
+                    // HlsAudioDownloader 分段下载同样完整）；下载直链在游客态
+                    // 常被 CDN 流式截断成预览段——「只能播一小部分」的根因。
+                    url = it.mediasUrl.ifBlank { it.downloadUrl },
                     title = it.name,
                     poster = "",
                     durationSeconds = 0.0,

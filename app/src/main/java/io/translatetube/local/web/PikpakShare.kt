@@ -56,6 +56,9 @@ internal object PikpakShare {
         val isVideo: Boolean,
         val downloadUrl: String,
         val sizeBytes: Long,
+        /** HLS 转码播放链（medias[0].link.url）：分段清单天然全量，
+         *  播放与音轨提取都比直链流式读取更完整（直链游客态常被 CDN 截断成预览段）。 */
+        val mediasUrl: String = "",
     )
 
     internal data class PikpakHookData(
@@ -469,28 +472,28 @@ internal object PikpakShare {
                 }
             }
         }
-        if (mediaUrl.isBlank()) {
-            val medias = file.optJSONArray("medias")
-            if (medias != null && medias.length() > 0) {
-                for (index in 0 until medias.length()) {
-                    val media = medias.optJSONObject(index) ?: continue
-                    val candidate = media.optJSONObject("link")?.optString("url").orEmpty()
-                        .ifBlank { media.optString("download_url") }
-                    if (candidate.isNotBlank()) {
-                        mediaUrl = candidate
-                        break
-                    }
+        // medias 转码链单独提取：HLS 分段形态用于播放与全量音轨提取，
+        // 与下载直链互为备份（保留原优先级语义）。
+        var hlsUrl = ""
+        val medias = file.optJSONArray("medias")
+        if (medias != null && medias.length() > 0) {
+            for (index in 0 until medias.length()) {
+                val media = medias.optJSONObject(index) ?: continue
+                val candidate = media.optJSONObject("link")?.optString("url").orEmpty()
+                if (candidate.isNotBlank()) {
+                    hlsUrl = candidate
+                    break
                 }
             }
         }
-        if (mediaUrl.isBlank()) mediaUrl = file.optString("download_url").orEmpty()
+        if (mediaUrl.isBlank()) mediaUrl = hlsUrl.ifBlank { file.optString("download_url").orEmpty() }
         val isFolder = kind == "drive#folder" || fileType == "[F]"
         val isVideo = !isFolder && (
             mediaUrl.isNotBlank() ||
                 mime.startsWith("video/") ||
                 hasVideoExtension(name)
             )
-        return PikpakEntry(id, name, parentId, isFolder, isVideo, mediaUrl, size)
+        return PikpakEntry(id, name, parentId, isFolder, isVideo, mediaUrl, size, hlsUrl)
     }
 
     private fun hasVideoExtension(name: String): Boolean {
