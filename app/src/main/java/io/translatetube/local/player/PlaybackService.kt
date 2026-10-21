@@ -1534,12 +1534,13 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     val input = contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("无法读取选中的字幕文件")
                     input.use {
-                        io.translatetube.local.yt.BoundedTextPayload.readBytes(
+                        val bytes = io.translatetube.local.yt.BoundedTextPayload.readBytes(
                             it,
                             maxBytes = 8L * 1024L * 1024L,
                             resourceLabel = "外部翻译字幕文件",
                             checkActive = { ownerJob?.ensureActive() },
-                        ).let(io.translatetube.local.subs.SubtitleFileDecoder::decode)
+                        )
+                        io.translatetube.local.subs.SubtitleFileDecoder.decode(bytes)
                     }
                 }
                 val translated = withContext(Dispatchers.Default) {
@@ -1611,6 +1612,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 phase = Phase.TRANSLATING,
                 lines = sourceOnly,
                 totalLines = sourceOnly.size,
+                sourceLang = sourceLang,
                 translatedLineCount = 0,
                 manualTranslationModeEnabled = true,
                 manualTranslationWaiting = true,
