@@ -62,6 +62,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -1729,6 +1730,10 @@ fun WebVideoScreen(
             val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
             val panelCollapsed = targetPanelHeight <= minPanelHeight + 1.dp
             val panelContentVisible = !panelCollapsed && targetPanelHeight > minPanelHeight + 8.dp
+            // pointerInput 会跨多次 Compose 重组继续运行；通过 updatedState 读取当前实际显示状态，
+            // 确保无论面板被拖到多高，点击顶部横线都能按屏幕上的开/收状态完全收起。
+            val latestPanelCollapsed by rememberUpdatedState(panelCollapsed)
+            val latestPanelExpandedHeight by rememberUpdatedState(panelExpandedHeight.value)
             val density = LocalDensity.current
             // Scaffold 内容默认避开系统导航栏；偏移一个导航栏 inset，
             // 让收起态的横线贴到物理屏幕底边，而不是停在应用内容底边。
@@ -1779,12 +1784,12 @@ fun WebVideoScreen(
                     }
 
                     if (finished && !dragStarted && !horizontalGesture) {
-                        val isCurrentlyExpanded =
-                            sourcePanelHeightDp > minPanelHeight.value + 1f
-                        sourcePanelHeightDp = if (isCurrentlyExpanded) {
-                            minPanelHeight.value
+                        // 点击只允许两种状态切换：当前 UI 已展开（包含任意拖动高度）就完全收起；
+                        // 当前 UI 已收起才展开到双卡片默认高度。超过 touch slop 的手势不会走到这里。
+                        sourcePanelHeightDp = if (latestPanelCollapsed) {
+                            latestPanelExpandedHeight
                         } else {
-                            panelExpandedHeight.value
+                            minPanelHeight.value
                         }
                     }
                 }
