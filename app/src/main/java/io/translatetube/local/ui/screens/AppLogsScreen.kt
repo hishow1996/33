@@ -40,6 +40,7 @@ import androidx.compose.ui.window.DialogProperties
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.util.AppLogRecord
 import io.translatetube.local.util.AppLogStore
+import io.translatetube.local.util.AppLogDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -134,6 +135,8 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                 record.thread.contains(query, ignoreCase = true) ||
                 record.issueKey.contains(query, ignoreCase = true) ||
                 record.resolvesIssueKey.contains(query, ignoreCase = true)
+                || AppLogDiagnostics.analyze(record).finding.contains(query, ignoreCase = true)
+                || AppLogDiagnostics.analyze(record).category.contains(query, ignoreCase = true)
         }
     }
     val unresolvedCount = records.count {
@@ -447,6 +450,12 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    val diagnosis = remember(record.timestampMs, record.tag, record.message, record.details) {
+                        AppLogDiagnostics.analyze(record)
+                    }
+                    if (isRecoverableLevel(record.level)) {
+                        DiagnosisSummaryCard(diagnosis)
+                    }
 
                     // Put request/response facts up front; users should not have to scan a long
                     // stack trace to find the HTTP code, response type, or HLS parsing stage.
@@ -644,13 +653,10 @@ private fun LogSummaryCard(
 @Composable
 private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
     val color = levelColor(record.level)
-    val rootCause = remember(record.details) {
-        record.details.lineSequence()
-            .map { it.trim() }
-            .filter { it.matches(Regex("#\\d+ .+")) }
-            .lastOrNull()
-            ?: record.details.lineSequence().firstOrNull { it.startsWith("- ") }?.take(180).orEmpty()
+    val diagnosis = remember(record.details, record.tag, record.message) {
+        AppLogDiagnostics.analyze(record)
     }
+    val rootCause = diagnosis.finding
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -740,6 +746,81 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
 }
 
 @Composable
+@Composable
+private fun DiagnosisSummaryCard(diagnosis: io.translatetube.local.util.AppLogDiagnosis) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFFF5F8FC),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFE1E8F0)),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "诊断判断",
+                    color = Color(0xFF202124),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    diagnosis.confidence,
+                    color = if (diagnosis.confidence.contains("不足") || diagnosis.confidence.contains("待验证")) {
+                        Color(0xFF946200)
+                    } else {
+                        Color(0xFF356A4A)
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                diagnosis.category,
+                color = Color(0xFF26384A),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                diagnosis.finding,
+                color = Color(0xFF354052),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "日志证据",
+                color = Color(0xFF202124),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                diagnosis.evidence,
+                color = Color(0xFF4D5968),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                "建议排查",
+                color = Color(0xFF202124),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Medium,
+            )
+            diagnosis.nextSteps.forEachIndexed { index, step ->
+                Text(
+                    (index + 1).toString() + ". " + step,
+                    color = Color(0xFF4D5968),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
 private fun DetailSection(title: String, text: String) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(

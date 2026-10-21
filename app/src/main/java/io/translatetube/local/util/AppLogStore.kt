@@ -56,7 +56,7 @@ object AppLogStore {
     private const val KEY_LAST_UNKNOWN_SESSION_START = "last_unknown_session_start"
     private val lock = Any()
     private val recentEvents = java.util.ArrayDeque<String>()
-    private const val MAX_RECENT_EVENTS = 16
+    private const val MAX_RECENT_EVENTS = 24
     private val failedWriteCount = java.util.concurrent.atomic.AtomicLong(0L)
     @Volatile private var lastWriteFailureTimestampMs: Long = 0L
     @Volatile private var lastWriteFailureDescription: String = ""
@@ -635,11 +635,127 @@ object AppLogStore {
                     append("- 系统低内存状态：").append(memory.lowMemory).append('\n')
                 }
             }
+            this.appendDiagnosticEnvironment(context, tag, details)
         }
         if (details.isNotBlank()) {
             append("异常详情与调用堆栈：\n")
             append(details)
             if (!details.endsWith('\n')) append('\n')
+        }
+    }
+
+    /**
+     * Add only task-relevant diagnostics. Values describe device/runtime state; URL paths,
+     * cookies, account identifiers and request bodies are intentionally excluded.
+     */
+    private fun StringBuilder.appendDiagnosticEnvironment(
+        context: Context,
+        tag: String,
+        details: String,
+    ) {
+        val scope = (tag + " " + details).lowercase(Locale.ROOT)
+        fun hasAny(vararg needles: String): Boolean = needles.any { scope.contains(it.lowercase(Locale.ROOT)) }
+        val networkRelated = hasAny(
+            "http", "https", "socket", "network", "timeout", "translat", "transcrib",
+            "web", "pikpak", "yt-dlp", "download", "下载", "翻译", "转写", "请求", "网络", "模型",
+        )
+        val webRelated = hasAny("webview", "webplayer", "websource", "webpage", "pikpak", "nuxt", "网页", "白屏", "脚本")
+        val audioRelated = hasAny(
+            "audio", "audiotrack", "tts", "dubbing", "playback", "pcm", "wav",
+            "配音", "音频", "音轨", "声音", "播放", "朗读",
+        )
+        val storageRelated = hasAny(
+            "model", "download", "install", "cache", "pcm", "wav", "transcrib",
+            "模型", "下载", "安装", "缓存", "转写", "音频",
+        )
+        if (!networkRelated && !webRelated && !audioRelated && !storageRelated) return
+
+        append("专项诊断快照：\n")
+        if (networkRelated) {
+            runCatching {
+                val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE)
+                    as? android.net.ConnectivityManager
+                val info = manager?.activeNetworkInfo
+                append("- 系统网络状态：").append(
+                    when {
+                        manager == null -> "连接管理器不可用"
+                        info == null -> "系统未提供活动网络信息"
+                        info.isConnected -> "已连接"
+                        info.isAvailable -> "网络可用但未连接"
+                        else -> "未连接或不可用"
+                    },
+                ).append('\n')
+                if (info != null) {
+                    append("- 网络类型：").append(info.typeName.orEmpty().ifBlank { "未知" })
+                        .append(" / ").append(info.subtypeName.orEmpty().ifBlank { "未知" }).append('\n')
+                    append("- 是否漫游：").append(info.isRoaming).append('\n')
+                }
+            }.onFailure {
+                append("- 系统网络状态：读取失败（").append(it.javaClass.simpleName).append("）\n")
+            }
+        }
+        if (webRelated) {
+            append("- WebView 提供方：")
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                runCatching {
+                    val provider = android.webkit.WebView.getCurrentWebViewPackage()
+                    append(provider?.packageName.orEmpty().ifBlank { "系统未返回" })
+                        .append("；版本：")
+                        .append(provider?.versionName.orEmpty().ifBlank { "系统未返回" })
+                        .append('\n')
+                }.onFailure {
+                    append("读取失败（").append(it.javaClass.simpleName).append("）\n")
+                }
+            } else {
+                append("当前 Android API 不提供此接口\n")
+            }
+        }
+        if (audioRelated) {
+            runCatching {
+                val manager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+                if (manager == null) {
+                    append("- 音频输出状态：AudioManager 不可用\n")
+                } else {
+                    append("- 音频模式：").append(manager.mode).append('\n')
+                    append("- 媒体音量：").append(manager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC))
+                        .append('/').append(manager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)).append('\n')
+                    append("- 扬声器电话模式：").append(manager.isSpeakerphoneOn).append('\n')
+                    if (android.os.Build.VERSION.SDK_INT >= 23) {
+                        val outputTypes = manager.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+                            .map { device ->
+                                when (device.type) {
+                                    android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "内置扬声器"
+                                    android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "听筒"
+                                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
+                                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> "有线耳麦"
+                                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "蓝牙 A2DP"
+                                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "蓝牙通话音频"
+                                    android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> "USB 音频设备"
+                                    android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> "USB 耳机"
+                                    android.media.AudioDeviceInfo.TYPE_HDMI -> "HDMI 音频"
+                                    else -> "其他输出类型 " + device.type
+                                }
+                            }.distinct()
+                        append("- 系统报告的音频输出设备：")
+                            .append(outputTypes.joinToString("、").ifBlank { "无/系统未报告" }).append('\n')
+                    }
+                }
+            }.onFailure {
+                append("- 音频输出状态：读取失败（").append(it.javaClass.simpleName).append("）\n")
+            }
+        }
+        if (storageRelated) {
+            runCatching {
+                val stat = android.os.StatFs(context.filesDir.absolutePath)
+                append("- 应用文件目录可用空间：")
+                    .append(stat.availableBytes / (1024L * 1024L)).append(" MB\n")
+                append("- 应用文件目录总空间：")
+                    .append(stat.totalBytes / (1024L * 1024L)).append(" MB\n")
+                append("- Native 堆已分配：")
+                    .append(android.os.Debug.getNativeHeapAllocatedSize() / (1024L * 1024L)).append(" MB\n")
+            }.onFailure {
+                append("- 存储/Native 堆快照：读取失败（").append(it.javaClass.simpleName).append("）\n")
+            }
         }
     }
 

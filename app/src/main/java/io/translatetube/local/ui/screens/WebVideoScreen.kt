@@ -1462,6 +1462,16 @@ fun WebVideoScreen(
                                             "脚本行号" to message.lineNumber().toString(),
                                             "控制台级别" to message.messageLevel().name,
                                             "页面导航代数" to pageGeneration.get().toString(),
+                                            "页面标题" to pageTitle.take(120).ifBlank { "无标题" },
+                                            "是否识别为 PikPak 分享页" to (PikpakShare.parseShareId(currentPage) != null).toString(),
+                                            "当前页面加载状态" to if (pageLoading) "仍在加载" else "已完成加载回调",
+                                            "WebView 内核版本" to if (android.os.Build.VERSION.SDK_INT >= 26) {
+                                                runCatching { WebView.getCurrentWebViewPackage()?.versionName }.getOrNull().orEmpty().ifBlank { "系统未返回" }
+                                            } else {
+                                                "当前 Android API 不提供此接口"
+                                            },
+                                            "当前 UA 是否带 wv 标记" to (webViewState.value?.settings?.userAgentString?.contains("; wv)", ignoreCase = true) == true).toString(),
+                                            "脚本来源与页面是否同主机" to (webSourceHost(message.sourceId()) == webSourceHost(currentPage)).toString(),
                                         ),
                                         issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
                                             "WebPlayerConsole",
