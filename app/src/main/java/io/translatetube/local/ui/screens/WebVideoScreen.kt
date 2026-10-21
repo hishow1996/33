@@ -1451,12 +1451,19 @@ fun WebVideoScreen(
                                 )
                                 val isPikpakSharePage = PikpakShare.parseShareId(url) != null
                                 if (isPikpakSharePage) {
-                                    // 密码验证发生在页面显示之后，因此在 DOM 完成后挂 hook 仍能捕获验证令牌；
-                                    // 不让捕获脚本参与 PikPak 首屏的启动时序。
-                                    runCatching { view.evaluateJavascript(NET_HOOK_SCRIPT, null) }
-                                        .onFailure { Log.w(TAG_WEB, "PikPak request hook injection failed", it) }
-
+                                    // PikPak 是依赖异步初始化的单页应用。不要在 onPageFinished 回调里立即改写
+                                    // fetch/XHR；先给官方页面留出稳定渲染时间，再安装只读响应监听。
                                     val renderGeneration = pageGeneration.get()
+                                    mainHandler.postDelayed({
+                                        if (!screenActive.get() ||
+                                            pageGeneration.get() != renderGeneration ||
+                                            currentPage != url
+                                        ) {
+                                            return@postDelayed
+                                        }
+                                        runCatching { view.evaluateJavascript(NET_HOOK_SCRIPT, null) }
+                                            .onFailure { Log.w(TAG_WEB, "PikPak request hook injection failed", it) }
+                                    }, 1500L)
                                     mainHandler.postDelayed({
                                         if (!screenActive.get() || pageGeneration.get() != renderGeneration || currentPage != url) {
                                             return@postDelayed
@@ -1516,17 +1523,9 @@ fun WebVideoScreen(
                                                             diagnosticContext = renderDiagnostics,
                                                             issueKey = renderIssueKey,
                                                         )
-                                                        if (pikpakBlankRetryUrl != url) {
-                                                            pikpakBlankRetryUrl = url
-                                                            status = "PikPak 页面未正常显示，正在自动刷新一次…"
-                                                            mainHandler.postDelayed({
-                                                                if (screenActive.get() && pageGeneration.get() == renderGeneration && currentPage == url) {
-                                                                    view.reload()
-                                                                }
-                                                            }, 300L)
-                                                        } else {
-                                                            status = "PikPak 页面仍为空白。请先更新系统 Android System WebView/Chrome，再点刷新；已记录诊断信息。"
-                                                        }
+                                                        // Do not auto-reload a PikPak SPA based on a single empty-DOM sample:
+                                                        // the app may still be mounting, and reload discards password-entry state.
+                                                        status = "PikPak 页面主体暂未完成渲染，已保留当前网页；可点右上角刷新重试。"
                                                     } else {
                                                         io.translatetube.local.util.AppLogStore.resolveIssue(
                                                             context = appCtx,
@@ -1538,9 +1537,13 @@ fun WebVideoScreen(
                                                 }
                                             }
                                         }
-                                    }, 1800L)
+                                    }, 3500L)
                                 }
-                                view.evaluateJavascript(PROBE_SCRIPT, null)
+                                // The generic touch-target patch mutates DOM styles and is not needed
+                                // on a PikPak file-list page; keep it for actual video/player websites.
+                                if (!isPikpakSharePage) {
+                                    view.evaluateJavascript(PROBE_SCRIPT, null)
+                                }
                             }
 
                             override fun shouldInterceptRequest(
