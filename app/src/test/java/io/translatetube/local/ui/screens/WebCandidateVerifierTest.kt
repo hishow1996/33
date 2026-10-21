@@ -48,11 +48,16 @@ class WebCandidateVerifierTest {
         val server = MockWebServer()
         server.start()
         try {
-            server.enqueue(MockResponse().setResponseCode(410).setBody("expired"))
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(410)
+                    .setHeader("Content-Type", "text/plain")
+                    .setBody("expired")
+            )
 
             val hint = WebCandidateVerifier.inspectAudioHint(
                 client = OkHttpClient(),
-                url = server.url("/master.m3u8").toString(),
+                url = server.url("/master.m3u8?token=do-not-log&quality=low").toString(),
                 referer = "https://example.com/watch",
                 cookie = null,
                 userAgent = null,
@@ -62,6 +67,10 @@ class WebCandidateVerifierTest {
             assertTrue(hint.message.contains("HTTP 410"))
             assertTrue(hint.failure is java.io.IOException)
             assertTrue(hint.failure?.message.orEmpty().contains("HTTP 410"))
+            assertEquals("410", hint.diagnosticContext["HTTP 状态码"])
+            assertEquals("text/plain", hint.diagnosticContext["响应 Content-Type"])
+            assertTrue(hint.diagnosticContext["请求地址查询参数名（不含值）"].orEmpty().contains("token"))
+            assertTrue(!hint.diagnosticContext.values.any { it.contains("do-not-log") })
         } finally {
             server.shutdown()
         }
@@ -86,6 +95,10 @@ class WebCandidateVerifierTest {
             assertTrue(hint.message.contains("不是有效的 M3U8"))
             assertTrue(hint.failure is IllegalStateException)
             assertTrue(hint.failure?.message.orEmpty().contains("#EXTM3U"))
+            assertEquals("200", hint.diagnosticContext["HTTP 状态码"])
+            assertEquals("text/html", hint.diagnosticContext["响应 Content-Type"])
+            assertEquals("HTML 网页（常见于登录页/防护拦截页）", hint.diagnosticContext["响应内容特征"])
+            assertEquals("false", hint.diagnosticContext["是否包含 #EXTM3U"])
         } finally {
             server.shutdown()
         }
