@@ -229,7 +229,7 @@ private fun WebCandidateAudioHint.detailRows(): List<Pair<String, String>> {
                 "${WebMediaFormat.bitrate(min)}–${WebMediaFormat.bitrate(max)}"
             }
         }
-        val videoBitrate = videoRange ?: info.videoBitrateBps?.let(WebMediaFormat::bitrate)
+        val videoBitrate = videoRange ?: info.videoBitrateBps?.let { WebMediaFormat.bitrate(it) }
         videoBitrate?.let { add("视频码率" to (info.videoBitrateBasis.prefix + it)) }
         if (videoBitrate != null) add("视频码率依据" to info.videoBitrateBasis.diagnosticName)
         info.audioCodec?.let { add("音频编码" to it) }
