@@ -203,6 +203,15 @@ internal object WhisperSubtitleTimelinePolicy {
         }
         flushCue()
 
+        // 段首行锚定 VAD 起点：token 对齐的行起点系统性晚于语音真实起点（VAD 能量检测
+        // 先于 Whisper 首词时间戳，普遍偏晚 200-600ms——「视频说完第一句字幕才出现」）。
+        // 每段第一行的 start 直接用 VAD 段起点，从源头把字幕时间轴与视频对齐；
+        // 原声播放与配音共用这份时间轴，两种模式同步受益。
+        if (cues.isNotEmpty() && cues[0].first > segmentStartMs) {
+            val first = cues[0]
+            cues[0] = Triple(segmentStartMs, first.second, first.third)
+        }
+
         // Correct overlaps and validate bounds in the same pass.
         val adjustedCues = ArrayList<Triple<Long, Long, String>>(cues.size)
         for (index in cues.indices) {
