@@ -675,15 +675,34 @@ internal object HlsAudioDownloader {
                     userAgent = userAgent ?: SafeMediaHttp.DEFAULT_USER_AGENT,
                     ownerJob = ownerJob,
                 ).use { response ->
-                    validateSegmentResponse(
-                        code = response.code,
-                        byteRangeStart = byteRangeStart,
-                        byteRangeEnd = byteRangeEnd,
-                        contentRangeHeader = response.header("Content-Range"),
+                    if (response.code !in 200..299) {
+                        throw IllegalStateException(
+                            "HLS 音轨片段请求失败；" + responseEvidence(response, "音轨片段请求")
+                        )
+                    }
+                    try {
+                        validateSegmentResponse(
+                            code = response.code,
+                            byteRangeStart = byteRangeStart,
+                            byteRangeEnd = byteRangeEnd,
+                            contentRangeHeader = response.header("Content-Range"),
+                        )
+                    } catch (validationFailure: Exception) {
+                        throw IllegalStateException(
+                            (validationFailure.message ?: "HLS 音轨片段 HTTP 响应校验失败") +
+                                "；" + responseEvidence(response, "音轨片段响应校验"),
+                            validationFailure,
+                        )
+                    }
+                    val body = response.body ?: throw IllegalStateException(
+                        "HLS 片段响应为空；HTTP ${response.code}；Content-Type=" +
+                            (response.header("Content-Type") ?: "未提供")
                     )
-                    val body = response.body ?: throw IllegalStateException("HLS 片段响应为空。")
                     if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
-                        throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录。")
+                        throw IllegalStateException(
+                            "服务器返回了网页或 JSON，而不是 HLS 媒体片段；链接可能过期或需要登录；" +
+                                responseEvidence(response, "音轨片段内容类型校验")
+                        )
                     }
                     val expectedBytes = body.contentLength()
                     if (byteRangeLength != null && expectedBytes >= 0L && expectedBytes != byteRangeLength) {
@@ -707,8 +726,14 @@ internal object HlsAudioDownloader {
                                     System.arraycopy(buffer, 0, payloadPrefix, payloadPrefixSize, copyCount)
                                     payloadPrefixSize += copyCount
                                     if (isLikelyTextErrorPayload(payloadPrefix, payloadPrefixSize)) {
+                                        val textPrefix = payloadPrefix.copyOfRange(0, payloadPrefixSize)
+                                            .toString(Charsets.UTF_8)
                                         throw IllegalStateException(
-                                            "HLS 片段返回了登录页、错误页或文本清单，而不是音频数据；链接可能过期或需要登录。"
+                                            "HLS 片段返回了登录页、错误页或文本清单，而不是音频数据；" +
+                                                "响应特征=" + summarizeHlsErrorText(
+                                                    textPrefix,
+                                                    response.header("Content-Type").orEmpty(),
+                                                )
                                         )
                                     }
                                 }
@@ -953,6 +978,93 @@ internal object HlsAudioDownloader {
         return MediaPlaylist(initSegment, segments, segmentDurationsSeconds)
     }
 
+    /**
+     * Include HTTP metadata with an HLS failure so the app log distinguishes expired links,
+     * authentication pages, unsupported byte ranges, and malformed responses.
+     * Response body summaries are capped and sanitized; raw URLs, cookies and query values are
+     * deliberately excluded.
+     */
+    private fun responseEvidence(response: okhttp3.Response, stage: String): String {
+        val body = response.body
+        val bodySummary = summarizeHlsErrorText(
+            body?.let { safeReadResponsePrefix(it.byteStream(), 4 * 1024) }.orEmpty(),
+            body?.contentType()?.toString().orEmpty(),
+        )
+        return buildString {
+            append(stage).append("：")
+            append("HTTP ").append(response.code).append(' ').append(response.message).append("；")
+            append("Content-Type=").append(body?.contentType()?.toString() ?: "未提供").append("；")
+            append("Content-Length=").append(
+                response.header("Content-Length")
+                    ?: body?.contentLength()?.takeIf { it >= 0L }?.toString()
+                    ?: "未提供"
+            ).append("；")
+            append("Content-Range=").append(response.header("Content-Range") ?: "未提供").append("；")
+            append("Accept-Ranges=").append(response.header("Accept-Ranges") ?: "未提供").append("；")
+            append("Retry-After=").append(response.header("Retry-After") ?: "未提供").append("；")
+            append("Server=").append(response.header("Server") ?: "未提供").append("；")
+            append("响应摘要=").append(bodySummary)
+        }
+    }
+
+    private fun safeReadResponsePrefix(input: java.io.InputStream, maxBytes: Int): String {
+        val output = ByteArrayOutputStream(minOf(maxBytes, 1024))
+        input.use { stream ->
+            val buffer = ByteArray(1024)
+            var total = 0
+            while (total < maxBytes) {
+                val count = stream.read(buffer, 0, minOf(buffer.size, maxBytes - total))
+                if (count <= 0) break
+                output.write(buffer, 0, count)
+                total += count
+            }
+        }
+        return output.toByteArray().toString(Charsets.UTF_8)
+    }
+
+    private fun summarizeHlsErrorText(value: String, contentType: String): String {
+        val prefix = value.removePrefix("\uFEFF").trim()
+        if (prefix.isBlank()) return "响应体为空或服务器未返回正文"
+        if (contentType.contains("html", ignoreCase = true) || prefix.startsWith("<")) {
+            val title = Regex("""(?is)<title[^>]*>(.*?)</title>""")
+                .find(prefix)?.groupValues?.getOrNull(1)
+                ?.replace(Regex("""<[^>]+>"""), " ")
+                ?.trim()
+            return title?.takeIf { it.isNotBlank() }?.let {
+                "HTML 错误页标题：" + sanitizeHlsDiagnosticText(it)
+            } ?: "HTML 登录页/防护错误页（正文已隐藏）"
+        }
+        if (contentType.contains("json", ignoreCase = true) || prefix.startsWith("{")) {
+            val fields = Regex(
+                """"(code|type|error|message|detail|title|success)"\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+)""",
+                RegexOption.IGNORE_CASE,
+            ).findAll(prefix).take(8).map { match ->
+                match.groupValues[1] + "=" +
+                    sanitizeHlsDiagnosticText(match.groupValues[2].trim('"'))
+            }.toList()
+            return if (fields.isNotEmpty()) {
+                "JSON 错误字段：" + fields.joinToString("; ").take(240)
+            } else {
+                "JSON 错误响应（正文已隐藏）"
+            }
+        }
+        return sanitizeHlsDiagnosticText(prefix.lineSequence().firstOrNull(String::isNotBlank).orEmpty())
+            .ifBlank { "文本错误响应（摘要为空）" }
+    }
+
+    private fun sanitizeHlsDiagnosticText(value: String): String {
+        var safe = value
+        safe = Regex("""(?i)\b(Bearer|Basic)\s+\S+""")
+            .replace(safe) { it.groupValues[1] + " [已隐藏]" }
+        safe = Regex("""(?i)\b(token|api[_-]?key|signature|sig|authorization|cookie|secret|password|credential|session|jwt|expires)\b\s*[:=]\s*["']?[^&\s,"'<>]+""")
+            .replace(safe) { it.groupValues[1] + "=[已隐藏]" }
+        safe = Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE)
+            .replace(safe, "[URL 已隐藏]")
+        safe = Regex("""(?<![A-Za-z0-9])[A-Za-z0-9_./+=-]{48,}(?![A-Za-z0-9])""")
+            .replace(safe, "[长令牌已隐藏]")
+        return safe.replace(Regex("""\s+"""), " ").trim().take(240)
+    }
+
     private fun fetchText(
         url: String,
         headers: Map<String, String>,
@@ -967,10 +1079,20 @@ internal object HlsAudioDownloader {
             userAgent = userAgent ?: SafeMediaHttp.DEFAULT_USER_AGENT,
             ownerJob = ownerJob,
         ).use { response ->
-            validateManifestResponseStatus(response.code)
-            val body = response.body ?: throw IllegalStateException("HLS 清单响应为空。")
+            if (response.code != 200) {
+                throw IllegalStateException(
+                    "HLS 清单未返回 HTTP 200 完整响应；" + responseEvidence(response, "清单请求")
+                )
+            }
+            val body = response.body ?: throw IllegalStateException(
+                "HLS 清单响应为空；HTTP ${response.code}；Content-Type=" +
+                    (response.header("Content-Type") ?: "未提供")
+            )
             if (isHtmlOrJsonContentType(body.contentType()?.toString())) {
-                throw IllegalStateException("服务器返回了网页或 JSON，而不是 HLS 清单；链接可能过期或需要登录。")
+                throw IllegalStateException(
+                    "服务器返回了网页或 JSON，而不是 HLS 清单；链接可能过期或需要登录；" +
+                        responseEvidence(response, "清单内容类型校验")
+                )
             }
             if (body.contentLength() > MAX_PLAYLIST_BYTES) {
                 throw IllegalStateException("HLS 清单超过 2 MB 限制，已停止解析。")
