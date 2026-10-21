@@ -1137,7 +1137,7 @@ private fun VideoParsingPage(
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .verticalScroll(androidx.compose.foundation.rememberScrollState()),
     ) {
-        // Navigation header — centered title balanced between the two actions.
+        // Compact navigation header; keep only the back and processing-actions controls.
         Row(
             Modifier.fillMaxWidth().padding(bottom = 7.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
