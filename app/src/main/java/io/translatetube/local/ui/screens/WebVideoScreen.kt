@@ -73,6 +73,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.web.PikpakShare.PikpakEntry
 import io.translatetube.local.web.PikpakShare
 import io.translatetube.local.web.WebMediaUrlPolicy
+import io.translatetube.local.web.SharedLinkTextParser
 import io.translatetube.local.web.BilibiliDeepLinkPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -1162,7 +1163,9 @@ fun WebVideoScreen(
                     placeholder = { Text("输入网页地址") },
                 )
                 IconButton(onClick = {
-                    val normalized = WebMediaUrlPolicy.normalizePageUrl(address)
+                    val rawAddress = address.trim()
+                    val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
+                    val normalized = WebMediaUrlPolicy.normalizePageUrl(inputUrl)
                     if (normalized == null) {
                         status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
                     } else {

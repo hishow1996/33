@@ -36,6 +36,22 @@ class SharedLinkTextParserTest {
     }
 
     @Test
+    fun extractsUrlsFromOtherWebsiteShareTextsToo() {
+        assertEquals(
+            "https://www.youtube.com/watch?v=abcdefghijk&feature=share",
+            SharedLinkTextParser.extractFirstHttpUrl(
+                "【旅行视频】复制打开 YouTube，看看这段精彩内容！ https://www.youtube.com/watch?v=abcdefghijk&feature=share。",
+            ),
+        )
+        assertEquals(
+            "https://www.douyin.com/video/123456789",
+            SharedLinkTextParser.extractFirstHttpUrl(
+                "短视频标题\n作者简介\nhttps://www.douyin.com/video/123456789，欢迎观看",
+            ),
+        )
+    }
+
+    @Test
     fun returnsNullWhenTextContainsNoHttpUrl() {
         assertNull(SharedLinkTextParser.extractFirstHttpUrl("没有链接的文本 bilibili://video/123"))
         assertNull(SharedLinkTextParser.extractFirstHttpUrl(""))
