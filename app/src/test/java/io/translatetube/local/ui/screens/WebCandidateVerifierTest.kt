@@ -83,7 +83,12 @@ class WebCandidateVerifierTest {
         val server = MockWebServer()
         server.start()
         try {
-            server.enqueue(MockResponse().setResponseCode(200).setBody("<html>login required</html>"))
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("Content-Type", "text/html; charset=utf-8")
+                    .setBody("<html>login required</html>")
+            )
 
             val hint = WebCandidateVerifier.inspectAudioHint(
                 client = OkHttpClient(),
