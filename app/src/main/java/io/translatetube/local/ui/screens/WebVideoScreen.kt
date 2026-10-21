@@ -865,7 +865,7 @@ fun WebVideoScreen(
                     if (result.needsPasscode) {
                         pikpakNeedsPasscode = true
                         if (pikpakPassCode.isBlank()) {
-                            pikpakNotice = "该分享需要提取码：把分享文案整段（含「密码: xxx」）粘贴到地址栏打开即可自动带码。"
+                            pikpakNotice = "请在上方 PikPak 官方网页手动输入提取码并完成验证；验证成功后会继续读取清单。"
                         }
                     }
                     if (result.entries.isNotEmpty()) {
@@ -912,15 +912,9 @@ fun WebVideoScreen(
         }
     }
 
-    // PikPak share manifests use their own resolver and never enter the yt-dlp fallback.
-    LaunchedEffect(currentPage, pageLoadToken) {
-        delay(5000)
-        if (PikpakShare.parseShareId(currentPage) != null &&
-            pikpakShareId == null && pikpakEntries.isEmpty() && !pikpakBusy
-        ) {
-            expandPikpak("")
-        }
-    }
+    // PikPak 分享页不在加载后立即调用私有接口枚举。
+    // 需要提取码时，先由用户在上方官方网页手动输入并验证；网页 hook 捕获到验证令牌后
+    // 再自动读取清单。若页面没有捕获到清单，用户也可在面板中手动点击读取/刷新。
 
     // Give the existing WebView probe and HEAD/Range candidate verifier first chance. Any newly
     // observed candidate restarts this quiet period; yt-dlp is used automatically only after the
@@ -1109,19 +1103,34 @@ fun WebVideoScreen(
                     if (!screenActive.get() || pageGeneration.get() != bridgeGeneration) return@post
                     if (!data.shareId.isNullOrBlank()) pikpakShareId = data.shareId
                     if (data.headers.isNotEmpty()) pikpakCapturedHeaders = data.headers
-                    if (data.passcodeToken.isNotBlank()) pikpakPasscodeToken = data.passcodeToken
+                    val hasNewVerifiedPasscodeToken =
+                        data.passcodeToken.isNotBlank() && data.passcodeToken != pikpakPasscodeToken
+                    if (data.passcodeToken.isNotBlank()) {
+                        // 只有网页返回有效 pass_code_token 后才认为官方验证流程已经继续。
+                        pikpakPasscodeToken = data.passcodeToken
+                        pikpakNeedsPasscode = false
+                        pikpakPassCode = ""
+                    }
                     if (data.parentId.isNotBlank()) {
                         pikpakListedParents = pikpakListedParents + data.parentId
                     }
-                    if (data.api == "verify" || data.api == "share") {
-                        // 提取码已在网页里通过（share 校验端点会下发 pass_code_token）
-                        pikpakNeedsPasscode = false
-                    }
-                    if (data.entries.isNotEmpty()) mergePikpakEntries(data.entries)
                     if (data.entries.isNotEmpty()) {
+                        pikpakNeedsPasscode = false
+                        mergePikpakEntries(data.entries)
                         val videoCount = pikpakEntries.count { it.isVideo }
                         val folderCount = pikpakEntries.count { it.isFolder }
                         pikpakNotice = "已从网页捕获清单：$videoCount 个视频、$folderCount 个文件夹。"
+                    }
+                    if (hasNewVerifiedPasscodeToken) {
+                        // 官方页面验证成功后，复用它刚返回的 token 继续读取分享清单。
+                        mainHandler.postDelayed({
+                            if (screenActive.get() &&
+                                pageGeneration.get() == bridgeGeneration &&
+                                !pikpakBusy
+                            ) {
+                                expandPikpak("")
+                            }
+                        }, 250)
                     }
                 }
             }
@@ -1198,9 +1207,9 @@ fun WebVideoScreen(
                 IconButton(onClick = {
                     val rawAddress = address.trim()
                     val inputUrl = SharedLinkTextParser.extractFirstHttpUrl(rawAddress) ?: rawAddress
-                    // 粘贴文本里带提取码（「密码: bubq」/「?p=」等）时先记下，
-                    // 进入 PikPak 分享页后自动带入，无需网页手动输码。
-                    pikpakPassCode = PikpakShare.extractPassCode(rawAddress).orEmpty()
+                    // 受密码保护的分享保持官方网页原始验证流程：
+                    // 用户在网页内手动输入提取码，不从粘贴文本自动填入私有接口。
+                    pikpakPassCode = ""
                     val normalized = WebMediaUrlPolicy.normalizePageUrl(inputUrl)
                     if (normalized == null) {
                         status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
@@ -1784,7 +1793,7 @@ fun WebVideoScreen(
                         Text(
                             when {
                                 pikpakBusy -> "正在读取 PikPak 分享清单…"
-                                pikpakNeedsPasscode -> "该 PikPak 分享需要提取码，请在面板中输入后读取。"
+                                pikpakNeedsPasscode -> "请在上方 PikPak 官方网页输入提取码并完成验证。"
                                 pikpakEntries.isEmpty() -> "正在读取 PikPak 文件清单…"
                                 else -> "PikPak：${pikpakVideos.size} 个视频 · ${pikpakFolders.size} 个文件夹"
                             },
@@ -1837,37 +1846,15 @@ fun WebVideoScreen(
                         .sortedBy { it.name.lowercase() }
                     val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
                     if (pikpakNeedsPasscode) {
-                        var passcodeInput by remember(initialUrl) {
-                            mutableStateOf(pikpakPassCode)
-                        }
-                        androidx.compose.foundation.layout.Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            androidx.compose.material3.OutlinedTextField(
-                                value = passcodeInput,
-                                onValueChange = { passcodeInput = it.trim() },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true,
-                                placeholder = { Text("提取码，如 bubq") },
-                                shape = RoundedCornerShape(10.dp),
-                            )
-                            TextButton(
-                                enabled = !pikpakBusy && passcodeInput.isNotBlank(),
-                                onClick = {
-                                    pikpakPassCode = passcodeInput.trim()
-                                    pikpakNeedsPasscode = false
-                                    expandPikpak("")
-                                },
-                                modifier = Modifier.padding(start = 6.dp),
-                            ) {
-                                Text("带码读取")
-                            }
-                        }
+                        Text(
+                            "请在上方官方分享网页的提取码输入框中手动验证。验证成功后，应用会自动继续读取；不要在此处重复输入。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                     TextButton(enabled = !pikpakBusy, onClick = { expandPikpak("") }) {
                         Text(
-                            if (pikpakEntries.isEmpty()) "立即读取清单" else "展开全部文件夹"
+                            if (pikpakEntries.isEmpty()) "读取/刷新清单" else "展开全部文件夹"
                         )
                     }
                     if (pikpakFolders.isNotEmpty()) {
