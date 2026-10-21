@@ -448,6 +448,20 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         fontWeight = FontWeight.SemiBold,
                     )
 
+                    // Put request/response facts up front; users should not have to scan a long
+                    // stack trace to find the HTTP code, response type, or HLS parsing stage.
+                    val diagnosticContextLines = record.details
+                        .substringAfter("故障上下文（用于定位发生时的状态）：\\n", "")
+                        .lineSequence()
+                        .takeWhile { it.startsWith("- ") }
+                        .toList()
+                    if (diagnosticContextLines.isNotEmpty()) {
+                        DetailSection(
+                            title = "检测上下文（请求 / HTTP / 清单解析）",
+                            text = diagnosticContextLines.joinToString("\\n"),
+                        )
+                    }
+
                     if (isRecoverableLevel(record.level) && record.issueKey.isNotBlank()) {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
