@@ -2615,7 +2615,7 @@ private val NET_HOOK_SCRIPT = """
           // PikPak share APIs may contain signed video links before the user chooses a file.
           // Keep collecting the structured file listing below, but defer media URL probing to playback.
           var hostName = String(target.location && target.location.hostname || '');
-          if (/(^|\\.)mypikpak\\.com$/i.test(hostName) || /(^|\\.)pikpak\\.com$/i.test(hostName)) return;
+          if (/(^|\.)mypikpak\.com$/i.test(hostName) || /(^|\.)pikpak\.com$/i.test(hostName)) return;
           if (!text) return;
           var text2 = String(text);
           if (text2.length > 2097152) return;
