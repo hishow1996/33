@@ -82,7 +82,7 @@ internal object BilibiliDeepLinkPolicy {
     private fun buildWebUrl(page: VideoPage): String = buildString {
         append("https://m.bilibili.com/video/")
         append(page.videoId)
-        page.page?.let {
+        page.page?.takeIf { it > 1 }?.let {
             append("?p=")
             append(it)
         }
