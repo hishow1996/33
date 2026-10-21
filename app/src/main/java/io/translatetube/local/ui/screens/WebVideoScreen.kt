@@ -1560,6 +1560,10 @@ fun WebVideoScreen(
                         }
                         val initial = WebMediaUrlPolicy.normalizePageUrl(initialUrl)
                         if (initial != null) {
+                            // 初次进入页面也必须先切换 PikPak 专用移动浏览器 UA。
+                            // 否则首次请求仍带系统 WebView 的 "; wv)" 标记，部分 PikPak
+                            // 前端会进入降级分支，出现空白页；后续手动导航才应用 UA 已经太晚。
+                            applyPikpakUserAgent(initial)
                             loadUrl(initial)
                         } else {
                             status = "网页地址无效，请返回后检查链接。"
