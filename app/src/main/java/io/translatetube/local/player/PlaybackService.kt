@@ -3852,12 +3852,14 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key, pipelineGeneration)
                     pm.seekTo(resumeSec * 1000)
+                    primeSubtitleHighlightAtPlaybackStart(pm.position())
                     pm.play()
                 }
             } else {
                 ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key, pipelineGeneration)
+                    primeSubtitleHighlightAtPlaybackStart(pm.position())
                     pm.play()
                 }
             }
@@ -5959,6 +5961,40 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
         dubbingDrainPoll = poll
         dubbingDrainHandler.post(poll)
+    }
+
+    /**
+     * Publish the initial visible subtitle before the first video/audio frame starts.
+     * Waiting for onIsPlayingChanged means the playhead has already advanced before the
+     * first highlight reaches Compose; this is noticeable for the first cue in both audio modes.
+     */
+    private fun primeSubtitleHighlightAtPlaybackStart(positionMs: Long) {
+        if (positionMs < 0L) return
+        val snapshot = ui.value
+        if (snapshot.lines.isEmpty()) return
+
+        val target = try {
+            subtitleHighlightLineAt(
+                snapshot.lines,
+                positionMs + subtitleTimingOffsetMs(),
+            )
+        } catch (error: Exception) {
+            android.util.Log.w(
+                "PlaybackService",
+                "Unable to prime the initial subtitle highlight",
+                error,
+            )
+            return
+        }
+
+        lastLineIdx = target
+        ui.update { state ->
+            if (state.key == snapshot.key && state.lines === snapshot.lines) {
+                state.copy(currentLine = target)
+            } else {
+                state
+            }
+        }
     }
 
     private fun tickFromPlayerCallback(ms: Long, source: String) {
