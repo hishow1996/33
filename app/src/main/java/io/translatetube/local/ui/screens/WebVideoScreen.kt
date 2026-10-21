@@ -160,7 +160,7 @@ fun WebVideoScreen(
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
-    var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(72f) } // 当前面板高度（dp），可连续拖动
+    var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(112f) } // 初始面板位置固定对应网页窗口底边，之后可拖动
     var pageTitle by remember { mutableStateOf("") }
     var verificationAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     var noSourceLoggedForPage by remember(initialUrl) { mutableStateOf(false) }
@@ -1195,9 +1195,15 @@ fun WebVideoScreen(
             BoxWithConstraints(
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
-            val viewportMaxHeight = maxHeight
+            // 固定网页窗口高度：默认视频源面板的顶部就是网页窗口底边。
+            // 面板拖动或收起时只改变面板，不重新测量/缩放网页窗口。
+            val panelPeekHeight = 112.dp.coerceAtMost(maxHeight)
+            val fixedWebHeight = (maxHeight - panelPeekHeight).coerceAtLeast(0.dp)
             AndroidView(
-                modifier = Modifier.matchParentSize(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(fixedWebHeight)
+                    .align(Alignment.TopCenter),
                 factory = { ctx ->
                     WebView(ctx).apply {
                         webViewState.value = this
@@ -1549,13 +1555,12 @@ fun WebVideoScreen(
             )
 
 
-            val minPanelHeight = 80.dp.coerceAtMost(maxHeight)
+            val minPanelHeight = 28.dp.coerceAtMost(maxHeight)
             val maxPanelHeight = (maxHeight * 0.92f)
                 .coerceAtLeast(minPanelHeight)
                 .coerceAtMost(maxHeight)
             val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
-            val panelContentThreshold = minPanelHeight + 84.dp.coerceAtMost(maxPanelHeight - minPanelHeight)
-            val panelContentVisible = targetPanelHeight >= panelContentThreshold
+            val panelContentVisible = targetPanelHeight > minPanelHeight + 8.dp
             val density = LocalDensity.current
             val panelDragModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
                 detectVerticalDragGestures(
@@ -1567,11 +1572,45 @@ fun WebVideoScreen(
                 )
             }
             val panelClickModifier = Modifier.clickable {
-                // 点击快速展开/收起；上下拖动则可以精确停在任意高度。
+                // 点顶部粗横线：收起到只露把手，或恢复到初始面板高度。
                 sourcePanelHeightDp = if (targetPanelHeight > minPanelHeight + 8.dp) {
                     minPanelHeight.value
                 } else {
-                    (minPanelHeight + (maxPanelHeight - minPanelHeight) * 0.58f).value
+                    panelPeekHeight.value
+                }
+            }
+
+            // 面板向下收起后，网页窗口与面板之间自然露出空白区。
+            // 把检测标题、候选数和状态放在这里，不再挤占视频源面板顶部。
+            val statusGapHeight = (panelPeekHeight - targetPanelHeight).coerceAtLeast(0.dp)
+            if (statusGapHeight >= 36.dp) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(y = fixedWebHeight)
+                        .fillMaxWidth()
+                        .height(statusGapHeight)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        "检测到的视频源",
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                    )
+                    Text(
+                        when {
+                            candidatesState.value.isNotEmpty() ->
+                                "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证"
+                            pageLoading || ytDlpBusy -> status
+                            else -> status.ifBlank { "等待检测视频源" }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             Card(
@@ -1600,51 +1639,6 @@ fun WebVideoScreen(
                                     color = MaterialTheme.colorScheme.outlineVariant,
                                     shape = RoundedCornerShape(2.dp),
                                 ),
-                        )
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(panelClickModifier)
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(
-                                "检测到的视频源",
-                                style = MaterialTheme.typography.titleSmall,
-                                maxLines = 1,
-                            )
-                            Text(
-                                when {
-                                    candidatesState.value.isNotEmpty() ->
-                                        "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证"
-                                    pageLoading || ytDlpBusy -> status
-                                    else -> status.ifBlank { "等待检测视频源" }
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Icon(
-                            imageVector = if (targetPanelHeight > minPanelHeight + 8.dp) {
-                                Icons.Filled.KeyboardArrowDown
-                            } else {
-                                Icons.Filled.KeyboardArrowUp
-                            },
-                            contentDescription = if (targetPanelHeight > minPanelHeight + 8.dp) {
-                                "收起视频源列表"
-                            } else {
-                                "展开视频源列表"
-                            },
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp),
                         )
                     }
                     if (panelContentVisible) {
