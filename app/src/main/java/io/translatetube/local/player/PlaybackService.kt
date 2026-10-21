@@ -1602,7 +1602,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         val sourceOnly = originalLines.mapIndexed { index, line ->
             line.copy(index = index, zh = null)
         }
-        require(sourceOnly.isNotEmpty()) { "没有可供外部翻译的原文字幕" }
+        if (sourceOnly.isEmpty()) return null
         val newWaiter = kotlinx.coroutines.CompletableDeferred<List<SubLine>>()
         val existing = manualTranslationWaiters.putIfAbsent(sessionKey, newWaiter)
         val waiter = existing ?: newWaiter
