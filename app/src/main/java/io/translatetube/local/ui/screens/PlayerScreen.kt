@@ -997,11 +997,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         )
     }
 
-    // 字幕只在当前配音行接近可视区域边缘时滚动，避免每句都重新启动滚动动画。
+    // 自动滚动始终跟随视频时间轴。配音音轨异步启动不能延迟字幕滚动。
     // 用 rememberUpdatedState 让长生命周期协程始终读取最新播放行，不会闭包住旧 state。
-    val effectiveScrollLine = if (
-        state.dubbingOn && state.activeDubbingLine in state.lines.indices
-    ) state.activeDubbingLine else state.currentLine
+    val effectiveScrollLine = state.currentLine
     val autoScrollTarget = rememberUpdatedState(effectiveScrollLine to state.lines.size)
     LaunchedEffect(state.key, state.phase, subtitlesVisible) {
         // The list is intentionally absent on the parsing screen and when subtitles are hidden.
@@ -2077,13 +2075,9 @@ private fun VideoParsingPage(
 
 @Composable
 private fun CurrentSubtitleStrip(state: PlayerUiState) {
-    // Prefer the subtitle currently being spoken by the dubbing engine; otherwise follow
-    // the video playhead. Both indexes refer to the same subtitle timeline.
-    val index = when {
-        state.dubbingOn && state.activeDubbingLine in state.lines.indices -> state.activeDubbingLine
-        state.currentLine in state.lines.indices -> state.currentLine
-        else -> -1
-    }
+    // The visible caption follows the video playhead. TTS/audio-track startup is asynchronous
+    // and must not delay the first subtitle strip or make captions drift behind the video.
+    val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
     val currentLine = state.lines.getOrNull(index)
     val currentText = remember(currentLine?.text, currentLine?.zh) {
         currentLine?.let { line ->
@@ -2633,11 +2627,9 @@ private fun SubtitleList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    // Original and dubbed playback share the same active-row visual state.
-    // Prefer the line whose voice has actually started; otherwise follow the media timeline.
-    val activeSubtitleIndex = if (
-        state.dubbingOn && state.activeDubbingLine in state.lines.indices
-    ) state.activeDubbingLine else state.currentLine
+    // Keep row highlighting locked to the video timeline in both playback modes.
+    // A late TTS start must not postpone the visual subtitle effect.
+    val activeSubtitleIndex = state.currentLine
     val hasActiveSubtitle = activeSubtitleIndex in state.lines.indices
     val activeSubtitlePulse by animateFloatAsState(
         targetValue = if (hasActiveSubtitle) 1.01f else 1f,
