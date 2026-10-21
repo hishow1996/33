@@ -16,10 +16,11 @@ data class AppLogDiagnosis(
 
 object AppLogDiagnostics {
     fun analyze(record: AppLogRecord): AppLogDiagnosis {
+        val currentDetails = focusedDetails(record.details)
         val raw = buildString {
             append(record.tag).append('\n')
             append(record.message).append('\n')
-            append(record.details)
+            append(currentDetails)
         }
         val text = raw.lowercase(Locale.ROOT)
         val tag = record.tag.lowercase(Locale.ROOT)
@@ -327,8 +328,29 @@ object AppLogDiagnostics {
         )
     }
 
+    /**
+     * Remove prior-event breadcrumbs and generic runtime snapshots before classifying a single
+     * failure. They remain in the exported log, but must not make unrelated errors look similar.
+     */
+    private fun focusedDetails(details: String): String {
+        var focused = details
+        focused = focused.replace(
+            Regex("""(?s)出错前最近操作/异常轨迹（最多 \d+ 条，按先后顺序）：\n.*?(?=运行环境：\n|异常详情与调用堆栈：\n|$)"""),
+            "",
+        )
+        focused = focused.replace(
+            Regex("""(?s)运行环境：\n.*?(?=专项诊断快照：\n|异常详情与调用堆栈：\n|$)"""),
+            "",
+        )
+        focused = focused.replace(
+            Regex("""(?s)专项诊断快照：\n.*?(?=异常详情与调用堆栈：\n|$)"""),
+            "",
+        )
+        return focused
+    }
+
     private fun evidence(record: AppLogRecord, terms: List<String>): String {
-        for (line in record.details.lineSequence()) {
+        for (line in focusedDetails(record.details).lineSequence()) {
             if (terms.any { line.contains(it, ignoreCase = true) }) {
                 return line.trim().take(360)
             }

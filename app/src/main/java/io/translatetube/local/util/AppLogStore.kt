@@ -601,7 +601,7 @@ object AppLogStore {
             }
         }
         if (recentTrail.isNotBlank() && (level == "WARN" || level == "ERROR" || level == "FATAL")) {
-            append("出错前最近操作/异常轨迹（最多 16 条，按先后顺序）：\n")
+            append("出错前最近操作/异常轨迹（最多 24 条，按先后顺序）：\n")
             append(recentTrail).append('\n')
         }
         if (level == "WARN" || level == "ERROR" || level == "FATAL") {
@@ -673,8 +673,7 @@ object AppLogStore {
         append("专项诊断快照：\n")
         if (networkRelated) {
             runCatching {
-                val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE)
-                    as? android.net.ConnectivityManager
+                val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
                 val info = manager?.activeNetworkInfo
                 append("- 系统网络状态：").append(
                     when {
