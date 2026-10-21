@@ -1,5 +1,7 @@
 package io.translatetube.local.player
 
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -7,6 +9,42 @@ import org.junit.Test
 
 class HlsAudioDownloaderTest {
 
+
+    @Test
+    fun manifestHttpFailureContainsResponseEvidenceAndRedactsQueryCredentials() {
+        val server = MockWebServer()
+        server.start()
+        val parent = createTempDir(prefix = "hls-http-diagnostic")
+        try {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(410)
+                    .setHeader("Content-Type", "text/plain; charset=utf-8")
+                    .setBody("expired; token=do-not-log")
+            )
+            val destination = java.io.File(parent, "audio.m4a")
+            val error = runCatching {
+                kotlinx.coroutines.runBlocking {
+                    HlsAudioDownloader.download(
+                        playlistUrl = server.url("/master.m3u8?token=private-query-value").toString(),
+                        destination = destination,
+                    )
+                }
+            }.exceptionOrNull()
+
+            val message = error?.message.orEmpty()
+            assertTrue(error is IllegalStateException)
+            assertTrue(message.contains("HTTP 410"))
+            assertTrue(message.contains("Content-Type=text/plain"))
+            assertTrue(message.contains("Content-Length="))
+            assertTrue(message.contains("响应摘要=expired"))
+            assertTrue(!message.contains("do-not-log"))
+            assertTrue(!message.contains("private-query-value"))
+        } finally {
+            server.shutdown()
+            parent.deleteRecursively()
+        }
+    }
 
     @Test
     fun failedSegmentInstallKeepsExistingDestinationAndCompletedPart() {
