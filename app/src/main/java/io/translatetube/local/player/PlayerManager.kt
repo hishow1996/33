@@ -20,6 +20,30 @@ private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/53
 
 /** ExoPlayer 封装：源装配 / 音量 / 倍速 / 时间轴轮询 */
 class PlayerManager(private val ctx: Context) {
+
+    /** 配音混流总线：DubbingEngine 按媒体时间挂 PCM，音频处理器逐窗相加。 */
+    val dubbingBus = DubbingTrackBus()
+
+    /** 混流处理器（与 bus 成对，注入 ExoPlayer 音频渲染管线）。 */
+    private val dubbingProcessor = DubbingAudioProcessor(dubbingBus)
+
+    /** 挂了配音混流处理器的渲染器工厂：配音与原声共用同一播放时钟。 */
+    private val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(ctx) {
+        override fun buildAudioSink(
+            context: Context,
+            enableFloatOutput: Boolean,
+            enableAudioTrackPlaybackParams: Boolean,
+        ): androidx.media3.exoplayer.audio.AudioSink? = runCatching {
+            androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .setAudioProcessors(arrayOf(dubbingProcessor))
+                .build()
+        }.getOrNull() ?: super.buildAudioSink(
+            context, enableFloatOutput, enableAudioTrackPlaybackParams,
+        )
+    }
+
     private val httpFactory = DefaultHttpDataSource.Factory()
         .setUserAgent(UA)
         .setAllowCrossProtocolRedirects(true)
@@ -36,6 +60,7 @@ class PlayerManager(private val ctx: Context) {
     }
 
     val player: ExoPlayer = ExoPlayer.Builder(ctx)
+        .setRenderersFactory(renderersFactory)
         .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(ctx, httpFactory)))
         .setLoadControl(
             DefaultLoadControl.Builder()

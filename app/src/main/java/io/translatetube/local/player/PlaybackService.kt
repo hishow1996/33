@@ -609,12 +609,24 @@ class PlaybackService : MediaSessionService() {
                     // alone is not enough. Invalidate any queued/playing PCM and re-evaluate at
                     // Media3's new playhead immediately; this also covers seeks from media controls.
                     safelyControlDubbing("position discontinuity") { dubbing?.stop() }
+                    // 混流总线：seek 后音频流会 flush；清空旧块并按新媒体头重设时钟基点，
+                    // 下一次 playAt()（本次 tick 立即触发）重新挂载正确时间窗的块。
+                    if (::pm.isInitialized) {
+                        pm.dubbingBus.reset()
+                        pm.dubbingBus.setStreamStartUs(newPosition.positionMs * 1000L)
+                    }
                     lastLineIdx = Int.MIN_VALUE
                     if (::pm.isInitialized) tickFromPlayerCallback(newPosition.positionMs, "position discontinuity")
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                        // 混流时钟基点：READY 后音频流从头输出，以当前播放位置校准总线。
+                        if (::pm.isInitialized) {
+                            pm.dubbingBus.setStreamStartUs(
+                                pm.player.currentPosition.coerceAtLeast(0L) * 1000L,
+                            )
+                        }
                         ui.update { state ->
                             if (state.progress.startsWith("正在尝试兼容清晰度 ")) {
                                 state.copy(phase = Phase.READY, progress = "", error = null)
@@ -1745,7 +1757,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
                 } catch (e: Exception) {
                     runCatching { tts.close() }
                     throw e
@@ -2072,7 +2084,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
                 } catch (e: Exception) {
                     runCatching { tts.close() }
                     throw e
@@ -3617,7 +3629,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             throw e
                         }
                         val d = try {
-                            DubbingEngine(this, key, scope)
+                            DubbingEngine(this, key, scope, pm.dubbingBus)
                         } catch (e: Exception) {
                             runCatching { tts.close() }
                             throw e
@@ -5928,7 +5940,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     private fun tickFromPlayerCallback(ms: Long, source: String) {
         try {
-            tick(ms)
+            // 字幕时间轴微调：正偏移让配音/字幕更早出现（对冲转写字幕时间戳的系统性偏晚），
+            // 配音与字幕共用同一偏移保证内容一致；不同来源的视频可各自校正。
+            tick(ms + subtitleTimingOffsetMs())
         } catch (error: Exception) {
             val state = ui.value
             io.translatetube.local.util.AppLogStore.error(
@@ -5958,6 +5972,11 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
         }
     }
+
+    private fun subtitleTimingOffsetMs(): Long =
+        getSharedPreferences("settings", MODE_PRIVATE)
+            .getLong("subtitle_offset_ms", 0L)
+            .coerceIn(-2_000L, 2_000L)
 
     private fun tick(ms: Long) {
         val st = ui.value
@@ -6442,7 +6461,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     throw e
                 }
                 val d = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
                 } catch (e: Exception) {
                     if (!ttsWasPreflighted) runCatching { tts.close() }
                     throw e
@@ -6658,7 +6677,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
                 val tts = pendingTts ?: makeTtsOffMainThread(selectedTts)
                 val engine = try {
-                    DubbingEngine(this@PlaybackService, sessionKey, scope)
+                    DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
                 } catch (e: Exception) {
                     if (pendingTts == null) runCatching { tts.close() }
                     throw e

@@ -590,6 +590,33 @@ Section("转写引擎") {
 }
 
 Section("配音设置") {
+            // 字幕/配音时间轴微调：对冲转写字幕时间戳的系统偏差（有的视频源整体偏晚）。
+            var subtitleOffsetMs by remember {
+                mutableStateOf(prefs.getLong("subtitle_offset_ms", 0L))
+            }
+            Column(Modifier.fillMaxWidth()) {
+                Text("字幕/配音时间轴微调", color = OnBg, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "偏晚就调正数（提前显示），偏早就调负数；当前 ${subtitleOffsetMs}ms",
+                    color = SubText, style = MaterialTheme.typography.bodySmall,
+                )
+                androidx.compose.foundation.layout.Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("-2s", color = SubText, style = MaterialTheme.typography.bodySmall)
+                    androidx.compose.material3.Slider(
+                        value = subtitleOffsetMs.toFloat(),
+                        onValueChange = {
+                            subtitleOffsetMs = (it / 100f).toInt() * 100L  // 100ms 步进
+                            prefs.edit().putLong("subtitle_offset_ms", subtitleOffsetMs).apply()
+                        },
+                        valueRange = -2000f..2000f,
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    )
+                    Text("+2s", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
