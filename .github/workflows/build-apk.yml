@@ -1,3 +1,4 @@
+# One-time user-requested APK build trigger for the current main source.
 # Build validation for unified external subtitle translation across YouTube, web, and local media (2026-10-21).
 # Re-run validation after correcting Kotlin compilation blockers.
 # User-requested APK build for latest main changes (2026-10-21).
