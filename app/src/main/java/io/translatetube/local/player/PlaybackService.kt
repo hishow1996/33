@@ -4223,9 +4223,25 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             "mp3", "m4a", "aac", "ogg", "opus", "flac", "wav" -> "纯音频候选"
             else -> "扩展名无法确认"
         }
+        val pathSegments = uri?.pathSegments.orEmpty()
+        val sensitivePathToken = Regex("""(?i)(token|signature|auth|secret|password|credential|session|jwt|expires|access.?key)""")
+        val safePath = pathSegments.map { segment ->
+            when {
+                sensitivePathToken.containsMatchIn(segment) -> "[疑似凭据路径段已隐藏]"
+                segment.length > 48 -> "[长路径段已隐藏:${segment.length}字符]"
+                else -> segment
+            }
+        }.joinToString("/", prefix = "/").take(240)
+        val queryNames = runCatching {
+            uri?.queryParameterNames.orEmpty().sorted().joinToString(", ").take(300)
+        }.getOrDefault("读取失败")
         return mapOf(
             "处理阶段" to stage.take(120),
+            "媒体源协议" to uri?.scheme.orEmpty().ifBlank { "未知" },
             "媒体源主机名" to uri?.host?.take(120).orEmpty().ifBlank { "未知" },
+            "媒体地址路径（已脱敏）" to safePath,
+            "媒体地址查询参数名（不含值）" to queryNames.ifBlank { "无" },
+            "媒体地址是否带查询参数" to (!uri?.encodedQuery.isNullOrBlank()).toString(),
             "媒体源类型" to mediaType,
             "媒体源扩展名提示" to extension.ifBlank { "无" },
             "媒体源诊断编号" to io.translatetube.local.util.AppLogStore.stableIssueKey("WebAudioSource", mediaUrl),
@@ -4247,6 +4263,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         val diagnosis = RemoteAudioFailurePolicy.classify(failure)
         val sourceUri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
         val sourceIdentity = listOf(sourceUri?.host.orEmpty(), sourceUri?.path.orEmpty(), diagnosis.code).joinToString("|")
+        val exceptionChain = generateSequence(failure) { it.cause }.take(12).toList()
+        val combinedExceptionMessages = exceptionChain.mapNotNull { it.message }.joinToString("\\n")
+        val httpStatus = Regex("""(?i)HTTP\\s+([0-9]{3})""")
+            .findAll(combinedExceptionMessages)
+            .lastOrNull()
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
         io.translatetube.local.util.AppLogStore.error(
             context = applicationContext,
             tag = tag,
@@ -4256,7 +4280,10 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 "失败分类代码" to diagnosis.code,
                 "可能原因" to diagnosis.likelyCause,
                 "建议排查方向" to diagnosis.nextStep,
-                "异常根因类型" to generateSequence(failure) { it.cause }.take(8).last().javaClass.name,
+                "异常根因类型" to exceptionChain.lastOrNull()?.javaClass?.name.orEmpty().ifBlank { "未知" },
+                "异常链类型（外层到根因）" to exceptionChain.joinToString(" -> ") { it.javaClass.name }.take(1_200),
+                "从异常中提取的 HTTP 状态码" to httpStatus.ifBlank { "未找到 HTTP 状态码" },
+                "当前是否为 HLS/M3U8 地址" to HlsAudioDownloader.isManifestUrl(mediaUrl).toString(),
             ) + extra,
             issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(tag, sourceIdentity),
         )
