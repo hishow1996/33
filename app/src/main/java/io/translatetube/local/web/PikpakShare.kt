@@ -501,6 +501,7 @@ internal object PikpakShare {
                 }
             }
             if (mediaUrl.isBlank()) mediaUrl = file.optString("download_url").orEmpty()
+            if (mediaUrl.isBlank()) mediaUrl = file.optString("media_url").orEmpty()
         }
         val isFolder = kind == "drive#folder" || fileType == "[F]"
         val isVideo = !isFolder && (
