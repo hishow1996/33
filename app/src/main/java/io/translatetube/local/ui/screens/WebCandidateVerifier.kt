@@ -232,20 +232,33 @@ internal object WebCandidateVerifier {
             }.build()
             client.newCall(request).execute().use responseUse@ { response ->
                 if (response.code !in 200..299) {
+                    // A failed HTTP status is a detection failure even though OkHttp does not
+                    // throw for it. Preserve a real diagnostic cause so the caller can persist
+                    // this failure in the app log instead of recording only a UI hint.
+                    val failure = java.io.IOException(
+                        "HLS 主清单请求失败：HTTP ${response.code} ${response.message}".trim()
+                    )
                     return@responseUse WebCandidateAudioHint(
                         message = "HLS 检测失败 · HTTP ${response.code}",
                         kind = WebCandidateAudioHintKind.FAILED,
+                        failure = failure,
                     )
                 }
                 val body = response.body ?: return@responseUse WebCandidateAudioHint(
                     message = "HLS 检测失败 · 服务器没有返回清单内容",
                     kind = WebCandidateAudioHintKind.FAILED,
+                    failure = java.io.EOFException(
+                        "HLS 主清单响应体为空（HTTP ${response.code}）。"
+                    ),
                 )
                 val manifest = readBoundedPrefix(body.byteStream(), MAX_HLS_HINT_BYTES)
                 if (manifest.lineSequence().none { it.trim().equals("#EXTM3U", ignoreCase = true) }) {
                     return@responseUse WebCandidateAudioHint(
                         message = "HLS 检测失败 · 响应内容不是有效的 M3U8 清单",
                         kind = WebCandidateAudioHintKind.FAILED,
+                        failure = IllegalStateException(
+                            "HLS 响应内容不是有效的 M3U8 清单：缺少 #EXTM3U 标记。"
+                        ),
                     )
                 }
 
