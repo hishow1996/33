@@ -1151,14 +1151,15 @@ private fun YtDlpUpdateSection() {
     }
 
     val isErrorMessage = message?.startsWith("检查失败") == true ||
+        message?.startsWith("版本检测失败") == true ||
         message?.startsWith("更新失败") == true ||
         message?.startsWith("yt-dlp 更新失败") == true
-    val hasError = isErrorMessage || (message == null && state.error != null && state.latest == null)
+    val hasError = isErrorMessage || (message == null && state.error != null)
     val statusText = when {
         isUpdating -> "正在更新规则"
         message != null -> message!!
         state.checking -> "正在检查版本…"
-        state.error != null && state.latest == null -> state.error!!
+        state.error != null -> state.error!!
         state.current == null && state.latest != null -> "已获取上游版本，本机版本暂不可读"
         state.hasUpdate -> "发现新版本"
         state.current != null && state.latest != null -> "已是最新版本"
