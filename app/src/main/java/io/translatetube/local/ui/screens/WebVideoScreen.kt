@@ -65,7 +65,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -1802,29 +1801,7 @@ fun WebVideoScreen(
                     }
                 }
             }
-            if (panelCollapsed) {
-                // 收起时完全移除 Card，只保留透明触控区域与贴屏幕底边的横线。
-                // 触控区域延伸到横线以上，但不会绘制任何面板背景或阴影。
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .height(14.dp)
-                        .offset(y = bottomSystemInset)
-                        .then(panelDragModifier)
-                        .then(panelClickModifier),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 40.dp, height = 5.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                                shape = RoundedCornerShape(2.dp),
-                            ),
-                    )
-                }
-            } else {
+            if (!panelCollapsed) {
                 Card(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -1842,30 +1819,12 @@ fun WebVideoScreen(
                     elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
                 ) {
                 Column(Modifier.fillMaxSize()) {
-                    // 仅顶部把手支持连续拖动，避免标题和视频源列表误触发面板移动。
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(24.dp)
-                            .then(panelDragModifier)
-                            .then(panelClickModifier),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(width = 36.dp, height = 4.dp)
-                                .background(
-                                    color = MaterialTheme.colorScheme.outlineVariant,
-                                    shape = RoundedCornerShape(2.dp),
-                                ),
-                        )
-                    }
                     if (panelContentVisible) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
-                                .padding(horizontal = 14.dp, vertical = 4.dp),
+                                .padding(start = 14.dp, top = 28.dp, end = 14.dp, bottom = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                 // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
@@ -2164,6 +2123,38 @@ fun WebVideoScreen(
                     }
                 }
             }
+            }
+
+            // 这个把手 Box 在展开/收起之间保持同一个组合节点，避免拖动中途被销毁。
+            // 收起时只有透明触控热区；可见横线贴在屏幕底边，不绘制面板区域。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(if (panelCollapsed) 14.dp else targetPanelHeight)
+                    .offset(y = if (panelCollapsed) bottomSystemInset else 0.dp),
+                contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.TopCenter,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (panelCollapsed) 14.dp else 24.dp)
+                        .then(panelDragModifier)
+                        .then(panelClickModifier),
+                    contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(
+                                width = if (panelCollapsed) 40.dp else 36.dp,
+                                height = if (panelCollapsed) 5.dp else 4.dp,
+                            )
+                            .background(
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(2.dp),
+                            ),
+                    )
+                }
             }
 
             }
