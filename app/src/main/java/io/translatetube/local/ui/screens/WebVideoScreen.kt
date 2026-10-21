@@ -241,8 +241,10 @@ fun WebVideoScreen(
                         "HLS 内部所选流诊断编号" to (hint.renditionUrl?.let { webSourceFingerprint(it) } ?: "无"),
                         "异常类型" to (actualHintFailure?.javaClass?.name ?: "检测模块未抛出异常"),
                         "异常详情" to (actualHintFailure?.message?.take(300) ?: "详见检测说明"),
-                        "HTTP 状态码" to Regex("""\\bHTTP\\s+(\\d{3})\\b""")
-                            .find(hint.message)?.groupValues?.getOrNull(1).orEmpty()
+                        "HTTP 状态码" to hint.message.substringAfter("HTTP ", "")
+                            .take(3)
+                            .takeIf { value -> value.length == 3 && value.all { it.isDigit() } }
+                            .orEmpty()
                             .ifBlank { "无/未返回" },
                         "是否 HLS 检测" to hint.message.startsWith("HLS 检测失败").toString(),
                         "页面导航代数" to hintPageGeneration.toString(),
