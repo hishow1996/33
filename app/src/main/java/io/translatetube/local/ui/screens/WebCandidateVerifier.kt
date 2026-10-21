@@ -423,11 +423,11 @@ internal object WebCandidateVerifier {
             ?.lowercase(java.util.Locale.ROOT)
             ?: "无"
         return mapOf(
-            "$label协议" to uri.scheme.orEmpty().ifBlank { "未知" },
-            "$label主机名" to uri.host.orEmpty().ifBlank { "未知" },
-            "$label路径（已脱敏）" to safePath.take(240),
-            "$label文件扩展名" to extension,
-            "$label查询参数名（不含值）" to queryNames.joinToString(", ").ifBlank { "无" }.take(300),
+            "${label}协议" to uri.scheme.orEmpty().ifBlank { "未知" },
+            "${label}主机名" to uri.host.orEmpty().ifBlank { "未知" },
+            "${label}路径（已脱敏）" to safePath.take(240),
+            "${label}文件扩展名" to extension,
+            "${label}查询参数名（不含值）" to queryNames.joinToString(", ").ifBlank { "无" }.take(300),
         )
     }
 
