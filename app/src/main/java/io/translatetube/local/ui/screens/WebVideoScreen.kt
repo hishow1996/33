@@ -970,7 +970,7 @@ fun WebVideoScreen(
                     pikpakNotice = when {
                         result.entries.isNotEmpty() && result.error == null ->
                             "清单已更新：共 " + pikpakEntries.count { it.isVideo } + " 个视频、" +
-                                pikpakEntries.count { it.isFolder } + " 个文件夹。点下方候选或文件夹继续。"
+                                pikpakEntries.count { it.isFolder } + " 个文件夹。点击视频播放或进入文件夹继续。"
                         result.entries.isNotEmpty() -> "部分读取成功：" + result.error
                         result.visitedParents.isNotEmpty() && result.error == null ->
                             "此前已读取过这些目录，无新增内容。"
