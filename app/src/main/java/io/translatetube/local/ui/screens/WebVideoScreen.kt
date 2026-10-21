@@ -1725,18 +1725,31 @@ fun WebVideoScreen(
                     }
 
                     if (!pageLoading && !ytDlpBusy && !ytDlpUpdatingRules) {
-                        Text(
-                            when {
-                                candidatesState.value.isNotEmpty() ->
-                                    "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证"
-                                else -> status.ifBlank { "等待检测视频源" }
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (ytDlpHint != null) MaterialTheme.colorScheme.error
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        if (candidatesState.value.isNotEmpty()) {
+                            Text(
+                                "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (status.isNotBlank()) {
+                            Text(
+                                status,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (ytDlpHint != null) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else if (candidatesState.value.isEmpty()) {
+                            Text(
+                                "等待检测视频源",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         if (
                             candidatesState.value.isEmpty() &&
                             ytDlpHint == null &&
