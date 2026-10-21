@@ -65,6 +65,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -1584,12 +1585,13 @@ fun WebVideoScreen(
             )
 
 
-            val minPanelHeight = 28.dp.coerceAtMost(maxHeight)
+            val minPanelHeight = 8.dp.coerceAtMost(maxHeight)
             val maxPanelHeight = (maxHeight * 0.92f)
                 .coerceAtLeast(minPanelHeight)
                 .coerceAtMost(maxHeight)
             val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
-            val panelContentVisible = targetPanelHeight > minPanelHeight + 8.dp
+            val panelCollapsed = targetPanelHeight <= minPanelHeight + 1.dp
+            val panelContentVisible = !panelCollapsed
             val density = LocalDensity.current
             val panelDragModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
                 detectVerticalDragGestures(
@@ -1800,23 +1802,31 @@ fun WebVideoScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .height(targetPanelHeight),
-                shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
+                shape = if (panelCollapsed) RoundedCornerShape(0.dp) else
+                    RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (panelCollapsed) Color.Transparent else MaterialTheme.colorScheme.surface,
+                ),
+                elevation = CardDefaults.cardElevation(
+                    defaultElevation = if (panelCollapsed) 0.dp else 14.dp,
+                ),
             ) {
                 Column(Modifier.fillMaxSize()) {
                     // 仅顶部把手支持连续拖动，避免标题和视频源列表误触发面板移动。
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(24.dp)
+                            .height(if (panelCollapsed) targetPanelHeight else 24.dp)
                             .then(panelDragModifier)
                             .then(panelClickModifier),
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(width = 36.dp, height = 4.dp)
+                                .size(
+                                    width = if (panelCollapsed) 40.dp else 36.dp,
+                                    height = if (panelCollapsed) 5.dp else 4.dp,
+                                )
                                 .background(
                                     color = MaterialTheme.colorScheme.outlineVariant,
                                     shape = RoundedCornerShape(2.dp),
