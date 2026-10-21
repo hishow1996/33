@@ -112,6 +112,10 @@ data class PlayerUiState(
     val selectedQuality: String = "",
     val availableSubtitleTracks: List<SubtitleTrackOption> = emptyList(),
     val subtitleTrackStatus: String = "",
+    /** The user opted to translate the transcript externally instead of using the configured engine. */
+    val manualTranslationModeEnabled: Boolean = false,
+    /** The transcription/translation pipeline is waiting for an external translated subtitle file. */
+    val manualTranslationWaiting: Boolean = false,
     val isProcessingPaused: Boolean = false,
     val processingFlow: ProcessingFlow = ProcessingFlow.AUTO,
     /** Last active pipeline stage when processing entered ERROR. */
@@ -183,6 +187,10 @@ class PlaybackService : MediaSessionService() {
         }
     }
     private var prepJob: Job? = null
+    private val manualTranslationRequestedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val manualTranslationWaiters =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<List<SubLine>>>()
+    private val manualTranslationSources = java.util.concurrent.ConcurrentHashMap<String, List<SubLine>>()
     private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
     @Volatile private var processingPaused = false
     @Volatile private var videoKey = ""
@@ -1192,6 +1200,15 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
+        for (oldKey in manualTranslationRequestedKeys.toList()) {
+            if (oldKey != key) manualTranslationRequestedKeys.remove(oldKey)
+        }
+        for (oldKey in manualTranslationWaiters.keys.toList()) {
+            if (oldKey != key) {
+                manualTranslationWaiters.remove(oldKey)?.cancel()
+                manualTranslationSources.remove(oldKey)
+            }
+        }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
@@ -1269,6 +1286,8 @@ class PlaybackService : MediaSessionService() {
             engineName = resumeState?.engineName.orEmpty(),
             translationCacheKey = effectiveTranslationCacheKey,
             ttsEngineName = configuredTtsName,
+            manualTranslationModeEnabled = manualTranslationRequestedKeys.contains(key),
+            manualTranslationWaiting = false,
         )
         io.translatetube.local.util.AppLogStore.info(
             this@PlaybackService,
@@ -1456,6 +1475,170 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         }
         subtitleDownloadJob = job
         job.start()
+    }
+
+
+    /**
+     * Pause the active five-stage pipeline after its source subtitle rows become available,
+     * allowing the user to export them, translate externally, and resume by importing the result.
+     */
+    fun enableManualSubtitleTranslation() {
+        val current = ui.value
+        val key = current.key
+        if (key.isBlank()) return
+        if (current.phase !in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING)) {
+            android.widget.Toast.makeText(
+                this,
+                "请在原文字幕转写或翻译阶段启用外部翻译模式。",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        manualTranslationRequestedKeys.add(key)
+        ui.update { state ->
+            if (state.key == key) state.copy(
+                manualTranslationModeEnabled = true,
+                subtitleTrackStatus = "已启用外部翻译模式；原文字幕生成后将暂停等待导入译文。",
+            ) else state
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "Subtitles",
+            "已启用外部翻译模式",
+            diagnosticContext = mapOf("字幕任务键类型" to when {
+                key.startsWith("youtube:") -> "YouTube"
+                key.startsWith("remote:") -> "网页视频/远程媒体"
+                key.startsWith("local:") -> "本地视频"
+                else -> "其他"
+            }),
+        )
+    }
+
+    /** Import the externally translated file into the waiting pipeline, retaining the original timeline. */
+    fun importManualTranslatedSubtitle(uri: Uri) {
+        val sessionKey = ui.value.key
+        val waiter = manualTranslationWaiters[sessionKey]
+        if (sessionKey.isBlank() || waiter == null || !ui.value.manualTranslationWaiting) {
+            android.widget.Toast.makeText(
+                this,
+                "请先启用外部翻译模式，等待原文字幕生成后再导入译文。",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+
+        scope.launch {
+            try {
+                val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                val decoded = withContext(Dispatchers.IO) {
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取选中的字幕文件")
+                    input.use {
+                        io.translatetube.local.yt.BoundedTextPayload.readBytes(
+                            it,
+                            maxBytes = 8L * 1024L * 1024L,
+                            resourceLabel = "外部翻译字幕文件",
+                            checkActive = { ownerJob?.ensureActive() },
+                        ).let(io.translatetube.local.subs.SubtitleFileDecoder::decode)
+                    }
+                }
+                val translated = withContext(Dispatchers.Default) {
+                    SubtitleParsers.parseAutoCancellable(decoded) {
+                        ownerJob?.ensureActive()
+                    }.filter { line ->
+                        line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
+                    }
+                }
+                ensureCurrentSession(sessionKey)
+                val source = manualTranslationSources[sessionKey]
+                    ?: throw IllegalStateException("原文字幕等待状态已失效，请重新启动该流程")
+                val merged = io.translatetube.local.subs.ManualSubtitleTranslationMerger.merge(source, translated)
+                ensureCurrentSession(sessionKey)
+                if (!waiter.complete(merged)) {
+                    throw IllegalStateException("当前字幕等待任务已结束，请重新启用外部翻译模式")
+                }
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        subtitleTrackStatus = "已导入外部译文，正在沿用原字幕时间轴继续处理。",
+                        progress = "已匹配译文时间轴，正在继续配音准备…",
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "Subtitles",
+                    "导入外部翻译字幕失败",
+                    e,
+                )
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        manualTranslationWaiting = true,
+                        manualTranslationModeEnabled = true,
+                        subtitleTrackStatus = "导入失败，可重新选择译文文件：" + (e.message ?: e.javaClass.simpleName),
+                        progress = "译文导入失败，请检查字幕时间轴后重试。",
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        this@PlaybackService,
+                        "译文导入失败：" + (e.message ?: e.javaClass.simpleName),
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private suspend fun awaitManualSubtitleTranslation(
+        sessionKey: String,
+        originalLines: List<SubLine>,
+        sourceLang: String,
+        pipelineGeneration: Long?,
+    ): List<SubLine>? {
+        if (!manualTranslationRequestedKeys.contains(sessionKey)) return null
+        val sourceOnly = originalLines.mapIndexed { index, line ->
+            line.copy(index = index, zh = null)
+        }
+        require(sourceOnly.isNotEmpty()) { "没有可供外部翻译的原文字幕" }
+        val newWaiter = kotlinx.coroutines.CompletableDeferred<List<SubLine>>()
+        val existing = manualTranslationWaiters.putIfAbsent(sessionKey, newWaiter)
+        val waiter = existing ?: newWaiter
+        manualTranslationSources[sessionKey] = sourceOnly
+        updateUiForSession(sessionKey, pipelineGeneration) {
+            it.copy(
+                phase = Phase.TRANSLATING,
+                lines = sourceOnly,
+                totalLines = sourceOnly.size,
+                translatedLineCount = 0,
+                manualTranslationModeEnabled = true,
+                manualTranslationWaiting = true,
+                progress = "原文字幕已生成（" + sourceOnly.size + " 条），请导出后外部翻译，再导入译文继续。",
+                subtitleTrackStatus = "正在等待外部翻译字幕文件；当前视频与原文时间轴已保留。",
+            )
+        }
+        try {
+            val merged = waiter.await()
+            ensureCurrentSession(sessionKey, pipelineGeneration)
+            manualTranslationRequestedKeys.remove(sessionKey)
+            updateUiForSession(sessionKey, pipelineGeneration) {
+                it.copy(
+                    lines = merged,
+                    totalLines = merged.size,
+                    translatedLineCount = merged.count { line -> !line.zh.isNullOrBlank() },
+                    manualTranslationModeEnabled = false,
+                    manualTranslationWaiting = false,
+                    progress = "外部译文已载入，继续准备视频字幕与配音…",
+                    subtitleTrackStatus = "外部译文已匹配到原文时间轴。",
+                )
+            }
+            return merged
+        } finally {
+            manualTranslationWaiters.remove(sessionKey, waiter)
+            manualTranslationSources.remove(sessionKey)
+            if (!waiter.isCompleted) manualTranslationRequestedKeys.remove(sessionKey)
+        }
     }
 
     /**
@@ -2367,7 +2550,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // Older builds may have persisted a progress placeholder (for example, "正在翻译")
             // as every row's Chinese text. Never trust such cache entries: retranslate from the
             // cached original subtitles instead of displaying the placeholder as completed output.
-            var cached = storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+            var cached = if (manualTranslationRequestedKeys.contains(key)) {
+                null
+            } else {
+                storedTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+            }
             if (storedTranslationCache != null && cached == null) {
                 android.util.Log.w(
                     "PlaybackService",
@@ -3239,7 +3426,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 } else {
                     restored
                 }
-                if (!isChineseLanguage(srcLang) && restored.any { line ->
+                val manualRestoredLines = awaitManualSubtitleTranslation(
+                    key, lines.orEmpty(), srcLang, pipelineGeneration,
+                )
+                if (manualRestoredLines != null) {
+                    lines = manualRestoredLines
+                } else if (!isChineseLanguage(srcLang) && restored.any { line ->
                     needsSubtitleTranslation(line, srcLang)
                 }) {
                     updateUiForSession(key, pipelineGeneration) {
@@ -3261,7 +3453,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         srcLang,
                         translatedLines.asSequence().map { it.text }.asIterable(),
                     )
-                if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
+                val externalTranslatedLines = awaitManualSubtitleTranslation(
+                    key, translatedLines, srcLang, pipelineGeneration,
+                )
+                if (externalTranslatedLines != null) {
+                    translatedLines = externalTranslatedLines
+                } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                     updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
                     translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
                 } else if (translatedLines.isNotEmpty()) {
@@ -3815,6 +4012,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         activeIdOverride: Long? = null,
         pipelineGeneration: Long? = null,
     ): List<SubLine> {
+        awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         updateUiForSession(key, pipelineGeneration) { state ->
@@ -3902,6 +4100,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // subtitle timeline to Room after every 10 translated cues.
         val translationBatches = pendingIndices.chunked(batchSize)
         for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
+            awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
             awaitProcessingResumed(key, pipelineGeneration)
             // The playback layer calls the engine once per small batch, so carry the previous
             // completed cues here; otherwise engine-local context resets at every boundary.
@@ -4098,6 +4297,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             )
         }
+        awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
         return updatedLines
     }
 
