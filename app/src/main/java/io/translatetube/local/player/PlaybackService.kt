@@ -5512,8 +5512,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     private fun safelySetOriginalVolume(volume: Float, source: String) {
         try {
             if (playerReady && ::pm.isInitialized) {
-                // Central safety gate: async cleanup/fallback callbacks must not unmute source
-                // audio over a cue that has already begun speaking.
+                // Central safety gate: neither asynchronous fallback callbacks nor an
+                // unfinished/failed cue may override the user's explicit original-audio mute.
+                // Also prevent narration tracks from overlapping while dubbed speech is active.
                 val state = ui.value
                 val engine = dubbing
                 val activeIndex = engine?.currentLineIdx() ?: -1
@@ -5521,7 +5522,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     engine != null &&
                     activeIndex >= 0 &&
                     engine.hasStartedPlaybackFor(activeIndex)
-                pm.originalVolume = if (dubbedSpeechIsActive) 0f else volume
+                pm.originalVolume = if (state.muteOriginal || dubbedSpeechIsActive) 0f else volume
             }
         } catch (error: Exception) {
             io.translatetube.local.util.AppLogStore.warning(
