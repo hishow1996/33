@@ -1,3 +1,4 @@
+# Build validation for unified external subtitle translation across YouTube, web, and local media (2026-10-21).
 # Re-run validation after correcting Kotlin compilation blockers.
 # User-requested APK build for latest main changes (2026-10-21).
 # Retry after aligning the HTML response test fixture with its asserted Content-Type.
