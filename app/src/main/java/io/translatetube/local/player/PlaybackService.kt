@@ -5456,6 +5456,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (highlightTimelineSource !== lines) {
             highlightTimeline = DubbingTimeline(lines)
             highlightTimelineSource = lines
+            // Don't carry a line index across a newly published subtitle snapshot.
+            lastLineIdx = Int.MIN_VALUE
         }
         val activeLine = highlightTimeline.lineAt(positionMs)
         if (activeLine in lines.indices) return activeLine
