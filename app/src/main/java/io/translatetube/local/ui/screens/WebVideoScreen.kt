@@ -31,7 +31,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -86,6 +88,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
+import kotlin.math.abs
 
 private const val TAG_WEB = "WebVideoScreen"
 
@@ -1733,21 +1736,58 @@ fun WebVideoScreen(
             val bottomSystemInset = with(density) {
                 WindowInsets.navigationBars.getBottom(this).toDp()
             }
-            val panelDragModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
-                detectVerticalDragGestures(
-                    onVerticalDrag = { _, dragAmount ->
-                        val deltaDp = with(density) { dragAmount.toDp().value }
-                        sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
-                            .coerceIn(minPanelHeight.value, maxPanelHeight.value)
-                    },
-                )
-            }
-            val panelClickModifier = Modifier.clickable {
-                // 点顶部粗横线：收起到只露把手，或恢复到初始面板高度。
-                sourcePanelHeightDp = if (!panelCollapsed) {
-                    minPanelHeight.value
-                } else {
-                    panelExpandedHeight.value
+            // 点击和拖动共用同一个手势识别器：未越过系统 touch slop 且正常抬手才算点击；
+            // 越过阈值后立即进入拖动模式，本次手势结束绝不再触发点击，防止拖动时误隐藏。
+            val panelHandleModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val touchSlop = viewConfiguration.touchSlop
+                    var dragStarted = false
+                    var horizontalGesture = false
+                    var finished = false
+                    var lastY = down.position.y
+
+                    while (!finished) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val dx = change.position.x - down.position.x
+                        val dy = change.position.y - down.position.y
+
+                        if (!dragStarted && !horizontalGesture) {
+                            when {
+                                abs(dx) > touchSlop && abs(dx) > abs(dy) -> {
+                                    horizontalGesture = true
+                                }
+                                abs(dy) > touchSlop -> {
+                                    dragStarted = true
+                                    val overSlopY = if (dy > 0f) dy - touchSlop else dy + touchSlop
+                                    val deltaDp = with(density) { overSlopY.toDp().value }
+                                    sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
+                                        .coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                                    change.consume()
+                                }
+                            }
+                        } else if (dragStarted && change.pressed) {
+                            val deltaY = change.position.y - lastY
+                            val deltaDp = with(density) { deltaY.toDp().value }
+                            sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
+                                .coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                            change.consume()
+                        }
+
+                        lastY = change.position.y
+                        if (!change.pressed) finished = true
+                    }
+
+                    if (finished && !dragStarted && !horizontalGesture) {
+                        val isCurrentlyExpanded =
+                            sourcePanelHeightDp > minPanelHeight.value + 1f
+                        sourcePanelHeightDp = if (isCurrentlyExpanded) {
+                            minPanelHeight.value
+                        } else {
+                            panelExpandedHeight.value
+                        }
+                    }
                 }
             }
 
@@ -2251,33 +2291,23 @@ fun WebVideoScreen(
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .width(80.dp)
                         .height(24.dp)
-                        .then(panelDragModifier),
+                        .then(panelHandleModifier),
                     contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
                 ) {
-                    // 点击把手单独处理，避免与父级纵向拖动手势争抢点击事件。
-                    // 透明触控区域比横线本身更宽，展开时点横线即可立即完全收起。
                     Box(
                         modifier = Modifier
-                            .width(80.dp)
-                            .height(24.dp)
-                            .then(panelClickModifier),
-                        contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(
-                                    width = if (panelCollapsed) 48.dp else 36.dp,
-                                    height = if (panelCollapsed) 6.dp else 4.dp,
-                                )
-                                .background(
-                                    color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
-                                        else MaterialTheme.colorScheme.outlineVariant,
-                                    shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
-                                ),
-                        )
-                    }
+                            .size(
+                                width = if (panelCollapsed) 48.dp else 36.dp,
+                                height = if (panelCollapsed) 6.dp else 4.dp,
+                            )
+                            .background(
+                                color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
+                            ),
+                    )
                 }
             }
 
