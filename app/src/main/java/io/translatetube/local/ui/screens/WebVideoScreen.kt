@@ -2253,22 +2253,31 @@ fun WebVideoScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(24.dp)
-                        .then(panelDragModifier)
-                        .then(panelClickModifier),
+                        .then(panelDragModifier),
                     contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
                 ) {
+                    // 点击把手单独处理，避免与父级纵向拖动手势争抢点击事件。
+                    // 透明触控区域比横线本身更宽，展开时点横线即可立即完全收起。
                     Box(
                         modifier = Modifier
-                            .size(
-                                width = if (panelCollapsed) 48.dp else 36.dp,
-                                height = if (panelCollapsed) 6.dp else 4.dp,
-                            )
-                            .background(
-                                color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
-                                    else MaterialTheme.colorScheme.outlineVariant,
-                                shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
-                            ),
-                    )
+                            .width(80.dp)
+                            .height(24.dp)
+                            .then(panelClickModifier),
+                        contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(
+                                    width = if (panelCollapsed) 48.dp else 36.dp,
+                                    height = if (panelCollapsed) 6.dp else 4.dp,
+                                )
+                                .background(
+                                    color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
+                                        else MaterialTheme.colorScheme.outlineVariant,
+                                    shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
+                                ),
+                        )
+                    }
                 }
             }
 
