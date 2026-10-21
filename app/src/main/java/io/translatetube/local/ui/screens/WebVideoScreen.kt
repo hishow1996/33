@@ -73,6 +73,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import io.translatetube.local.web.PikpakShare.PikpakEntry
 import io.translatetube.local.web.PikpakShare
 import io.translatetube.local.web.WebMediaUrlPolicy
+import io.translatetube.local.web.BilibiliDeepLinkPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1298,6 +1299,43 @@ fun WebVideoScreen(
                             }
                         }
                         webViewClient = object : WebViewClient() {
+                            /**
+                             * Bilibili share links can redirect to bilibili://video/... rather than
+                             * an HTTP page. Convert recognized Bilibili video deep links and keep
+                             * navigation inside this WebView so video-source detection can run.
+                             */
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView,
+                                request: WebResourceRequest,
+                            ): Boolean {
+                                if (!request.isForMainFrame) return false
+                                val originalUrl = request.url.toString()
+                                val convertedUrl = BilibiliDeepLinkPolicy.toWebUrl(originalUrl)
+                                    ?: return false
+                                val safeUrl = WebMediaUrlPolicy.normalizePageUrl(convertedUrl)
+                                    ?: return false
+                                val originalScheme = request.url.scheme.orEmpty()
+
+                                mainHandler.post {
+                                    if (!screenActive.get()) return@post
+                                    address = safeUrl
+                                    status = "已识别 B 站分享链接，正在打开视频网页…"
+                                    io.translatetube.local.util.AppLogStore.info(
+                                        context = appCtx,
+                                        tag = "WebPageLoad",
+                                        message = "已将 B 站客户端深链转换为 HTTPS 视频页",
+                                        diagnosticContext = mapOf(
+                                            "原始跳转协议" to originalScheme,
+                                            "转换后页面主机名" to webSourceHost(safeUrl),
+                                            "页面导航代数" to pageGeneration.get().toString(),
+                                            "处理方式" to "在应用内继续加载并检测视频源",
+                                        ),
+                                    )
+                                    view.loadUrl(safeUrl)
+                                }
+                                return true
+                            }
+
                             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
                                 resetForNavigation(url)
