@@ -171,3 +171,5 @@ jobs:
 # User-requested APK build for latest main source ab085aed346585a53d9e0f942b3175c04fb3f56d (2026-10-20).
 
 # Explicit APK build trigger requested on 2026-10-21.
+
+# Rebuild latest main including PikPak WebView blank-page recovery (2026-10-21).
