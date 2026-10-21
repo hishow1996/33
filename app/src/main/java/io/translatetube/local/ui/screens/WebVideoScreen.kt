@@ -241,14 +241,22 @@ fun WebVideoScreen(
                         "HLS 内部所选流诊断编号" to (hint.renditionUrl?.let { webSourceFingerprint(it) } ?: "无"),
                         "异常类型" to (actualHintFailure?.javaClass?.name ?: "检测模块未抛出异常"),
                         "异常详情" to (actualHintFailure?.message?.take(300) ?: "详见检测说明"),
+                        "HTTP 状态码" to Regex("""\\bHTTP\\s+(\\d{3})\\b""")
+                            .find(hint.message)?.groupValues?.getOrNull(1).orEmpty()
+                            .ifBlank { "无/未返回" },
+                        "是否 HLS 检测" to hint.message.startsWith("HLS 检测失败").toString(),
                         "页面导航代数" to hintPageGeneration.toString(),
                         "检测方式" to if (WebCandidateAudioHintKind.DETECTING == hint.kind) "等待 HLS 检测" else "读取候选源音轨提示",
                     )
                     if (hint.kind == WebCandidateAudioHintKind.FAILED) {
-                        io.translatetube.local.util.AppLogStore.warning(
+                        // Detection failures must be visible in the "错误" log filter, not only
+                        // as WARN entries. Use a dedicated tag so HLS failures can be searched
+                        // directly in the in-app diagnostic history.
+                        val isHlsFailure = hint.message.startsWith("HLS 检测失败")
+                        io.translatetube.local.util.AppLogStore.error(
                             context = appCtx,
-                            tag = "WebSourceAudioHint",
-                            message = "网页媒体源音轨类型识别失败",
+                            tag = if (isHlsFailure) "HlsAudioDetection" else "WebAudioTrackDetection",
+                            message = if (isHlsFailure) "HLS 清单音轨检测失败" else "网页媒体源音轨类型检测失败",
                             failure = actualHintFailure,
                             diagnosticContext = diagnostics,
                             issueKey = issueKey,
