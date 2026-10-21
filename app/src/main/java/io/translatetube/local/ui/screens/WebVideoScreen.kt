@@ -152,6 +152,97 @@ internal data class WebVideoCandidate(
     val verified: Boolean = false,
 )
 
+/** One-line card summary: source type, resolution and codecs; bitrate stays in the expanded details. */
+private fun WebCandidateAudioHint.compactSummary(): String {
+    val info = mediaInfo
+    val parts = mutableListOf(
+        when (kind) {
+            WebCandidateAudioHintKind.DETECTING -> "正在检测音轨"
+            WebCandidateAudioHintKind.INDEPENDENT -> "独立音轨"
+            WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> "音画混合（低码率档）"
+            WebCandidateAudioHintKind.MUXED_DIRECT -> "音画混合直链"
+            WebCandidateAudioHintKind.NO_AUDIO -> "未检测到音轨"
+            WebCandidateAudioHintKind.FAILED -> "音轨检测失败"
+            WebCandidateAudioHintKind.UNKNOWN -> "音轨类型待确认"
+        },
+    )
+    if (info == null) return parts.first()
+
+    val minHeight = info.videoHeightMin
+    val maxHeight = info.videoHeightMax
+    val resolution = if (minHeight != null && maxHeight != null && minHeight != maxHeight) {
+        "${minHeight}p–${maxHeight}p"
+    } else {
+        WebMediaFormat.resolutionLabel(info.videoWidth, info.videoHeight)
+    }
+    if (info.hasVideo != false) {
+        resolution?.let { parts += "视频 $it" }
+        info.videoCodec?.let { parts += it }
+    }
+    if (info.hasAudio == false) {
+        parts += "无音轨"
+    } else if (info.hasAudio == true) {
+        val audioParts = buildList {
+            info.audioCodec?.let { add(it) }
+            info.audioChannels?.let { add(WebMediaFormat.channels(it)) }
+            info.audioLanguage?.takeIf { it.isNotBlank() }?.let { add(it) }
+            if (info.audioTrackCount > 1) add("${info.audioTrackCount} 条音轨")
+        }
+        if (audioParts.isNotEmpty()) parts += "音频 ${audioParts.joinToString(" ")}"
+    }
+    return parts.distinct().joinToString(" · ")
+}
+
+/** Detailed media fields for the opt-in expansion on each candidate card. */
+private fun WebCandidateAudioHint.detailRows(): List<Pair<String, String>> {
+    val info = mediaInfo
+    if (info == null) {
+        return buildList {
+            if (message.isNotBlank()) add("检测说明" to message)
+            diagnosticContext.entries
+                .filter { it.key != "检测步骤" && it.value.isNotBlank() }
+                .take(12)
+                .forEach { add(it.key to it.value) }
+        }
+    }
+
+    return buildList {
+        info.container?.let { add("容器格式" to it) }
+        info.hasVideo?.let { add("视频轨" to if (it) "有" else "无") }
+        info.hasAudio?.let { add("音轨" to if (it) "有" else "无") }
+        if (info.audioTrackCount > 0) add("音轨数量" to info.audioTrackCount.toString())
+        info.durationSeconds?.takeIf { it > 0.0 }?.let {
+            add("时长" to WebMediaFormat.duration(it))
+        }
+        info.videoCodec?.let { add("视频编码" to it) }
+        WebMediaFormat.resolutionLabel(info.videoWidth, info.videoHeight)?.let {
+            add("视频分辨率" to it)
+        }
+        if (info.videoHeightMin != null && info.videoHeightMax != null &&
+            info.videoHeightMin != info.videoHeightMax
+        ) {
+            add("清晰度范围" to "${info.videoHeightMin}p–${info.videoHeightMax}p")
+        }
+        if (info.videoVariantCount > 1) add("画质档位数量" to info.videoVariantCount.toString())
+        val videoRange = info.videoBitrateMinBps?.let { min ->
+            info.videoBitrateMaxBps?.takeIf { it != min }?.let { max ->
+                "${WebMediaFormat.bitrate(min)}–${WebMediaFormat.bitrate(max)}"
+            }
+        }
+        val videoBitrate = videoRange ?: info.videoBitrateBps?.let(WebMediaFormat::bitrate)
+        videoBitrate?.let { add("视频码率" to (info.videoBitrateBasis.prefix + it)) }
+        if (videoBitrate != null) add("视频码率依据" to info.videoBitrateBasis.diagnosticName)
+        info.audioCodec?.let { add("音频编码" to it) }
+        info.audioChannels?.let { add("音频声道" to WebMediaFormat.channels(it)) }
+        info.audioSampleRate?.let { add("音频采样率" to "${it} Hz") }
+        info.audioBitrateBps?.let {
+            add("音频码率" to (info.audioBitrateBasis.prefix + WebMediaFormat.bitrate(it)))
+            add("音频码率依据" to info.audioBitrateBasis.diagnosticName)
+        }
+        info.audioLanguage?.takeIf { it.isNotBlank() }?.let { add("音频语言" to it) }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -2125,6 +2216,8 @@ fun WebVideoScreen(
                         items(displayCandidates, key = { it.url }) { candidate ->
                             val sourceHint = sourceHints[candidate.url]
                                 ?: WebCandidateVerifier.initialAudioHint(candidate.url)
+                            val detailRows = sourceHint.detailRows()
+                            var showMediaDetails by remember(candidate.url) { mutableStateOf(false) }
                             val hintColor = when (sourceHint.kind) {
                                 WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
@@ -2177,16 +2270,17 @@ fun WebVideoScreen(
                                             }
                                         }
                                         Text(
-                                            sourceHint.message,
+                                            candidate.url,
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = hintColor,
-                                            maxLines = 3,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
-                                            candidate.url,
+                                            sourceHint.compactSummary(),
                                             style = MaterialTheme.typography.labelSmall,
-                                            maxLines = 1,
+                                            color = hintColor,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         if (sourceHint.kind == WebCandidateAudioHintKind.FAILED) {
@@ -2211,6 +2305,56 @@ fun WebVideoScreen(
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
+                                        }
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { showMediaDetails = !showMediaDetails }
+                                                .padding(vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                "更多参数",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Icon(
+                                                imageVector = if (showMediaDetails) Icons.Filled.KeyboardArrowUp
+                                                    else Icons.Filled.KeyboardArrowDown,
+                                                contentDescription = if (showMediaDetails) "收起参数" else "展开参数",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                        AnimatedVisibility(visible = showMediaDetails) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 2.dp, bottom = 4.dp),
+                                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                                            ) {
+                                                detailRows.forEach { (label, value) ->
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.Top,
+                                                    ) {
+                                                        Text(
+                                                            label,
+                                                            modifier = Modifier.widthIn(min = 76.dp, max = 104.dp),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        )
+                                                        Spacer(Modifier.width(8.dp))
+                                                        Text(
+                                                            value,
+                                                            modifier = Modifier.weight(1f),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.onSurface,
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     Button(
