@@ -86,7 +86,7 @@ class WebCandidateVerifierTest {
             server.enqueue(
                 MockResponse()
                     .setResponseCode(200)
-                    .addHeader("Content-Type", "text/html; charset=utf-8")
+                    .addHeader("Content-Type", "text/html")
                     .setBody("<html>login required</html>")
             )
 
