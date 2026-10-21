@@ -8,7 +8,7 @@ package io.translatetube.local.web
  * normalization path. It deliberately recognizes only HTTP(S), not app-only schemes.
  */
 internal object SharedLinkTextParser {
-    private val webUrlPattern = Regex("""(?i)https?://[^\\s<>\\"'`]+""")
+    private val webUrlPattern = Regex("""(?i)https?://[^\\s<>\"'`]+""")
     private val trailingPunctuation = setOf(
         '.', ',', ';', ':', '!', '?',
         '，', '。', '；', '：', '！', '？', '、',
