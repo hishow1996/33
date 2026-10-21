@@ -249,7 +249,7 @@ fun WebVideoScreen(
                         "是否 HLS 检测" to hint.message.startsWith("HLS 检测失败").toString(),
                         "页面导航代数" to hintPageGeneration.toString(),
                         "检测方式" to if (WebCandidateAudioHintKind.DETECTING == hint.kind) "等待 HLS 检测" else "读取候选源音轨提示",
-                    )
+                    ) + hint.diagnosticContext
                     if (hint.kind == WebCandidateAudioHintKind.FAILED) {
                         // Detection failures must be visible in the "错误" log filter, not only
                         // as WARN entries. Use a dedicated tag so HLS failures can be searched
