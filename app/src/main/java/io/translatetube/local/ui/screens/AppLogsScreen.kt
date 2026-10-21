@@ -747,7 +747,6 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
 }
 
 @Composable
-@Composable
 private fun DiagnosisSummaryCard(diagnosis: io.translatetube.local.util.AppLogDiagnosis) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -822,6 +821,7 @@ private fun DiagnosisSummaryCard(diagnosis: io.translatetube.local.util.AppLogDi
     }
 }
 
+@Composable
 private fun DetailSection(title: String, text: String) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
