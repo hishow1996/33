@@ -142,6 +142,7 @@ class PlayerManager(private val ctx: Context) {
     }
 
     init {
+        player.volume = 1f
         // 音频焦点：耳机拔出/来电/其他应用播放时自动暂停或压低
         player.setAudioAttributes(
             androidx.media3.common.AudioAttributes.Builder()
@@ -432,9 +433,10 @@ class PlayerManager(private val ctx: Context) {
         player.playbackParameters = PlaybackParameters(DubbingTiming.normalizePlayerSpeed(s))
     }
     fun playbackSpeed(): Float = player.playbackParameters.speed
+    /** 原声增益：不能用 player.volume（会连混进同一路输出的配音一起静音），改为控制混流处理器。 */
     var originalVolume: Float
-        get() = player.volume
-        set(v) { player.volume = v }
+        get() = dubbingProcessor.originalGain
+        set(v) { dubbingProcessor.originalGain = v.coerceIn(0f, 1f) }
     fun duration(): Long = if (released) 0L else
         runCatching { player.duration.coerceAtLeast(0) }
             .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read duration", it) }
