@@ -4710,6 +4710,36 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                                 throw cancelled
                             } catch (probeError: Exception) {
                                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                val sourceUri = runCatching { android.net.Uri.parse(mediaUrl) }.getOrNull()
+                                io.translatetube.local.util.AppLogStore.error(
+                                    context = this@PlaybackService,
+                                    tag = "WebHlsManifestProbe",
+                                    message = "流式音轨提取失败后，检测网页媒体是否为 HLS 清单时发生异常",
+                                    failure = probeError,
+                                    diagnosticContext = remoteAudioBaseDiagnostics(
+                                        mediaUrl,
+                                        referrer,
+                                        cookie,
+                                        "流式音轨提取失败后的 HLS 清单探测",
+                                    ) + mapOf(
+                                        "前序流式提取异常类型" to streamingError.javaClass.name,
+                                        "前序流式提取异常详情" to
+                                            (streamingError.message ?: "无异常消息").take(300),
+                                        "前序异常分类" to
+                                            io.translatetube.local.player.RemoteAudioFailurePolicy
+                                                .classify(streamingError).code,
+                                        "HLS 探测异常类型" to probeError.javaClass.name,
+                                        "HLS 探测异常详情" to
+                                            (probeError.message ?: "无异常消息").take(300),
+                                    ),
+                                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                                        "WebHlsManifestProbe",
+                                        listOf(
+                                            sourceUri?.host.orEmpty(),
+                                            sourceUri?.path.orEmpty(),
+                                        ).joinToString("|"),
+                                    ),
+                                )
                                 android.util.Log.w(
                                     "PlaybackService",
                                     "检查网页媒体是否为 HLS 清单失败",
