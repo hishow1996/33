@@ -203,6 +203,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var activePipelineGeneration = 0L
     private var dubbingMutationGenerationCounter = 0L
     @Volatile private var activeDubbingMutationGeneration = 0L
+    @Volatile private var processingEngineConfigFingerprint = ""
+    private var enginePreferencesListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
+    @Volatile private var enginePreferenceRestartJob: Job? = null
     // Serialize every flow that creates/replaces a DubbingEngine. YouTube, remote web media,
     // local video and imported subtitles must not initialize a new TTS engine while a cancelled
     // pipeline is still unwinding a blocking Android TTS/JNI call.
@@ -282,6 +285,113 @@ class PlaybackService : MediaSessionService() {
         Phase.TRANSLATING, Phase.SYNTHESIZING,
     )
 
+    private fun isProcessingEnginePreferenceKey(key: String): Boolean =
+        key == "active_api_id" ||
+            key.startsWith("asr_") ||
+            key.startsWith("tts_") ||
+            key.startsWith("piper_") ||
+            key.startsWith("kokoro_") ||
+            key.startsWith("system_tts_") ||
+            key.startsWith("free_gemini_") ||
+            key.startsWith("free_deepseek_") ||
+            key.contains("translate", ignoreCase = true) ||
+            key.contains("translation", ignoreCase = true)
+
+    /**
+     * Hash only the settings that influence transcription, translation or synthesis.
+     * The fingerprint is diagnostic-safe: API keys and other preference values are never logged.
+     */
+    private fun processingEnginePreferenceFingerprint(): String {
+        val relevant = getSharedPreferences("settings", MODE_PRIVATE).all.entries
+            .filter { entry -> isProcessingEnginePreferenceKey(entry.key) }
+            .sortedBy { entry -> entry.key }
+            .joinToString("\n") { entry ->
+                val value = when (val raw = entry.value) {
+                    is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
+                    else -> raw?.toString().orEmpty()
+                }
+                "${entry.key}=$value"
+            }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(relevant.toByteArray(Charsets.UTF_8))
+        return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun shouldRestartForEnginePreferenceChange(state: PlayerUiState): Boolean =
+        isProcessingPhase(state.phase) || (
+            state.phase == Phase.READY &&
+                (state.waitingForTranscriptionEngine || state.waitingForDubbingEngine)
+            )
+
+    private fun registerProcessingEnginePreferenceWatcher() {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
+            if (changedKey != null && isProcessingEnginePreferenceKey(changedKey)) {
+                val latestFingerprint = processingEnginePreferenceFingerprint()
+                val current = ui.value
+                if (!shouldRestartForEnginePreferenceChange(current)) {
+                    processingEngineConfigFingerprint = latestFingerprint
+                } else if (latestFingerprint != processingEngineConfigFingerprint) {
+                    // Debounce rapid preference writes so a single settings change restarts the
+                    // pipeline once, using the final selected ASR/translation/TTS configuration.
+                    enginePreferenceRestartJob?.cancel()
+                    enginePreferenceRestartJob = scope.launch {
+                        kotlinx.coroutines.delay(850L)
+                        val stableFingerprint = processingEnginePreferenceFingerprint()
+                        val state = ui.value
+                        if (!shouldRestartForEnginePreferenceChange(state)) {
+                            processingEngineConfigFingerprint = stableFingerprint
+                            return@launch
+                        }
+                        if (stableFingerprint == processingEngineConfigFingerprint) return@launch
+                        val sessionKey = videoKey
+                        if (sessionKey.isBlank() || state.key != sessionKey) {
+                            processingEngineConfigFingerprint = stableFingerprint
+                            return@launch
+                        }
+                        val restartVideoId = videoId ?: sessionKey
+                            .takeIf { it.startsWith("youtube:") }
+                            ?.removePrefix("youtube:")
+                        val restartLocalUri = localUri
+                        val restartRemoteUrl = remoteMediaUrl
+                        val restartRemoteTitle = remoteMediaTitle
+                        val restartRemoteReferrer = remoteMediaReferrer
+                        val restartRemoteCookie = remoteMediaCookie
+                        val restartRemoteUserAgent = remoteMediaUserAgent
+                        val restartRequestToken = activeOpenRequestToken
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "处理期间检测到引擎设置变化，自动按新配置重新处理当前视频",
+                            diagnosticContext = mapOf(
+                                "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                                "触发时处理阶段" to state.phase.name,
+                                "处理流程" to state.processingFlow.name,
+                                "旧引擎配置指纹" to processingEngineConfigFingerprint.take(16),
+                                "新引擎配置指纹" to stableFingerprint.take(16),
+                                "音频策略" to "重新检查缓存；转写/翻译缓存按所选引擎隔离；重新准备配音",
+                            ),
+                        )
+                        open(
+                            key = sessionKey,
+                            videoId = restartVideoId,
+                            localUri = restartLocalUri,
+                            resumeState = null,
+                            remoteMediaUrl = restartRemoteUrl,
+                            remoteMediaTitle = restartRemoteTitle,
+                            remoteMediaReferrer = restartRemoteReferrer,
+                            remoteMediaCookie = restartRemoteCookie,
+                            remoteMediaUserAgent = restartRemoteUserAgent,
+                            requestToken = restartRequestToken,
+                        )
+                    }
+                }
+            }
+        }
+        enginePreferencesListener = listener
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+    }
     /** Processing checkpoints wait here while paused. */
     private suspend fun awaitProcessingResumed(
         sessionKey: String,
@@ -378,6 +488,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        registerProcessingEnginePreferenceWatcher()
         // 先尽早建立前台通知，再初始化播放器；任何初始化异常都转成页面错误，
         // 避免点击“观看”后因 Service onCreate 抛异常而直接杀掉整个进程。
         try {
@@ -955,6 +1066,15 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        enginePreferenceRestartJob?.cancel()
+        enginePreferenceRestartJob = null
+        enginePreferencesListener?.let { listener ->
+            runCatching {
+                getSharedPreferences("settings", MODE_PRIVATE)
+                    .unregisterOnSharedPreferenceChangeListener(listener)
+            }
+        }
+        enginePreferencesListener = null
         // Cancel work before releasing services it may still be using. In particular, the
         // local ASR JNI recognizer must not be released while a synchronous decode call is active.
         cancelDubbingDrainAfterVideoEnd()
@@ -1063,6 +1183,7 @@ class PlaybackService : MediaSessionService() {
             }
             return
         }
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
@@ -2181,11 +2302,22 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
             } ?: key
             val providerFingerprint = translationProviderFingerprint(selectedTranslationId)
-            val storedAsrProvider = getSharedPreferences("settings", MODE_PRIVATE)
-                .getString("asr_provider", "local") ?: "local"
+            val settingsPrefs = getSharedPreferences("settings", MODE_PRIVATE)
+            val storedAsrProvider = settingsPrefs.getString("asr_provider", "local") ?: "local"
             val asrProvider = storedAsrProvider.takeIf {
                 it == "local" || it == "elevenlabs" || it == "cartesia" || it == "kawa"
             } ?: "local"
+            val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
+            val cloudAsrLanguageIdentity = when (asrProvider) {
+                "cartesia" -> settingsPrefs.getString("asr_cartesia_language", "en") ?: "en"
+                "kawa" -> settingsPrefs.getString("asr_kawa_language", "auto") ?: "auto"
+                else -> "auto"
+            }.replace(Regex("[^A-Za-z0-9_-]"), "_")
+            val asrCacheIdentity = if (asrProvider == "local") {
+                "local-$localAsrModelId"
+            } else {
+                "$asrProvider-$cloudAsrLanguageIdentity"
+            }
             val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
                 activeId = selectedTranslationId,
@@ -2193,24 +2325,27 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 previousKey = resumeState?.translationCacheKey,
                 providerFingerprint = providerFingerprint,
             )
-            val localAsrModelId = io.translatetube.local.data.ModelFiles.selectedLocalAsrModelId(this)
-            // Keep locally generated transcript/translation caches model-specific to avoid stale output
-            // when a user switches between Whisper and SenseVoice.
-            val translationCacheKey = if (
-                asrProvider == "local" && sourceImportedLines.isNullOrEmpty()
-            ) "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3" else baseTranslationCacheKey
+            // An ASR provider switch must never reuse captions/translations generated by a different
+            // recognizer. Keep imported subtitle tasks independent of ASR settings.
+            val translationCacheKey = when {
+                !sourceImportedLines.isNullOrEmpty() -> baseTranslationCacheKey
+                asrProvider == "local" -> "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
+                else -> "$baseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
+            }
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                // Keep local ASR transcript caches separate by model selection.
-                // v5: YouTube 滚动字幕已整理为一句一条；旧 v4 缓存里是重复行，不能再用。
-                videoId != null -> "$key|source|youtube-v5" +
-                    if (asrProvider == "local") "|asr-$localAsrModelId" else ""
+                // YouTube rolling captions were normalized to one cue per line in v5.
+                // Keep the existing local-model cache where possible; isolate cloud ASR by provider.
+                videoId != null -> "$key|source|youtube-v5" + when (asrProvider) {
+                    "local" -> "|asr-$localAsrModelId"
+                    else -> "|asr-$asrCacheIdentity-cloud-v1"
+                }
                 remoteMediaUrl != null && asrProvider == "local" ->
                     "$cacheKeyBase|source|remote-asr-$localAsrModelId-timed-v3"
-                remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-v1"
+                remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-$asrCacheIdentity-timed-v4"
                 localUri != null && asrProvider == "local" ->
                     "$key|source|local-asr-$localAsrModelId-timed-v3"
-                else -> "$key|source|local-asr-v1"
+                else -> "$key|source|local-asr-$asrCacheIdentity-timed-v4"
             }
             // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
             if (resumeState == null) {
@@ -5313,9 +5448,15 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             highlightTimeline = DubbingTimeline(lines)
             highlightTimelineSource = lines
         }
-        return highlightTimeline.lineAt(positionMs)
-    }
+        val activeLine = highlightTimeline.lineAt(positionMs)
+        if (activeLine in lines.indices) return activeLine
 
+        // Small timing gaps between cues should not make the unified caption strip flicker.
+        // Keep the previous cue briefly, until the next cue starts or the gap is substantial.
+        val previousLine = lines.getOrNull(lastLineIdx) ?: return -1
+        val gapAfterPreviousCue = positionMs - previousLine.endMs
+        return if (gapAfterPreviousCue in 0L..1_200L) lastLineIdx else -1
+    }
     /**
      * ExoPlayer invokes some callbacks synchronously from seek()/play() on its application looper.
      * A stale subtitle snapshot or a TTS transition must not let an ordinary runtime exception
@@ -6586,9 +6727,23 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
     }
 
-    // Backward-compatible entry point; the player control now selects the original-only mode.
-    fun toggleMute() = selectOriginalPlayback()
-    fun toggleAudioOnly() {
+    /** Toggle the original audio track without forcing the player into original-only mode. */
+    fun toggleMute() {
+        val current = ui.value
+        if (current.key.isBlank()) return
+        val mute = !current.muteOriginal
+        ui.update { state ->
+            if (state.key == current.key) state.copy(muteOriginal = mute) else state
+        }
+        if (::pm.isInitialized) {
+            safelySetOriginalVolume(if (mute) 0f else 1f, "original audio toggle")
+            if (!mute && ui.value.dubbingOn) {
+                // If a dubbed sentence is active the safety gate keeps the source track ducked;
+                // the next timeline tick restores original audio when no dubbed voice is speaking.
+                tickFromPlayerCallback(pm.position(), "original audio enabled")
+            }
+        }
+    }    fun toggleAudioOnly() {
         val nowOnly = !ui.value.audioOnly
         ui.update { it.copy(audioOnly = nowOnly) }
         // 关画面：禁视频轨（省电）；重开恢复
