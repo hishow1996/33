@@ -454,6 +454,7 @@ fun WebVideoScreen(
     var ytDlpBusy by remember(initialUrl) { mutableStateOf(false) }
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
     var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
+    var ytDlpUpdatingRules by remember(currentPage) { mutableStateOf(false) }
     var ytDlpDetailsExpanded by remember(currentPage) { mutableStateOf(false) }
     var pageLoadToken by remember(initialUrl) { mutableStateOf(0) }
 
@@ -1624,7 +1625,7 @@ fun WebVideoScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     AnimatedVisibility(
-                        visible = pageLoading || ytDlpBusy,
+                        visible = pageLoading || ytDlpBusy || ytDlpUpdatingRules,
                         enter = fadeIn(animationSpec = tween(150)) +
                             expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
                         exit = fadeOut(animationSpec = tween(110)) +
@@ -1640,18 +1641,24 @@ fun WebVideoScreen(
                                 strokeWidth = 2.dp,
                             )
                             Text(
-                                if (ytDlpBusy) "yt-dlp 正在解析视频资源…" else "正在加载网页并检测视频源…",
+                                when {
+                                    ytDlpUpdatingRules -> "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
+                                    ytDlpBusy -> "yt-dlp 正在解析视频资源…"
+                                    else -> "正在加载网页并检测视频源…"
+                                },
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            TextButton(
-                                onClick = { cancelWebParsing() },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            ) {
-                                Text(if (ytDlpBusy) "取消解析" else "停止加载", maxLines = 1)
+                            if (!ytDlpUpdatingRules) {
+                                TextButton(
+                                    onClick = { cancelWebParsing() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                ) {
+                                    Text(if (ytDlpBusy) "取消解析" else "停止加载", maxLines = 1)
+                                }
                             }
                         }
                     }
@@ -1673,20 +1680,19 @@ fun WebVideoScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
-                                var updatingRules by remember(currentPage) { mutableStateOf(false) }
                                 TextButton(
                                     modifier = Modifier.heightIn(min = 30.dp),
                                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                    enabled = !updatingRules && !ytDlpBusy,
+                                    enabled = !ytDlpUpdatingRules && !ytDlpBusy,
                                     onClick = {
-                                        updatingRules = true
+                                        ytDlpUpdatingRules = true
                                         ytDlpHint = null
                                         status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
                                         ytScope.launch(Dispatchers.IO) {
                                             try {
                                                 val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
                                                 mainHandler.post {
-                                                    updatingRules = false
+                                                    ytDlpUpdatingRules = false
                                                     status = message
                                                 }
                                             } catch (e: CancellationException) {
@@ -1704,7 +1710,7 @@ fun WebVideoScreen(
                                                     ),
                                                 )
                                                 mainHandler.post {
-                                                    updatingRules = false
+                                                    ytDlpUpdatingRules = false
                                                     ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
                                                     status = "规则更新失败，可稍后重试。"
                                                 }
@@ -1712,13 +1718,13 @@ fun WebVideoScreen(
                                         }
                                     },
                                 ) {
-                                    Text(if (updatingRules) "更新中…" else "更新规则", maxLines = 1)
+                                    Text(if (ytDlpUpdatingRules) "更新中…" else "更新规则", maxLines = 1)
                                 }
                             }
                         }
                     }
 
-                    if (!pageLoading && !ytDlpBusy) {
+                    if (!pageLoading && !ytDlpBusy && !ytDlpUpdatingRules) {
                         Text(
                             when {
                                 candidatesState.value.isNotEmpty() ->
