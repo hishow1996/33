@@ -29,6 +29,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -1606,8 +1608,8 @@ fun WebVideoScreen(
                 }
             }
 
-            // 面板向下收起后，网页窗口与面板之间自然露出空白区。
-            // 把检测标题、候选数和状态放在这里，不再挤占视频源面板顶部。
+            // 面板下拉时，固定网页窗口与面板之间露出的空白区域专门承载加载、
+            // 媒体检测、候选验证和 yt-dlp 状态；覆盖面板本身只呈现来源列表。
             val statusGapHeight = (panelPeekHeight - targetPanelHeight).coerceAtLeast(0.dp)
             if (statusGapHeight >= 36.dp) {
                 Column(
@@ -1617,26 +1619,161 @@ fun WebVideoScreen(
                         .fillMaxWidth()
                         .height(statusGapHeight)
                         .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(
-                        "检测到的视频源",
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                    )
-                    Text(
-                        when {
-                            candidatesState.value.isNotEmpty() ->
-                                "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证"
-                            pageLoading || ytDlpBusy -> status
-                            else -> status.ifBlank { "等待检测视频源" }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    AnimatedVisibility(
+                        visible = pageLoading || ytDlpBusy,
+                        enter = fadeIn(animationSpec = tween(150)) +
+                            expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+                        exit = fadeOut(animationSpec = tween(110)) +
+                            shrinkVertically(animationSpec = tween(150)),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Text(
+                                if (ytDlpBusy) "yt-dlp 正在解析视频资源…" else "正在加载网页并检测视频源…",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            TextButton(
+                                onClick = { cancelWebParsing() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            ) {
+                                Text(if (ytDlpBusy) "取消解析" else "停止加载", maxLines = 1)
+                            }
+                        }
+                    }
+
+                    if (ytDlpHint != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                if (ytDlpDetailsExpanded) ytDlpHint.orEmpty() else "yt-dlp 解析异常 · 点击查看原因",
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { ytDlpDetailsExpanded = !ytDlpDetailsExpanded },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                maxLines = if (ytDlpDetailsExpanded) 4 else 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
+                                var updatingRules by remember(currentPage) { mutableStateOf(false) }
+                                TextButton(
+                                    modifier = Modifier.heightIn(min = 30.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    enabled = !updatingRules && !ytDlpBusy,
+                                    onClick = {
+                                        updatingRules = true
+                                        ytDlpHint = null
+                                        status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
+                                        ytScope.launch(Dispatchers.IO) {
+                                            try {
+                                                val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
+                                                mainHandler.post {
+                                                    updatingRules = false
+                                                    status = message
+                                                }
+                                            } catch (e: CancellationException) {
+                                                throw e
+                                            } catch (e: Exception) {
+                                                io.translatetube.local.util.AppLogStore.error(
+                                                    appCtx,
+                                                    "YtDlp",
+                                                    "手动更新网页视频解析规则失败",
+                                                    e,
+                                                    diagnosticContext = mapOf(
+                                                        "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
+                                                        "操作" to "用户从网页视频页手动更新规则",
+                                                        "当前页面是否仍活跃" to screenActive.get().toString(),
+                                                    ),
+                                                )
+                                                mainHandler.post {
+                                                    updatingRules = false
+                                                    ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
+                                                    status = "规则更新失败，可稍后重试。"
+                                                }
+                                            }
+                                        }
+                                    },
+                                ) {
+                                    Text(if (updatingRules) "更新中…" else "更新规则", maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+
+                    if (!pageLoading && !ytDlpBusy) {
+                        Text(
+                            when {
+                                candidatesState.value.isNotEmpty() ->
+                                    "${candidatesState.value.size} 个候选源 · ${verifiedUrls.size} 个已验证"
+                                else -> status.ifBlank { "等待检测视频源" }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (ytDlpHint != null) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (
+                            candidatesState.value.isEmpty() &&
+                            ytDlpHint == null &&
+                            ytDlpAutoAttempts == 0 &&
+                            PikpakShare.parseShareId(currentPage) == null &&
+                            WebMediaUrlPolicy.normalizePageUrl(currentPage) != null
+                        ) {
+                            Text(
+                                "候选源验证中，必要时将尝试备用解析。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    // 分享页的加载/清单状态也放在空白区域，视频源面板里只留可操作的文件与候选源。
+                    if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
+                        val pikpakFolders = pikpakEntries.filter { it.isFolder }
+                        val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
+                        Text(
+                            when {
+                                pikpakBusy -> "正在读取 PikPak 分享清单…"
+                                pikpakNeedsPasscode -> "该 PikPak 分享需要提取码，请在面板中输入后读取。"
+                                pikpakEntries.isEmpty() -> "正在读取 PikPak 文件清单…"
+                                else -> "PikPak：${pikpakVideos.size} 个视频 · ${pikpakFolders.size} 个文件夹"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (pikpakNeedsPasscode) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (pikpakNotice != null) {
+                            Text(
+                                pikpakNotice.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (pikpakNeedsPasscode) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
             Card(
@@ -1675,158 +1812,12 @@ fun WebVideoScreen(
                                 .padding(horizontal = 14.dp, vertical = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                if (candidatesState.value.isEmpty() && !pageLoading && !ytDlpBusy) {
-                    Text(
-                        status,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                AnimatedVisibility(
-                    visible = pageLoading || ytDlpBusy,
-                    enter = fadeIn(animationSpec = tween(150)) +
-                        expandVertically(
-                            animationSpec = tween(180, easing = FastOutSlowInEasing),
-                        ),
-                    exit = fadeOut(animationSpec = tween(110)) +
-                        shrinkVertically(
-                            animationSpec = tween(150, easing = FastOutSlowInEasing),
-                        ),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        androidx.compose.material3.CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                        )
-                        Text(
-                            if (ytDlpBusy) "正在解析视频资源…" else "正在加载网页并检测视频…",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                        )
-                        TextButton(onClick = { cancelWebParsing() }) {
-                            Text(if (ytDlpBusy) "取消解析" else "停止加载")
-                        }
-                    }
-                }
-                if (ytDlpHint != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            if (ytDlpDetailsExpanded) ytDlpHint.orEmpty() else "yt-dlp 解析失败 · 点击查看原因",
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { ytDlpDetailsExpanded = !ytDlpDetailsExpanded },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            maxLines = if (ytDlpDetailsExpanded) 3 else 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)) {
-                            var updatingRules by remember(currentPage) { mutableStateOf(false) }
-                            TextButton(
-                                modifier = Modifier.heightIn(min = 32.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                enabled = !updatingRules && !ytDlpBusy,
-                                onClick = {
-                                    updatingRules = true
-                                    ytDlpHint = null
-                                    status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
-                                    ytScope.launch(Dispatchers.IO) {
-                                        try {
-                                            val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
-                                            mainHandler.post {
-                                                updatingRules = false
-                                                status = message
-                                            }
-                                        } catch (e: CancellationException) {
-                                            throw e
-                                        } catch (e: Exception) {
-                                            io.translatetube.local.util.AppLogStore.error(
-                                                appCtx,
-                                                "YtDlp",
-                                                "手动更新网页视频解析规则失败",
-                                                e,
-                                                diagnosticContext = mapOf(
-                                                    "页面主机名" to (runCatching { android.net.Uri.parse(currentPage).host }.getOrNull() ?: "未知"),
-                                                    "操作" to "用户从网页视频页手动更新规则",
-                                                    "当前页面是否仍活跃" to screenActive.get().toString(),
-                                                ),
-                                            )
-                                            mainHandler.post {
-                                                updatingRules = false
-                                                ytDlpHint = "规则更新失败：${e.message ?: "网络错误"}"
-                                                status = "规则更新失败，可稍后重试。"
-                                            }
-                                        }
-                                    }
-                                },
-                            ) { Text(if (updatingRules) "更新中…" else "更新规则", maxLines = 1) }
-                        }
-                    }
-                }
-                if (
-                    !pageLoading &&
-                    !ytDlpBusy &&
-                    ytDlpAutoAttempts == 0 &&
-                    candidatesState.value.none { candidate ->
-                        candidate.url in verifiedUrls &&
-                            WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
-                    } &&
-                    PikpakShare.parseShareId(currentPage) == null &&
-                    WebMediaUrlPolicy.normalizePageUrl(currentPage) != null
-                ) {
-                    Text(
-                        "候选源验证中，必要时将尝试备用解析。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
                 // ---- PikPak 分享清单区：识别到分享链接或已捕获清单时显示 ----
                 if (PikpakShare.parseShareId(currentPage) != null || pikpakShareId != null) {
                     val pikpakFolders = pikpakEntries.filter { it.isFolder }
                         .sortedBy { it.name.lowercase() }
                     val pikpakVideos = pikpakEntries.filter { it.isVideo && it.downloadUrl.isNotBlank() }
-                    Text("PikPak 分享清单", style = MaterialTheme.typography.titleMedium)
-                    if (pikpakEntries.isEmpty()) {
-                        Text(
-                            "已识别 PikPak 分享链接，正在读取文件清单；若迟迟无结果，请在上方网页里点一下任意文件夹。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        Text(
-                            "共 ${pikpakVideos.size} 个视频、${pikpakFolders.size} 个文件夹。视频已加入下方候选列表，点候选卡片即可转写翻译配音。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (pikpakNotice != null) {
-                        Text(
-                            pikpakNotice.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (pikpakNeedsPasscode) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                     if (pikpakNeedsPasscode) {
-                        Text(
-                            "该分享需要提取码：网页打不开也没关系，直接在下面输入提取码即可读取清单。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
                         var passcodeInput by remember(initialUrl) {
                             mutableStateOf(pikpakPassCode)
                         }
@@ -1857,11 +1848,7 @@ fun WebVideoScreen(
                     }
                     TextButton(enabled = !pikpakBusy, onClick = { expandPikpak("") }) {
                         Text(
-                            when {
-                                pikpakBusy -> "读取中…"
-                                pikpakEntries.isEmpty() -> "立即读取清单"
-                                else -> "展开全部文件夹"
-                            }
+                            if (pikpakEntries.isEmpty()) "立即读取清单" else "展开全部文件夹"
                         )
                     }
                     if (pikpakFolders.isNotEmpty()) {
