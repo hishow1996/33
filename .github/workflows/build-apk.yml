@@ -175,3 +175,5 @@ jobs:
 # Rebuild latest main including PikPak WebView blank-page recovery (2026-10-21).
 
 # One-time build request marker: 2026-10-21T17:24+08:00
+
+# Explicit user-requested APK build trigger (2026-10-21 19:24 +08:00).
