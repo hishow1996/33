@@ -129,14 +129,15 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         }
         val query = searchQuery.trim()
         if (query.isBlank()) levelFiltered else levelFiltered.filter { record ->
+            val diagnosis = AppLogDiagnostics.analyze(record)
             record.tag.contains(query, ignoreCase = true) ||
                 record.message.contains(query, ignoreCase = true) ||
                 record.details.contains(query, ignoreCase = true) ||
                 record.thread.contains(query, ignoreCase = true) ||
                 record.issueKey.contains(query, ignoreCase = true) ||
-                record.resolvesIssueKey.contains(query, ignoreCase = true)
-                || AppLogDiagnostics.analyze(record).finding.contains(query, ignoreCase = true)
-                || AppLogDiagnostics.analyze(record).category.contains(query, ignoreCase = true)
+                record.resolvesIssueKey.contains(query, ignoreCase = true) ||
+                diagnosis.finding.contains(query, ignoreCase = true) ||
+                diagnosis.category.contains(query, ignoreCase = true)
         }
     }
     val unresolvedCount = records.count {

@@ -122,7 +122,11 @@ object AppLogDiagnostics {
                 ),
             )
         }
-        if (hasAny("sockettimeoutexception", "timeout", "timed out", "超时")) {
+        val recordedHttpError = (
+            Regex("""(?i)\bHTTP(?:\s*状态码)?\s*[:：]?\s*(\d{3})\b""").find(raw)
+                ?: Regex("""(?i)\bHTTP/\d(?:\.\d)?\s+(\d{3})\b""").find(raw)
+            )?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { it in 400..599 } == true
+        if (!recordedHttpError && hasAny("sockettimeoutexception", "timeout", "timed out", "超时")) {
             return result(
                 "请求或处理超时",
                 "超时现象已确认，具体阶段待定位",
