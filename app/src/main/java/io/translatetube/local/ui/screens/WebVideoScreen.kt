@@ -1593,6 +1593,11 @@ fun WebVideoScreen(
             val panelCollapsed = targetPanelHeight <= minPanelHeight + 1.dp
             val panelContentVisible = !panelCollapsed && targetPanelHeight > minPanelHeight + 8.dp
             val density = LocalDensity.current
+            // Scaffold 内容默认避开系统导航栏；偏移一个导航栏 inset，
+            // 让收起态的横线贴到物理屏幕底边，而不是停在应用内容底边。
+            val bottomSystemInset = with(density) {
+                WindowInsets.navigationBars.getBottom(this).toDp()
+            }
             val panelDragModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
                 detectVerticalDragGestures(
                     onVerticalDrag = { _, dragAmount ->
@@ -1797,36 +1802,58 @@ fun WebVideoScreen(
                     }
                 }
             }
-            Card(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(targetPanelHeight),
-                shape = if (panelCollapsed) RoundedCornerShape(0.dp) else
-                    RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (panelCollapsed) Color.Transparent else MaterialTheme.colorScheme.surface,
-                ),
-                elevation = CardDefaults.cardElevation(
-                    defaultElevation = if (panelCollapsed) 0.dp else 14.dp,
-                ),
-            ) {
+            if (panelCollapsed) {
+                // 收起时完全移除 Card，只保留透明触控区域与贴屏幕底边的横线。
+                // 触控区域延伸到横线以上，但不会绘制任何面板背景或阴影。
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(14.dp)
+                        .offset(y = bottomSystemInset)
+                        .then(panelDragModifier)
+                        .then(panelClickModifier),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 40.dp, height = 5.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(2.dp),
+                            ),
+                    )
+                }
+            } else {
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(targetPanelHeight),
+                    shape = RoundedCornerShape(
+                        topStart = 22.dp,
+                        topEnd = 22.dp,
+                        bottomStart = 0.dp,
+                        bottomEnd = 0.dp,
+                    ),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
+                ) {
                 Column(Modifier.fillMaxSize()) {
                     // 仅顶部把手支持连续拖动，避免标题和视频源列表误触发面板移动。
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(if (panelCollapsed) targetPanelHeight else 24.dp)
+                            .height(24.dp)
                             .then(panelDragModifier)
                             .then(panelClickModifier),
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(
-                                    width = if (panelCollapsed) 40.dp else 36.dp,
-                                    height = if (panelCollapsed) 5.dp else 4.dp,
-                                )
+                                .size(width = 36.dp, height = 4.dp)
                                 .background(
                                     color = MaterialTheme.colorScheme.outlineVariant,
                                     shape = RoundedCornerShape(2.dp),
@@ -2136,6 +2163,7 @@ fun WebVideoScreen(
                         }
                     }
                 }
+            }
             }
 
             }
