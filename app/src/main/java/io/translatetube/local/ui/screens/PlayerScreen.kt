@@ -1159,28 +1159,7 @@ private fun VideoParsingPage(
                     modifier = Modifier.size(21.dp),
                 )
             }
-            Box(
-                Modifier
-                    .weight(1f)
-                    .padding(horizontal = 4.dp),
-                contentAlignment = androidx.compose.ui.Alignment.Center,
-            ) {
-                Text(
-                    VideoProcessingFlowPolicy.pageTitle(
-                        source,
-                        flow,
-                        failed = isError,
-                    ),
-                    color = Color(0xFF17243B),
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = (-0.35).sp,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Spacer(Modifier.weight(1f))
             Box {
                 IconButton(
                     onClick = { processingSettingsOpen = true },
