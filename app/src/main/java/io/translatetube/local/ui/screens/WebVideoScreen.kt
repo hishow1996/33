@@ -162,7 +162,7 @@ fun WebVideoScreen(
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
-    var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(112f) } // 初始面板位置固定对应网页窗口底边，之后可拖动
+    var sourcePanelHeightDp by remember(initialUrl) { mutableStateOf(8f) } // 默认完全收起，只在屏幕底边显示把手
     var pageTitle by remember { mutableStateOf("") }
     var verificationAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     var noSourceLoggedForPage by remember(initialUrl) { mutableStateOf(false) }
@@ -1722,6 +1722,8 @@ fun WebVideoScreen(
             val maxPanelHeight = (maxHeight * 0.92f)
                 .coerceAtLeast(minPanelHeight)
                 .coerceAtMost(maxHeight)
+            // 点底部把手展开时，默认显示约两张视频源卡片；小屏幕自动适配可用高度。
+            val panelExpandedHeight = 260.dp.coerceAtMost(maxPanelHeight)
             val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
             val panelCollapsed = targetPanelHeight <= minPanelHeight + 1.dp
             val panelContentVisible = !panelCollapsed && targetPanelHeight > minPanelHeight + 8.dp
@@ -1745,7 +1747,7 @@ fun WebVideoScreen(
                 sourcePanelHeightDp = if (!panelCollapsed) {
                     minPanelHeight.value
                 } else {
-                    panelPeekHeight.value
+                    panelExpandedHeight.value
                 }
             }
 
@@ -2243,14 +2245,14 @@ fun WebVideoScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(if (panelCollapsed) 14.dp else targetPanelHeight)
+                    .height(if (panelCollapsed) 24.dp else targetPanelHeight)
                     .offset(y = if (panelCollapsed) bottomSystemInset else 0.dp),
                 contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.TopCenter,
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (panelCollapsed) 14.dp else 24.dp)
+                        .height(24.dp)
                         .then(panelDragModifier)
                         .then(panelClickModifier),
                     contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
@@ -2258,12 +2260,13 @@ fun WebVideoScreen(
                     Box(
                         modifier = Modifier
                             .size(
-                                width = if (panelCollapsed) 40.dp else 36.dp,
-                                height = if (panelCollapsed) 5.dp else 4.dp,
+                                width = if (panelCollapsed) 48.dp else 36.dp,
+                                height = if (panelCollapsed) 6.dp else 4.dp,
                             )
                             .background(
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                                shape = RoundedCornerShape(2.dp),
+                                color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.outlineVariant,
+                                shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
                             ),
                     )
                 }
