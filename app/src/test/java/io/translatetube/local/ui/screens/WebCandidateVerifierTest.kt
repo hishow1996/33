@@ -52,7 +52,7 @@ class WebCandidateVerifierTest {
                 MockResponse()
                     .setResponseCode(410)
                     .setHeader("Content-Type", "text/plain")
-                    .setBody("expired")
+                    .setBody("expired; token=do-not-save")
             )
 
             val hint = WebCandidateVerifier.inspectAudioHint(
@@ -69,6 +69,8 @@ class WebCandidateVerifierTest {
             assertTrue(hint.failure?.message.orEmpty().contains("HTTP 410"))
             assertEquals("410", hint.diagnosticContext["HTTP 状态码"])
             assertEquals("text/plain", hint.diagnosticContext["响应 Content-Type"])
+            assertTrue(hint.diagnosticContext["HTTP 错误响应体摘要"].orEmpty().contains("expired"))
+            assertTrue(!hint.diagnosticContext.values.any { it.contains("do-not-save") })
             assertTrue(hint.diagnosticContext["请求地址查询参数名（不含值）"].orEmpty().contains("token"))
             assertTrue(!hint.diagnosticContext.values.any { it.contains("do-not-log") })
         } finally {
