@@ -1011,8 +1011,19 @@ internal object HlsAudioDownloader {
                 contentType,
             )
         }
+        val responseUrl = response.request.url
+        val queryNames = (0 until responseUrl.querySize)
+            .map { responseUrl.queryParameterName(it) }
+            .distinct()
+            .joinToString(", ")
+            .take(300)
+            .ifBlank { "无" }
+        val safePath = safeHlsPath(responseUrl)
         return buildString {
             append(stage).append("：")
+            append("响应主机名=").append(responseUrl.host).append("；")
+            append("响应路径（已脱敏）=").append(safePath).append("；")
+            append("查询参数名（不含值）=").append(queryNames).append("；")
             append("HTTP ").append(response.code).append(' ').append(response.message).append("；")
             append("Content-Type=").append(body?.contentType()?.toString() ?: "未提供").append("；")
             append("Content-Length=").append(
@@ -1026,6 +1037,18 @@ internal object HlsAudioDownloader {
             append("Server=").append(response.header("Server") ?: "未提供").append("；")
             append("响应摘要=").append(bodySummary)
         }
+    }
+
+    private fun safeHlsPath(url: okhttp3.HttpUrl): String {
+        val sensitivePathToken = Regex("""(?i)(token|signature|auth|secret|password|credential|session|jwt|expires|access.?key)""")
+        return url.encodedPathSegments.map { segment ->
+            when {
+                segment.isBlank() -> ""
+                sensitivePathToken.containsMatchIn(segment) -> "[疑似凭据路径段已隐藏]"
+                segment.length > 48 -> "[长路径段已隐藏:${segment.length}字符]"
+                else -> segment
+            }
+        }.joinToString("/", prefix = "/").take(240)
     }
 
     private fun safeReadResponsePrefix(input: java.io.InputStream, maxBytes: Int): String {
@@ -1046,6 +1069,11 @@ internal object HlsAudioDownloader {
     private fun summarizeHlsErrorText(value: String, contentType: String): String {
         val prefix = value.removePrefix("\uFEFF").trim()
         if (prefix.isBlank()) return "响应体为空或服务器未返回正文"
+        val printableRatio = prefix.count { char ->
+            char == '\n' || char == '\r' || char == '\t' ||
+                (char.code >= 0x20 && char.code != 0xFFFD)
+        }.toDouble() / prefix.length.toDouble()
+        if (printableRatio < 0.85) return "疑似二进制响应（正文未记录）"
         if (contentType.contains("html", ignoreCase = true) || prefix.startsWith("<")) {
             val title = Regex("""(?is)<title[^>]*>(.*?)</title>""")
                 .find(prefix)?.groupValues?.getOrNull(1)
