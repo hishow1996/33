@@ -160,7 +160,11 @@ internal object PikpakShare {
         val files = root.optJSONArray("files")
         if (files != null) {
             for (index in 0 until files.length()) {
-                val entry = parseFile(files.optJSONObject(index) ?: continue, parentId) ?: continue
+                val entry = parseFile(
+                    files.optJSONObject(index) ?: continue,
+                    parentId,
+                    includeMediaUrl = root.optString("api").equals("file_info", ignoreCase = true),
+                ) ?: continue
                 entries.add(entry)
             }
         }
@@ -200,7 +204,6 @@ internal object PikpakShare {
             return PikpakEnumeration(emptyList(), visited, needsPasscode, "PikPak 鉴权初始化失败，请检查网络后重试。")
         }
         var captchaRefreshed = false
-        var fileInfoQuota = 30
         while (queue.isNotEmpty() && visited.size < maxFolders && entries.size < maxEntries) {
             val parent = queue.removeFirst()
             if (!visited.add(parent)) continue
@@ -290,7 +293,7 @@ internal object PikpakShare {
                     val files = json.optJSONArray("files")
                     if (files != null) {
                         for (index in 0 until files.length()) {
-                            val entry = parseFile(files.optJSONObject(index) ?: continue, parent) ?: continue
+                            val entry = parseFile(files.optJSONObject(index) ?: continue, parent, includeMediaUrl = false) ?: continue
                             entries.add(entry)
                         }
                     }
@@ -310,26 +313,7 @@ internal object PikpakShare {
             entries.filter { it.parentId == parent && it.isFolder && it.id !in visited }
                 .forEach { queue.addLast(it.id) }
         }
-        // 无直链的视频条目补取 file_info（限量，防拖慢清单；只补视频，图片/文档不浪费配额）
-        if (lastError == null && fileInfoQuota > 0) {
-            val detailCaptcha = captchaToken(deviceId, "GET:$DRIVE_BASE/drive/v1/share/file_info")
-            if (detailCaptcha != null) {
-                val updated = entries.map { entry ->
-                    if (entry.isVideo && entry.downloadUrl.isBlank() && fileInfoQuota > 0) {
-                        fileInfoQuota--
-                        fetchFileInfo(shareId, entry.id, passcodeToken, passCode, deviceId, detailCaptcha)?.let { fetched ->
-                            PikpakEntry(entry.id, entry.name, entry.parentId, entry.isFolder,
-                                fetched.isVideo, fetched.downloadUrl, fetched.sizeBytes)
-                        } ?: entry
-                    } else {
-                        entry
-                    }
-                }
-                entries.clear()
-                entries.addAll(updated)
-            }
-        }
-        if (queue.isNotEmpty() && lastError == null && entries.size >= maxEntries) {
+        // 视频直链不在清单阶段逐个补取；只在用户点选播放时查询 file_info。if (queue.isNotEmpty() && lastError == null && entries.size >= maxEntries) {
             lastError = "分享内容较多，已读取前 $maxEntries 个文件；可点具体文件夹继续展开。"
         }
         return PikpakEnumeration(entries.toList(), visited.toSet(), needsPasscode, lastError)
@@ -395,6 +379,33 @@ internal object PikpakShare {
     @Volatile
     private var cachedDeviceId: String = ""
 
+    /**
+     * 仅在用户点击播放时解析所选视频的最新直链。清单枚举不调用此方法，
+     * 避免一打开分享就为大量视频逐个请求 file_info。
+     */
+    fun resolveVideoUrl(
+        shareId: String,
+        fileId: String,
+        passcodeToken: String = "",
+        passCode: String = "",
+        deviceUuid: String = "",
+        fallbackUrl: String = "",
+    ): String? {
+        val deviceId = deviceUuid.ifBlank { randomHex32() }
+        val captcha = captchaToken(deviceId, "GET:$DRIVE_BASE/drive/v1/share/file_info")
+        val latestUrl = captcha?.let { token ->
+            fetchFileInfo(
+                shareId = shareId,
+                fileId = fileId,
+                passcodeToken = passcodeToken,
+                passCode = passCode,
+                deviceId = deviceId,
+                captcha = token,
+            )?.downloadUrl?.takeIf { it.isNotBlank() }
+        }
+        return latestUrl ?: fallbackUrl.takeIf { it.isNotBlank() }
+    }
+
     /** 单文件直链补取：GET /drive/v1/share/file_info?share_id=&file_id=&pass_code_token=。 */
     private fun fetchFileInfo(
         shareId: String,
@@ -446,7 +457,11 @@ internal object PikpakShare {
      * 解析单个文件条目。文件夹判定 kind=="drive#folder" 或 file_type=="[F]"；
      * 直链优先级 web_content_link > links{*.url} > medias[].link.url > download_url。
      */
-    private fun parseFile(file: JSONObject, parentId: String): PikpakEntry? {
+    private fun parseFile(
+        file: JSONObject,
+        parentId: String,
+        includeMediaUrl: Boolean = true,
+    ): PikpakEntry? {
         val id = file.optString("id").trim()
         if (id.isEmpty()) return null
         val name = file.optString("name").trim()
@@ -454,36 +469,39 @@ internal object PikpakShare {
         val fileType = file.optString("file_type").trim()
         val mime = file.optString("mime_type").trim().lowercase()
         val size = file.optString("size").trim().toLongOrNull() ?: 0L
-        var mediaUrl = file.optString("web_content_link").orEmpty()
-        if (mediaUrl.isBlank()) {
-            val links = file.optJSONObject("links")
-            if (links != null) {
-                val keys = links.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val candidate = links.optJSONObject(key)?.optString("url").orEmpty()
-                    if (candidate.isNotBlank()) {
-                        mediaUrl = candidate
-                        break
+        var mediaUrl = ""
+        if (includeMediaUrl) {
+            mediaUrl = file.optString("web_content_link").orEmpty()
+            if (mediaUrl.isBlank()) {
+                val links = file.optJSONObject("links")
+                if (links != null) {
+                    val keys = links.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val candidate = links.optJSONObject(key)?.optString("url").orEmpty()
+                        if (candidate.isNotBlank()) {
+                            mediaUrl = candidate
+                            break
+                        }
                     }
                 }
             }
-        }
-        if (mediaUrl.isBlank()) {
-            val medias = file.optJSONArray("medias")
-            if (medias != null && medias.length() > 0) {
-                for (index in 0 until medias.length()) {
-                    val media = medias.optJSONObject(index) ?: continue
-                    val candidate = media.optJSONObject("link")?.optString("url").orEmpty()
-                        .ifBlank { media.optString("download_url") }
-                    if (candidate.isNotBlank()) {
-                        mediaUrl = candidate
-                        break
+            if (mediaUrl.isBlank()) {
+                val medias = file.optJSONArray("medias")
+                if (medias != null && medias.length() > 0) {
+                    for (index in 0 until medias.length()) {
+                        val media = medias.optJSONObject(index) ?: continue
+                        val candidate = media.optJSONObject("link")?.optString("url").orEmpty()
+                            .ifBlank { media.optString("download_url") }
+                        if (candidate.isNotBlank()) {
+                            mediaUrl = candidate
+                            break
+                        }
                     }
                 }
             }
+            if (mediaUrl.isBlank()) mediaUrl = file.optString("download_url").orEmpty()
         }
-        if (mediaUrl.isBlank()) mediaUrl = file.optString("download_url").orEmpty()
         val isFolder = kind == "drive#folder" || fileType == "[F]"
         val isVideo = !isFolder && (
             mediaUrl.isNotBlank() ||
