@@ -391,6 +391,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     val translatedSubPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { PlaybackService.instance?.importTranslatedSubtitles(it) }
     }
+    // Import a translation for the currently waiting pipeline, preserving its original subtitle timeline.
+    val manualTranslatedSubPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { PlaybackService.instance?.importManualTranslatedSubtitle(it) }
+    }
     val subtitleFileSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/vtt")) { uri ->
         val track = pendingSubtitleTrack
         pendingSubtitleTrack = null
@@ -471,6 +475,32 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
+    fun requestOriginalSubtitleExport() {
+        val linesSnapshot = state.lines.mapIndexed { index, line ->
+            line.copy(index = index, zh = null)
+        }
+        if (linesSnapshot.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "当前还没有可导出的原文字幕，请等待转写阶段完成。", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val base = state.title.ifBlank { "subtitles" }
+            .replace(Regex("[\\\\/:*?\\\"<>|]"), "_")
+            .take(48)
+            .ifBlank { "subtitles" }
+        subtitleExportScope.launch {
+            val content = withContext(Dispatchers.Default) {
+                // Drop any partial/automatic Chinese translation and export the original text only.
+                SubtitleParsers.toSrt(linesSnapshot)
+            }
+            if (content.isBlank()) {
+                android.widget.Toast.makeText(ctx, "没有有效原文字幕可导出", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            pendingSubtitleExportContent = content
+            subtitleSrtSaver.launch(base + "_original.srt")
+        }
+    }
+
     fun copySubtitles() {
         val linesSnapshot = state.lines
         if (linesSnapshot.isEmpty()) {
@@ -529,6 +559,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onCancel = { PlaybackService.instance?.cancelProcessing() },
                 onImportSubtitles = { subPicker.launch(arrayOf("*/*")) },
                 onImportTranslatedSubtitles = { translatedSubPicker.launch(arrayOf("*/*")) },
+                onEnableManualTranslation = { PlaybackService.instance?.enableManualSubtitleTranslation() },
+                onExportOriginalSubtitle = { requestOriginalSubtitleExport() },
+                onImportManualTranslatedSubtitle = { manualTranslatedSubPicker.launch(arrayOf("*/*")) },
                 onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
                 onGoSettings = onGoSettings,
             )
@@ -1016,6 +1049,9 @@ private fun VideoParsingPage(
     onCancel: () -> Unit,
     onImportSubtitles: () -> Unit,
     onImportTranslatedSubtitles: () -> Unit,
+    onEnableManualTranslation: () -> Unit,
+    onExportOriginalSubtitle: () -> Unit,
+    onImportManualTranslatedSubtitle: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
     onGoSettings: () -> Unit,
 ) {
@@ -1187,6 +1223,49 @@ private fun VideoParsingPage(
                         style = MaterialTheme.typography.labelMedium,
                     )
                     DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (state.manualTranslationModeEnabled) "外部翻译模式已启用" else "启用外部翻译模式",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
+                        },
+                        enabled = !state.manualTranslationModeEnabled &&
+                            state.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING),
+                        onClick = {
+                            processingSettingsOpen = false
+                            onEnableManualTranslation()
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导出原文字幕（SRT）", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, tint = Color(0xFF3268F5))
+                        },
+                        enabled = state.lines.isNotEmpty(),
+                        onClick = {
+                            processingSettingsOpen = false
+                            onExportOriginalSubtitle()
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导入译文并继续处理", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF067647))
+                        },
+                        enabled = state.manualTranslationWaiting,
+                        onClick = {
+                            processingSettingsOpen = false
+                            onImportManualTranslatedSubtitle()
+                        },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                    )
+                    DropdownMenuItem(
                         text = { Text("导入字幕并自动翻译", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingIcon = {
                             Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
@@ -1229,6 +1308,53 @@ private fun VideoParsingPage(
                         },
                         contentPadding = PaddingValues(horizontal = 14.dp),
                     )
+                }
+            }
+        }
+
+        if (state.manualTranslationWaiting) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = Color.White,
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "原文字幕已生成，等待外部翻译",
+                        color = Color(0xFF20324B),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    )
+                    Text(
+                        "先导出 SRT，在其他工具中翻译并保留时间戳，再导入译文继续。视频任务会停留在当前阶段，不需要重新转写。",
+                        color = Color(0xFF68778D),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        FilledTonalButton(
+                            onClick = onExportOriginalSubtitle,
+                            enabled = state.lines.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("导出原文")
+                        }
+                        Button(
+                            onClick = onImportManualTranslatedSubtitle,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Filled.Subtitles, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("导入译文")
+                        }
+                    }
                 }
             }
         }
