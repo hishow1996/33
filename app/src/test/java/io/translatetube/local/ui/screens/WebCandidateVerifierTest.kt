@@ -1,5 +1,8 @@
 package io.translatetube.local.ui.screens
 
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,6 +41,54 @@ class WebCandidateVerifierTest {
         assertEquals(WebCandidateAudioHintKind.FAILED, hint.kind)
         assertTrue(hint.failure === original)
         assertEquals("read timed out", hint.failure?.message)
+    }
+
+    @Test
+    fun httpFailureRetainsStatusAndCauseForPersistentAppLogging() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(410).setBody("expired"))
+
+            val hint = WebCandidateVerifier.inspectAudioHint(
+                client = OkHttpClient(),
+                url = server.url("/master.m3u8").toString(),
+                referer = "https://example.com/watch",
+                cookie = null,
+                userAgent = null,
+            )
+
+            assertEquals(WebCandidateAudioHintKind.FAILED, hint.kind)
+            assertTrue(hint.message.contains("HTTP 410"))
+            assertTrue(hint.failure is java.io.IOException)
+            assertTrue(hint.failure?.message.orEmpty().contains("HTTP 410"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun invalidManifestPayloadRetainsCauseForPersistentAppLogging() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(200).setBody("<html>login required</html>"))
+
+            val hint = WebCandidateVerifier.inspectAudioHint(
+                client = OkHttpClient(),
+                url = server.url("/master.m3u8").toString(),
+                referer = "https://example.com/watch",
+                cookie = null,
+                userAgent = null,
+            )
+
+            assertEquals(WebCandidateAudioHintKind.FAILED, hint.kind)
+            assertTrue(hint.message.contains("不是有效的 M3U8"))
+            assertTrue(hint.failure is IllegalStateException)
+            assertTrue(hint.failure?.message.orEmpty().contains("#EXTM3U"))
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Test
