@@ -1591,7 +1591,7 @@ fun WebVideoScreen(
                 .coerceAtMost(maxHeight)
             val targetPanelHeight = sourcePanelHeightDp.dp.coerceIn(minPanelHeight, maxPanelHeight)
             val panelCollapsed = targetPanelHeight <= minPanelHeight + 1.dp
-            val panelContentVisible = !panelCollapsed
+            val panelContentVisible = !panelCollapsed && targetPanelHeight > minPanelHeight + 8.dp
             val density = LocalDensity.current
             val panelDragModifier = Modifier.pointerInput(minPanelHeight, maxPanelHeight, density) {
                 detectVerticalDragGestures(
@@ -1604,7 +1604,7 @@ fun WebVideoScreen(
             }
             val panelClickModifier = Modifier.clickable {
                 // 点顶部粗横线：收起到只露把手，或恢复到初始面板高度。
-                sourcePanelHeightDp = if (targetPanelHeight > minPanelHeight + 8.dp) {
+                sourcePanelHeightDp = if (!panelCollapsed) {
                     minPanelHeight.value
                 } else {
                     panelPeekHeight.value
