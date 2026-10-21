@@ -336,25 +336,32 @@ class PlaybackService : MediaSessionService() {
                     // Debounce rapid preference writes so a single settings change restarts the
                     // pipeline once, using the final selected ASR/translation/TTS configuration.
                     enginePreferenceRestartJob?.cancel()
+                    val changedSessionKey = videoKey
+                    val changedPipelineGeneration = activePipelineGeneration
                     enginePreferenceRestartJob = scope.launch {
                         kotlinx.coroutines.delay(850L)
                         val stableFingerprint = processingEnginePreferenceFingerprint()
                         val state = ui.value
-                        if (!shouldRestartForEnginePreferenceChange(state)) {
+                        // If the user canceled or opened a different item while this debounce was
+                        // pending, don't resurrect that task. A pipeline that simply reached READY
+                        // is still restarted because the engine changed while it was processing.
+                        if (changedSessionKey.isBlank() ||
+                            videoKey != changedSessionKey ||
+                            activePipelineGeneration != changedPipelineGeneration ||
+                            state.key != changedSessionKey
+                        ) {
                             processingEngineConfigFingerprint = stableFingerprint
                             return@launch
                         }
                         if (stableFingerprint == processingEngineConfigFingerprint) return@launch
-                        val sessionKey = videoKey
-                        if (sessionKey.isBlank() || state.key != sessionKey) {
-                            processingEngineConfigFingerprint = stableFingerprint
-                            return@launch
-                        }
-                        val restartVideoId = videoId ?: sessionKey
-                            .takeIf { it.startsWith("youtube:") }
-                            ?.removePrefix("youtube:")
+                        val sessionKey = changedSessionKey
                         val restartLocalUri = localUri
                         val restartRemoteUrl = remoteMediaUrl
+                        val restartVideoId = videoId ?: if (restartRemoteUrl == null) {
+                            sessionKey.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                        } else {
+                            null
+                        }
                         val restartRemoteTitle = remoteMediaTitle
                         val restartRemoteReferrer = remoteMediaReferrer
                         val restartRemoteCookie = remoteMediaCookie
@@ -373,18 +380,20 @@ class PlaybackService : MediaSessionService() {
                                 "音频策略" to "重新检查缓存；转写/翻译缓存按所选引擎隔离；重新准备配音",
                             ),
                         )
-                        open(
-                            key = sessionKey,
-                            videoId = restartVideoId,
-                            localUri = restartLocalUri,
-                            resumeState = null,
-                            remoteMediaUrl = restartRemoteUrl,
-                            remoteMediaTitle = restartRemoteTitle,
-                            remoteMediaReferrer = restartRemoteReferrer,
-                            remoteMediaCookie = restartRemoteCookie,
-                            remoteMediaUserAgent = restartRemoteUserAgent,
-                            requestToken = restartRequestToken,
-                        )
+                        withContext(Dispatchers.Main.immediate) {
+                            open(
+                                key = sessionKey,
+                                videoId = restartVideoId,
+                                localUri = restartLocalUri,
+                                resumeState = null,
+                                remoteMediaUrl = restartRemoteUrl,
+                                remoteMediaTitle = restartRemoteTitle,
+                                remoteMediaReferrer = restartRemoteReferrer,
+                                remoteMediaCookie = restartRemoteCookie,
+                                remoteMediaUserAgent = restartRemoteUserAgent,
+                                requestToken = restartRequestToken,
+                            )
+                        }
                     }
                 }
             }
@@ -6743,7 +6752,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 tickFromPlayerCallback(pm.position(), "original audio enabled")
             }
         }
-    }    fun toggleAudioOnly() {
+    }
+
+    fun toggleAudioOnly() {
         val nowOnly = !ui.value.audioOnly
         ui.update { it.copy(audioOnly = nowOnly) }
         // 关画面：禁视频轨（省电）；重开恢复
