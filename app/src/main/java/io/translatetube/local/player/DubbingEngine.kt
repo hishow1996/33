@@ -25,6 +25,22 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * AppLogStore performs synchronous file IO. Keep diagnostic writes off Media3/audio callbacks,
+ * especially when the mixer is feeding a cue at the exact subtitle timestamp.
+ */
+private object DubbingLogDispatcher {
+    private val executor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "dubbing-log-writer").apply { isDaemon = true }
+    }
+
+    fun enqueue(action: () -> Unit) {
+        runCatching {
+            executor.execute { runCatching(action) }
+        }
+    }
+}
+
+/**
  * 行级时间轴配音引擎：
  * Kokoro/Piper 等引擎在后台逐行合成并缓存 PCM，由 AudioTrack 按时间轴切行；
  * 系统 TTS 则在对应字幕时间点直接调用 Android 朗读服务，不再预合成 PCM。
@@ -45,6 +61,36 @@ class DubbingEngine(
     private val outputBus: DubbingTrackBus,
 ) {
     private val appContext = ctx.applicationContext
+
+    private fun logDubbingInfo(
+        message: String,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ) {
+        DubbingLogDispatcher.enqueue {
+            io.translatetube.local.util.AppLogStore.info(
+                appContext,
+                "DubbingEngine",
+                message,
+                diagnosticContext = diagnosticContext,
+            )
+        }
+    }
+
+    private fun logDubbingError(
+        message: String,
+        failure: Throwable? = null,
+        diagnosticContext: Map<String, String> = emptyMap(),
+    ) {
+        DubbingLogDispatcher.enqueue {
+            io.translatetube.local.util.AppLogStore.error(
+                appContext,
+                "DubbingEngine",
+                message,
+                failure,
+                diagnosticContext = diagnosticContext,
+            )
+        }
+    }
     // videoKey may contain a content:// URI with slashes. Hash it to keep all cache files
     // inside one bounded, collision-resistant directory instead of creating nested path segments.
     private val cacheRootDir = File(ctx.cacheDir, "dub").apply { mkdirs() }
@@ -97,6 +143,10 @@ class DubbingEngine(
     @Volatile var onPlaybackStarted: ((index: Int) -> Unit)? = null
     private val synthesisErrorReported = AtomicBoolean(false)
     private val firstSynthesisReported = AtomicBoolean(false)
+    /** Emit first-output milestones once per attached subtitle session, not once per cue. */
+    private val firstPlaybackReported = AtomicBoolean(false)
+    private val firstPlaybackCompletedReported = AtomicBoolean(false)
+    private val audioOutputPathReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
     @Volatile private var speed = 1.0f
@@ -257,6 +307,17 @@ class DubbingEngine(
             val windowed = DubbingTiming.extendCueWindows(normalized)
             windowed to DubbingTimeline(windowed)
         } catch (error: Exception) {
+            logDubbingError(
+                "配音引擎校验字幕/时间轴失败",
+                error,
+                mapOf(
+                    "配音引擎名称" to tts.name,
+                    "配音引擎实现类" to tts.javaClass.name,
+                    "输入字幕行数" to lines.size.toString(),
+                    "输入源语言" to sourceLanguage,
+                    "允许的最大字幕行数" to DubbingTimeline.MAX_INPUT_CUE_COUNT.toString(),
+                ),
+            )
             runCatching { tts.close() }
             throw error
         }
@@ -302,6 +363,9 @@ class DubbingEngine(
                 nextSpeechStartMsByLine = nextSpeechStarts
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
+            firstPlaybackReported.set(false)
+            firstPlaybackCompletedReported.set(false)
+            audioOutputPathReported.set(false)
             synthesisRealtimeFactorValue = Float.NaN
             synthesisRealtimeSampleCountValue = 0
             synthesisTimelineLagFactorValue = Float.NaN
@@ -312,6 +376,32 @@ class DubbingEngine(
             priorityTarget = -1
             priorityLookAhead = 2
             latestTimelineCursor = DubbingTimelineCursor()
+            logDubbingInfo(
+                "配音会话已绑定字幕",
+                mapOf(
+                    "配音引擎名称" to tts.name,
+                    "配音引擎实现类" to tts.javaClass.name,
+                    "配音输出模式" to if (tts is TimelineTtsPlayback && tts.useDirectTimelinePlayback) {
+                        "Android 系统 TTS 即时朗读"
+                    } else {
+                        "PCM 合成后挂载混流总线"
+                    },
+                    "输入源语言" to sourceLanguage,
+                    "字幕总行数" to this.lines.size.toString(),
+                    "有效时间轴行数" to this.lines.count { DubbingTimeline.isPlayableCue(it) }.toString(),
+                    "含中文译文的可配音行数" to this.lines.count {
+                        DubbingTimeline.isPlayableCue(it) && !it.zh.isNullOrBlank()
+                    }.toString(),
+                    "缺少中文译文的可配音行数" to this.lines.count {
+                        DubbingTimeline.isPlayableCue(it) && it.zh.isNullOrBlank()
+                    }.toString(),
+                    "合并配音分块数" to chunkTextByFirst.size.toString(),
+                    "PCM 缓存目录可写" to cacheDir.canWrite().toString(),
+                    "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
+                    "PCM 内存缓存预算 bytes" to pcmMemoryBudgetBytes.toString(),
+                    "混流总线代次" to outputBus.generationToken().toString(),
+                ),
+            )
             cacheInitJob?.cancel()
             val generation = cacheInitGeneration.incrementAndGet()
             // 清内存缓存：防止旧会话同 idx 行的音频串台。
@@ -331,6 +421,17 @@ class DubbingEngine(
                 try {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if (released || generation != cacheInitGeneration.get()) return@launch
+                    logDubbingInfo(
+                        "配音缓存预检开始",
+                        mapOf(
+                            "缓存初始化代次" to generation.toString(),
+                            "字幕总行数" to this@DubbingEngine.lines.size.toString(),
+                            "配音引擎" to (tts?.name ?: "未知引擎"),
+                            "配音输出模式" to if (usesImmediateTimelinePlayback) "系统 TTS 即时模式" else "PCM 缓存/混流模式",
+                            "缓存文件数" to cacheDir.listFiles().orEmpty().count { it.isFile }.toString(),
+                            "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
+                        ),
+                    )
 
                     // Instant System TTS keeps its direct audible playback path. Queue valid cues
                     // for optional PCM warm-up, but do not allocate a second TTS service or begin
@@ -362,6 +463,17 @@ class DubbingEngine(
                             }
                         }
                         bumpPrepared()
+                        logDubbingInfo(
+                            "系统 TTS 即时配音初始化完成",
+                            mapOf(
+                                "字幕总行数" to this@DubbingEngine.lines.size.toString(),
+                                "已就绪行数" to _preparedCount.value.toString(),
+                                "可配音译文行数" to pending.totalSize().toString(),
+                                "即时朗读模式" to "true",
+                                "是否请求后台 PCM 预热" to backgroundSynthesisRequested.toString(),
+                                "配音引擎" to (tts?.name ?: "未知引擎"),
+                            ),
+                        )
                         if (backgroundSynthesisRequested) ensureBackgroundSynthesisEngine()
                         return@launch
                     }
@@ -433,6 +545,21 @@ class DubbingEngine(
                     }
                     if (!released && generation == cacheInitGeneration.get()) {
                         bumpPrepared()
+                        logDubbingInfo(
+                            "配音 PCM 缓存预检完成",
+                            mapOf(
+                                "缓存初始化代次" to generation.toString(),
+                                "字幕总行数" to this@DubbingEngine.lines.size.toString(),
+                                "当前已就绪行数" to _preparedCount.value.toString(),
+                                "连续就绪前缀行数" to _preparedUntil.value.toString(),
+                                "待合成队列行数" to pending.totalSize().toString(),
+                                "有效缓存文件数" to cacheDir.listFiles().orEmpty().count {
+                                    it.isFile && it.name.endsWith(".pcm")
+                                }.toString(),
+                                "配音引擎" to (tts?.name ?: "未知引擎"),
+                                "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
+                            ),
+                        )
                         startSynthLoop()
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -472,6 +599,17 @@ class DubbingEngine(
             // If release won the race before ownership was published, close the incoming engine
             // here; otherwise release() now owns it and will close it after active synthesis exits.
             if (!ttsPublished) runCatching { tts.close() }
+            logDubbingError(
+                "配音会话初始化失败",
+                error,
+                mapOf(
+                    "配音引擎名称" to tts.name,
+                    "配音引擎实现类" to tts.javaClass.name,
+                    "字幕总行数" to preparedLines.size.toString(),
+                    "是否已接管 TTS 实例" to ttsPublished.toString(),
+                    "是否已经释放" to released.toString(),
+                ),
+            )
             throw error
         }
     }
@@ -619,6 +757,17 @@ class DubbingEngine(
                         runCatching {
                             val audioFromMemory = memoryAudio(idx)
                             if (audioFromMemory != null) {
+                                logDubbingInfo(
+                                    "首条可用配音 PCM 来自内存缓存",
+                                    mapOf(
+                                        "字幕行号" to "${idx + 1}/${lines.size}",
+                                        "PCM 样本数" to audioFromMemory.samples.size.toString(),
+                                        "采样率 Hz" to audioFromMemory.sampleRate.toString(),
+                                        "预计音频时长 ms" to (audioFromMemory.samples.size.toDouble() * 1000.0 /
+                                            audioFromMemory.sampleRate.coerceAtLeast(1)).toLong().toString(),
+                                        "配音引擎" to (tts?.name ?: "未知引擎"),
+                                    ),
+                                )
                                 onFirstSynthesisReady?.invoke(
                                     idx,
                                     audioFromMemory.samples.size,
@@ -633,7 +782,21 @@ class DubbingEngine(
                                     if (sampleRate !in 8_000..192_000 || sampleCount <= 0) {
                                         throw java.io.IOException("缓存 PCM 头无效")
                                     }
-                                    if (!released) onFirstSynthesisReady?.invoke(idx, sampleCount, sampleRate)
+                                    if (!released) {
+                                        logDubbingInfo(
+                                            "首条可用配音 PCM 命中磁盘缓存",
+                                            mapOf(
+                                                "字幕行号" to "${idx + 1}/${lines.size}",
+                                                "PCM 样本数" to sampleCount.toString(),
+                                                "采样率 Hz" to sampleRate.toString(),
+                                                "预计音频时长 ms" to (sampleCount.toDouble() * 1000.0 /
+                                                    sampleRate.coerceAtLeast(1)).toLong().toString(),
+                                                "缓存文件大小 bytes" to cacheFile(idx).length().toString(),
+                                                "配音引擎" to (tts?.name ?: "未知引擎"),
+                                            ),
+                                        )
+                                        onFirstSynthesisReady?.invoke(idx, sampleCount, sampleRate)
+                                    }
                                 }
                             }
                         }.onFailure {
@@ -1027,6 +1190,26 @@ class DubbingEngine(
                     synthesisRecoveryRetryCounts.remove(idx)
                     markCuePrepared(idx, hasAudio = true)
                     if (!released && firstSynthesisReported.compareAndSet(false, true)) {
+                        logDubbingInfo(
+                            "首条中文配音 PCM 合成成功",
+                            mapOf(
+                                "字幕行号" to "${idx + 1}/${lines.size}",
+                                "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                                "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                                "合成调用次数（含重试）" to synthesisCallCount.toString(),
+                                "PCM 样本数" to boundedSamples.size.toString(),
+                                "PCM 采样率 Hz" to readyAudio.sampleRate.toString(),
+                                "音频时长 ms" to outputAudioDurationMs.toLong().toString(),
+                                "本句合成语速" to effectiveSynthesisSpeed.toString(),
+                                "本句合成处理耗时 ms" to synthesisElapsedMs.toString(),
+                                "合成实时系数" to synthesisRealtimeFactorValue.takeIf { it.isFinite() }?.toString().orEmpty().ifBlank { "尚未形成有效样本" },
+                                "是否成功写入磁盘缓存" to cachePersisted.toString(),
+                                "是否保留在内存缓存" to retainedInMemory.toString(),
+                                "是否为合并配音分块" to chunkTextByFirst.containsKey(idx).toString(),
+                                "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                                "混流总线代次" to outputBus.generationToken().toString(),
+                            ),
+                        )
                         runCatching {
                             onFirstSynthesisReady?.invoke(idx, boundedSamples.size, readyAudio.sampleRate)
                         }.onFailure {
@@ -1048,6 +1231,24 @@ class DubbingEngine(
                     val retryRequestedWhileActive = synchronized(pending) {
                         retryAfterActiveSynthesis.contains(idx)
                     }
+                    logDubbingInfo(
+                        "配音句合成/缓存处理发生异常，正在判断恢复策略",
+                        mapOf(
+                            "字幕行号" to "${idx + 1}/${lines.size}",
+                            "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                            "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                            "故障异常类型" to e.javaClass.name,
+                            "故障原因" to detail.take(360),
+                            "中文译文字符数" to text.length.toString(),
+                            "合成调用次数（含重试）" to synthesisCallCount.toString(),
+                            "当前恢复重试次数" to (synthesisRecoveryRetryCounts[idx] ?: 0).toString(),
+                            "是否已有同句播放重试等待" to retryRequestedWhileActive.toString(),
+                            "备用引擎切换是否已请求" to fallbackRequested.get().toString(),
+                            "待合成队列行数" to pending.totalSize().toString(),
+                            "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
+                            "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                        ),
+                    )
                     if (DubbingRetryQueuePolicy.shouldKeepCuePendingAfterFailure(retryRequestedWhileActive)) {
                         // The queued retry is real work, not terminal silence. Keeping readiness
                         // pending prevents tick() from showing a false silent-cue/error state.
@@ -1260,6 +1461,22 @@ class DubbingEngine(
 
     private fun reportSynthesisError(message: String) {
         if (!released && synthesisErrorReported.compareAndSet(false, true)) {
+            logDubbingError(
+                "配音功能上报终止性故障：$message",
+                diagnosticContext = mapOf(
+                    "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                    "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                    "故障时字幕行号" to if (_currentLine.value >= 0) "${_currentLine.value + 1}/${lines.size}" else "当前没有活动字幕行",
+                    "字幕总行数" to lines.size.toString(),
+                    "已准备行数" to _preparedCount.value.toString(),
+                    "连续就绪前缀行数" to _preparedUntil.value.toString(),
+                    "待合成队列行数" to pending.totalSize().toString(),
+                    "音频输出模式" to if (usesImmediateTimelinePlayback) "系统 TTS 即时朗读" else "PCM 混流",
+                    "首句输出是否已确认" to firstPlaybackReported.get().toString(),
+                    "视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                    "混流总线代次" to outputBus.generationToken().toString(),
+                ),
+            )
             // A UI/notification callback must never terminate the synthesis worker itself.
             runCatching { onSynthesisError?.invoke(message) }
                 .onFailure {
@@ -2261,6 +2478,18 @@ class DubbingEngine(
                 )
             }
         }
+        logDubbingError(
+            "设备无法创建任何候选配音静态音轨分段",
+            lastError,
+            mapOf(
+                "请求音轨总样本数" to requestedCount.toString(),
+                "采样率 Hz" to sampleRate.toString(),
+                "尝试的静态分段样本数" to candidates.joinToString(","),
+                "最终失败原因" to describeAudioTrackFailure(lastError),
+                "设备" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                "Android API" to android.os.Build.VERSION.SDK_INT.toString(),
+            ),
+        )
         throw IllegalStateException(
             AudioTrackChunkPolicy.failureMessage(sampleRate, candidates, lastError?.message),
             lastError,
@@ -2321,6 +2550,20 @@ class DubbingEngine(
                     "PCM_FLOAT AudioTrack 写入后仍未就绪，state=${floatTrack.state}"
                 )
             }
+            if (audioOutputPathReported.compareAndSet(false, true)) {
+                logDubbingInfo(
+                    "配音静态音轨初始化成功",
+                    mapOf(
+                        "实际 PCM 编码" to "PCM_FLOAT",
+                        "采样率 Hz" to sampleRate.toString(),
+                        "采样点数" to samples.size.toString(),
+                        "请求缓冲区 bytes" to (samples.size * 4).toString(),
+                        "AudioTrack 状态" to floatTrack.state.toString(),
+                        "设备" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                        "Android API" to android.os.Build.VERSION.SDK_INT.toString(),
+                    ),
+                )
+            }
             return floatTrack
         } catch (e: Exception) {
             floatFailure = e
@@ -2364,6 +2607,21 @@ class DubbingEngine(
                 "DubbingEngine",
                 "Using PCM_16BIT fallback for ${samples.size} samples at ${sampleRate} Hz",
             )
+            if (audioOutputPathReported.compareAndSet(false, true)) {
+                logDubbingInfo(
+                    "配音静态音轨已回退到 PCM_16BIT",
+                    mapOf(
+                        "实际 PCM 编码" to "PCM_16BIT",
+                        "采样率 Hz" to sampleRate.toString(),
+                        "采样点数" to pcm16.size.toString(),
+                        "请求缓冲区 bytes" to (pcm16.size * 2).toString(),
+                        "PCM_FLOAT 失败原因" to describeAudioTrackFailure(floatFailure),
+                        "AudioTrack 状态" to pcm16Track.state.toString(),
+                        "设备" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                        "Android API" to android.os.Build.VERSION.SDK_INT.toString(),
+                    ),
+                )
+            }
             return pcm16Track
         } catch (pcm16Error: Exception) {
             pcm16Failure = pcm16Error
@@ -2398,6 +2656,23 @@ class DubbingEngine(
                     )
                 }
                 android.util.Log.i("DubbingEngine", "Using legacy PCM_16BIT AudioTrack fallback")
+                if (audioOutputPathReported.compareAndSet(false, true)) {
+                    logDubbingInfo(
+                        "配音静态音轨已回退到传统 AudioTrack 构造方式",
+                        mapOf(
+                            "实际 PCM 编码" to "PCM_16BIT",
+                            "实际构造方式" to "传统 AudioTrack 构造函数",
+                            "采样率 Hz" to sampleRate.toString(),
+                            "采样点数" to pcm16.size.toString(),
+                            "请求缓冲区 bytes" to (pcm16.size * 2).toString(),
+                            "PCM_FLOAT 失败原因" to describeAudioTrackFailure(floatFailure),
+                            "Builder PCM_16BIT 失败原因" to describeAudioTrackFailure(pcm16Failure),
+                            "AudioTrack 状态" to legacyTrack.state.toString(),
+                            "设备" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                            "Android API" to android.os.Build.VERSION.SDK_INT.toString(),
+                        ),
+                    )
+                }
                 return legacyTrack
             } catch (legacyError: Exception) {
                 try { legacyTrack?.release() } catch (_: Exception) {}
@@ -2745,6 +3020,27 @@ class DubbingEngine(
                                 allowed
                             }
                             if (stillCurrent) {
+                                if (firstPlaybackReported.compareAndSet(false, true)) {
+                                    logDubbingInfo(
+                                        "首句系统 TTS 已触发实际朗读回调",
+                                        mapOf(
+                                            "字幕行号" to "${idx + 1}/${lines.size}",
+                                            "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                                            "字幕开始时间 ms" to line.startMs.toString(),
+                                            "字幕结束时间 ms" to line.endMs.toString(),
+                                            "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                                            "中文译文字符数" to spokenText.length.toString(),
+                                            "人物/音色编号" to line.speakerId.toString(),
+                                            "实际 TTS 语速" to speechRate.toString(),
+                                            "播放器速度" to timelineSpeed.toString(),
+                                            "输出音量" to activeVolume.toString(),
+                                            "AudioManager 音乐是否活跃" to runCatching {
+                                                (appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                                                    ?.isMusicActive?.toString() ?: "不可用"
+                                            }.getOrDefault("读取失败"),
+                                        ),
+                                    )
+                                }
                                 runCatching { onPlaybackStarted?.invoke(idx) }
                                     .onFailure {
                                         android.util.Log.w(
@@ -2771,6 +3067,18 @@ class DubbingEngine(
                             }
                             if (stillCurrent && error.isNullOrBlank() && startedAtNanos > 0L) {
                                 val elapsedMs = ((completedAtNanos - startedAtNanos).coerceAtLeast(0L) / 1_000_000L)
+                                if (firstPlaybackCompletedReported.compareAndSet(false, true)) {
+                                    logDubbingInfo(
+                                        "首句系统 TTS 朗读完成",
+                                        mapOf(
+                                            "字幕行号" to "${idx + 1}/${lines.size}",
+                                            "实际朗读耗时 ms" to elapsedMs.toString(),
+                                            "中文译文码点数" to spokenCodePointCount.toString(),
+                                            "实际 TTS 语速" to speechRate.toString(),
+                                            "播放器速度" to timelineSpeed.toString(),
+                                        ),
+                                    )
+                                }
                                 val oldEstimate = directTtsMsPerCodePoint
                                 val newEstimate = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
                                     currentMsPerCodePoint = oldEstimate,
@@ -2875,6 +3183,25 @@ class DubbingEngine(
                         current
                     }
                     if (!ownsCue) return@execute
+                    if (firstPlaybackReported.compareAndSet(false, true)) {
+                        logDubbingInfo(
+                            "首条中文配音 PCM 已挂载混流总线",
+                            mapOf(
+                                "字幕行号" to "${idx + 1}/${lines.size}",
+                                "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                                "字幕音频起始时间 ms" to pcmLine.startMs.toString(),
+                                "视频当前位置 ms" to latestTimelineCursor.positionMs.toString(),
+                                "归一化 PCM 样本数" to outputPcm.samples.size.toString(),
+                                "归一化 PCM 采样率 Hz" to outputPcm.sampleRate.toString(),
+                                "估算音频时长 ms" to (outputPcm.samples.size.toDouble() * 1000.0 /
+                                    outputPcm.sampleRate.coerceAtLeast(1)).toLong().toString(),
+                                "输出音量" to activeVolume.toString(),
+                                "播放器速度" to activePlayerSpeed.toString(),
+                                "混流总线代次" to outputBus.generationToken().toString(),
+                                "输出总线接受数据" to acceptedFeed.toString(),
+                            ),
+                        )
+                    }
                     runCatching { onPlaybackStarted?.invoke(idx) }
                         .onFailure {
                             android.util.Log.w("DubbingEngine", "Could not publish dubbing playback state", it)
@@ -2886,6 +3213,26 @@ class DubbingEngine(
                         "DubbingEngine",
                         "Dubbing mix feed failed for line ${idx + 1}",
                         error,
+                    )
+                    logDubbingError(
+                        "第 ${idx + 1}/${lines.size} 句配音 PCM 挂载混流总线失败",
+                        error,
+                        mapOf(
+                            "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                            "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                            "字幕行号" to "${idx + 1}/${lines.size}",
+                            "字幕时间轴 ms" to "${line.startMs}–${line.endMs}",
+                            "播放请求代次" to generation.toString(),
+                            "当前播放代次" to playbackGeneration.get().toString(),
+                            "混流总线请求代次" to busGenerationAtRequest.toString(),
+                            "当前混流总线代次" to outputBus.generationToken().toString(),
+                            "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                            "当前活动字幕行号" to (_currentLine.value + 1).toString(),
+                            "AudioManager 音乐是否活跃" to runCatching {
+                                (appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                                    ?.isMusicActive?.toString() ?: "不可用"
+                            }.getOrDefault("读取失败"),
+                        ),
                     )
                     runCatching { markCuePrepared(idx, hasAudio = false) }
                 }
@@ -2901,7 +3248,22 @@ class DubbingEngine(
         // Invalidate an in-flight PCM load/track creation and clear "voice is audible" immediately.
         // PlaybackService reselects the active cue and calls playAt() when ExoPlayer resumes, so
         // retaining a static AudioTrack here only holds native buffer memory while the user pauses.
+        val pausedLine = _currentLine.value
+        val playbackWasStarted = pausedLine >= 0 && playbackStartedLine == pausedLine
+        val engineNameAtPause = tts?.name ?: "未知引擎"
         val invalidated = invalidatePlayback()
+        logDubbingInfo(
+            "配音输出已暂停",
+            mapOf(
+                "暂停前字幕行号" to if (pausedLine >= 0) "${pausedLine + 1}/${lines.size}" else "当前没有活动字幕行",
+                "暂停前是否已进入实际输出" to playbackWasStarted.toString(),
+                "配音引擎" to engineNameAtPause,
+                "输出模式" to if (usesImmediateTimelinePlayback) "系统 TTS 即时朗读" else "PCM 混流",
+                "作废播放代次" to invalidated.first.toString(),
+                "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                "混流总线代次" to outputBus.generationToken().toString(),
+            ),
+        )
         // Stop only the exact utterance owned by the invalidated generation. A late pause from
         // an older cue must never stop a newer system-TTS utterance.
         val directTts = (tts as? TimelineTtsPlayback)?.takeIf { it.useDirectTimelinePlayback }
@@ -2915,6 +3277,21 @@ class DubbingEngine(
     fun resumePlayback() {
         if (released) return
         _currentLine.value = -1
+        logDubbingInfo(
+            "配音输出已恢复，等待按视频时间轴重新选择字幕",
+            mapOf(
+                "配音引擎" to (tts?.name ?: "未知引擎"),
+                "当前时间轴字幕行号" to if (latestTimelineCursor.lineIndex >= 0) {
+                    "${latestTimelineCursor.lineIndex + 1}/${lines.size}"
+                } else {
+                    "当前为字幕间隙"
+                },
+                "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                "已准备行数" to _preparedCount.value.toString(),
+                "待合成队列行数" to pending.totalSize().toString(),
+                "混流总线代次" to outputBus.generationToken().toString(),
+            ),
+        )
     }
 
     fun stop() {
@@ -3092,6 +3469,19 @@ class DubbingEngine(
             if (released) return
             released = true
         }
+        logDubbingInfo(
+            "配音引擎开始释放",
+            mapOf(
+                "配音引擎名称" to (tts?.name ?: "未知引擎"),
+                "配音引擎实现类" to (tts?.javaClass?.name ?: "未知"),
+                "字幕总行数" to lines.size.toString(),
+                "已准备行数" to _preparedCount.value.toString(),
+                "待合成队列行数" to pending.totalSize().toString(),
+                "释放时活动字幕行号" to if (_currentLine.value >= 0) "${_currentLine.value + 1}/${lines.size}" else "没有活动字幕行",
+                "输出模式" to if (usesImmediateTimelinePlayback) "系统 TTS 即时朗读" else "PCM 混流",
+                "混流总线代次" to outputBus.generationToken().toString(),
+            ),
+        )
         // A retired engine must not retain every decoded PCM cue while its cancellation handlers
         // unwind. rememberMemoryAudio() also checks released under this same map lock, so an old
         // cache reader cannot repopulate the LRU after this clear.
