@@ -244,6 +244,11 @@ fun WebVideoScreen(
     var pageTitle by remember { mutableStateOf("") }
     var verificationAttempts by remember(initialUrl) { mutableStateOf(emptySet<String>()) }
     var noSourceLoggedForPage by remember(initialUrl) { mutableStateOf(false) }
+    // 记录每轮检测的收尾结果；检测状态变化会重启 quiet-period effect，但同一导航只汇总一次。
+    var detectionSummaryLoggedForPage by remember(initialUrl) { mutableStateOf(false) }
+    var sourceDetectionStartedAtMs by remember(initialUrl) {
+        mutableStateOf(android.os.SystemClock.elapsedRealtime())
+    }
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
@@ -806,6 +811,8 @@ fun WebVideoScreen(
         sourceHintAttempts = emptySet()
         verificationAttempts = emptySet()
         noSourceLoggedForPage = false
+        detectionSummaryLoggedForPage = false
+        sourceDetectionStartedAtMs = android.os.SystemClock.elapsedRealtime()
         // PikPak 清单跟随整页导航重置（SPA 内点文件夹不触发导航，清单保留）
         pikpakShareId = null
         pikpakPasscodeToken = ""
@@ -1044,11 +1051,78 @@ fun WebVideoScreen(
         ) return@LaunchedEffect
 
         delay(8000)
-        val hasUsableCandidate = candidatesState.value.any { candidate ->
+        val candidatesSnapshot = candidatesState.value
+        val usableCandidateCount = candidatesSnapshot.count { candidate ->
             candidate.url in verifiedUrls &&
                 WebMediaUrlPolicy.normalizeMediaUrl(candidate.url) != null
         }
+        val hasUsableCandidate = usableCandidateCount > 0
         val ytDlpEligible = io.translatetube.local.yt.YtDlpRepo.isEligible(currentPage)
+        if (screenActive.get() && !detectionSummaryLoggedForPage) {
+            detectionSummaryLoggedForPage = true
+            val hostDistribution = candidatesSnapshot
+                .groupingBy { webSourceHost(it.url) }
+                .eachCount()
+                .entries
+                .sortedByDescending { it.value }
+                .take(8)
+                .joinToString(", ") { "${it.key}=${it.value}" }
+                .ifBlank { "无候选源" }
+            val candidateTypeDistribution = candidatesSnapshot
+                .groupingBy { webSourceType(it.url) }
+                .eachCount()
+                .toSortedMap()
+                .entries
+                .joinToString(", ") { "${it.key}=${it.value}" }
+                .ifBlank { "无候选源" }
+            val audioHintDistribution = sourceHints.values
+                .groupingBy { it.kind.name }
+                .eachCount()
+                .toSortedMap()
+                .entries
+                .joinToString(", ") { "${it.key}=${it.value}" }
+                .ifBlank { "尚无音轨识别结果" }
+            io.translatetube.local.util.AppLogStore.info(
+                context = appCtx,
+                tag = "WebSourceDetection",
+                message = "网页视频源检测阶段汇总",
+                diagnosticContext = mapOf(
+                    "页面主机名" to webSourceHost(currentPage),
+                    "页面标题" to pageTitle.take(120).ifBlank { "无标题" },
+                    "页面导航代数" to pageGeneration.get().toString(),
+                    "本轮导航开始至汇总耗时毫秒" to
+                        (android.os.SystemClock.elapsedRealtime() - sourceDetectionStartedAtMs).coerceAtLeast(0L).toString(),
+                    "静默等待窗口毫秒" to "8000",
+                    "候选源总数" to candidatesSnapshot.size.toString(),
+                    "已校验并标记可访问的候选源数" to usableCandidateCount.toString(),
+                    "已发起校验但暂未标记可访问的候选源数" to candidatesSnapshot.count {
+                        it.url in verificationAttempts && it.url !in verifiedUrls
+                    }.toString(),
+                    "候选源主机分布（最多 8 个）" to hostDistribution,
+                    "候选源类型分布" to candidateTypeDistribution,
+                    "音轨识别结果分布" to audioHintDistribution,
+                    "尚未完成音轨识别的候选数" to sourceHints.values.count {
+                        it.kind == WebCandidateAudioHintKind.DETECTING
+                    }.toString(),
+                    "音轨识别失败数" to sourceHints.values.count {
+                        it.kind == WebCandidateAudioHintKind.FAILED
+                    }.toString(),
+                    "带 DRM 标记的候选源数" to candidatesSnapshot.count { it.drmProtected }.toString(),
+                    "是否找到可访问候选源" to hasUsableCandidate.toString(),
+                    "是否支持 yt-dlp 备用解析" to ytDlpEligible.toString(),
+                    "是否为 PikPak 分享页" to (PikpakShare.parseShareId(currentPage) != null).toString(),
+                    "检测结论" to if (hasUsableCandidate) {
+                        "至少一个候选源通过可访问性校验"
+                    } else {
+                        "当前没有候选源通过可访问性校验；结合 WebSourceProbe、WebSourceVerify、WebSourceHttp 和 WebResourceLoad 日志判断具体原因"
+                    },
+                ),
+                issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                    "WebSourceDetectionSummary",
+                    webSourceIssueIdentity(currentPage) + "|" + pageGeneration.get(),
+                ),
+            )
+        }
         if (screenActive.get() && !hasUsableCandidate && !noSourceLoggedForPage) {
             noSourceLoggedForPage = true
             io.translatetube.local.util.AppLogStore.warning(
@@ -1775,9 +1849,9 @@ fun WebVideoScreen(
                                 error: WebResourceError,
                             ) {
                                 super.onReceivedError(view, request, error)
+                                val failedUrl = request.url.toString()
                                 if (request.isForMainFrame) {
                                     mainHandler.post {
-                                        val failedUrl = request.url.toString()
                                         if (screenActive.get() && failedUrl == currentPage) {
                                             pageLoading = false
                                             navigationInProgress.set(false)
@@ -1799,6 +1873,43 @@ fun WebVideoScreen(
                                             )
                                         }
                                     }
+                                } else if (
+                                    WebVideoProbePolicy.acceptsMediaUrl(failedUrl) &&
+                                    WebMediaUrlPolicy.looksLikeMediaRequest(failedUrl)
+                                ) {
+                                    // HTTP 状态错误由 onReceivedHttpError 处理；这里专门补齐
+                                    // DNS、超时、TLS、连接中断等没有 HTTP 响应的媒体请求失败。
+                                    val errorCategory = when (error.errorCode) {
+                                        WebViewClient.ERROR_HOST_LOOKUP -> "DNS/域名解析失败"
+                                        WebViewClient.ERROR_TIMEOUT -> "网络请求超时"
+                                        WebViewClient.ERROR_CONNECT -> "无法连接媒体服务器"
+                                        WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> "TLS/证书握手失败"
+                                        WebViewClient.ERROR_IO -> "媒体请求 I/O 失败或连接中断"
+                                        WebViewClient.ERROR_UNSUPPORTED_SCHEME -> "媒体请求使用不支持的协议"
+                                        else -> "WebView 媒体资源加载失败"
+                                    }
+                                    io.translatetube.local.util.AppLogStore.warning(
+                                        context = appCtx,
+                                        tag = "WebResourceLoad",
+                                        message = "网页媒体资源请求失败（没有收到正常 HTTP 响应）",
+                                        diagnosticContext = mapOf(
+                                            "页面主机名" to webSourceHost(currentPage),
+                                            "媒体源主机名" to webSourceHost(failedUrl),
+                                            "候选源诊断编号" to webSourceFingerprint(failedUrl),
+                                            "媒体源类型" to webSourceType(failedUrl),
+                                            "错误分类" to errorCategory,
+                                            "WebView 错误代码" to error.errorCode.toString(),
+                                            "错误详情" to error.description.toString().take(300),
+                                            "HTTP 方法" to request.method,
+                                            "是否主文档请求" to request.isForMainFrame.toString(),
+                                            "页面导航代数" to pageGeneration.get().toString(),
+                                            "可能原因" to "网络连接、DNS、TLS 或媒体服务器中断；如同一候选源随后校验成功，可能是临时请求失败",
+                                        ),
+                                        issueKey = webSourceIssueKey(
+                                            "resource-load-" + error.errorCode,
+                                            failedUrl,
+                                        ),
+                                    )
                                 }
                             }
 
