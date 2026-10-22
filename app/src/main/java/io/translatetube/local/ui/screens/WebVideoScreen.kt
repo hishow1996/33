@@ -253,6 +253,9 @@ fun WebVideoScreen(
     var pikpakBlankRetryUrl by remember(initialUrl) { mutableStateOf<String?>(null) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val screenActive = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(true) }
+    // A single top-level navigation can emit several onPageStarted callbacks while a short link
+    // redirects through multiple Bilibili URLs. Keep one detection generation for the whole chain.
+    val navigationInProgress = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(false) }
     val pageGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
     val ytDlpRunGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
     val fullScreenContainer = remember { mutableStateOf<FrameLayout?>(null) }
@@ -782,6 +785,7 @@ fun WebVideoScreen(
 
     fun resetForNavigation(target: String) {
         applyPikpakUserAgent(target)
+        navigationInProgress.set(true)
         pageGeneration.incrementAndGet()
         ytDlpRunGeneration.incrementAndGet()
         ytDlpJob?.cancel()
@@ -1271,12 +1275,11 @@ fun WebVideoScreen(
                             if (view == null) {
                                 status = "网页尚未就绪，请稍后重试。"
                             } else {
-                                status = "正在重新检测视频…"
-                                pageLoading = true
-                                candidatesState.value = emptyList()
-                                verifiedUrls = emptySet()
-                                sourceHints = emptyMap()
-                                sourceHintAttempts = emptySet()
+                                // Use the same single-generation reset as address navigation.
+                                // onPageStarted recognizes this prepared reload and will not clear
+                                // candidates or start another detection round for the same action.
+                                resetForNavigation(currentPage)
+                                pageLoadToken++
                                 runCatching { view.stopLoading() }
                                 view.reload()
                             }
@@ -1509,8 +1512,19 @@ fun WebVideoScreen(
 
                             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
-                                resetForNavigation(url)
-                                pageLoadToken++
+                                if (navigationInProgress.compareAndSet(false, true)) {
+                                    // First callback for a new navigation. Explicit address-bar and
+                                    // refresh requests have already reset state before calling loadUrl/reload.
+                                    resetForNavigation(url)
+                                    pageLoadToken++
+                                } else {
+                                    // Redirect continuation or duplicate callback: update the final
+                                    // address/UA only. Do not clear already detected video sources,
+                                    // verification state, or the current detection generation.
+                                    applyPikpakUserAgent(url)
+                                    currentPage = url
+                                    address = url
+                                }
                                 // 普通视频站仍尽早挂 hook；PikPak 分享页先让官方 SPA 完成初始化，
                                 // 再挂接后续人工密码验证/文件夹点击产生的请求，避免过早改写 fetch/XHR。
                                 if (screenActive.get() && PikpakShare.parseShareId(url) == null) {
@@ -1522,6 +1536,7 @@ fun WebVideoScreen(
                                 super.onPageFinished(view, url)
                                 if (!screenActive.get() || url != currentPage) return
                                 pageLoading = false
+                                navigationInProgress.set(false)
                                 address = url
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
@@ -1708,6 +1723,7 @@ fun WebVideoScreen(
                                         val failedUrl = request.url.toString()
                                         if (screenActive.get() && failedUrl == currentPage) {
                                             pageLoading = false
+                                            navigationInProgress.set(false)
                                             status = "网页加载失败：" + error.description
                                             io.translatetube.local.util.AppLogStore.warning(
                                                 context = appCtx,
@@ -1774,6 +1790,7 @@ fun WebVideoScreen(
                                     mainHandler.postDelayed({
                                         if (screenActive.get() && pageGeneration.get() == failedGeneration && currentPage == failedUrl) {
                                             pageLoading = false
+                                            navigationInProgress.set(false)
                                             status = if (PikpakShare.parseShareId(failedUrl) != null) {
                                                 "PikPak 官方页面返回 HTTP $failedStatus，服务器可能限制了访问；请点刷新重试。"
                                             } else {
