@@ -59,6 +59,7 @@ import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.translate.Crypto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.FreeModelDefaults
@@ -1144,6 +1145,8 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     var pullError by remember { mutableStateOf<String?>(null) }
     var testingConnection by remember { mutableStateOf(false) }
     var connectionMessage by remember { mutableStateOf<String?>(null) }
+    var connectionTestJob by remember { mutableStateOf<Job?>(null) }
+    var connectionTestGeneration by remember { mutableStateOf(0L) }
 
     val needsBaseUrl = type == "OPENAI"
     // Azure Translator 同样需要订阅密钥；区域不能替代 API Key。
@@ -1168,6 +1171,24 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             region = region.trim(),
             enabled = true,
         )
+
+        fun cancelConnectionTest(message: String) {
+            connectionTestGeneration += 1L
+            connectionTestJob?.cancel()
+            connectionTestJob = null
+            testingConnection = false
+            connectionMessage = message
+        }
+
+        fun selectModel(newModel: String) {
+            if (newModel == model) return
+            if (testingConnection) {
+                cancelConnectionTest("已切换模型，已取消之前的连接测试")
+            } else {
+                connectionMessage = null
+            }
+            model = newModel
+        }
 
         fun pullModelsNow() {
             pulling = true
@@ -1195,27 +1216,37 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         }
 
         fun testConnectionNow() {
+            connectionTestJob?.cancel()
+            connectionTestGeneration += 1L
+            val testGeneration = connectionTestGeneration
             testingConnection = true
             connectionMessage = null
             val profile = makeCurrentProfile()
-            scope.launch(Dispatchers.IO) {
+            connectionTestJob = scope.launch(Dispatchers.IO) {
                 val startedAt = System.nanoTime()
                 try {
                     EngineFactory.fromProfile(profile).testConnection()
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                     withContext(Dispatchers.Main) {
-                        connectionMessage = "模型连接成功 · ${elapsedMs} ms" +
-                            if (profile.model.isNotBlank()) " · ${profile.model}" else ""
-                        testingConnection = false
+                        // Ignore results from a test whose model has since been changed.
+                        if (connectionTestGeneration == testGeneration) {
+                            connectionMessage = "模型连接成功 · ${elapsedMs} ms" +
+                                if (profile.model.isNotBlank()) " · ${profile.model}" else ""
+                            testingConnection = false
+                            connectionTestJob = null
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                     withContext(Dispatchers.Main) {
-                        connectionMessage = "模型连接失败 · ${elapsedMs} ms · " +
-                            apiConnectionFailureMessage(profile, e)
-                        testingConnection = false
+                        if (connectionTestGeneration == testGeneration) {
+                            connectionMessage = "模型连接失败 · ${elapsedMs} ms · " +
+                                apiConnectionFailureMessage(profile, e)
+                            testingConnection = false
+                            connectionTestJob = null
+                        }
                     }
                 }
             }
@@ -1239,6 +1270,21 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                 "GEMINI" to "Gemini 大模型",
                 "GCLOUD" to "Google 翻译 API",
             )
+            fun selectServiceType(value: String) {
+                if (value == type) {
+                    typePickerExpanded = false
+                    return
+                }
+                if (testingConnection) {
+                    cancelConnectionTest("服务类型已切换，已取消之前的连接测试")
+                } else {
+                    connectionMessage = null
+                }
+                type = value
+                models = null
+                model = ""
+                typePickerExpanded = false
+            }
             Labeled("服务类型") {
                 Box(Modifier.fillMaxWidth()) {
                     OutlinedTextField(
@@ -1277,23 +1323,13 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                             modifier = Modifier.fillMaxWidth()
                                                 .clip(RoundedCornerShape(12.dp))
                                                 .background(if (type == value) SurfaceHigh else SurfaceDark)
-                                                .clickable {
-                                                    type = value
-                                                    models = null
-                                                    model = ""
-                                                    typePickerExpanded = false
-                                                }
+                                                .clickable { selectServiceType(value) }
                                                 .padding(horizontal = 12.dp, vertical = 13.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
                                             RadioButton(
                                                 selected = type == value,
-                                                onClick = {
-                                                    type = value
-                                                    models = null
-                                                    model = ""
-                                                    typePickerExpanded = false
-                                                },
+                                                onClick = { selectServiceType(value) },
                                                 colors = RadioButtonDefaults.colors(selectedColor = BrandBright),
                                             )
                                             Text(
@@ -1364,7 +1400,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     if (!fixedEngine) {
                         OutlinedTextField(
                             value = model,
-                            onValueChange = { model = it },
+                            onValueChange = { selectModel(it) },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             placeholder = { Text("填写模型名称") },
@@ -1424,7 +1460,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                                 .fillMaxWidth()
                                                 .clip(RoundedCornerShape(8.dp))
                                                 .background(if (m == model) Brand else androidx.compose.ui.graphics.Color.Transparent)
-                                                .clickable { model = m }
+                                                .clickable { selectModel(m) }
                                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                                         )
                                     }
