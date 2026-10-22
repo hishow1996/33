@@ -2342,8 +2342,8 @@ fun WebVideoScreen(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 3.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                        .padding(horizontal = 10.dp, vertical = 2.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
                                     Text(
                                         candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
@@ -2475,7 +2475,7 @@ fun WebVideoScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable { showMediaDetails = !showMediaDetails }
-                                            .padding(vertical = 2.dp),
+                                            .padding(vertical = 1.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text(
