@@ -2613,82 +2613,97 @@ class DubbingEngine(
                 } else false
             }
             if (!ownsCue) return
-            val accepted = timelineTts.speakOnTimeline(
-                text = spokenText,
-                speed = speechRate,
-                speakerId = line.speakerId,
-                volume = activeVolume,
-                utteranceId = utteranceId,
-                onStarted = {
-                    val stillCurrent = synchronized(playbackControlLock) {
-                        val allowed = !released &&
-                            playbackGeneration.get() == generation &&
-                            _currentLine.value == idx &&
-                            isActivePlaybackAllowedLocked()
-                        if (allowed) {
-                            playbackStartedLine = idx
-                            directTtsStartedAtNanos.set(System.nanoTime())
-                        }
-                        allowed
-                    }
-                    if (stillCurrent) {
-                        runCatching { onPlaybackStarted?.invoke(idx) }
-                            .onFailure {
-                                android.util.Log.w(
+            // Serialize TTS submission with stop(): otherwise disable can run after the
+            // generation check but just before speakOnTimeline(), allowing a stale utterance
+            // to begin after stopTimelineSpeech() has already returned.
+            val accepted = synchronized(playbackControlLock) {
+                if (
+                    released ||
+                    playbackGeneration.get() != generation ||
+                    _currentLine.value != idx ||
+                    activeTimelineUtteranceId != utteranceId ||
+                    !isActivePlaybackAllowedLocked()
+                ) {
+                    false
+                } else {
+                    timelineTts.speakOnTimeline(
+                        text = spokenText,
+                        speed = speechRate,
+                        speakerId = line.speakerId,
+                        volume = activeVolume,
+                        utteranceId = utteranceId,
+                        onStarted = {
+                            val stillCurrent = synchronized(playbackControlLock) {
+                                val allowed = !released &&
+                                    playbackGeneration.get() == generation &&
+                                    _currentLine.value == idx &&
+                                    isActivePlaybackAllowedLocked()
+                                if (allowed) {
+                                    playbackStartedLine = idx
+                                    directTtsStartedAtNanos.set(System.nanoTime())
+                                }
+                                allowed
+                            }
+                            if (stillCurrent) {
+                                runCatching { onPlaybackStarted?.invoke(idx) }
+                                    .onFailure {
+                                        android.util.Log.w(
+                                            "DubbingEngine",
+                                            "Could not publish live system-TTS playback state",
+                                            it,
+                                        )
+                                    }
+                            } else {
+                                timelineTts.stopTimelineSpeech(utteranceId)
+                            }
+                        },
+                        onCompleted = { error ->
+                            val completedAtNanos = System.nanoTime()
+                            val startedAtNanos = directTtsStartedAtNanos.getAndSet(0L)
+                            val stillCurrent = synchronized(playbackControlLock) {
+                                if (activeTimelineUtteranceId == utteranceId) {
+                                    activeTimelineUtteranceId = null
+                                    activeCueOverrunsWindow = false
+                                }
+                                !released &&
+                                    playbackGeneration.get() == generation &&
+                                    _currentLine.value == idx
+                            }
+                            if (stillCurrent && error.isNullOrBlank() && startedAtNanos > 0L) {
+                                val elapsedMs = ((completedAtNanos - startedAtNanos).coerceAtLeast(0L) / 1_000_000L)
+                                val oldEstimate = directTtsMsPerCodePoint
+                                val newEstimate = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
+                                    currentMsPerCodePoint = oldEstimate,
+                                    elapsedMs = elapsedMs,
+                                    codePointCount = spokenCodePointCount,
+                                    appliedSpeechRate = speechRate,
+                                    estimatedPunctuationPauseMs = punctuationPauseMs,
+                                )
+                                directTtsMsPerCodePoint = newEstimate
+                                android.util.Log.d(
                                     "DubbingEngine",
-                                    "Could not publish live system-TTS playback state",
-                                    it,
+                                    "System TTS timing calibration: line=${idx + 1}/${lines.size} " +
+                                        "speechChars=$spokenCodePointCount punctuationPauseMs=$punctuationPauseMs " +
+                                        "elapsedMs=$elapsedMs appliedRate=$speechRate " +
+                                        "msPerCodePoint=$oldEstimate->$newEstimate",
                                 )
                             }
-                    } else {
-                        timelineTts.stopTimelineSpeech(utteranceId)
-                    }
-                },
-                onCompleted = { error ->
-                    val completedAtNanos = System.nanoTime()
-                    val startedAtNanos = directTtsStartedAtNanos.getAndSet(0L)
-                    val stillCurrent = synchronized(playbackControlLock) {
-                        if (activeTimelineUtteranceId == utteranceId) {
-                            activeTimelineUtteranceId = null
-                            activeCueOverrunsWindow = false
-                        }
-                        !released &&
-                            playbackGeneration.get() == generation &&
-                            _currentLine.value == idx
-                    }
-                    if (stillCurrent && error.isNullOrBlank() && startedAtNanos > 0L) {
-                        val elapsedMs = ((completedAtNanos - startedAtNanos).coerceAtLeast(0L) / 1_000_000L)
-                        val oldEstimate = directTtsMsPerCodePoint
-                        val newEstimate = DubbingSyncHoldPolicy.updateSpeechDurationEstimate(
-                            currentMsPerCodePoint = oldEstimate,
-                            elapsedMs = elapsedMs,
-                            codePointCount = spokenCodePointCount,
-                            appliedSpeechRate = speechRate,
-                            estimatedPunctuationPauseMs = punctuationPauseMs,
-                        )
-                        directTtsMsPerCodePoint = newEstimate
-                        android.util.Log.d(
-                            "DubbingEngine",
-                            "System TTS timing calibration: line=${idx + 1}/${lines.size} " +
-                                "speechChars=$spokenCodePointCount punctuationPauseMs=$punctuationPauseMs " +
-                                "elapsedMs=$elapsedMs appliedRate=$speechRate " +
-                                "msPerCodePoint=$oldEstimate->$newEstimate",
-                        )
-                    }
-                    if (!error.isNullOrBlank()) {
-                        if (stillCurrent) {
-                            markCuePrepared(idx, hasAudio = false)
-                            synchronized(playbackControlLock) {
-                                if (playbackGeneration.get() == generation && _currentLine.value == idx) {
-                                    playbackStartedLine = -1
-                                    _currentLine.value = -1
+                            if (!error.isNullOrBlank()) {
+                                if (stillCurrent) {
+                                    markCuePrepared(idx, hasAudio = false)
+                                    synchronized(playbackControlLock) {
+                                        if (playbackGeneration.get() == generation && _currentLine.value == idx) {
+                                            playbackStartedLine = -1
+                                            _currentLine.value = -1
+                                        }
+                                    }
+                                    reportSynthesisError("第 ${idx + 1} 行系统 TTS 朗读失败：$error")
                                 }
                             }
-                            reportSynthesisError("第 ${idx + 1} 行系统 TTS 朗读失败：$error")
-                        }
-                    }
-                },
-            )
+                        },
+                    )
+                }
+            }
             if (!accepted) {
                 markCuePrepared(idx, hasAudio = false)
                 synchronized(playbackControlLock) {
