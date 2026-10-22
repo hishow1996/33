@@ -2224,20 +2224,20 @@ fun WebVideoScreen(
                             }
                             val audioChipContainer = when (sourceHint.kind) {
                                 WebCandidateAudioHintKind.INDEPENDENT,
-                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primaryContainer
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
-                                WebCandidateAudioHintKind.MUXED_DIRECT -> MaterialTheme.colorScheme.tertiaryContainer
+                                WebCandidateAudioHintKind.MUXED_DIRECT,
                                 WebCandidateAudioHintKind.NO_AUDIO,
                                 WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.errorContainer
+                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primaryContainer
                                 WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.surfaceVariant
                             }
                             val audioChipTextColor = when (sourceHint.kind) {
                                 WebCandidateAudioHintKind.INDEPENDENT,
-                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.onPrimaryContainer
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
-                                WebCandidateAudioHintKind.MUXED_DIRECT -> MaterialTheme.colorScheme.onTertiaryContainer
+                                WebCandidateAudioHintKind.MUXED_DIRECT,
                                 WebCandidateAudioHintKind.NO_AUDIO,
                                 WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.onErrorContainer
+                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.onPrimaryContainer
                                 WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
                             Card(
@@ -2292,15 +2292,31 @@ fun WebVideoScreen(
                                             sourceHint.resolutionSummary(),
                                             modifier = Modifier
                                                 .background(
-                                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                                    color = MaterialTheme.colorScheme.errorContainer,
                                                     shape = RoundedCornerShape(8.dp),
                                                 )
                                                 .padding(horizontal = 9.dp, vertical = 7.dp),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurface,
+                                            color = MaterialTheme.colorScheme.onErrorContainer,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
+                                        if (reason != null) {
+                                            Text(
+                                                "播放限制",
+                                                modifier = Modifier
+                                                    .background(
+                                                        color = MaterialTheme.colorScheme.errorContainer,
+                                                        shape = RoundedCornerShape(8.dp),
+                                                    )
+                                                    .padding(horizontal = 9.dp, vertical = 7.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        Spacer(Modifier.weight(1f))
                                     Button(
                                         modifier = Modifier
                                             .widthIn(min = 100.dp)
