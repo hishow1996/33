@@ -240,7 +240,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                         "新服务类型" to (profile?.type ?: "BUILTIN"),
                         "新服务模型" to profile?.model.orEmpty().take(120),
                         "是否启用" to (profile?.enabled ?: true).toString(),
-                        "API 密钥是否已配置" to profile?.apiKey?.isNotBlank().toString(),
+                        "API 密钥是否已配置" to (profile?.let { runCatching { Crypto.decrypt(it.apiKey).isNotBlank() }.getOrDefault(false) } ?: false).toString(),
                         "安全说明" to "未记录 API Key、Authorization、完整 Base URL 或请求头",
                     ),
                 )
@@ -648,7 +648,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                                 "服务类型" to p.type,
                                 "服务配置编号" to p.id.toString(),
                                 "模型名称" to p.model.take(120),
-                                "API 密钥是否已配置" to p.apiKey.isNotBlank().toString(),
+                                "API 密钥是否已配置" to runCatching { Crypto.decrypt(p.apiKey).isNotBlank() }.getOrDefault(false).toString(),
                                 "Base URL 是否已填写" to p.baseUrl.isNotBlank().toString(),
                                 "安全说明" to "未记录 API Key、完整 Base URL 或请求头",
                             ),
