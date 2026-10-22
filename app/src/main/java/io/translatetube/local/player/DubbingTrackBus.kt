@@ -11,9 +11,8 @@ package io.translatetube.local.player
  * flush 后由播放层设一次（= player.currentPosition），此后媒体时间由流内样本数
  * 外推，误差为常数级（±50ms 内无感）。
  *
- * 线程模型：feed/reset 只来自 DubbingEngine 的 audioExec 单线程；readMixWindow
- * 只来自 ExoPlayer 的渲染线程。两端以 [pending] 队列（ConcurrentLinkedQueue）
- * + 快照数组交接，锁只保护指针推进。
+ * 线程模型：feed、reset 和模式开关通过 stateLock 串行发布状态；readMixWindow
+ * 在锁内合并待处理块并获取快照，逐样本混音在锁外完成，避免长时间占用渲染线程。
  */
 class DubbingTrackBus {
 
@@ -45,9 +44,13 @@ class DubbingTrackBus {
 
     /** 挂一块配音 PCM；[samples] 按源采样率 [sourceSampleRate] 给出，内部线性重采样到 sink 率。 */
     fun feed(mediaTimeUs: Long, samples: FloatArray, sourceSampleRate: Int) {
-        if (samples.isEmpty() || sourceSampleRate <= 0 || !dubbingEnabled) return
+        if (samples.isEmpty() || sourceSampleRate <= 0) return
+        // Capture mode and generation atomically before resampling.
+        val expectedGeneration = synchronized(stateLock) {
+            if (!dubbingEnabled) return
+            contentGeneration
+        }
         // A toggle/seek while resampling must prevent this old result from being re-enqueued.
-        val expectedGeneration = contentGeneration
         val target = sinkSampleRate
         val resampled = if (target == sourceSampleRate || target <= 0) samples else run {
             val ratio = sourceSampleRate.toDouble() / target
