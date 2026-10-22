@@ -211,6 +211,71 @@ object ModelFiles {
  */
 class ModelDownloadManager(private val ctx: Context, private val scope: CoroutineScope) {
 
+    /** Queue lifecycle events away from UI and file/network workers; progress ticks are never logged. */
+    private val modelLogExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "model-download-log").apply { isDaemon = true }
+    }
+
+    private fun logModelInfo(message: String, details: Map<String, String> = emptyMap()) {
+        runCatching {
+            modelLogExecutor.execute {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.info(
+                        ctx.applicationContext, "ModelDownloadManager", message,
+                        diagnosticContext = details,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun logModelWarning(
+        message: String,
+        failure: Throwable? = null,
+        details: Map<String, String> = emptyMap(),
+    ) {
+        runCatching {
+            modelLogExecutor.execute {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        ctx.applicationContext, "ModelDownloadManager", message, failure,
+                        diagnosticContext = details,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun logModelError(
+        message: String,
+        failure: Throwable? = null,
+        details: Map<String, String> = emptyMap(),
+    ) {
+        runCatching {
+            modelLogExecutor.execute {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.error(
+                        ctx.applicationContext, "ModelDownloadManager", message, failure,
+                        diagnosticContext = details,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun modelKindDetails(kind: ModelKind): Map<String, String> = mapOf(
+        "模型类别" to kind.name,
+        "当前状态" to (if (kind == ModelKind.TTS) _tts.value else _asr.value).status.name,
+        "当前进度百分比" to (if (kind == ModelKind.TTS) _tts.value else _asr.value).progress.toString(),
+        "当前下载阶段" to (if (kind == ModelKind.TTS) _tts.value else _asr.value).stageMessage.orEmpty(),
+        "目标目录类型" to if (kind == ModelKind.TTS) "TTS" else "ASR",
+        "当前选择的转写模型" to if (kind == ModelKind.ASR) {
+            runCatching { ModelFiles.selectedLocalAsrModelId(ctx) }.getOrDefault("读取失败")
+        } else {
+            "不适用"
+        },
+    )
+
     private val _tts = MutableStateFlow(ModelState())
     val tts: StateFlow<ModelState> = _tts
     private val _asr = MutableStateFlow(ModelState())
@@ -328,7 +393,29 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     }
 
     fun download(kind: ModelKind) {
-        if (!claimDownloadStart(kind)) return
+        if (!claimDownloadStart(kind)) {
+            logModelWarning(
+                "重复模型下载请求已忽略",
+                details = modelKindDetails(kind) + mapOf(
+                    "忽略原因" to "相同模型已有启动过程、下载任务或安装任务运行",
+                    "是否已有配音模型任务" to (ttsJob?.isActive == true).toString(),
+                    "是否已有转写模型任务" to (asrJob?.isActive == true).toString(),
+                ),
+            )
+            return
+        }
+        logModelInfo(
+            "模型下载/安装任务已请求启动",
+            modelKindDetails(kind) + mapOf(
+                "缓存目录可用空间 MB" to (ctx.cacheDir.usableSpace / (1024L * 1024L)).toString(),
+                "应用文件目录可用空间 MB" to (ctx.filesDir.usableSpace / (1024L * 1024L)).toString(),
+                "是否处于暂停状态" to isPaused.toString(),
+                "下载源数量" to when (kind) {
+                    ModelKind.TTS -> ttsUrls.size.toString()
+                    ModelKind.ASR -> (if (ModelFiles.selectedLocalAsrModelId(ctx) == "sensevoice") senseVoiceUrls else asrUrls).size.toString()
+                },
+            ),
+        )
         // A new task joins an already-paused model session instead of secretly resuming work.
         if (io.translatetube.local.tts.PiperModels.hasActiveDownloads &&
             io.translatetube.local.tts.PiperModels.isPaused
@@ -345,10 +432,24 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     }
                     if (ModelFiles.ttsReady(ctx)) {
                         _tts.value = ModelState(status = ModelStatus.READY, progress = 100)
+                        logModelInfo(
+                            "配音模型已存在且完整，跳过重复下载",
+                            modelKindDetails(ModelKind.TTS) + mapOf(
+                                "检查目录类型" to "TTS",
+                                "模型目录可用空间 MB" to (ModelFiles.ttsDir(ctx).usableSpace / (1024L * 1024L)).toString(),
+                            ),
+                        )
                         return
                     }
                     if (!startBackgroundDownloadService()) {
                         _tts.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
+                        logModelError(
+                            "无法启动配音模型后台下载服务",
+                            details = modelKindDetails(ModelKind.TTS) + mapOf(
+                                "失败阶段" to "startForegroundService/startService",
+                                "目标目录" to ModelFiles.ttsDir(ctx).name,
+                            ),
+                        )
                         return
                     }
                     val job = scope.launch {
@@ -390,10 +491,25 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     val selectedModelId = ModelFiles.selectedLocalAsrModelId(ctx)
                     if (ModelFiles.asrReady(ctx)) {
                         _asr.value = ModelState(status = ModelStatus.READY, progress = 100)
+                        logModelInfo(
+                            "当前转写模型及必需附属文件已完整，跳过重复下载",
+                            modelKindDetails(ModelKind.ASR) + mapOf(
+                                "Whisper 完整性" to ModelFiles.whisperReady(ctx).toString(),
+                                "SenseVoice 完整性" to ModelFiles.senseVoiceReady(ctx).toString(),
+                                "语音检测 VAD 完整性" to ModelFiles.isValidVadModel(File(ModelFiles.asrDir(ctx), "silero_vad.onnx")).toString(),
+                            ),
+                        )
                         return
                     }
                     if (!startBackgroundDownloadService()) {
                         _asr.value = ModelState(status = ModelStatus.FAILED, error = "无法启动后台下载服务，请检查系统后台运行权限后重试")
+                        logModelError(
+                            "无法启动语音转写模型后台下载服务",
+                            details = modelKindDetails(ModelKind.ASR) + mapOf(
+                                "失败阶段" to "startForegroundService/startService",
+                                "目标模型" to ModelFiles.selectedLocalAsrModelId(ctx),
+                            ),
+                        )
                         return
                     }
                     val job = scope.launch {
@@ -458,6 +574,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val job = synchronized(downloadStartLock) {
             if (kind == ModelKind.TTS) ttsJob else asrJob
         }
+        logModelWarning(
+            "用户请求取消模型下载/安装任务",
+            details = modelKindDetails(kind) + mapOf(
+                "取消前任务是否活跃" to (job?.isActive == true).toString(),
+                "取消前下载文件大小 bytes" to File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp").length().toString(),
+            ),
+        )
         when (kind) {
             ModelKind.TTS -> _tts.value = ModelState(status = ModelStatus.FAILED, error = "已取消")
             ModelKind.ASR -> _asr.value = ModelState(status = ModelStatus.FAILED, error = "已取消")
@@ -471,7 +594,13 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val managedActive = ttsJob?.isActive == true || asrJob?.isActive == true ||
             isActiveModelState(_tts.value) || isActiveModelState(_asr.value)
         val piperActive = io.translatetube.local.tts.PiperModels.hasActiveDownloads
-        if (!managedActive && !piperActive) return
+        if (!managedActive && !piperActive) {
+            logModelInfo(
+                "忽略模型下载暂停/恢复操作：当前没有活动任务",
+                mapOf("配音任务状态" to _tts.value.status.name, "转写任务状态" to _asr.value.status.name),
+            )
+            return
+        }
         val shouldPause = ModelPauseCoordinationPolicy.shouldPauseAfterToggle(
             managedActive = managedActive,
             managedPaused = isPaused,
@@ -480,6 +609,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         )
         if (managedActive) setDownloadsPaused(shouldPause)
         if (piperActive) io.translatetube.local.tts.PiperModels.setPaused(shouldPause)
+        logModelInfo(
+            if (shouldPause) "模型下载任务已暂停" else "模型下载任务已恢复",
+            mapOf(
+                "配音模型状态" to _tts.value.status.name,
+                "转写模型状态" to _asr.value.status.name,
+                "管理器任务是否活跃" to managedActive.toString(),
+                "Piper 模型任务是否活跃" to piperActive.toString(),
+                "管理器是否暂停" to isPaused.toString(),
+                "Piper 是否暂停" to io.translatetube.local.tts.PiperModels.isPaused.toString(),
+                "状态来源" to "前台通知的全局暂停/恢复操作",
+            ),
+        )
     }
 
     private fun setDownloadsPaused(paused: Boolean) {
@@ -496,6 +637,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
 
     /** Cancel every active model task and release pause waiters before cancelling the jobs. */
     fun cancelAll() {
+        logModelWarning(
+            "用户请求取消全部模型下载任务",
+            details = mapOf(
+                "配音模型状态" to _tts.value.status.name,
+                "转写模型状态" to _asr.value.status.name,
+                "配音任务是否活跃" to (ttsJob?.isActive == true).toString(),
+                "转写任务是否活跃" to (asrJob?.isActive == true).toString(),
+                "Piper 活跃任务数" to io.translatetube.local.tts.PiperModels.activeDownloadCount.toString(),
+            ),
+        )
         resumeDownloads()
         io.translatetube.local.tts.PiperModels.cancelAllDownloads()
         if (ttsJob?.isActive == true || isActiveModelState(_tts.value)) cancel(ModelKind.TTS)
@@ -576,8 +727,18 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         urls: List<String>,
         destDir: File,
     ) {
-        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0)
+        val downloadStartedAtMs = System.currentTimeMillis()
         val pkg = File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp")
+        logModelInfo(
+            "模型压缩包下载与安装阶段开始",
+            modelKindDetails(kind) + mapOf(
+                "候选下载源数量" to urls.size.toString(),
+                "目标目录" to destDir.name,
+                "缓存目录可用空间 MB" to (ctx.cacheDir.usableSpace / (1024L * 1024L)).toString(),
+                "安装目录可用空间 MB" to ((destDir.parentFile ?: ctx.filesDir).usableSpace / (1024L * 1024L)).toString(),
+            ),
+        )
+        state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0)
         val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
         val requiredStorageBytes = when (kind) {
             ModelKind.TTS -> ModelStoragePreflightPolicy.requiredBytes(
@@ -608,6 +769,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 status = ModelStatus.FAILED,
                 error = "可用存储空间不足：下载和安装该模型预计至少需要 ${ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间，请释放空间后重试。",
             )
+            logModelError(
+                "模型下载前置检查失败：存储空间不足",
+                details = modelKindDetails(kind) + mapOf(
+                    "所需最小可用空间 bytes" to requiredStorageBytes.toString(),
+                    "估算所需空间 MB" to ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes).toString(),
+                    "检测到的最小可用空间 bytes" to (usableSpace?.toString() ?: "系统未能提供"),
+                    "下载阶段" to "存储空间预检",
+                    "临时压缩包是否已清理" to (!pkg.exists()).toString(),
+                ),
+            )
             return
         }
         var lastError: String? = null
@@ -627,6 +798,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 },
             )
             var downloadedArchiveSha256: String? = null
+            logModelInfo(
+                "开始尝试模型下载源",
+                modelKindDetails(kind) + mapOf(
+                    "下载源序号" to (sourceIndex + 1).toString(),
+                    "候选下载源总数" to urls.size.toString(),
+                    "下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                    "当前阶段" to state.value.stageMessage.orEmpty(),
+                    "是否使用备用源" to (sourceIndex > 0).toString(),
+                ),
+            )
             try {
                 withContext(Dispatchers.IO) {
                     val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
@@ -833,6 +1014,20 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     error = null,
                 )
                 Log.i("ModelDL", "$kind 就绪")
+                logModelInfo(
+                    "模型下载、完整性校验与安装全部完成",
+                    modelKindDetails(kind) + mapOf(
+                        "最终状态" to state.value.status.name,
+                        "最终进度百分比" to state.value.progress.toString(),
+                        "下载压缩包大小 MB" to ((pkg.length() + 1_048_575L) / 1_048_576L).toString(),
+                        "目标目录" to destDir.name,
+                        "目标目录顶层项目数" to destDir.listFiles().orEmpty().size.toString(),
+                        "总耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
+                        "最终下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                        "最终校验状态" to "模型文件完整性检查通过",
+                        "压缩包已清理" to (!pkg.exists()).toString(),
+                    ),
+                )
                 return
             } catch (e: kotlinx.coroutines.CancellationException) {
                 pkg.delete()
@@ -862,11 +1057,33 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         }
         pkg.delete()
         state.value = state.value.copy(status = ModelStatus.FAILED, error = lastError ?: "全部下载源失败")
+        logModelError(
+            "模型全部下载源尝试失败",
+            details = modelKindDetails(kind) + mapOf(
+                "候选下载源数量" to urls.size.toString(),
+                "所有下载源主机" to urls.map { runCatching { android.net.Uri.parse(it).host }.getOrNull() ?: "未知" }.distinct().joinToString(", "),
+                "最后一次失败原因" to (lastError ?: "未提供失败原因").take(360),
+                "最终阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
+                "累计耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
+                "临时压缩包已清理" to (!pkg.exists()).toString(),
+            ),
+        )
     }
 
     /** Whisper 主模型已经存在时，只补下载缺失/损坏的 VAD 文件，避免重新下载近 200 MB 模型包。 */
     private suspend fun runVadOnly(state: MutableStateFlow<ModelState>) {
+        val startedAtMs = System.currentTimeMillis()
         val vad = File(ModelFiles.asrDir(ctx), "silero_vad.onnx")
+        logModelInfo(
+            "转写模型主文件已存在，开始单独补齐 VAD 附属模型",
+            mapOf(
+                "附属模型文件" to vad.name,
+                "当前转写模型" to ModelFiles.selectedLocalAsrModelId(ctx),
+                "VAD 文件当前存在" to vad.exists().toString(),
+                "VAD 当前完整性" to ModelFiles.isValidVadModel(vad).toString(),
+                "候选下载源数量" to "2",
+            ),
+        )
         var lastError: String? = null
         val urls = listOf(
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
@@ -901,6 +1118,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     downloadedMB = (vad.length() + 1_048_575L) / 1_048_576L,
                     totalMB = 1,
                 )
+                logModelInfo(
+                    "VAD 附属模型补下载成功",
+                    mapOf(
+                        "附属模型文件" to vad.name,
+                        "文件大小 bytes" to vad.length().toString(),
+                        "SHA-256 完整性" to "通过",
+                        "总耗时 ms" to (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L).toString(),
+                        "转写模型已就绪" to "true",
+                    ),
+                )
                 return
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -909,6 +1136,16 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             }
         }
         state.value = ModelState(status = ModelStatus.FAILED, error = "补下载 VAD 模型失败：${lastError ?: "网络异常"}")
+        logModelError(
+            "VAD 附属模型补下载失败",
+            details = mapOf(
+                "附属模型文件" to vad.name,
+                "最后一次失败原因" to (lastError ?: "网络异常").take(360),
+                "最终完整性检查" to ModelFiles.isValidVadModel(vad).toString(),
+                "总耗时 ms" to (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L).toString(),
+                "尝试过的下载源主机" to urls.map { runCatching { android.net.Uri.parse(it).host }.getOrNull() ?: "未知" }.distinct().joinToString(", "),
+            ),
+        )
     }
 
     private fun sha256(file: File, checkActive: () -> Unit = {}): String {
