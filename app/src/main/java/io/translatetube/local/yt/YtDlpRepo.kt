@@ -299,6 +299,7 @@ object YtDlpRepo {
 
         fun pypiMirror(url: String, source: String): String? {
             val json = fetchVersionText(
+                context = context,
                 url = url,
                 accept = "application/json",
                 maxBytes = MAX_PYPI_METADATA_BYTES,
@@ -376,6 +377,7 @@ object YtDlpRepo {
 
         // REST API 放在发布页之后：未登录限额低，共享 IP 常被 403。
         fetchVersionText(
+            context = context,
             url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
             accept = "application/vnd.github+json",
             maxBytes = MAX_RELEASE_METADATA_BYTES,
@@ -405,6 +407,7 @@ object YtDlpRepo {
             "GHProxy.net" to "https://ghproxy.net",
         ).forEach { (label, proxy) ->
             val json = fetchVersionText(
+                context = context,
                 url = "$proxy/$releaseApiPath",
                 accept = "application/vnd.github+json",
                 maxBytes = MAX_RELEASE_METADATA_BYTES,
@@ -482,6 +485,7 @@ object YtDlpRepo {
      * 失败明细只在最终放弃时记录一次，避免设置页错误文案里出现重复条目。
      */
     private fun fetchVersionText(
+        context: Context,
         url: String,
         accept: String,
         maxBytes: Long,
@@ -534,7 +538,7 @@ object YtDlpRepo {
             }
             if (text != null) return text
             if (!transient || attempt >= VERSION_LOOKUP_ATTEMPTS || !sleepBeforeRetry(VERSION_LOOKUP_RETRY_DELAY_MS)) {
-                failure?.let { recordProbe(source, it) }
+                failure?.let { recordProbe(context, source, it) }
                 return null
             }
         }
@@ -1107,7 +1111,7 @@ object YtDlpRepo {
                         lastError = e
                         break
                     } catch (e: Exception) {
-                        Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，第 $attempt/$UPDATE_DOWNLOAD_ATTEMPTS 次）：$candidate", e)
+                        Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，第 $attempt/$maxAttempts 次）：$candidate", e)
                         AppLogStore.info(
                             appCtx,
                             "YtDlpUpdate",
