@@ -12,7 +12,7 @@ class AppLogTitleResolverTest {
             AppLogTitleResolver.title("DubbingEngine", "配音 PCM 缓存预检完成"),
         )
         assertEquals(
-            "配音 / 混流输出：配音混流处理器写入缓冲失败",
+            "配音 / 音频混流：配音混流处理器写入缓冲失败",
             AppLogTitleResolver.title("DubbingMixer", "配音混流处理器写入缓冲失败"),
         )
         assertEquals(
