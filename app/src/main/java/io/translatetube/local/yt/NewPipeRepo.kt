@@ -1,5 +1,7 @@
 package io.translatetube.local.yt
 
+import android.content.Context
+import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.util.HttpDownloadResponsePolicy
 
 import io.translatetube.local.subs.SubLine
@@ -20,6 +22,7 @@ import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
 
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -117,9 +120,55 @@ data class SubtitleTrackOption(
 
 object NewPipeRepo {
     @Volatile private var inited = false
+    @Volatile private var appContext: Context? = null
     @Volatile private var cachedInfo: StreamInfo? = null
     @Volatile private var cachedId: String? = null
     private val infoLock = Any()
+    /** Keep structured log file writes off UI and network callback threads. */
+    private val logExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "youtube-extractor-log").apply { isDaemon = true }
+    }
+
+    private fun logInfo(message: String, context: Map<String, String> = emptyMap()) {
+        val app = appContext ?: return
+        runCatching {
+            logExecutor.execute {
+                runCatching {
+                    AppLogStore.info(app, "YouTubeExtractor", message, diagnosticContext = context)
+                }
+            }
+        }
+    }
+
+    private fun logWarning(
+        message: String,
+        failure: Throwable? = null,
+        context: Map<String, String> = emptyMap(),
+    ) {
+        val app = appContext ?: return
+        runCatching {
+            logExecutor.execute {
+                runCatching {
+                    AppLogStore.warning(app, "YouTubeExtractor", message, failure, diagnosticContext = context)
+                }
+            }
+        }
+    }
+
+    private fun logError(
+        message: String,
+        failure: Throwable? = null,
+        context: Map<String, String> = emptyMap(),
+    ) {
+        val app = appContext ?: return
+        runCatching {
+            logExecutor.execute {
+                runCatching {
+                    AppLogStore.error(app, "YouTubeExtractor", message, failure, diagnosticContext = context)
+                }
+            }
+        }
+    }
     /** Every invalidation prevents any older in-flight fetch from repopulating the cache. */
     private var infoCacheGeneration = 0L
 
@@ -136,37 +185,95 @@ object NewPipeRepo {
             val ownerJob = currentCoroutineContext()[Job]
             val previousJob = extractorOwnerJob.get()
             if (ownerJob == null) extractorOwnerJob.remove() else extractorOwnerJob.set(ownerJob)
+            val startedAtNanos = System.nanoTime()
+            logInfo(
+                "开始读取 YouTube 视频元数据",
+                mapOf(
+                    "YouTube 视频 ID" to videoId,
+                    "本次缓存代次" to requestGeneration.toString(),
+                    "网络解析方式" to "NewPipe Extractor",
+                ),
+            )
             val fetched = try {
-                StreamInfo.getInfo(
-                    ServiceList.YouTube,
-                    "https://www.youtube.com/watch?v=$videoId",
-                )
+                try {
+                    StreamInfo.getInfo(
+                        ServiceList.YouTube,
+                        "https://www.youtube.com/watch?v=$videoId",
+                    )
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    logWarning(
+                        "YouTube 视频元数据获取失败",
+                        failure,
+                        mapOf(
+                            "YouTube 视频 ID" to videoId,
+                            "请求耗时 ms" to ((System.nanoTime() - startedAtNanos).coerceAtLeast(0L) / 1_000_000L).toString(),
+                            "本次缓存代次" to requestGeneration.toString(),
+                        ),
+                    )
+                    throw failure
+                }
             } finally {
                 if (previousJob == null) extractorOwnerJob.remove()
                 else extractorOwnerJob.set(previousJob)
             }
+            val elapsedMs = ((System.nanoTime() - startedAtNanos).coerceAtLeast(0L) / 1_000_000L)
             synchronized(infoLock) {
                 if (infoCacheGeneration == requestGeneration) {
                     cachedInfo = fetched
                     cachedId = videoId
                 }
             }
+            logInfo(
+                "YouTube 视频元数据获取成功",
+                mapOf(
+                    "YouTube 视频 ID" to videoId,
+                    "标题字符数" to (fetched.name?.length ?: 0).toString(),
+                    "视频时长秒" to fetched.duration.toString(),
+                    "字幕轨数量" to fetched.subtitles.size.toString(),
+                    "音轨候选数量" to fetched.audioStreams.size.toString(),
+                    "视频流候选数量" to fetched.videoStreams.size.toString(),
+                    "请求耗时 ms" to elapsedMs.toString(),
+                    "结果是否写入缓存" to (infoCacheGeneration == requestGeneration).toString(),
+                ),
+            )
             fetched
         }
 
-    fun init(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) {
+    fun init(ctx: Context) {
+        appContext = ctx.applicationContext
         initOnce()
+        logInfo(
+            "YouTube 解析器初始化完成",
+            mapOf(
+                "解析器" to "NewPipe Extractor",
+                "HTTP 连接超时秒" to "15",
+                "HTTP 读取超时秒" to "30",
+                "HTTP 单次请求超时秒" to "45",
+            ),
+        )
     }
 
     /** Explicit retry invalidates cached data without blocking on an in-flight network request. */
     fun invalidate(videoId: String? = null) {
-        synchronized(infoLock) {
+        val cleared = synchronized(infoLock) {
             infoCacheGeneration += 1
-            if (videoId == null || cachedId == videoId) {
+            val shouldClear = videoId == null || cachedId == videoId
+            if (shouldClear) {
                 cachedInfo = null
                 cachedId = null
             }
+            shouldClear
         }
+        logInfo(
+            "YouTube 元数据缓存已失效",
+            mapOf(
+                "指定视频 ID" to videoId.orEmpty().ifBlank { "全部视频" },
+                "是否清除当前缓存内容" to cleared.toString(),
+                "新缓存代次" to synchronized(infoLock) { infoCacheGeneration.toString() },
+            ),
+        )
     }
 
     /** 从链接或原始 11 位 ID 提取 YouTube 视频 ID，并校验 URL 主机名。 */
@@ -197,9 +304,14 @@ object NewPipeRepo {
             throw e
         } catch (e: Exception) {
             android.util.Log.w("NewPipeRepo", "Could not list YouTube subtitle tracks", e)
+            logWarning(
+                "YouTube 字幕轨列表读取失败",
+                e,
+                mapOf("YouTube 视频 ID" to videoId, "失败阶段" to "读取元数据中的 subtitles 字段"),
+            )
             emptyList()
         }
-        return tracks.mapIndexedNotNull { index, track ->
+        val options = tracks.mapIndexedNotNull { index, track ->
             val url = track.url?.takeIf { it.isNotBlank() } ?: return@mapIndexedNotNull null
             val kind = if (track.isAutoGenerated) "auto" else "manual"
             SubtitleTrackOption(
@@ -217,6 +329,17 @@ object NewPipeRepo {
                 else -> 3
             }
         }
+        logInfo(
+            "YouTube 字幕轨识别完成",
+            mapOf(
+                "YouTube 视频 ID" to videoId,
+                "识别到的字幕轨数量" to options.size.toString(),
+                "手动字幕轨数量" to options.count { !it.isAutoGenerated }.toString(),
+                "自动生成字幕轨数量" to options.count { it.isAutoGenerated }.toString(),
+                "可用语言列表" to options.map { it.languageTag }.distinct().take(20).joinToString(", ").ifBlank { "无" },
+            ),
+        )
+        return options
     }
 
     /** 下载单条字幕轨，优先取 WebVTT；不同源格式统一解析后再导出为 VTT。 */
@@ -231,7 +354,20 @@ object NewPipeRepo {
                     val parsed = SubtitleParsers.parseAutoCancellable(body) {
                         ownerJob?.ensureActive()
                     }.filter { it.startMs >= 0L && it.endMs > it.startMs }
-                    if (parsed.isNotEmpty()) return@withContext SubtitleParsers.toVtt(parsed)
+                    if (parsed.isNotEmpty()) {
+                        logInfo(
+                            "YouTube 指定字幕轨下载与解析成功",
+                            mapOf(
+                                "字幕语言" to track.languageTag,
+                                "是否自动生成" to track.isAutoGenerated.toString(),
+                                "有效字幕行数" to parsed.size.toString(),
+                                "原始字幕响应字符数" to body.length.toString(),
+                                "实际采用 VTT 格式请求" to url.contains("fmt=vtt").toString(),
+                                "尝试 URL 格式数量" to candidates.size.toString(),
+                            ),
+                        )
+                        return@withContext SubtitleParsers.toVtt(parsed)
+                    }
                     lastError = IllegalStateException("字幕内容无法识别")
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -239,10 +375,21 @@ object NewPipeRepo {
                     lastError = e
                 }
             }
-            throw IllegalStateException(
+            val failure = IllegalStateException(
                 "无法下载该字幕轨" + (lastError?.message?.let { "：" + it } ?: ""),
                 lastError,
             )
+            logError(
+                "YouTube 指定字幕轨下载或解析失败",
+                failure,
+                mapOf(
+                    "字幕语言" to track.languageTag,
+                    "是否自动生成" to track.isAutoGenerated.toString(),
+                    "尝试 URL 格式数量" to candidates.size.toString(),
+                    "失败类型" to (lastError?.javaClass?.name ?: "未知"),
+                ),
+            )
+            throw failure
         }
 
     /** 字幕轨优先请求 WebVTT；NewPipe 默认 URL 常为 TTML，需兼容两种格式。 */
@@ -259,6 +406,14 @@ object NewPipeRepo {
         }
         if (tracks.isEmpty()) {
             android.util.Log.i("NewPipeRepo", "No YouTube subtitle tracks for video=$videoId")
+            logWarning(
+                "YouTube 视频没有可用字幕轨",
+                diagnosticContext = mapOf(
+                    "YouTube 视频 ID" to videoId,
+                    "字幕轨数量" to "0",
+                    "后续建议" to "由视频处理流程选择音轨提取与语音转写",
+                ),
+            )
             return null
         }
 
@@ -289,6 +444,17 @@ object NewPipeRepo {
                             "NewPipeRepo",
                             "Loaded ${lines.size} subtitle cues (language=${track.languageTag}, auto=${track.isAutoGenerated})"
                         )
+                        logInfo(
+                            "YouTube 原字幕获取成功",
+                            mapOf(
+                                "YouTube 视频 ID" to videoId,
+                                "选中字幕语言" to track.languageTag.ifBlank { "未知" },
+                                "是否自动生成" to track.isAutoGenerated.toString(),
+                                "有效字幕行数" to lines.size.toString(),
+                                "尝试过的字幕轨数量" to (ordered.indexOf(track) + 1).toString(),
+                                "当前使用 VTT 格式候选" to candidateUrl.contains("fmt=vtt").toString(),
+                            ),
+                        )
                         return lines to track.languageTag
                     }
                     android.util.Log.w(
@@ -309,6 +475,16 @@ object NewPipeRepo {
         android.util.Log.w(
             "NewPipeRepo",
             "Found ${tracks.size} subtitle tracks but none could be downloaded or parsed for video=$videoId"
+        )
+        logWarning(
+            "YouTube 存在字幕轨但全部下载或解析失败",
+            diagnosticContext = mapOf(
+                "YouTube 视频 ID" to videoId,
+                "检测到字幕轨数量" to tracks.size.toString(),
+                "尝试过的字幕语言" to ordered.map { it.languageTag }.distinct().take(20).joinToString(", "),
+                "尝试格式" to "每条字幕轨优先 VTT，失败后重试原始格式",
+                "后续建议" to "检查字幕请求 HTTP 状态、字幕内容格式及视频访问权限",
+            ),
         )
         return null
     }
@@ -340,7 +516,29 @@ object NewPipeRepo {
             )
         }
         val selectedIndex = YouTubeStreamSelector.chooseAudioStreamForAsrIndex(candidates)
-        return streams.getOrNull(selectedIndex)
+        val selected = streams.getOrNull(selectedIndex)
+        if (selected == null) {
+            logWarning(
+                "YouTube 转写音轨选择失败：没有可用音轨候选",
+                diagnosticContext = mapOf(
+                    "YouTube 视频 ID" to videoId,
+                    "识别到音轨候选数量" to streams.size.toString(),
+                ),
+            )
+        } else {
+            logInfo(
+                "YouTube 转写音轨选择完成",
+                mapOf(
+                    "YouTube 视频 ID" to videoId,
+                    "识别到音轨候选数量" to streams.size.toString(),
+                    "最终选中音轨序号" to (selectedIndex + 1).toString(),
+                    "最终选中音轨格式" to (selected.format?.suffix ?: "未知"),
+                    "最终选中音轨码率 kbps" to selected.averageBitrate.toString(),
+                    "选择策略" to "优先选择有效的低码率 M4A，减少下载量与缓存占用",
+                ),
+            )
+        }
+        return selected
     }
 
     private suspend fun downloadText(url: String): String = withContext(Dispatchers.IO) {
