@@ -3281,10 +3281,8 @@ class DubbingEngine(
             "配音输出已恢复，等待按视频时间轴重新选择字幕",
             mapOf(
                 "配音引擎" to (tts?.name ?: "未知引擎"),
-                "当前时间轴字幕行号" to if (latestTimelineCursor.lineIndex >= 0) {
-                    "${latestTimelineCursor.lineIndex + 1}/${lines.size}"
-                } else {
-                    "当前为字幕间隙"
+                "当前时间轴字幕行号" to lineAt(latestTimelineCursor.positionMs).let { lineIndex ->
+                    if (lineIndex >= 0) "${lineIndex + 1}/${lines.size}" else "当前为字幕间隙"
                 },
                 "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                 "已准备行数" to _preparedCount.value.toString(),
