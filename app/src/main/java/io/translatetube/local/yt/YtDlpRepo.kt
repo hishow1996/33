@@ -722,11 +722,26 @@ object YtDlpRepo {
         if (inited) return@withContext
         synchronized(this) {
             if (inited) return@synchronized
-            YoutubeDL.init(ctx.applicationContext)
+            val appCtx = ctx.applicationContext
+            try {
+                YoutubeDL.init(appCtx)
+            } catch (error: Exception) {
+                AppLogStore.error(
+                    appCtx,
+                    "YtDlpRuntime",
+                    "yt-dlp 运行时初始化失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "CPU ABI" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
+                        "Python 原生库是否存在" to File(appCtx.applicationInfo.nativeLibraryDir, "libpython.so").isFile.toString(),
+                        "异常摘要" to describeError(error),
+                    ),
+                )
+                throw error
+            }
             inited = true
             // Record first use and the actual version of the installed executable.
             // YoutubeDL.version() alone can be null until its own updater has run once.
-            val appCtx = ctx.applicationContext
             val currentVersion = detectLocalVersion(appCtx, allowProcess = false).version
                 ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()
                     ?.trim()
@@ -739,6 +754,16 @@ object YtDlpRepo {
                 current = currentVersion ?: _updateState.value.current,
             )
             Log.i(TAG, "yt-dlp runtime ready, version=${currentVersion ?: "unknown"}")
+            AppLogStore.info(
+                appCtx,
+                "YtDlpRuntime",
+                "yt-dlp 运行时初始化成功",
+                diagnosticContext = mapOf(
+                    "本机版本" to currentVersion.orEmpty().ifBlank { "未知" },
+                    "CPU ABI" to android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty(),
+                    "运行时目录是否存在" to File(appCtx.noBackupFilesDir, YoutubeDL.baseName).isDirectory.toString(),
+                ),
+            )
         }
     }
 
@@ -781,8 +806,22 @@ object YtDlpRepo {
         onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long?) -> Unit = { _, _, _ -> },
         cookieHeader: String? = null,
     ): File = withContext(Dispatchers.IO) {
-        if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
+        if (!isEligible(pageUrl)) {
+            AppLogStore.warning(
+                ctx.applicationContext,
+                "YtDlpAudioDownload",
+                "yt-dlp 音轨下载参数校验失败：网页地址无效或不受支持",
+                diagnosticContext = mapOf("页面主机" to safeHost(pageUrl)),
+            )
+            throw IllegalArgumentException("网页地址无效或不受支持")
+        }
         if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
+            AppLogStore.warning(
+                ctx.applicationContext,
+                "YtDlpAudioDownload",
+                "yt-dlp 音轨下载参数校验失败：Cookie 请求头含控制字符",
+                diagnosticContext = mapOf("页面主机" to safeHost(pageUrl), "是否提供 Cookie" to (!cookieHeader.isNullOrBlank()).toString()),
+            )
             throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         ensureReady(ctx)
@@ -811,6 +850,16 @@ object YtDlpRepo {
         val parent = dest.parentFile
         if (parent == null || dest.name.endsWith(".part")) {
             cancellationHandle?.dispose()
+            AppLogStore.warning(
+                ctx.applicationContext,
+                "YtDlpAudioDownload",
+                "yt-dlp 音轨下载目标路径校验失败",
+                diagnosticContext = mapOf(
+                    "目标文件名" to dest.name.take(100),
+                    "是否有父目录" to (parent != null).toString(),
+                    "目标是否为临时分片文件" to dest.name.endsWith(".part").toString(),
+                ),
+            )
             throw IllegalArgumentException("下载目标路径不合法")
         }
         val stagingDir = File(
@@ -819,6 +868,16 @@ object YtDlpRepo {
         )
         if (!stagingDir.mkdirs()) {
             cancellationHandle?.dispose()
+            AppLogStore.error(
+                ctx.applicationContext,
+                "YtDlpAudioDownload",
+                "无法创建 yt-dlp 音频暂存目录",
+                diagnosticContext = mapOf(
+                    "目标文件名" to dest.name.take(100),
+                    "父目录存在" to (parent.exists()).toString(),
+                    "父目录可写" to parent.canWrite().toString(),
+                ),
+            )
             throw java.io.IOException("无法创建 yt-dlp 音频暂存目录")
         }
         val outputTemplate = File(stagingDir, "audio.%(ext)s").absolutePath
@@ -1371,8 +1430,22 @@ object YtDlpRepo {
      */
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     suspend fun resolve(ctx: Context, pageUrl: String, cookieHeader: String? = null): ResolvedMedia {
-        if (!isEligible(pageUrl)) throw IllegalArgumentException("网页地址无效或不受支持")
+        if (!isEligible(pageUrl)) {
+            AppLogStore.warning(
+                ctx.applicationContext,
+                "YtDlpResolve",
+                "yt-dlp 解析参数校验失败：网页地址无效或不受支持",
+                diagnosticContext = mapOf("页面主机" to safeHost(pageUrl)),
+            )
+            throw IllegalArgumentException("网页地址无效或不受支持")
+        }
         if (!YtDlpMediaPolicy.isSafeCookieHeader(cookieHeader)) {
+            AppLogStore.warning(
+                ctx.applicationContext,
+                "YtDlpResolve",
+                "yt-dlp 解析参数校验失败：Cookie 请求头含控制字符",
+                diagnosticContext = mapOf("页面主机" to safeHost(pageUrl), "是否提供 Cookie" to (!cookieHeader.isNullOrBlank()).toString()),
+            )
             throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         currentCoroutineContext().ensureActive()
