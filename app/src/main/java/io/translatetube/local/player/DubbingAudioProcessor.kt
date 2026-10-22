@@ -33,6 +33,11 @@ class DubbingAudioProcessor(
     private var firstInputLogged = false
     private var timestampFallbackLogged = false
 
+    /** Diagnostics only: the renderer stream offset the sink wrapper already removed from PTS. */
+    @Volatile
+    var sinkStreamOffsetUs: Long = 0L
+
+    /** [presentationTimeUs] must already be on the player's media timeline (offset removed). */
     fun setInputBufferPresentationTimeUs(presentationTimeUs: Long) {
         requestedBufferTimeUs = if (presentationTimeUs >= 0L) presentationTimeUs else INVALID_TIME_US
         requestedBufferSerial += 1L
@@ -180,7 +185,8 @@ class DubbingAudioProcessor(
                         "采样率 Hz" to sampleRate.toString(),
                         "声道数" to channels.toString(),
                         "缓冲区字节数" to remaining.toString(),
-                        "音频缓冲区 PTS us" to timestampWindowStartUs.toString(),
+                        "音频缓冲区媒体时间 us" to timestampWindowStartUs.toString(),
+                        "播放器流偏移 us" to sinkStreamOffsetUs.toString(),
                         "校准媒体时间 us" to fallbackWindowStartUs.toString(),
                         "当前缓冲区是否有待混入配音" to
                             (windowStartUs >= 0L && bus.hasAudioInWindow(windowStartUs, frames)).toString(),

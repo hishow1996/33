@@ -25,8 +25,29 @@ class PlayerManager(private val ctx: Context) {
     /** 配音混流总线：DubbingEngine 按媒体时间挂 PCM，音频处理器逐窗相加。 */
     val dubbingBus = DubbingTrackBus()
 
+    /** Mixer diagnostics are written off the audio thread: AppLogStore does synchronous file IO. */
+    private val mixerLogExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "dubbing-mixer-log").apply { isDaemon = true }
+    }
+
     /** 混流处理器（与 bus 成对，注入 ExoPlayer 音频渲染管线）。 */
-    private val dubbingProcessor = DubbingAudioProcessor(dubbingBus)
+    private val dubbingProcessor = DubbingAudioProcessor(dubbingBus) { isWarning, message, details ->
+        runCatching {
+            mixerLogExecutor.execute {
+                runCatching {
+                    if (isWarning) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            ctx, "DubbingMixer", message, diagnosticContext = details,
+                        )
+                    } else {
+                        io.translatetube.local.util.AppLogStore.info(
+                            ctx, "DubbingMixer", message, diagnosticContext = details,
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     /** Attach the real decoded-buffer PTS to the processor before Media3 handles each buffer. */
     private val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(ctx) {
@@ -43,13 +64,31 @@ class PlayerManager(private val ctx: Context) {
             object : androidx.media3.exoplayer.audio.ForwardingAudioSink(delegate) {
                 private var currentInputBuffer: ByteBuffer? = null
 
+                /**
+                 * ExoPlayer adds a per-stream offset (10^12 us for the first period) to every
+                 * buffer timestamp before calling handleBuffer. Without removing it, the mix
+                 * window never lines up with subtitle time and the dubbing stays silent.
+                 */
+                @Volatile private var rendererStreamOffsetUs = 0L
+
+                override fun setOutputStreamOffsetUs(outputStreamOffsetUs: Long) {
+                    rendererStreamOffsetUs = outputStreamOffsetUs
+                    dubbingProcessor.sinkStreamOffsetUs = outputStreamOffsetUs
+                    super.setOutputStreamOffsetUs(outputStreamOffsetUs)
+                }
+
                 override fun handleBuffer(
                     buffer: ByteBuffer,
                     presentationTimeUs: Long,
                     encodedAccessUnitCount: Int,
                 ): Boolean {
                     if (currentInputBuffer !== buffer) {
-                        dubbingProcessor.setInputBufferPresentationTimeUs(presentationTimeUs)
+                        dubbingProcessor.setInputBufferPresentationTimeUs(
+                            DubbingSinkTimestamp.toMediaTimeUs(
+                                presentationTimeUs,
+                                rendererStreamOffsetUs,
+                            ),
+                        )
                         currentInputBuffer = buffer
                     }
                     val handled = super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
@@ -491,5 +530,6 @@ class PlayerManager(private val ctx: Context) {
         mainHandler.removeCallbacks(ticker)
         runCatching { player.release() }
             .onFailure { android.util.Log.w("PlayerManager", "Player release failed", it) }
+        runCatching { mixerLogExecutor.shutdown() }
     }
 }
