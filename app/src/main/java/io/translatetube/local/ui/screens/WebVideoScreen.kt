@@ -67,6 +67,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -1116,10 +1117,6 @@ fun WebVideoScreen(
                     } else {
                         "当前没有候选源通过可访问性校验；结合 WebSourceProbe、WebSourceVerify、WebSourceHttp 和 WebResourceLoad 日志判断具体原因"
                     },
-                ),
-                issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
-                    "WebSourceDetectionSummary",
-                    webSourceIssueIdentity(currentPage) + "|" + pageGeneration.get(),
                 ),
             )
         }
