@@ -96,8 +96,61 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
 
     LaunchedEffect(refresh) {
         scanning = true
-        data = withContext(Dispatchers.IO) { scanStorage(ctx, db) }
-        scanning = false
+        try {
+            val snapshot = withContext(Dispatchers.IO) { scanStorage(ctx, db) }
+            data = snapshot
+            withContext(Dispatchers.IO) {
+                val metrics = mapOf(
+                    "扫描总耗时/时间戳 ms" to snapshot.timestamp.toString(),
+                    "应用数据总占用 bytes" to snapshot.total.toString(),
+                    "临时缓存 bytes" to snapshot.cache.toString(),
+                    "字幕缓存条数" to snapshot.subtitleCount.toString(),
+                    "字幕缓存占用 bytes" to snapshot.subtitleBytes.toString(),
+                    "视频历史条数" to snapshot.historyCount.toString(),
+                    "收藏记录条数" to snapshot.favorites.toString(),
+                    "模型目录占用 bytes" to snapshot.models.toString(),
+                    "TTS 模型完整性" to snapshot.ttsReady.toString(),
+                    "Whisper 模型完整性" to snapshot.whisperReady.toString(),
+                    "SenseVoice 模型完整性" to snapshot.senseReady.toString(),
+                    "当前选择的本地转写模型" to snapshot.selectedAsr,
+                    "数据库占用 bytes" to snapshot.database.toString(),
+                    "日志占用 bytes" to snapshot.logs.toString(),
+                    "日志记录条数" to snapshot.logCount.toString(),
+                    "扫描警告数量" to snapshot.warnings.size.toString(),
+                    "扫描警告摘要" to snapshot.warnings.take(10).joinToString("；").take(1_200).ifBlank { "无" },
+                )
+                if (snapshot.warnings.isEmpty()) {
+                    AppLogStore.info(ctx, "StorageManagementScreen", "本地存储空间扫描完成", diagnosticContext = metrics)
+                } else {
+                    AppLogStore.warning(
+                        ctx,
+                        "StorageManagementScreen",
+                        "本地存储空间扫描完成，但部分目录或数据库统计不完整",
+                        diagnosticContext = metrics,
+                    )
+                }
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            withContext(Dispatchers.IO) {
+                AppLogStore.error(
+                    ctx,
+                    "StorageManagementScreen",
+                    "本地存储空间扫描失败",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "刷新序号" to refresh.toString(),
+                        "错误类型" to failure.javaClass.name,
+                        "错误摘要" to (failure.message ?: "没有异常消息").take(300),
+                    ),
+                )
+            }
+            message = "存储统计失败：${failure.message ?: failure.javaClass.simpleName}"
+            messageError = true
+        } finally {
+            scanning = false
+        }
     }
 
     fun requestClear(action: StorageAction) {
@@ -110,12 +163,41 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
             pending = null
             message = "当前有播放、处理或模型下载任务，暂不能清理这类数据。"
             messageError = true
+            scope.launch(Dispatchers.IO) {
+                AppLogStore.warning(
+                    ctx,
+                    "StorageManagementScreen",
+                    "本地数据清理请求被安全策略阻止",
+                    diagnosticContext = mapOf(
+                        "清理类别" to action.title,
+                        "当前是否正在播放" to player.isPlaying.toString(),
+                        "当前视频处理阶段" to player.phase.name,
+                        "配音是否仍在准备" to (player.totalLines > 0 && player.preparedCount < player.totalLines).toString(),
+                        "配音模型状态" to ttsState.status.name,
+                        "转写模型状态" to asrState.status.name,
+                        "Piper 下载任务数" to piperDownloads.toString(),
+                        "拒绝原因" to "清理期间存在活动中的播放/处理/模型下载任务",
+                    ),
+                )
+            }
             return
         }
         pending = null
         actionBusy = true
         scope.launch {
             val result = withContext(Dispatchers.IO) {
+                AppLogStore.info(
+                    ctx,
+                    "StorageManagementScreen",
+                    "开始执行本地数据清理",
+                    diagnosticContext = mapOf(
+                        "清理类别" to action.title,
+                        "操作前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir) }.getOrDefault(-1L).toString(),
+                        "操作前日志记录条数" to runCatching { AppLogStore.readRecent(ctx, 800).size }.getOrDefault(-1).toString(),
+                        "是否播放/处理中" to playbackBusy.toString(),
+                        "是否模型下载中" to downloadBusy.toString(),
+                    ),
+                )
                 runCatching {
                     when (action) {
                         StorageAction.CACHE -> {
@@ -138,6 +220,38 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
                         StorageAction.LOGS ->
                             if (AppLogStore.clear(ctx)) "应用日志已清理，之后的新日志仍会继续保存。"
                             else "部分日志文件未能删除，请稍后重试。"
+                    }
+                }
+            }
+            withContext(Dispatchers.IO) {
+                val failure = result.exceptionOrNull()
+                val actionLabel = action.title
+                if (failure != null) {
+                    AppLogStore.error(
+                        ctx,
+                        "StorageManagementScreen",
+                        "本地数据清理操作失败：$actionLabel",
+                        failure,
+                        diagnosticContext = mapOf(
+                            "清理类别" to actionLabel,
+                            "异常类型" to failure.javaClass.name,
+                            "异常摘要" to (failure.message ?: "没有异常消息").take(300),
+                        ),
+                    )
+                } else {
+                    val summary = result.getOrNull().orEmpty()
+                    val partial = summary.contains("部分") || summary.contains("失败") || summary.contains("未能")
+                    val diagnostic = mapOf(
+                        "清理类别" to actionLabel,
+                        "操作结果摘要" to summary.take(500),
+                        "当前临时缓存 bytes" to runCatching { AppCacheStoragePolicy.sizeBytes(ctx.cacheDir) }.getOrDefault(-1L).toString(),
+                        "当前日志记录条数" to runCatching { AppLogStore.readRecent(ctx, 800).size }.getOrDefault(-1).toString(),
+                        "结果分类" to if (partial) "部分完成或仍有资源占用" else "成功完成",
+                    )
+                    if (partial) {
+                        AppLogStore.warning(ctx, "StorageManagementScreen", "本地数据清理部分完成：$actionLabel", diagnosticContext = diagnostic)
+                    } else {
+                        AppLogStore.info(ctx, "StorageManagementScreen", "本地数据清理成功：$actionLabel", diagnosticContext = diagnostic)
                     }
                 }
             }
