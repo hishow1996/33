@@ -644,7 +644,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "转写模型状态" to _asr.value.status.name,
                 "配音任务是否活跃" to (ttsJob?.isActive == true).toString(),
                 "转写任务是否活跃" to (asrJob?.isActive == true).toString(),
-                "Piper 活跃任务数" to io.translatetube.local.tts.PiperModels.activeDownloadCount.toString(),
+                "Piper 活跃任务数" to io.translatetube.local.tts.PiperModels.activeDownloadCount.value.toString(),
             ),
         )
         resumeDownloads()
@@ -774,7 +774,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 details = modelKindDetails(kind) + mapOf(
                     "所需最小可用空间 bytes" to requiredStorageBytes.toString(),
                     "估算所需空间 MB" to ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes).toString(),
-                    "检测到的最小可用空间 bytes" to (usableSpace?.toString() ?: "系统未能提供"),
+                    "检测到的最小可用空间 bytes" to usableSpace.toString(),
                     "下载阶段" to "存储空间预检",
                     "临时压缩包是否已清理" to (!pkg.exists()).toString(),
                 ),
