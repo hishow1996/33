@@ -1006,6 +1006,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     else -> ModelFiles.whisperReady(ctx)
                 }
                 if (!installed) throw java.io.IOException("模型文件安装后完整性检查未通过")
+                val installedArchiveBytes = pkg.length()
                 pkg.delete()
                 state.value = state.value.copy(
                     status = ModelStatus.READY,
@@ -1019,7 +1020,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     modelKindDetails(kind) + mapOf(
                         "最终状态" to state.value.status.name,
                         "最终进度百分比" to state.value.progress.toString(),
-                        "下载压缩包大小 MB" to ((pkg.length() + 1_048_575L) / 1_048_576L).toString(),
+                        "下载压缩包大小 MB" to ((installedArchiveBytes + 1_048_575L) / 1_048_576L).toString(),
                         "目标目录" to destDir.name,
                         "目标目录顶层项目数" to destDir.listFiles().orEmpty().size.toString(),
                         "总耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
