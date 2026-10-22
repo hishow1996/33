@@ -764,6 +764,7 @@ class PlaybackService : MediaSessionService() {
 
         awaitProcessingResumed(sessionKey, pipelineGeneration)
         ensureCurrentSession(sessionKey, pipelineGeneration)
+        if (::pm.isInitialized) engine.primeUpcomingCuesAndWait(pm.position(), lookAheadMs = 2_500L)
     }
 
     private fun updateProcessingNotification(state: PlayerUiState) {
@@ -5755,17 +5756,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     private fun safelySetOriginalVolume(volume: Float, source: String) {
         try {
             if (playerReady && ::pm.isInitialized) {
-                // Central safety gate: neither asynchronous fallback callbacks nor an
-                // unfinished/failed cue may override the user's explicit original-audio mute.
-                // Also prevent narration tracks from overlapping while dubbed speech is active.
+                // Generated PCM is ducked by the processor's envelope; keep live System TTS exclusive.
                 val state = ui.value
                 val engine = dubbing
-                val activeIndex = engine?.currentLineIdx() ?: -1
-                val dubbedSpeechIsActive = state.dubbingOn &&
-                    engine != null &&
-                    activeIndex >= 0 &&
-                    engine.hasStartedPlaybackFor(activeIndex)
-                pm.originalVolume = if (state.muteOriginal || dubbedSpeechIsActive) 0f else volume
+                val liveTtsActive = state.dubbingOn &&
+                    engine?.usesImmediateTimelinePlayback == true &&
+                    engine.currentLineIdx() >= 0 &&
+                    engine.hasStartedPlaybackFor(engine.currentLineIdx())
+                pm.originalVolume = if (state.muteOriginal || liveTtsActive) 0f else volume.coerceIn(0f, 1f)
             }
         } catch (error: Exception) {
             io.translatetube.local.util.AppLogStore.warning(
@@ -6042,6 +6040,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     private fun tick(ms: Long) {
         val st = ui.value
         val d = dubbing
+        if (d != null && st.dubbingOn) d.primeUpcomingCues(ms)
 
         // 配音必须严格使用 lineAt 的时间区间结果；字幕高亮可以回退到最近一行，
         // 但不能把“字幕间隙中的上一行”当成当前配音行，否则会压低间隙里的原声。
@@ -6050,20 +6049,22 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         // is loading so the audio executor can skip elapsed speech instead of starting late.
         val previousDubbingLine = d?.currentLineIdx() ?: -1
         d?.updateTimelinePosition(dubLine, ms)
-        val keepingTimelineCue = d?.shouldContinueCurrentCue(dubLine) == true
+        val keepingTimelineCue = d?.usesImmediateTimelinePlayback == true &&
+            d.shouldContinueCurrentCue(dubLine)
         // Retire a queue head only after its audio output actually starts.
         if (d != null && previousDubbingLine >= 0 && d.hasStartedPlaybackFor(previousDubbingLine)) {
             removeDubbingCatchUpCue(st.key, previousDubbingLine)
         }
-        val queuedHead = peekDubbingCatchUpCue(st.key)
+        val queuedHead = if (d?.usesImmediateTimelinePlayback == true) peekDubbingCatchUpCue(st.key) else null
         val keepingQueuedCue = d != null && queuedHead != null && previousDubbingLine >= 0 &&
             previousDubbingLine != queuedHead && d.shouldContinueCurrentCue(queuedHead)
         val keepingPreviousDubbingCue = keepingTimelineCue || keepingQueuedCue
         updateDubbingCatchUpQueue(
             state = st,
             positionMs = ms,
-            captureMissedCues = keepingPreviousDubbingCue || hasDubbingCatchUpCues(st.key) ||
-                (previousDubbingLine >= 0 && previousDubbingLine != dubLine),
+            captureMissedCues = d?.usesImmediateTimelinePlayback == true &&
+                (keepingPreviousDubbingCue || hasDubbingCatchUpCues(st.key) ||
+                    (previousDubbingLine >= 0 && previousDubbingLine != dubLine)),
             activeDubbingIndex = previousDubbingLine,
         )
         // Highlight against the exact subtitle snapshot rendered by the UI. Its cached interval
@@ -6082,16 +6083,11 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 d.updatePlayerSpeed(pm.playbackSpeed())
                 // Voice volume is independent of source-audio state: never mix the two narrations.
                 d.updateVolume(1.0f)
-                val activeCueIndex = d.currentLineIdx()
-                val voiceStarted = activeCueIndex >= 0 && d.hasStartedPlaybackFor(activeCueIndex)
-                safelySetOriginalVolume(
-                    if (voiceStarted || st.muteOriginal) 0f else 1f,
-                    "continuing a dubbed cue",
-                )
+                safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "continuing a dubbed cue")
                 d.prioritizeAround(peekDubbingCatchUpCue(st.key) ?: dubLine, lookAhead = 8)
-            } else if (peekDubbingCatchUpCue(st.key) != null) {
-                // Play a late cue from its beginning; do not trim it against the advanced video cursor.
-                var catchUpIndex = peekDubbingCatchUpCue(st.key)
+            } else if (queuedHead != null) {
+                // Live System TTS stays serialized; generated PCM playback is scheduled by bus timestamps.
+                var catchUpIndex = queuedHead
                 while (catchUpIndex != null && d.isPrepared(catchUpIndex) && d.isSilent(catchUpIndex)) {
                     removeDubbingCatchUpCue(st.key, catchUpIndex)
                     catchUpIndex = peekDubbingCatchUpCue(st.key)
@@ -6125,12 +6121,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         }
                     }
                 }
-                val activeCatchUpIndex = d.currentLineIdx()
-                val voiceStarted = d.hasStartedPlaybackFor(activeCatchUpIndex)
-                safelySetOriginalVolume(
-                    if (voiceStarted || st.muteOriginal) 0f else 1f,
-                    "catch-up dubbing playback",
-                )
+                safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "catch-up dubbing playback")
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
                 if (d.currentLineIdx() >= 0) d.stop()
                 // No synthesized voice is playing for this cue, so source audio is the only
@@ -6171,13 +6162,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     // Voice volume is independent of source-audio state: never mix the two narrations.
                     d.updateVolume(1.0f)
                 }
-                // Keep the source audible during TTS startup, then cut it to zero when speech starts.
-                val voiceStarted = d.hasStartedPlaybackFor(dubLine) ||
-                    (keepingPreviousDubbingCue && d.hasStartedPlaybackFor(previousDubbingLine))
-                safelySetOriginalVolume(
-                    if (voiceStarted || st.muteOriginal) 0f else 1f,
-                    "dubbing cue playback",
-                )
+                safelySetOriginalVolume(if (st.muteOriginal) 0f else 1f, "dubbing cue playback")
             } else if (dubLine >= 0) {
                 // If generation is falling behind real time, continuously enlarge the look-ahead
                 // priority window so the single TTS worker prepares more upcoming cues first.

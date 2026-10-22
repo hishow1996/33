@@ -1,158 +1,213 @@
 package io.translatetube.local.player
 
 /**
- * 配音 PCM 总线（媒体时钟对位）。
+ * 配音 PCM 总线。各句按媒体时间预挂载，由 Media3 音频处理器按输入缓冲区的真实时间戳读取。
  *
- * 混流架构的核心数据结构：合成层把每块配音 PCM 挂到「它该出现的媒体时间」上，
- * [DubbingAudioProcessor] 在 ExoPlayer 音频渲染管线里按同一媒体时钟逐窗取出相加。
- * 配音由此与视频共用一个播放时钟：seek/暂停/倍速天然跟随，不再手工追赶。
- *
- * 时钟基点：ExoPlayer seek/rebuffer 会导致音频流 flush；[setStreamStartUs] 在
- * flush 后由播放层设一次（= player.currentPosition），此后媒体时间由流内样本数
- * 外推，误差为常数级（±50ms 内无感）。
- *
- * 线程模型：feed、reset 和模式开关通过 stateLock 串行发布状态；readMixWindow
- * 在锁内合并待处理块并获取快照，逐样本混音在锁外完成，避免长时间占用渲染线程。
+ * 块在后台生产线程重采样、排序和去重；渲染线程只遍历有交集的块并累加样本，
+ * 不在读侧排序，也不为每个块分配中间缓冲区。
  */
 class DubbingTrackBus {
 
-    /** 挂载中的块（挂载时间升序投递；读取侧按媒体时间归并）。 */
-    private class Block(val mediaTimeUs: Long, val samples: FloatArray)
-
-    private val stateLock = Any()
-    private val newBlocks = java.util.concurrent.ConcurrentLinkedQueue<Block>()
-    @Volatile private var installed: Array<Block> = emptyArray()
-    @Volatile private var sinkSampleRate = 24_000
-    /** Mode changes invalidate in-flight resampling and reads as well as queued PCM blocks. */
-    @Volatile private var dubbingEnabled = true
-    @Volatile private var contentGeneration = 0L
-
-    /** flush 后的流头媒体时间（微秒）；-1 表示未校准。 */
-    @Volatile private var streamStartUs = -1L
-
-    /** 重采样后写入；挂载块长度超出窗口的部分在读取时自然丢弃（绝不让下一句排队）。 */
-    fun configure(sampleRate: Int) {
-        if (sampleRate > 0) sinkSampleRate = sampleRate
+    private class Block(
+        val cueKey: String?,
+        val mediaTimeUs: Long,
+        val startFrame: Long,
+        val samples: FloatArray,
+    ) {
+        val endFrame: Long = startFrame + samples.size.toLong()
     }
 
-    /** ExoPlayer 音频流 flush 后重设流头（微秒媒体时间）。 */
+    private val stateLock = Any()
+    @Volatile private var installed: Array<Block> = emptyArray()
+    @Volatile private var sinkSampleRate = 24_000
+    @Volatile private var dubbingEnabled = true
+    @Volatile private var contentGeneration = 0L
+    /** Fallback clock only; normal synchronization uses each AudioSink buffer PTS. */
+    @Volatile private var streamStartUs = -1L
+    @Volatile private var latestReadUs = Long.MIN_VALUE
+
+    fun configure(sampleRate: Int) {
+        if (sampleRate <= 0) return
+        synchronized(stateLock) {
+            if (sinkSampleRate == sampleRate) return
+            sinkSampleRate = sampleRate
+            contentGeneration += 1L
+            installed = emptyArray()
+            latestReadUs = Long.MIN_VALUE
+        }
+    }
+
     fun setStreamStartUs(mediaUs: Long) {
         streamStartUs = mediaUs
     }
 
     fun streamStart(): Long = streamStartUs
+    fun generationToken(): Long = contentGeneration
 
-    /** 挂一块配音 PCM；[samples] 按源采样率 [sourceSampleRate] 给出，内部线性重采样到 sink 率。 */
-    fun feed(mediaTimeUs: Long, samples: FloatArray, sourceSampleRate: Int) {
-        if (samples.isEmpty() || sourceSampleRate <= 0) return
-        // Capture mode and generation atomically before resampling.
-        val expectedGeneration = synchronized(stateLock) {
-            if (!dubbingEnabled) return
-            contentGeneration
+    fun feed(
+        mediaTimeUs: Long,
+        samples: FloatArray,
+        sourceSampleRate: Int,
+    ): Boolean = feedInternal(
+        cueKey = null,
+        mediaTimeUs = mediaTimeUs,
+        samples = samples,
+        sourceSampleRate = sourceSampleRate,
+        expectedGeneration = null,
+        isStillCurrent = null,
+    )
+
+    /** Refeeding the same cue replaces its prior block instead of doubling its loudness. */
+    fun feed(
+        cueKey: String,
+        mediaTimeUs: Long,
+        samples: FloatArray,
+        sourceSampleRate: Int,
+        expectedGeneration: Long? = null,
+        isStillCurrent: (() -> Boolean)? = null,
+    ): Boolean = feedInternal(
+        cueKey = cueKey,
+        mediaTimeUs = mediaTimeUs,
+        samples = samples,
+        sourceSampleRate = sourceSampleRate,
+        expectedGeneration = expectedGeneration,
+        isStillCurrent = isStillCurrent,
+    )
+
+    private fun feedInternal(
+        cueKey: String?,
+        mediaTimeUs: Long,
+        samples: FloatArray,
+        sourceSampleRate: Int,
+        expectedGeneration: Long?,
+        isStillCurrent: (() -> Boolean)?,
+    ): Boolean {
+        if (samples.isEmpty() || sourceSampleRate <= 0 || mediaTimeUs < 0L) return false
+        val snapshot = synchronized(stateLock) {
+            if (!dubbingEnabled) return false
+            if (expectedGeneration != null && expectedGeneration != contentGeneration) return false
+            Triple(contentGeneration, sinkSampleRate, latestReadUs)
         }
-        // A toggle/seek while resampling must prevent this old result from being re-enqueued.
-        val target = sinkSampleRate
-        val resampled = if (target == sourceSampleRate || target <= 0) samples else run {
-            val ratio = sourceSampleRate.toDouble() / target
-            val outLen = (samples.size / ratio).toInt().coerceAtLeast(1)
-            FloatArray(outLen) { i ->
-                val pos = i * ratio
-                val low = pos.toInt().coerceAtMost(samples.size - 1)
-                val high = (low + 1).coerceAtMost(samples.size - 1)
-                val frac = (pos - low).toFloat()
-                samples[low] * (1f - frac) + samples[high] * frac
+        if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return false
+
+        val targetRate = snapshot.second
+        val resampled = if (targetRate == sourceSampleRate) {
+            samples
+        } else {
+            val outputCount = (
+                (samples.size.toLong() * targetRate + sourceSampleRate / 2L) / sourceSampleRate
+            ).toInt().coerceAtLeast(1)
+            val ratio = sourceSampleRate.toDouble() / targetRate.toDouble()
+            FloatArray(outputCount) { index ->
+                val sourcePosition = index * ratio
+                val low = sourcePosition.toInt().coerceIn(0, samples.lastIndex)
+                val high = (low + 1).coerceAtMost(samples.lastIndex)
+                val fraction = (sourcePosition - low).toFloat()
+                samples[low] * (1f - fraction) + samples[high] * fraction
             }
         }
+
+        if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return false
         synchronized(stateLock) {
-            if (dubbingEnabled && contentGeneration == expectedGeneration) {
-                newBlocks.add(Block(mediaTimeUs, resampled))
+            if (!dubbingEnabled || contentGeneration != snapshot.first) return false
+            if (expectedGeneration != null && contentGeneration != expectedGeneration) return false
+            if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return false
+
+            val readHead = latestReadUs
+            val cutoffUs = if (readHead == Long.MIN_VALUE) Long.MIN_VALUE
+                else (readHead - RETAIN_PAST_MS * 1_000L).coerceAtLeast(0L)
+            val cutoffFrame = if (cutoffUs == Long.MIN_VALUE) Long.MIN_VALUE
+                else frameAtUs(cutoffUs, targetRate)
+            val next = ArrayList<Block>(installed.size + 1)
+            for (block in installed) {
+                val sameCue = cueKey != null && block.cueKey == cueKey
+                val stillRelevant = cutoffFrame == Long.MIN_VALUE || block.endFrame > cutoffFrame
+                if (!sameCue && stillRelevant) next.add(block)
             }
+
+            val startFrame = frameAtUs(mediaTimeUs, targetRate)
+            val endFrame = startFrame + resampled.size.toLong()
+            if (cutoffFrame != Long.MIN_VALUE && endFrame <= cutoffFrame) {
+                installed = next.toTypedArray()
+                return false
+            }
+            next.add(Block(cueKey, mediaTimeUs, startFrame, resampled))
+            next.sortWith(compareBy<Block> { it.startFrame }.thenBy { it.mediaTimeUs })
+            installed = next.toTypedArray()
         }
+        return true
     }
 
-    /**
-     * Gate audible output immediately and discard all already queued/installed voice PCM.
-     * Keep the stream clock calibrated so original audio and video continue uninterrupted.
-     */
+    /** Turning dubbing off clears queued voice immediately and invalidates all in-flight feeds. */
     fun setDubbingEnabled(enabled: Boolean) {
         synchronized(stateLock) {
+            if (dubbingEnabled == enabled) return
             dubbingEnabled = enabled
             contentGeneration += 1L
-            newBlocks.clear()
             installed = emptyArray()
         }
     }
 
-    /** seek/换曲/停播：清空总线和校准。 */
+    /** Seek / source replacement: invalidate old blocks and asynchronous publishers. */
     fun reset() {
         synchronized(stateLock) {
             contentGeneration += 1L
-            newBlocks.clear()
             installed = emptyArray()
             streamStartUs = -1L
+            latestReadUs = Long.MIN_VALUE
         }
     }
 
-    /**
-     * 读取 [mediaTimeUs, mediaTimeUs + count/sinkRate) 的配音窗（含跨块拼接）。
-     * 返回 count 长度的 FloatArray（无声处为 0）。窗口落后于已挂块的丢弃超窗样本：
-     * 每条都配到自己的窗口为止，绝不挤占下一句的开始时间。
-     */
-    fun readMixWindow(mediaTimeUs: Long, count: Int): FloatArray {
-        val out = FloatArray(count) { 0f }
-        var readGeneration = -1L
-        var rate = sinkSampleRate
-        val blocks = synchronized(stateLock) {
-            if (!dubbingEnabled) return out
-            installPendingLocked()
-            readGeneration = contentGeneration
-            rate = sinkSampleRate
-            installed
+    /** Allocating helper for diagnostics/tests; the render path should call [mixInto]. */
+    fun readMixWindow(mediaTimeUs: Long, count: Int): FloatArray =
+        FloatArray(count.coerceAtLeast(0)).also { mixInto(mediaTimeUs, it.size, it) }
+
+    /** Add every block intersecting the requested window into a caller-owned reusable buffer. */
+    fun mixInto(mediaTimeUs: Long, count: Int, out: FloatArray) {
+        if (count <= 0 || out.size < count) return
+        java.util.Arrays.fill(out, 0, count, 0f)
+        val snapshot = synchronized(stateLock) {
+            if (!dubbingEnabled) return
+            Triple(installed, sinkSampleRate, contentGeneration)
         }
-        if (blocks.isEmpty()) return out
-        var blockIdx = 0
-        // 跳过完全在窗口之前的块（其播放已过）
-        while (blockIdx < blocks.size && blocks[blockIdx].mediaTimeUs + blocks[blockIdx].samples.size * 1_000_000L / rate <= mediaTimeUs) {
-            blockIdx++
-        }
-        while (blockIdx < blocks.size && blocks.isNotEmpty()) {
-            val block = blocks[blockIdx]
-            val blockEndUs = block.mediaTimeUs + block.samples.size * 1_000_000L / rate
-            if (block.mediaTimeUs >= mediaTimeUs + count * 1_000_000L / rate) break
-            val blockStartUs = block.mediaTimeUs
-            for (i in 0 until count) {
-                val sampleUs = mediaTimeUs + i * 1_000_000L / rate
-                if (sampleUs < blockStartUs || sampleUs >= blockEndUs) continue
-                val offsetInBlock = ((sampleUs - blockStartUs) * rate / 1_000_000L).toInt()
-                if (offsetInBlock < block.samples.size) {
-                    out[i] = block.samples[offsetInBlock]
-                }
+        val blocks = snapshot.first
+        val rate = snapshot.second
+        val readGeneration = snapshot.third
+        val windowStartFrame = frameAtUs(mediaTimeUs, rate)
+        val windowEndFrame = windowStartFrame + count.toLong()
+
+        for (block in blocks) {
+            if (block.startFrame >= windowEndFrame) break
+            if (block.endFrame <= windowStartFrame) continue
+            val destinationStart = (block.startFrame - windowStartFrame).coerceAtLeast(0L).toInt()
+            val sourceStart = (windowStartFrame - block.startFrame).coerceAtLeast(0L).toInt()
+            val copyCount = minOf(count - destinationStart, block.samples.size - sourceStart)
+            if (copyCount <= 0) continue
+            var i = 0
+            while (i < copyCount) {
+                out[destinationStart + i] += block.samples[sourceStart + i]
+                i++
             }
-            blockIdx++
         }
-        // If disable/re-enable happened during this read, discard this stale window too.
-        if (!dubbingEnabled || contentGeneration != readGeneration) out.fill(0f)
-        return out
+
+        val windowEndUs = mediaTimeUs + count.toLong() * 1_000_000L / rate
+        synchronized(stateLock) {
+            if (dubbingEnabled && contentGeneration == readGeneration) {
+                latestReadUs = maxOf(latestReadUs, windowEndUs)
+            }
+        }
+        if (!dubbingEnabled || contentGeneration != readGeneration) {
+            java.util.Arrays.fill(out, 0, count, 0f)
+        }
     }
 
-    /** 消费完毕的块（窗口已完全越过）随 install 淘汰，防内存增长。 */
-    private fun installPendingLocked() {
-        var dirty = false
-        while (true) {
-            val b = newBlocks.peek() ?: break
-            dirty = true
-            newBlocks.poll()
-            val arr = installed
-            val merged = arr + b
-            java.util.Arrays.sort(merged, compareBy { it.mediaTimeUs })
-            installed = merged
-        }
-        if (dirty) {
-            // 顺手淘汰：读侧推进由调用频率决定，这里按流头粗剪（保守：保留流头前 5 秒）
-            val head = streamStartUs
-            if (head > 0) {
-                installed = installed.filter { it.mediaTimeUs + it.samples.size * 1_000_000L / sinkSampleRate > head - 5_000_000L }.toTypedArray()
-            }
-        }
+    private fun frameAtUs(timeUs: Long, sampleRate: Int): Long {
+        val safeUs = timeUs.coerceAtLeast(0L)
+        return (safeUs / 1_000_000L) * sampleRate.toLong() +
+            (safeUs % 1_000_000L) * sampleRate.toLong() / 1_000_000L
+    }
+
+    private companion object {
+        const val RETAIN_PAST_MS = 5_000L
     }
 }

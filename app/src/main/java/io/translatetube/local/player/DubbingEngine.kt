@@ -200,6 +200,9 @@ class DubbingEngine(
     @Volatile private var playbackStartedLine = -1
     /** 混流架构下最近一次挂上总线的行（同 generation 同行不重复挂载）。 */
     @Volatile private var lastFedLine = -1
+    private val prefedCueKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val prefeedCompletions = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Boolean>>()
+    @Volatile private var prefeedGeneration = Long.MIN_VALUE
     /** Exact direct-TTS utterance owned by the current playback generation. */
     @Volatile private var activeTimelineUtteranceId: String? = null
     /** Keep an overlong cue intact until it finishes; the service queues intervening cues. */
@@ -2415,15 +2418,112 @@ class DubbingEngine(
         latestTimelineCursor = DubbingTimelineCursor(lineIndex, positionMs.coerceAtLeast(0L))
     }
 
+    /** Pre-mount ready PCM before its subtitle start; Media3 PTS drives the eventual playback. */
+    fun primeUpcomingCues(positionMs: Long, lookAheadMs: Long = 2_500L) {
+        if (released || usesImmediateTimelinePlayback || lines.isEmpty()) return
+        val position = positionMs.coerceAtLeast(0L)
+        val windowMs = lookAheadMs.coerceAtLeast(0L)
+        val horizon = if (Long.MAX_VALUE - position < windowMs) Long.MAX_VALUE else position + windowMs
+        val busGeneration = outputBus.generationToken()
+        synchronized(prefedCueKeys) {
+            if (prefeedGeneration != busGeneration) {
+                prefedCueKeys.clear()
+                prefeedCompletions.keys.removeIf { !it.startsWith("$busGeneration:") }
+                prefeedGeneration = busGeneration
+            }
+        }
+        val candidates = lines.indices.asSequence()
+            .map(::resolveChunkIndex)
+            .distinct()
+            .filter { index ->
+                val cue = lines.getOrNull(index) ?: return@filter false
+                DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank() &&
+                    cue.endMs > position && cue.startMs <= horizon
+            }
+            .sortedWith(compareBy<Int> { lines[it].startMs }.thenBy { it })
+            .take(MAX_PREFEED_CUES)
+            .toList()
+
+        for (index in candidates) {
+            if (!isPrepared(index) || isSilent(index)) continue
+            val key = "$busGeneration:$index"
+            val completion = synchronized(prefedCueKeys) {
+                if (!prefedCueKeys.add(key)) null
+                else kotlinx.coroutines.CompletableDeferred<Boolean>().also { prefeedCompletions[key] = it }
+            } ?: continue
+            try {
+                audioExec.execute {
+                    var published = false
+                    try {
+                        if (released || outputBus.generationToken() != busGeneration) return@execute
+                        val loaded = load(index) {
+                            !released && outputBus.generationToken() == busGeneration
+                        } ?: return@execute
+                        val output = DubbingOutputPcmPolicy.normalize(loaded.first, loaded.second) {
+                            if (released || outputBus.generationToken() != busGeneration) {
+                                throw kotlinx.coroutines.CancellationException("Prefetched PCM is stale")
+                            }
+                        }
+                        if (output.samples.isEmpty()) return@execute
+                        val cue = lines.getOrNull(resolveChunkIndex(index)) ?: return@execute
+                        published = outputBus.feed(
+                            cueKey = mixCueKey(index),
+                            mediaTimeUs = cue.startMs.coerceAtLeast(0L) * 1_000L,
+                            samples = output.samples,
+                            sourceSampleRate = output.sampleRate,
+                            expectedGeneration = busGeneration,
+                        ) { !released && outputBus.generationToken() == busGeneration }
+                    } catch (_: kotlinx.coroutines.CancellationException) {
+                        // Seek, mode change or engine replacement invalidated the asynchronous task.
+                    } catch (error: Exception) {
+                        android.util.Log.d("DubbingEngine", "Prefeed failed for cue ${index + 1}", error)
+                    } finally {
+                        completion.complete(published)
+                        if (!published) {
+                            prefedCueKeys.remove(key)
+                            prefeedCompletions.remove(key, completion)
+                        }
+                    }
+                }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                completion.complete(false)
+                prefedCueKeys.remove(key)
+                prefeedCompletions.remove(key, completion)
+            }
+        }
+    }
+
+    /** Wait briefly for the first ready cue to be mounted before the initial player start. */
+    suspend fun primeUpcomingCuesAndWait(positionMs: Long, lookAheadMs: Long = 2_500L) {
+        if (released || usesImmediateTimelinePlayback || lines.isEmpty()) return
+        primeUpcomingCues(positionMs, lookAheadMs)
+        val position = positionMs.coerceAtLeast(0L)
+        val windowMs = lookAheadMs.coerceAtLeast(0L)
+        val horizon = if (Long.MAX_VALUE - position < windowMs) Long.MAX_VALUE else position + windowMs
+        val busGeneration = outputBus.generationToken()
+        val firstIndex = lines.indices.asSequence()
+            .map(::resolveChunkIndex)
+            .distinct()
+            .filter { index ->
+                val cue = lines.getOrNull(index) ?: return@filter false
+                DubbingTimeline.isPlayableCue(cue) && !cue.zh.isNullOrBlank() &&
+                    cue.endMs > position && cue.startMs <= horizon &&
+                    isPrepared(index) && !isSilent(index)
+            }
+            .minWithOrNull(compareBy<Int> { lines[it].startMs }.thenBy { it }) ?: return
+        val completion = prefeedCompletions["$busGeneration:$firstIndex"] ?: return
+        kotlinx.coroutines.withTimeoutOrNull(PREFEED_STARTUP_WAIT_MS) { completion.await() }
+    }
+
+    private fun mixCueKey(index: Int): String = "$cacheWriterId:${resolveChunkIndex(index)}"
+
     /**
      * Keep a live System TTS utterance or an overlong PCM tail alive across normal subtitle
      * boundaries. The next tick will start the newest still-current cue after this sentence ends.
      */
     fun shouldContinueCurrentCue(nextLineIndex: Int): Boolean {
-        // 混流架构：句子按各自的媒体时间窗独立挂载，永不互相排队——「等本句读完」
-        // 的整条链路（含越界顺延）由总线时间窗取代，恒返回 false。
-        return false
-        @Suppress("UNREACHABLE_CODE")
+        // Generated PCM is timestamp-scheduled. Only experimental live System TTS needs serialization.
+        if ((tts as? TimelineTtsPlayback)?.useDirectTimelinePlayback != true) return false
         if (released) return false
         val currentIndex = _currentLine.value
         if (currentIndex < 0 || currentIndex == nextLineIndex) return false
@@ -2505,8 +2605,8 @@ class DubbingEngine(
         if (released) return
         val line = lines.getOrNull(idx) ?: return
         if (!DubbingTimeline.isPlayableCue(line)) return
-        // 混流架构：不再「等本句读完」——每句按自己的媒体时间窗独立挂载，播放时钟
-        // 统一由 ExoPlayer 驱动；超窗残余在总线读取侧截断，句子之间永不互相排队。
+        // PCM cues follow Media3's media clock; reject in-flight feed after a seek or mode change.
+        val busGenerationAtRequest = outputBus.generationToken()
         stop()
         activeVolume = volume.takeIf { it.isFinite() }?.coerceIn(0.0f, 1.0f) ?: 1.0f
         // Seed the asynchronous startup with the current ExoPlayer speed; ticker updates can
@@ -2745,17 +2845,30 @@ class DubbingEngine(
                         clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
                     }
+                    val canFeed = synchronized(playbackControlLock) {
+                        !released && playbackGeneration.get() == generation &&
+                            _currentLine.value == idx && isActivePlaybackAllowedLocked()
+                    }
+                    if (!canFeed) return@execute
+                    val acceptedFeed = outputBus.feed(
+                        cueKey = mixCueKey(idx),
+                        mediaTimeUs = pcmLine.startMs.coerceAtLeast(0L) * 1_000L,
+                        samples = outputPcm.samples,
+                        sourceSampleRate = outputPcm.sampleRate,
+                        expectedGeneration = busGenerationAtRequest,
+                        isStillCurrent = {
+                            !released && playbackGeneration.get() == generation && _currentLine.value == idx
+                        },
+                    )
+                    if (!acceptedFeed) {
+                        clearUnstartedLineIfCurrent(idx, generation)
+                        return@execute
+                    }
                     val ownsCue = synchronized(playbackControlLock) {
-                        val current = !released &&
-                            playbackGeneration.get() == generation &&
-                            _currentLine.value == idx &&
-                            isActivePlaybackAllowedLocked()
-                        if (current && lastFedLine != idx) {
-                            outputBus.feed(
-                                pcmLine.startMs * 1000L,
-                                outputPcm.samples,
-                                outputPcm.sampleRate,
-                            )
+                        val current = !released && playbackGeneration.get() == generation &&
+                            _currentLine.value == idx && isActivePlaybackAllowedLocked() &&
+                            outputBus.generationToken() == busGenerationAtRequest
+                        if (current) {
                             lastFedLine = idx
                             playbackStartedLine = idx
                         }

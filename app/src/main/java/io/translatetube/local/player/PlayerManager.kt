@@ -15,6 +15,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.nio.ByteBuffer
 
 private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
@@ -27,18 +28,55 @@ class PlayerManager(private val ctx: Context) {
     /** 混流处理器（与 bus 成对，注入 ExoPlayer 音频渲染管线）。 */
     private val dubbingProcessor = DubbingAudioProcessor(dubbingBus)
 
-    /** 挂了配音混流处理器的渲染器工厂：配音与原声共用同一播放时钟。 */
+    /** Attach the real decoded-buffer PTS to the processor before Media3 handles each buffer. */
     private val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(ctx) {
         override fun buildAudioSink(
             context: Context,
             enableFloatOutput: Boolean,
             enableAudioTrackPlaybackParams: Boolean,
         ): androidx.media3.exoplayer.audio.AudioSink? = runCatching {
-            androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+            val delegate = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                 .setEnableFloatOutput(enableFloatOutput)
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .setAudioProcessors(arrayOf(dubbingProcessor))
                 .build()
+            object : androidx.media3.exoplayer.audio.ForwardingAudioSink(delegate) {
+                private var currentInputBuffer: ByteBuffer? = null
+
+                override fun handleBuffer(
+                    buffer: ByteBuffer,
+                    presentationTimeUs: Long,
+                    encodedAccessUnitCount: Int,
+                ): Boolean {
+                    if (currentInputBuffer !== buffer) {
+                        dubbingProcessor.setInputBufferPresentationTimeUs(presentationTimeUs)
+                        currentInputBuffer = buffer
+                    }
+                    val handled = super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
+                    if (handled) currentInputBuffer = null
+                    return handled
+                }
+
+                override fun handleDiscontinuity() {
+                    currentInputBuffer = null
+                    dubbingProcessor.clearInputBufferTimestamp()
+                    super.handleDiscontinuity()
+                }
+
+                override fun flush() {
+                    currentInputBuffer = null
+                    dubbingProcessor.clearInputBufferTimestamp()
+                    super.flush()
+                }
+
+                override fun reset() {
+                    currentInputBuffer = null
+                    dubbingProcessor.clearInputBufferTimestamp()
+                    super.reset()
+                }
+            }
+        }.onFailure { error ->
+            android.util.Log.e("PlayerManager", "无法安装配音混流处理器，回退系统音频 sink", error)
         }.getOrNull() ?: super.buildAudioSink(
             context, enableFloatOutput, enableAudioTrackPlaybackParams,
         )
