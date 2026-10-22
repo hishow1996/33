@@ -44,6 +44,17 @@ object YtDlpRepo {
     private const val MAX_RESOLVE_FORMATS = 500
     private const val VERSION_COMMAND_TIMEOUT_SECONDS = 25L
 
+    /** 版本查询：单个来源遇到瞬时错误（超时、断连、5xx）时最多尝试的次数。 */
+    private const val VERSION_LOOKUP_ATTEMPTS = 2
+    private const val VERSION_LOOKUP_RETRY_DELAY_MS = 700L
+
+    /** 更新包下载：遇到瞬时错误（超时、断连、5xx、下载不完整）时最多尝试的次数。 */
+    private const val UPDATE_DOWNLOAD_ATTEMPTS = 3
+    private const val UPDATE_DOWNLOAD_RETRY_DELAY_MS = 1500L
+
+    /** 重试也不会改变结果的下载失败（HTTP 4xx、大小或版本校验不通过），不再重试。 */
+    private class NonRetryableDownloadException(message: String) : java.io.IOException(message)
+
     /**
      * 与 App 内 WebView 一致的移动端 Chrome UA。yt-dlp 默认 UA（python-* 类）
      * 会被 B 站等风控站点以 HTTP 412 直接拒绝，是「网页视频解析失败」的最常见原因；
@@ -231,11 +242,13 @@ object YtDlpRepo {
     }
 
     /**
-     * 多来源读取上游稳定版：
-     * 1) GitHub REST API；
-     * 2) GitHub latest 发布页的最终重定向地址（可避开 API 限流/部分网关拦截）；
-     * 3) PyPI 项目元数据兜底。
+     * 多来源读取上游稳定版（依次尝试，任一成功即返回）：
+     * 1) PyPI 国内镜像（阿里云、清华）；
+     * 2) GitHub latest 发布页的最终重定向地址（不占 REST API 限额）；
+     * 3) GitHub REST API（未登录每小时仅 60 次，共享 IP 常 403，所以排在发布页之后）；
+     * 4) PyPI 官方源兜底。
      *
+     * 每个来源遇到瞬时错误（超时、断连、5xx）会再试一次，见 [fetchVersionText]。
      * 显式设置 User-Agent：GitHub REST API 对缺少该请求头的客户端可能拒绝请求。
      */
     private fun fetchLatestReleaseTag(): String? {
@@ -256,7 +269,52 @@ object YtDlpRepo {
             return version
         }
 
-        // 各地网络可达性不同，依次尝试常见 PyPI 镜像、GitHub API 和官网重定向。
+        // 不下载整个发布页；从 /releases/latest 的最终重定向地址读取稳定版 tag。
+        // 该请求不走 REST API，不占未登录每小时 60 次的限额。
+        fun githubReleasePage(): String? {
+            var attempt = 0
+            while (true) {
+                attempt++
+                var failure: String? = null
+                var transient = false
+                val tag = try {
+                    val request = Request.Builder()
+                        .url("https://github.com/yt-dlp/yt-dlp/releases/latest")
+                        .header("User-Agent", "TranslateTube-Android")
+                        .header("Accept", "text/html")
+                        .header("Cache-Control", "no-cache")
+                        .build()
+                    checkHttp.newCall(request).execute().use { response ->
+                        if (response.code != 200) {
+                            failure = "HTTP ${response.code}"
+                            transient = isTransientHttpCode(response.code)
+                            return@use null
+                        }
+                        val parsed = YtDlpVersionPolicy.stableTagFromReleasePath(response.request.url.encodedPath)
+                        if (parsed == null) failure = "重定向地址不包含稳定版版本号"
+                        parsed
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    Log.w(TAG, "GitHub release-page version lookup failed", error)
+                    failure = error.javaClass.simpleName + ": " + (error.message?.take(60) ?: "网络错误")
+                    transient = error is java.io.IOException
+                    null
+                }
+                if (tag != null) return tag
+                if (!transient || attempt >= VERSION_LOOKUP_ATTEMPTS) {
+                    recordProbe("GitHub 发布页", failure ?: "未知错误")
+                    return null
+                }
+                if (!sleepBeforeRetry(VERSION_LOOKUP_RETRY_DELAY_MS)) {
+                    recordProbe("GitHub 发布页", failure ?: "未知错误")
+                    return null
+                }
+            }
+        }
+
+        // 各地网络可达性不同，依次尝试 PyPI 镜像、GitHub 发布页、GitHub API 和 PyPI 官方源。
         // 必须选择 stable 版本，避免把 PyPI 上的 dev 预发布误报成 STABLE 更新。
         pypiMirror(
             url = "https://mirrors.aliyun.com/pypi/web/pypi/yt-dlp/json",
@@ -268,6 +326,9 @@ object YtDlpRepo {
             source = "Tsinghua PyPI 镜像",
         )?.let { return it }
 
+        githubReleasePage()?.let { return it }
+
+        // REST API 放在发布页之后：未登录限额低，共享 IP 常被 403。
         fetchVersionText(
             url = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
             accept = "application/vnd.github+json",
@@ -278,28 +339,6 @@ object YtDlpRepo {
             if (tag != null) return tag
             recordProbe("GitHub API", "响应中没有可识别的稳定版 tag")
         }
-
-        // 不下载整个发布页；从 /releases/latest 的最终重定向地址读取稳定版 tag。
-        runCatching {
-            val request = Request.Builder()
-                .url("https://github.com/yt-dlp/yt-dlp/releases/latest")
-                .header("User-Agent", "TranslateTube-Android")
-                .header("Accept", "text/html")
-                .header("Cache-Control", "no-cache")
-                .build()
-            checkHttp.newCall(request).execute().use { response ->
-                if (response.code != 200) {
-                    recordProbe("GitHub 发布页", "HTTP ${response.code}")
-                    return@use null
-                }
-                val tag = YtDlpVersionPolicy.stableTagFromReleasePath(response.request.url.encodedPath)
-                if (tag == null) recordProbe("GitHub 发布页", "重定向地址不包含稳定版版本号")
-                tag
-            }
-        }.onFailure {
-            Log.w(TAG, "GitHub release-page version lookup failed", it)
-            recordProbe("GitHub 发布页", it.javaClass.simpleName + ": " + (it.message?.take(60) ?: "网络错误"))
-        }.getOrNull()?.let { return it }
 
         // 官方 PyPI JSON 是最后兜底；解析 releases 列表中的稳定版，过滤 .dev / rc / a / b。
         pypiMirror(
@@ -320,45 +359,80 @@ object YtDlpRepo {
         lastProbeDetail = ((lastProbeDetail ?: "") + "；" + source + "：" + detail)
     }
 
+    /** 5xx 是服务端瞬时故障，值得再试一次；4xx（含 403 限流、404）再试结果也一样。 */
+    private fun isTransientHttpCode(code: Int): Boolean = code in 500..599
+
+    /** 重试前的短暂等待；线程被中断时返回 false，调用方应放弃重试。 */
+    private fun sleepBeforeRetry(delayMs: Long): Boolean = try {
+        Thread.sleep(delayMs)
+        true
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        false
+    }
+
+    /**
+     * 读取一个版本元数据来源。遇到瞬时错误（超时、断连、5xx）最多尝试
+     * [VERSION_LOOKUP_ATTEMPTS] 次；403/404、响应过大等再试也不会变的失败直接放弃。
+     * 失败明细只在最终放弃时记录一次，避免设置页错误文案里出现重复条目。
+     */
     private fun fetchVersionText(
         url: String,
         accept: String,
         maxBytes: Long,
         source: String,
-    ): String? = try {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "TranslateTube-Android")
-            .header("Accept", accept)
-            .header("Cache-Control", "no-cache")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .build()
-        checkHttp.newCall(request).execute().use { response ->
-            if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
-                Log.w(TAG, "$source version lookup returned HTTP ${response.code}")
-                recordProbe(source, "HTTP " + response.code)
-                return@use null
+    ): String? {
+        var attempt = 0
+        while (true) {
+            attempt++
+            var failure: String? = null
+            var transient = false
+            val text = try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "TranslateTube-Android")
+                    .header("Accept", accept)
+                    .header("Cache-Control", "no-cache")
+                    .header("X-GitHub-Api-Version", "2022-11-28")
+                    .build()
+                checkHttp.newCall(request).execute().use { response ->
+                    if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
+                        Log.w(TAG, "$source version lookup returned HTTP ${response.code}")
+                        failure = "HTTP " + response.code
+                        transient = isTransientHttpCode(response.code)
+                        return@use null
+                    }
+                    val body = response.body ?: run {
+                        failure = "响应没有内容"
+                        return@use null
+                    }
+                    val length = body.contentLength()
+                    if (length > maxBytes) {
+                        Log.w(TAG, "$source version metadata exceeded size limit: $length")
+                        failure = "响应超过大小限制"
+                        return@use null
+                    }
+                    val bytes = BoundedTextPayload.readBytes(
+                        body.byteStream(),
+                        maxBytes = maxBytes,
+                        resourceLabel = "yt-dlp $source 版本检查响应",
+                    )
+                    String(bytes, Charsets.UTF_8)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w(TAG, "$source version lookup failed", error)
+                failure = error.javaClass.simpleName + ": " + (error.message?.take(60) ?: "网络错误")
+                transient = error is java.io.IOException
+                null
             }
-            val body = response.body ?: return@use null
-            val length = body.contentLength()
-            if (length > maxBytes) {
-                Log.w(TAG, "$source version metadata exceeded size limit: $length")
-                recordProbe(source, "响应超过大小限制")
-                return@use null
+            if (text != null) return text
+            if (!transient || attempt >= VERSION_LOOKUP_ATTEMPTS || !sleepBeforeRetry(VERSION_LOOKUP_RETRY_DELAY_MS)) {
+                failure?.let { recordProbe(source, it) }
+                return null
             }
-            val bytes = BoundedTextPayload.readBytes(
-                body.byteStream(),
-                maxBytes = maxBytes,
-                resourceLabel = "yt-dlp $source 版本检查响应",
-            )
-            String(bytes, Charsets.UTF_8)
         }
-    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-        throw cancelled
-    } catch (error: Exception) {
-        Log.w(TAG, "$source version lookup failed", error)
-        recordProbe(source, error.javaClass.simpleName + ": " + (error.message?.take(60) ?: "网络错误"))
-        null
     }
 
     /** Local-version probing result; failure summarizes the attempts when version is null. */
@@ -747,8 +821,8 @@ object YtDlpRepo {
         try {
             ensureReady(appCtx)
 
-            // 不再依赖 api.github.com（未登录每小时 60 次，共享 IP 常 403）。
-            // 版本号复用检查更新的多源探测：PyPI 镜像 → GitHub → PyPI 官方
+            // api.github.com 未登录每小时 60 次，共享 IP 常 403，只作后备。
+            // 版本号复用检查更新的多源探测：PyPI 镜像 → GitHub 发布页 → GitHub API → PyPI 官方
             val version = fetchLatestReleaseTag()
                 ?: throw java.io.IOException(
                     "获取更新包信息失败：" + (lastProbeDetail?.trimStart('；') ?: "所有版本源均未响应"),
@@ -801,24 +875,44 @@ object YtDlpRepo {
             val failures = mutableListOf<String>()
             var downloaded = false
             for (candidate in candidates) {
-                try {
-                    downloadedBytes = downloadYtDlpZipapp(candidate, tempFile!!, version) { done, total ->
-                        totalBytes = total
-                        _updateState.value = _updateState.value.copy(
-                            updateStage = "正在下载 yt-dlp " + version,
-                            updateProgress = total?.let { ((done * 100L) / it).toInt().coerceIn(0, 99) },
-                            downloadedBytes = done,
-                            totalBytes = total,
-                        )
+                var lastError: Exception? = null
+                for (attempt in 1..UPDATE_DOWNLOAD_ATTEMPTS) {
+                    try {
+                        downloadedBytes = downloadYtDlpZipapp(candidate, tempFile!!, version) { done, total ->
+                            totalBytes = total
+                            _updateState.value = _updateState.value.copy(
+                                updateStage = "正在下载 yt-dlp " + version,
+                                updateProgress = total?.let { ((done * 100L) / it).toInt().coerceIn(0, 99) },
+                                downloadedBytes = done,
+                                totalBytes = total,
+                            )
+                        }
+                        downloaded = true
+                        break
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (e: NonRetryableDownloadException) {
+                        // HTTP 4xx、包过大/过小、版本不符：重试结果不会变。
+                        Log.w(TAG, "yt-dlp 更新包下载失败（不重试）：$candidate", e)
+                        lastError = e
+                        break
+                    } catch (e: Exception) {
+                        Log.w(TAG, "yt-dlp 更新包下载失败（第 $attempt/$UPDATE_DOWNLOAD_ATTEMPTS 次）：$candidate", e)
+                        lastError = e
+                        if (attempt < UPDATE_DOWNLOAD_ATTEMPTS) {
+                            _updateState.value = _updateState.value.copy(
+                                updateStage = "下载失败，正在重试（第 ${attempt + 1}/$UPDATE_DOWNLOAD_ATTEMPTS 次）…",
+                                updateProgress = null,
+                                downloadedBytes = 0L,
+                                totalBytes = null,
+                            )
+                            kotlinx.coroutines.delay(UPDATE_DOWNLOAD_RETRY_DELAY_MS * attempt)
+                        }
                     }
-                    downloaded = true
-                    break
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                } catch (e: Exception) {
-                    Log.w(TAG, "yt-dlp 更新包下载失败：$candidate", e)
-                    failures += (java.net.URI(candidate).host ?: candidate) + "：" + describeError(e)
                 }
+                if (downloaded) break
+                failures += (java.net.URI(candidate).host ?: candidate) + "：" +
+                    (lastError?.let { describeError(it) } ?: "未知错误")
             }
             if (!downloaded) throw java.io.IOException("获取更新包失败：" + failures.joinToString("；"))
 
@@ -925,7 +1019,8 @@ object YtDlpRepo {
 
     /**
      * Download a yt-dlp zipapp with bounded size, complete-length and embedded-version checks.
-     * A failed candidate is retried by updateRules() using a fresh overwrite of the temp file.
+     * Transient failures are retried by updateRules() using a fresh overwrite of the temp file;
+     * [NonRetryableDownloadException] marks failures that a retry cannot change.
      */
     private suspend fun downloadYtDlpZipapp(
         url: String,
@@ -940,11 +1035,19 @@ object YtDlpRepo {
             .build()
         var received = 0L
         updateHttp.newCall(request).execute().use { response ->
-            if (response.code != 200) throw java.io.IOException("HTTP " + response.code)
+            if (response.code != 200) {
+                // 5xx 和 429 是服务端瞬时故障，可重试；其余 4xx（403/404 等）重试结果不会变。
+                val message = "HTTP " + response.code
+                throw if (response.code == 429 || isTransientHttpCode(response.code)) {
+                    java.io.IOException(message)
+                } else {
+                    NonRetryableDownloadException(message)
+                }
+            }
             val body = response.body ?: throw java.io.IOException("响应没有文件内容")
             val total = body.contentLength().takeIf { it > 0L }
             if (total != null && total > MAX_UPDATE_DOWNLOAD_BYTES) {
-                throw java.io.IOException("下载包超过安全大小限制")
+                throw NonRetryableDownloadException("下载包超过安全大小限制")
             }
             onProgress(0L, total)
             body.byteStream().use { source ->
@@ -958,7 +1061,7 @@ object YtDlpRepo {
                         if (n == 0) continue
                         received += n
                         if (received > MAX_UPDATE_DOWNLOAD_BYTES) {
-                            throw java.io.IOException("下载包超过安全大小限制")
+                            throw NonRetryableDownloadException("下载包超过安全大小限制")
                         }
                         sink.write(buffer, 0, n)
                         val now = android.os.SystemClock.elapsedRealtime()
@@ -975,11 +1078,11 @@ object YtDlpRepo {
             }
         }
         if (received < MIN_UPDATE_DOWNLOAD_BYTES) {
-            throw java.io.IOException("下载包过小，疑似错误页面")
+            throw NonRetryableDownloadException("下载包过小，疑似错误页面")
         }
         val actual = dest.inputStream().use { YtDlpVersionPolicy.versionFromZipapp(it) }
         if (actual != expectedVersion) {
-            throw java.io.IOException(
+            throw NonRetryableDownloadException(
                 "更新包版本校验失败：预期 $expectedVersion，识别为 ${actual ?: "未知版本"}",
             )
         }
