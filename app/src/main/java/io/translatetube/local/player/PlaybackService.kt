@@ -529,6 +529,8 @@ class PlaybackService : MediaSessionService() {
             startForeground(1001, boot)
 
             pm = PlayerManager(this)
+            // Match the new mix bus to the currently visible mode before any timeline tick runs.
+            pm.dubbingBus.setDubbingEnabled(ui.value.dubbingOn)
             pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
             pm.onEnded = {
                 val sessionKey = ui.value.key
@@ -6955,12 +6957,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         val nowOn = !ui.value.dubbingOn
         val sessionKey = ui.value.key
         val position = if (::pm.isInitialized) pm.position() else -1L
-        // Mode changes invalidate any speech queued for the previous mode, including end-of-video
-        // draining. The next dub tick will select a cue from the current video timestamp.
-        cancelDubbingDrainAfterVideoEnd()
-        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
+
+        // Gate the actual mixer first. Turning the switch off must silence already queued PCM,
+        // not just prevent the next timeline tick from choosing a subtitle.
+        if (::pm.isInitialized) pm.dubbingBus.setDubbingEnabled(nowOn)
         if (!nowOn) {
-            safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+            // Publish the off state before cancellation so stale ticks fail their live-owner check.
             ui.update { state ->
                 if (state.key == sessionKey) {
                     state.copy(
@@ -6971,6 +6973,15 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     )
                 } else state
             }
+            // Stop the active sentence before doing queue bookkeeping.
+            safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+        }
+
+        // Mode changes invalidate any speech queued for the previous mode, including end-of-video
+        // draining. The next dub tick will select a cue from the current video timestamp.
+        cancelDubbingDrainAfterVideoEnd()
+        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
+        if (!nowOn) {
             if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
             val currentDubbing = dubbing
             if (position >= 0L) currentDubbing?.prepareForBackgroundPlayback(currentDubbing.lineAt(position))
@@ -6999,9 +7010,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     fun selectOriginalPlayback() {
         val sessionKey = ui.value.key
         val position = if (::pm.isInitialized) pm.position() else -1L
-        cancelDubbingDrainAfterVideoEnd()
-        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
-        safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+        if (::pm.isInitialized) pm.dubbingBus.setDubbingEnabled(false)
         ui.update { state ->
             if (state.key == sessionKey) {
                 state.copy(
@@ -7012,6 +7021,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 )
             } else state
         }
+        safelyControlDubbing("switch to original playback") { dubbing?.stop() }
+        cancelDubbingDrainAfterVideoEnd()
+        clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = position)
         if (::pm.isInitialized) safelySetOriginalVolume(1f, "source audio restore requested")
         lastLineIdx = Int.MIN_VALUE
         if (position >= 0L) {
