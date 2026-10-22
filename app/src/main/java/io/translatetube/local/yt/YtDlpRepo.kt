@@ -344,9 +344,12 @@ object YtDlpRepo {
         // 再尝试公开的 GitHub API 镜像；请求仅读取公开发行元数据，不携带令牌。
         val releaseApiPath = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
         listOf(
+            "GH-Proxy 国内入口" to "https://gh-proxy.org",
             "GHFast" to "https://ghfast.top",
-            "GH-Proxy" to "https://gh-proxy.com",
+            "GH-Proxy 备用入口" to "https://gh-proxy.com",
             "GHProxy.net" to "https://ghproxy.net",
+            "GH.llkk" to "https://gh.llkk.cc",
+            "Houlang 镜像" to "https://mirror.houlang.cloud",
         ).forEach { (label, proxy) ->
             val json = fetchVersionText(
                 url = "$proxy/$releaseApiPath",
@@ -894,15 +897,22 @@ object YtDlpRepo {
             // 下载后仍会验证文件大小和 zipapp 内版本号，镜像错误页不会被安装。
             val candidates = listOf(
                 "GitHub 官方" to officialReleaseUrl,
+                // 常见国内 GitHub 文件加速服务；可用性会变化，始终逐个回退。
+                "GH-Proxy 国内入口" to "https://gh-proxy.org/$officialReleaseUrl",
                 "GHFast 镜像" to "https://ghfast.top/$officialReleaseUrl",
-                "GH-Proxy 镜像" to "https://gh-proxy.com/$officialReleaseUrl",
+                "GH-Proxy 备用入口" to "https://gh-proxy.com/$officialReleaseUrl",
                 "GHProxy.net 镜像" to "https://ghproxy.net/$officialReleaseUrl",
+                "GH.llkk 镜像" to "https://gh.llkk.cc/$officialReleaseUrl",
+                "Houlang 镜像" to "https://mirror.houlang.cloud/$officialReleaseUrl",
+                "旧版 GHProxy 镜像" to "https://mirror.ghproxy.com/$officialReleaseUrl",
             )
             val failures = mutableListOf<String>()
             var downloaded = false
             for ((source, candidate) in candidates) {
                 var lastError: Exception? = null
-                for (attempt in 1..UPDATE_DOWNLOAD_ATTEMPTS) {
+                // 官方源重试几次；备用镜像各尝试一次，失败就尽快切到下一个来源。
+                val maxAttempts = if (source == "GitHub 官方") UPDATE_DOWNLOAD_ATTEMPTS else 1
+                for (attempt in 1..maxAttempts) {
                     try {
                         _updateState.value = _updateState.value.copy(
                             updateStage = "正在从 $source 下载 yt-dlp $version",
@@ -928,9 +938,9 @@ object YtDlpRepo {
                     } catch (e: Exception) {
                         Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，第 $attempt/$UPDATE_DOWNLOAD_ATTEMPTS 次）：$candidate", e)
                         lastError = e
-                        if (attempt < UPDATE_DOWNLOAD_ATTEMPTS) {
+                        if (attempt < maxAttempts) {
                             _updateState.value = _updateState.value.copy(
-                                updateStage = "$source 下载失败，正在重试（第 ${attempt + 1}/$UPDATE_DOWNLOAD_ATTEMPTS 次）…",
+                                updateStage = "$source 下载失败，正在重试（第 ${attempt + 1}/$maxAttempts 次）…",
                                 updateProgress = null,
                                 downloadedBytes = 0L,
                                 totalBytes = null,
