@@ -69,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
@@ -1839,40 +1840,42 @@ fun WebVideoScreen(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val touchSlop = viewConfiguration.touchSlop
+                    var totalX = 0f
+                    var totalY = 0f
                     var dragStarted = false
                     var horizontalGesture = false
                     var finished = false
-                    var lastY = down.position.y
+
+                    // positionChange() 得到的是手指真实位移，不受把手随面板移动影响
+                    fun applyDrag(dyPx: Float) {
+                        val deltaDp = with(density) { dyPx.toDp().value }
+                        sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
+                            .coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                    }
 
                     while (!finished) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        val dx = change.position.x - down.position.x
-                        val dy = change.position.y - down.position.y
+                        val delta = change.positionChange()
 
                         if (!dragStarted && !horizontalGesture) {
+                            totalX += delta.x
+                            totalY += delta.y
                             when {
-                                abs(dx) > touchSlop && abs(dx) > abs(dy) -> {
+                                abs(totalX) > touchSlop && abs(totalX) > abs(totalY) -> {
                                     horizontalGesture = true
                                 }
-                                abs(dy) > touchSlop -> {
+                                abs(totalY) > touchSlop -> {
                                     dragStarted = true
-                                    val overSlopY = if (dy > 0f) dy - touchSlop else dy + touchSlop
-                                    val deltaDp = with(density) { overSlopY.toDp().value }
-                                    sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
-                                        .coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                                    applyDrag(if (totalY > 0f) totalY - touchSlop else totalY + touchSlop)
                                     change.consume()
                                 }
                             }
                         } else if (dragStarted && change.pressed) {
-                            val deltaY = change.position.y - lastY
-                            val deltaDp = with(density) { deltaY.toDp().value }
-                            sourcePanelHeightDp = (sourcePanelHeightDp - deltaDp)
-                                .coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                            applyDrag(delta.y)
                             change.consume()
                         }
 
-                        lastY = change.position.y
                         if (!change.pressed) finished = true
                     }
 
