@@ -7,6 +7,42 @@ import org.junit.Test
 
 class WebVideoProbePolicyTest {
     @Test
+    fun ignoresRepeatedCompletedNavigationForSameBilibiliVideoOnly() {
+        val completed = "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333"
+        val trackingVariant = "https://www.bilibili.com/video/BV1xx411c7mD?vd_source=share"
+
+        assertTrue(
+            WebVideoProbePolicy.isDuplicateCompletedNavigation(
+                targetUrl = trackingVariant,
+                currentPageUrl = trackingVariant,
+                lastCompletedUrl = completed,
+            ),
+        )
+        assertTrue(WebVideoProbePolicy.isSameBilibiliVideoPage(trackingVariant, completed))
+        assertFalse(
+            WebVideoProbePolicy.isDuplicateCompletedNavigation(
+                targetUrl = "https://www.bilibili.com/video/BV1xx411c7mD/?p=2",
+                currentPageUrl = "https://www.bilibili.com/video/BV1xx411c7mD/?p=2",
+                lastCompletedUrl = completed,
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.isDuplicateCompletedNavigation(
+                targetUrl = "https://example.com/video?id=2",
+                currentPageUrl = "https://example.com/video?id=2",
+                lastCompletedUrl = "https://example.com/video?id=1",
+            ),
+        )
+        assertFalse(
+            WebVideoProbePolicy.isDuplicateCompletedNavigation(
+                targetUrl = completed,
+                currentPageUrl = completed,
+                lastCompletedUrl = null,
+            ),
+        )
+    }
+
+    @Test
     fun rejectsEmptyAndOversizedBridgePayloads() {
         assertFalse(WebVideoProbePolicy.acceptsPayload(""))
         assertFalse(WebVideoProbePolicy.acceptsPayload("x".repeat(WebVideoProbePolicy.MAX_PAYLOAD_CHARS + 1)))

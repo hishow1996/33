@@ -256,6 +256,12 @@ fun WebVideoScreen(
     // A single top-level navigation can emit several onPageStarted callbacks while a short link
     // redirects through multiple Bilibili URLs. Keep one detection generation for the whole chain.
     val navigationInProgress = remember(initialUrl) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val lastCompletedNavigationUrl = remember(initialUrl) {
+        java.util.concurrent.atomic.AtomicReference<String?>(null)
+    }
+    val lastCompletedNavigationGeneration = remember(initialUrl) {
+        java.util.concurrent.atomic.AtomicLong(-1L)
+    }
     val pageGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
     val ytDlpRunGeneration = remember(initialUrl) { java.util.concurrent.atomic.AtomicLong(0L) }
     val fullScreenContainer = remember { mutableStateOf<FrameLayout?>(null) }
@@ -1152,9 +1158,13 @@ fun WebVideoScreen(
                 mainHandler.post {
                     if (!screenActive.get() || pageGeneration.get() != bridgeGeneration) return@post
                     val previousCandidates = candidatesState.value
+                    val previousUrls = previousCandidates.map { it.url }.toHashSet()
                     val merged = WebVideoProbePolicy.mergeCandidates(previousCandidates, found)
-                    val addedCount = (merged.size - previousCandidates.size).coerceAtLeast(0)
-                    candidatesState.value = merged
+                    val candidatesChanged = merged != previousCandidates
+                    val addedCount = found.count { it.url !in previousUrls }
+                    // The DOM probe reports on a timer. Do not publish an identical candidate list:
+                    // doing so reruns Compose effects and can look like source detection is looping.
+                    if (candidatesChanged) candidatesState.value = merged
                     if (addedCount > 0) {
                         io.translatetube.local.util.AppLogStore.info(
                             context = appCtx,
@@ -1187,10 +1197,12 @@ fun WebVideoScreen(
                             ),
                         )
                     }
-                    status = if (merged.isEmpty()) {
-                        "网页已加载，但暂未检测到媒体地址。DRM、blob/MSE 或封闭式播放器可能无法提取。"
-                    } else {
-                        "发现 ${merged.size} 个媒体地址；选择可直接访问且未受 DRM 保护的源即可继续。"
+                    if (addedCount > 0) {
+                        status = "发现 ${merged.size} 个媒体地址；选择可直接访问且未受 DRM 保护的源即可继续。"
+                    } else if (merged.isEmpty() && status == "网页已加载，正在检测视频源…") {
+                        // Only show the empty-result state once; later polling must not override a
+                        // more informative status produced by parsing or candidate validation.
+                        status = "网页已加载，但暂未检测到媒体地址。DRM、blob/MSE 或封闭式播放器可能无法提取。"
                     }
                 }
             }
@@ -1512,18 +1524,38 @@ fun WebVideoScreen(
 
                             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
-                                if (navigationInProgress.compareAndSet(false, true)) {
-                                    // First callback for a new navigation. Explicit address-bar and
-                                    // refresh requests have already reset state before calling loadUrl/reload.
-                                    resetForNavigation(url)
-                                    pageLoadToken++
-                                } else {
-                                    // Redirect continuation or duplicate callback: update the final
-                                    // address/UA only. Do not clear already detected video sources,
-                                    // verification state, or the current detection generation.
-                                    applyPikpakUserAgent(url)
-                                    currentPage = url
-                                    address = url
+                                val duplicateCompletedBilibiliPage =
+                                    lastCompletedNavigationGeneration.get() == pageGeneration.get() &&
+                                        WebVideoProbePolicy.isDuplicateCompletedNavigation(
+                                            targetUrl = url,
+                                            currentPageUrl = currentPage,
+                                            lastCompletedUrl = lastCompletedNavigationUrl.get(),
+                                        )
+                                val sameBilibiliVideoAlreadyDetected =
+                                    candidatesState.value.isNotEmpty() &&
+                                        WebVideoProbePolicy.isSameBilibiliVideoPage(url, currentPage)
+                                when {
+                                    duplicateCompletedBilibiliPage || sameBilibiliVideoAlreadyDetected -> {
+                                        // Bilibili may emit a repeated start callback after its video
+                                        // sources are already visible. Do not clear candidates or restart detection.
+                                        applyPikpakUserAgent(url)
+                                        currentPage = url
+                                        address = url
+                                        Log.d(TAG_WEB, "Ignoring repeated navigation callback for detected Bilibili video")
+                                    }
+                                    navigationInProgress.compareAndSet(false, true) -> {
+                                        // First callback for a new navigation. Explicit address-bar and
+                                        // refresh requests have already reset state before calling loadUrl/reload.
+                                        resetForNavigation(url)
+                                        pageLoadToken++
+                                    }
+                                    else -> {
+                                        // Redirect continuation: update address/UA only.
+                                        // Do not clear candidates or reinitialize the detection generation.
+                                        applyPikpakUserAgent(url)
+                                        currentPage = url
+                                        address = url
+                                    }
                                 }
                                 // 普通视频站仍尽早挂 hook；PikPak 分享页先让官方 SPA 完成初始化，
                                 // 再挂接后续人工密码验证/文件夹点击产生的请求，避免过早改写 fetch/XHR。
@@ -1535,8 +1567,26 @@ fun WebVideoScreen(
                             override fun onPageFinished(view: WebView, url: String) {
                                 super.onPageFinished(view, url)
                                 if (!screenActive.get() || url != currentPage) return
+                                val completedGeneration = pageGeneration.get()
+                                val duplicateCompletedBilibiliPage =
+                                    lastCompletedNavigationGeneration.get() == completedGeneration &&
+                                        WebVideoProbePolicy.isDuplicateCompletedNavigation(
+                                            targetUrl = url,
+                                            currentPageUrl = currentPage,
+                                            lastCompletedUrl = lastCompletedNavigationUrl.get(),
+                                        )
+                                if (duplicateCompletedBilibiliPage) {
+                                    // Do not reset the status or restart the recurring JS probe for
+                                    // the same already-finished Bilibili video.
+                                    navigationInProgress.set(false)
+                                    address = url
+                                    Log.d(TAG_WEB, "Ignoring repeated finish callback for completed Bilibili video")
+                                    return
+                                }
                                 pageLoading = false
                                 navigationInProgress.set(false)
+                                lastCompletedNavigationUrl.set(url)
+                                lastCompletedNavigationGeneration.set(completedGeneration)
                                 address = url
                                 pageTitle = view.title.orEmpty()
                                 status = "网页已加载，正在检测视频源…"
@@ -1679,16 +1729,21 @@ fun WebVideoScreen(
                                             drmProtected = false,
                                         )
                                                                                 val previousCandidates = candidatesState.value
+                                        val isNewCandidate = previousCandidates.none { it.url == candidate.url }
+                                        val addedCount = if (isNewCandidate) 1 else 0
                                         val mergedCandidates = WebVideoProbePolicy.mergeCandidates(
                                             previousCandidates,
                                             listOf(candidate),
                                         )
-                                        val addedCount = (mergedCandidates.size - previousCandidates.size).coerceAtLeast(0)
-                                        candidatesState.value = mergedCandidates
+                                        // Resource requests can repeat for every HLS segment/poll;
+                                        // publish candidate state only when content actually changes.
+                                        if (mergedCandidates != previousCandidates) {
+                                            candidatesState.value = mergedCandidates
+                                        }
                                         // The per-candidate type classification below carries individual fingerprints.
                                         // Only log the first network-intercept discovery here to avoid flooding a bounded log
                                         // with a separate identical event for every segment/resource on a complex page.
-                                        if (addedCount > 0 && previousCandidates.isEmpty()) {
+                                        if (isNewCandidate && previousCandidates.isEmpty()) {
                                             io.translatetube.local.util.AppLogStore.info(
                                                 context = appCtx,
                                                 tag = "WebSourceDetection",
@@ -1706,7 +1761,9 @@ fun WebVideoScreen(
                                                 ),
                                             )
                                         }
-                                        status = "已从网页网络请求中检测到媒体资源。"
+                                        if (isNewCandidate) {
+                                            status = "已从网页网络请求中检测到媒体资源。"
+                                        }
                                     }
                                 }
                                 return super.shouldInterceptRequest(view, request)

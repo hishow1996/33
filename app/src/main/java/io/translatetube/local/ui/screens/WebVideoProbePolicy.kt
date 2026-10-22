@@ -21,6 +21,55 @@ internal object WebVideoProbePolicy {
     const val MAX_POSTER_CHARS = 2048
 
     /**
+     * Identify the same Bilibili video across short-link redirects and tracking-query changes.
+     * Page number is part of the identity, because a different "p" is a different media segment.
+     */
+    fun isSameBilibiliVideoPage(firstUrl: String, secondUrl: String): Boolean {
+        val first = bilibiliVideoIdentity(firstUrl) ?: return false
+        return first == bilibiliVideoIdentity(secondUrl)
+    }
+
+    fun isDuplicateCompletedNavigation(
+        targetUrl: String,
+        currentPageUrl: String,
+        lastCompletedUrl: String?,
+    ): Boolean {
+        if (lastCompletedUrl.isNullOrBlank()) return false
+        return isSameBilibiliVideoPage(targetUrl, currentPageUrl) &&
+            isSameBilibiliVideoPage(targetUrl, lastCompletedUrl)
+    }
+
+    private fun bilibiliVideoIdentity(rawUrl: String): String? {
+        val uri = runCatching { java.net.URI(rawUrl) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase(java.util.Locale.ROOT).orEmpty()
+        val host = uri.host?.lowercase(java.util.Locale.ROOT).orEmpty()
+        if (scheme !in setOf("http", "https") ||
+            !(host == "b23.tv" || host == "bilibili.com" || host.endsWith(".bilibili.com"))
+        ) return null
+
+        val path = uri.rawPath.orEmpty()
+        val match = Regex(
+            "/video/(BV[0-9A-Za-z]+|av[0-9]+)(?:/|$)",
+            RegexOption.IGNORE_CASE,
+        ).find(path) ?: return null
+        val rawId = match.groupValues[1]
+        // BVID characters are case-sensitive; only normalize its BV prefix.
+        val videoId = if (rawId.startsWith("BV", ignoreCase = true)) {
+            "BV" + rawId.substring(2)
+        } else {
+            rawId.lowercase(java.util.Locale.ROOT)
+        }
+        val pageNumber = uri.rawQuery.orEmpty()
+            .split("&")
+            .firstOrNull { it.substringBefore("=") == "p" }
+            ?.substringAfter("=", "")
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
+            ?: 1
+        return "$videoId:p=$pageNumber"
+    }
+
+    /**
      * yt-dlp is the last automatic fallback, not the first parser. Start it only after the
      * WebView has finished loading, candidate validation has had time to run, and no usable
      * HTTP(S) media URL was verified by the existing parser.
