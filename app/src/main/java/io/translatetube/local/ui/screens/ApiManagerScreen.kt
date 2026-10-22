@@ -22,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import android.net.Uri
 import java.io.File
 import java.util.Locale
@@ -62,6 +64,7 @@ import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.FreeModelDefaults
 import io.translatetube.local.translate.GeminiEngine
 import io.translatetube.local.translate.OpenAiCompatEngine
+import android.view.WindowManager
 import android.widget.Toast
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.withContext
@@ -842,6 +845,28 @@ private fun GenericApiLogo() {
     }
 }
 
+/**
+ * Dialog windows do not always inherit the Activity's resize behavior.
+ * Force resize while the IME is visible so the form's existing vertical scroll
+ * can reach fields and action buttons above the keyboard.
+ */
+@Composable
+private fun ConfigureDialogImeResize() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = (view.parent as? DialogWindowProvider)?.window
+        val originalSoftInputMode = window?.attributes?.softInputMode
+        if (window != null) {
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        onDispose {
+            if (window != null && originalSoftInputMode != null) {
+                window.setSoftInputMode(originalSoftInputMode)
+            }
+        }
+    }
+}
+
 @Composable
 private fun FreeModelConfigDialog(
     type: String, // "GEMINI" or "DEEPSEEK"
@@ -887,8 +912,10 @@ private fun FreeModelConfigDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
+        ConfigureDialogImeResize()
         Column(
             Modifier.fillMaxWidth(0.92f)
+                .imePadding()
                 .heightIn(max = (configuration.screenHeightDp * 0.85f).dp)
                 .clip(RoundedCornerShape(20.dp)).background(SurfaceDark)
                 .verticalScroll(rememberScrollState())
@@ -1128,6 +1155,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
+        ConfigureDialogImeResize()
         val scope = rememberCoroutineScope()
 
         fun makeCurrentProfile(): ApiProfile = ApiProfile(
@@ -1194,6 +1222,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         }
         Column(
             Modifier.fillMaxWidth(0.94f)
+                .imePadding()
                 .heightIn(max = (configuration.screenHeightDp * 0.84f).dp)
                 .clip(RoundedCornerShape(20.dp)).background(SurfaceDark)
                 .verticalScroll(rememberScrollState())
