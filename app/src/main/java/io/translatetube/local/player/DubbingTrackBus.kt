@@ -158,6 +158,22 @@ class DubbingTrackBus {
         }
     }
 
+    /**
+     * Check whether a queued cue overlaps a media-time window without advancing the render head.
+     * The audio processor uses this to reject clearly misaligned sink timestamps and fall back to
+     * the calibrated stream clock. This query must have no side effects on [latestReadUs].
+     */
+    fun hasAudioInWindow(mediaTimeUs: Long, count: Int): Boolean {
+        if (count <= 0) return false
+        val snapshot = synchronized(stateLock) {
+            if (!dubbingEnabled) return false
+            installed to sinkSampleRate
+        }
+        val startFrame = frameAtUs(mediaTimeUs, snapshot.second)
+        val endFrame = startFrame + count.toLong()
+        return snapshot.first.any { it.startFrame < endFrame && it.endFrame > startFrame }
+    }
+
     /** Allocating helper for diagnostics/tests; the render path should call [mixInto]. */
     fun readMixWindow(mediaTimeUs: Long, count: Int): FloatArray =
         FloatArray(count.coerceAtLeast(0)).also { mixInto(mediaTimeUs, it.size, it) }
