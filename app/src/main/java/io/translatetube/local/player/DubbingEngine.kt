@@ -2748,7 +2748,8 @@ class DubbingEngine(
                     val ownsCue = synchronized(playbackControlLock) {
                         val current = !released &&
                             playbackGeneration.get() == generation &&
-                            _currentLine.value == idx
+                            _currentLine.value == idx &&
+                            isActivePlaybackAllowedLocked()
                         if (current && lastFedLine != idx) {
                             outputBus.feed(
                                 pcmLine.startMs * 1000L,
