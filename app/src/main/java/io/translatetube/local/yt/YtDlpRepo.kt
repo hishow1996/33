@@ -1,5 +1,6 @@
 package io.translatetube.local.yt
 
+import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.util.AudioDownloadProgressFormatter
 import io.translatetube.local.util.HttpDownloadResponsePolicy
 
@@ -140,6 +141,16 @@ object YtDlpRepo {
         }
 
         _updateState.value = _updateState.value.copy(checking = true, error = null)
+        AppLogStore.info(
+            appCtx,
+            "YtDlpUpdate",
+            "开始检查 yt-dlp 上游版本",
+            diagnosticContext = mapOf(
+                "检查方式" to if (force) "用户手动触发" else "自动检查",
+                "本机已记录版本" to prefs.getString("current_version", null).orEmpty().ifBlank { "未知" },
+                "缓存的上游版本" to prefs.getString("latest_version", null).orEmpty().ifBlank { "无" },
+            ),
+        )
         try {
             // Local runtime initialization and upstream stable-version lookup are independent.
             // Keep the runtime failure available to the settings page instead of hiding it.
@@ -171,18 +182,29 @@ object YtDlpRepo {
                 null
             }
 
-            val latestKnown = fetchLatestReleaseTag()
+            val latestKnown = fetchLatestReleaseTag(appCtx)
             if (latestKnown == null) {
                 val diagnostic = lastProbeDetail
                     ?: "所有版本源均未响应；请确认网络可访问版本源后重试"
+                val checkError = listOfNotNull(
+                    "无法获取 yt-dlp 上游稳定版：$diagnostic",
+                    localVersionError,
+                ).joinToString("；")
+                AppLogStore.warning(
+                    appCtx,
+                    "YtDlpUpdate",
+                    "yt-dlp 所有上游版本来源均检查失败",
+                    diagnosticContext = mapOf(
+                        "版本来源探测详情" to diagnostic.take(2_000),
+                        "本机版本" to currentVersion.orEmpty().ifBlank { "未知" },
+                        "本机版本读取错误" to localVersionError.orEmpty().ifBlank { "无" },
+                    ),
+                )
                 _updateState.value = _updateState.value.copy(
                     current = currentVersion,
                     latest = prefs.getString("latest_version", null),
                     checking = false,
-                    error = listOfNotNull(
-                        "无法获取 yt-dlp 上游稳定版：$diagnostic",
-                        localVersionError,
-                    ).joinToString("；"),
+                    error = checkError,
                 )
                 return@withContext
             }
@@ -206,12 +228,33 @@ object YtDlpRepo {
                 checking = false,
                 error = localVersionError,
             )
+            AppLogStore.info(
+                appCtx,
+                "YtDlpUpdate",
+                "yt-dlp 版本检查完成",
+                diagnosticContext = mapOf(
+                    "本机版本" to currentVersion.orEmpty().ifBlank { "未知" },
+                    "最新稳定版" to latestKnown,
+                    "是否有更新" to hasUpdate.toString(),
+                    "本机版本检测详情" to local.failure.orEmpty().ifBlank { "无" }.take(800),
+                ),
+            )
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             Log.w(TAG, "yt-dlp update check failed", error)
             val detail = error.message?.takeIf { it.isNotBlank() }
                 ?: error.javaClass.simpleName
+            AppLogStore.error(
+                appCtx,
+                "YtDlpUpdate",
+                "yt-dlp 版本检查异常",
+                error,
+                diagnosticContext = mapOf(
+                    "异常摘要" to describeError(error),
+                    "版本来源探测详情" to lastProbeDetail.orEmpty().ifBlank { "无" }.take(2_000),
+                ),
+            )
             _updateState.value = _updateState.value.copy(
                 checking = false,
                 error = "版本检查异常：$detail",
@@ -251,7 +294,7 @@ object YtDlpRepo {
      * 每个来源遇到瞬时错误（超时、断连、5xx）会再试一次，见 [fetchVersionText]。
      * 显式设置 User-Agent：GitHub REST API 对缺少该请求头的客户端可能拒绝请求。
      */
-    private fun fetchLatestReleaseTag(): String? {
+    private fun fetchLatestReleaseTag(context: Context): String? {
         lastProbeDetail = null
 
         fun pypiMirror(url: String, source: String): String? {
@@ -263,9 +306,15 @@ object YtDlpRepo {
             ) ?: return null
             val version = YtDlpVersionPolicy.latestStableFromPypiJson(json)
             if (version == null) {
-                recordProbe(source, "响应不是有效的 PyPI 稳定版元数据")
+                recordProbe(context, source, "响应不是有效的 PyPI 稳定版元数据")
                 return null
             }
+            AppLogStore.info(
+                context,
+                "YtDlpUpdate",
+                "已从备用 PyPI 元数据源获取版本",
+                diagnosticContext = mapOf("版本来源" to source, "版本号" to version),
+            )
             return version
         }
 
@@ -302,13 +351,21 @@ object YtDlpRepo {
                     transient = error is java.io.IOException
                     null
                 }
-                if (tag != null) return tag
+                if (tag != null) {
+                    AppLogStore.info(
+                        context,
+                        "YtDlpUpdate",
+                        "已从 GitHub 官方最新发布页获取稳定版",
+                        diagnosticContext = mapOf("版本来源" to "GitHub 发布页", "版本号" to tag),
+                    )
+                    return tag
+                }
                 if (!transient || attempt >= VERSION_LOOKUP_ATTEMPTS) {
-                    recordProbe("GitHub 发布页", failure ?: "未知错误")
+                    recordProbe(context, "GitHub 发布页", failure ?: "未知错误")
                     return null
                 }
                 if (!sleepBeforeRetry(VERSION_LOOKUP_RETRY_DELAY_MS)) {
-                    recordProbe("GitHub 发布页", failure ?: "未知错误")
+                    recordProbe(context, "GitHub 发布页", failure ?: "未知错误")
                     return null
                 }
             }
@@ -325,8 +382,16 @@ object YtDlpRepo {
             source = "GitHub API",
         )?.let { json ->
             val tag = YtDlpVersionPolicy.stableGitHubTag(json)
-            if (tag != null) return tag
-            recordProbe("GitHub API", "响应中没有可识别的稳定版 tag")
+            if (tag != null) {
+                AppLogStore.info(
+                    context,
+                    "YtDlpUpdate",
+                    "已从 GitHub 官方 API 获取稳定版",
+                    diagnosticContext = mapOf("版本来源" to "GitHub API", "版本号" to tag),
+                )
+                return tag
+            }
+            recordProbe(context, "GitHub API", "响应中没有可识别的稳定版 tag")
         }
 
         // GitHub API 在未登录限额、共享出口 IP 或网络路由异常时可能返回 403/429。
@@ -346,8 +411,16 @@ object YtDlpRepo {
                 source = "GitHub API 镜像（$label）",
             ) ?: return@forEach
             val tag = YtDlpVersionPolicy.stableGitHubTag(json)
-            if (tag != null) return tag
-            recordProbe("GitHub API 镜像（$label）", "响应中没有可识别的稳定版 tag")
+            if (tag != null) {
+                AppLogStore.info(
+                    context,
+                    "YtDlpUpdate",
+                    "已从 GitHub API 备用入口获取稳定版",
+                    diagnosticContext = mapOf("版本来源" to label, "版本号" to tag),
+                )
+                return tag
+            }
+            recordProbe(context, "GitHub API 镜像（$label）", "响应中没有可识别的稳定版 tag")
         }
 
         // 只有官方 GitHub 与其公开 API 代理都无法读取时，才退回 PyPI 元数据。
@@ -369,7 +442,7 @@ object YtDlpRepo {
         )?.let { return it }
 
         Log.w(TAG, "Unable to fetch yt-dlp stable version from all sources")
-        recordProbe("汇总", "全部版本源失败")
+        recordProbe(context, "汇总", "全部版本源失败")
         return null
     }
 
@@ -377,8 +450,18 @@ object YtDlpRepo {
     @Volatile
     private var lastProbeDetail: String? = null
 
-    private fun recordProbe(source: String, detail: String) {
+    private fun recordProbe(context: Context, source: String, detail: String) {
         lastProbeDetail = ((lastProbeDetail ?: "") + "；" + source + "：" + detail)
+        AppLogStore.info(
+            context,
+            "YtDlpUpdate",
+            "yt-dlp 版本来源请求失败",
+            diagnosticContext = mapOf(
+                "版本来源" to source,
+                "失败原因" to detail.take(500),
+                "说明" to "已记录此来源最终失败结果；流程会继续尝试其他来源。",
+            ),
+        )
     }
 
     /** 5xx 是服务端瞬时故障，值得再试一次；4xx（含 403 限流、404）再试结果也一样。 */
@@ -655,6 +738,13 @@ object YtDlpRepo {
         }
     }
 
+    private fun safeHost(rawUrl: String): String =
+        runCatching { java.net.URI(rawUrl).host?.lowercase(Locale.ROOT) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.take(120)
+            ?: "未知"
+
     fun isReady(): Boolean = inited
 
     // ---- 会话级来源标记：resolve 成功后记录 mediaUrl → 源页面/Cookie 映射 ----
@@ -692,6 +782,17 @@ object YtDlpRepo {
             throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         ensureReady(ctx)
+        AppLogStore.info(
+            ctx.applicationContext,
+            "YtDlpAudioDownload",
+            "开始通过 yt-dlp 下载网页音轨",
+            diagnosticContext = mapOf(
+                "媒体页面主机" to safeHost(pageUrl),
+                "目标文件名" to dest.name.take(100),
+                "下载格式" to "bestaudio（仅音频）",
+                "是否提供 Cookie" to (!cookieHeader.isNullOrBlank()).toString(),
+            ),
+        )
         val ownerJob = currentCoroutineContext()[kotlinx.coroutines.Job]
         ownerJob?.ensureActive()
         val processId = "elephant-audio-" + java.util.UUID.randomUUID().toString()
@@ -771,7 +872,34 @@ object YtDlpRepo {
                 throw IllegalStateException("yt-dlp 音频已下载，但无法原子保存缓存；旧缓存仍保留")
             }
             dest.setLastModified(System.currentTimeMillis())
+            AppLogStore.info(
+                ctx.applicationContext,
+                "YtDlpAudioDownload",
+                "yt-dlp 音轨下载并校验成功",
+                diagnosticContext = mapOf(
+                    "媒体页面主机" to safeHost(pageUrl),
+                    "目标文件名" to dest.name.take(100),
+                    "下载字节数" to downloadedBytes.toString(),
+                    "有效性校验" to "通过",
+                ),
+            )
             dest
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            AppLogStore.error(
+                ctx.applicationContext,
+                "YtDlpAudioDownload",
+                "yt-dlp 网页音轨下载失败",
+                error,
+                diagnosticContext = mapOf(
+                    "媒体页面主机" to safeHost(pageUrl),
+                    "目标文件名" to dest.name.take(100),
+                    "暂存目录是否存在" to stagingDir.exists().toString(),
+                    "异常摘要" to describeError(error),
+                ),
+            )
+            throw error
         } finally {
             cancellationHandle?.dispose()
             YoutubeDL.destroyProcessById(processId)
@@ -830,6 +958,12 @@ object YtDlpRepo {
             totalBytes = null,
             error = null,
         )
+        AppLogStore.info(
+            appCtx,
+            "YtDlpUpdate",
+            "开始手动更新 yt-dlp 解析规则",
+            diagnosticContext = mapOf("更新阶段" to "获取版本信息", "已安装运行时" to inited.toString()),
+        )
 
         var tempFile: File? = null
         var backupFile: File? = null
@@ -845,15 +979,26 @@ object YtDlpRepo {
 
             // api.github.com 未登录每小时 60 次，共享 IP 常 403，只作后备。
             // 版本号复用检查更新的多源探测：PyPI 镜像 → GitHub 发布页 → GitHub API → PyPI 官方
-            val version = fetchLatestReleaseTag()
+            val version = fetchLatestReleaseTag(appCtx)
                 ?: throw java.io.IOException(
                     "获取更新包信息失败：" + (lastProbeDetail?.trimStart('；') ?: "所有版本源均未响应"),
                 )
 
-            val currentVersion = detectLocalVersion(appCtx, allowProcess = false).version
+            val localVersionResult = detectLocalVersion(appCtx, allowProcess = false)
+            val currentVersion = localVersionResult.version
                 ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()
                     ?.trim()
                     ?.takeIf { YtDlpVersionPolicy.isInstalledBuild(it) }
+            AppLogStore.info(
+                appCtx,
+                "YtDlpUpdate",
+                "已确定 yt-dlp 更新目标版本",
+                diagnosticContext = mapOf(
+                    "本机版本" to currentVersion.orEmpty().ifBlank { "未知" },
+                    "目标稳定版" to version,
+                    "本机版本检测详情" to localVersionResult.failure.orEmpty().ifBlank { "无" }.take(800),
+                ),
+            )
             if (currentVersion != null && !YtDlpVersionPolicy.isUpdateAvailable(currentVersion, version)) {
                 val now = System.currentTimeMillis()
                 appCtx.getSharedPreferences("ytdlp", Context.MODE_PRIVATE).edit()
@@ -872,6 +1017,12 @@ object YtDlpRepo {
                     updateProgress = null,
                     downloadedBytes = 0L,
                     totalBytes = null,
+                )
+                AppLogStore.info(
+                    appCtx,
+                    "YtDlpUpdate",
+                    "跳过 yt-dlp 更新：当前已是最新版本",
+                    diagnosticContext = mapOf("本机版本" to currentVersion, "官方稳定版" to version),
                 )
                 return@withContext "yt-dlp 解析规则已是最新版本；失败可能是站点限制或网络问题"
             }
@@ -925,16 +1076,49 @@ object YtDlpRepo {
                             )
                         }
                         downloaded = true
+                        AppLogStore.info(
+                            appCtx,
+                            "YtDlpUpdate",
+                            "yt-dlp 更新包下载完成",
+                            diagnosticContext = mapOf(
+                                "下载来源" to source,
+                                "目标版本" to version,
+                                "下载字节数" to downloadedBytes.toString(),
+                                "预期总字节数" to totalBytes?.toString().orEmpty().ifBlank { "服务器未提供" },
+                            ),
+                        )
                         break
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         throw cancelled
                     } catch (e: NonRetryableDownloadException) {
                         // HTTP 4xx、包过大/过小、版本不符：跳过当前来源，继续尝试下一个来源。
                         Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，不重试）：$candidate", e)
+                        AppLogStore.info(
+                            appCtx,
+                            "YtDlpUpdate",
+                            "yt-dlp 更新包来源失败，切换下一个来源",
+                            diagnosticContext = mapOf(
+                                "下载来源" to source,
+                                "目标版本" to version,
+                                "尝试次数" to attempt.toString(),
+                                "错误摘要" to describeError(e),
+                            ),
+                        )
                         lastError = e
                         break
                     } catch (e: Exception) {
                         Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，第 $attempt/$UPDATE_DOWNLOAD_ATTEMPTS 次）：$candidate", e)
+                        AppLogStore.info(
+                            appCtx,
+                            "YtDlpUpdate",
+                            "yt-dlp 更新包下载尝试失败",
+                            diagnosticContext = mapOf(
+                                "下载来源" to source,
+                                "目标版本" to version,
+                                "尝试次数" to "$attempt/$maxAttempts",
+                                "错误摘要" to describeError(e),
+                            ),
+                        )
                         lastError = e
                         if (attempt < maxAttempts) {
                             _updateState.value = _updateState.value.copy(
@@ -963,6 +1147,16 @@ object YtDlpRepo {
             val downloadedVersion = tempFile!!.inputStream().use {
                 YtDlpVersionPolicy.versionFromZipapp(it)
             }
+            AppLogStore.info(
+                appCtx,
+                "YtDlpUpdate",
+                "开始校验 yt-dlp 更新包",
+                diagnosticContext = mapOf(
+                    "目标版本" to version,
+                    "文件识别版本" to downloadedVersion.orEmpty().ifBlank { "未识别" },
+                    "下载字节数" to downloadedBytes.toString(),
+                ),
+            )
             if (downloadedVersion != version) {
                 throw java.io.IOException(
                     "更新包版本校验失败：预期 " + version + "，文件识别为 " +
@@ -1007,6 +1201,16 @@ object YtDlpRepo {
             installationSucceeded = true
             oldBinaryBackedUp = false
             backupFile?.delete()
+            AppLogStore.info(
+                appCtx,
+                "YtDlpUpdate",
+                "yt-dlp 更新安装并复核成功",
+                diagnosticContext = mapOf(
+                    "安装版本" to version,
+                    "文件字节数" to downloadedBytes.toString(),
+                    "安装后复核版本" to installedVersion.orEmpty().ifBlank { "未识别" },
+                ),
+            )
 
             _updateState.value = _updateState.value.copy(
                 current = version,
@@ -1027,6 +1231,22 @@ object YtDlpRepo {
         } catch (error: Exception) {
             Log.w(TAG, "yt-dlp update failed", error)
             val detail = describeError(error)
+            AppLogStore.error(
+                appCtx,
+                "YtDlpUpdate",
+                "yt-dlp 更新流程失败",
+                error,
+                diagnosticContext = mapOf(
+                    "失败阶段" to _updateState.value.updateStage.orEmpty().ifBlank { "未知" },
+                    "本机版本" to _updateState.value.current.orEmpty().ifBlank { "未知" },
+                    "目标版本" to _updateState.value.latest.orEmpty().ifBlank { "未确定" },
+                    "已下载字节数" to downloadedBytes.toString(),
+                    "预期总字节数" to totalBytes?.toString().orEmpty().ifBlank { "未知" },
+                    "版本来源探测详情" to lastProbeDetail.orEmpty().ifBlank { "无" }.take(2_000),
+                    "更新阶段的错误详情" to detail.take(1_200),
+                    "异常摘要" to detail.take(1_200),
+                ),
+            )
             _updateState.value = _updateState.value.copy(
                 updateRunning = false,
                 updateStage = "更新失败",
@@ -1152,6 +1372,16 @@ object YtDlpRepo {
             throw IllegalArgumentException("Cookie 请求头不能包含控制字符")
         }
         currentCoroutineContext().ensureActive()
+        AppLogStore.info(
+            ctx.applicationContext,
+            "YtDlpResolve",
+            "开始使用 yt-dlp 解析网页媒体源",
+            diagnosticContext = mapOf(
+                "页面主机" to safeHost(pageUrl),
+                "是否提供 Cookie" to (!cookieHeader.isNullOrBlank()).toString(),
+                "解析参数" to "dump-json / no-playlist / socket-timeout=20 / retries=3",
+            ),
+        )
         ensureReady(ctx)
         currentCoroutineContext().ensureActive()
         return withContext(Dispatchers.IO) {
@@ -1224,15 +1454,46 @@ object YtDlpRepo {
                 val title = info.optString("title").takeIf { it.isNotBlank() && it != "null" }
                     ?: info.optString("fulltitle").takeIf { it.isNotBlank() && it != "null" }
                     ?: "yt-dlp 视频"
-                ResolvedMedia(
+                val result = ResolvedMedia(
                     title = title,
                     durationSec = info.optDouble("duration", 0.0).toInt().coerceAtLeast(0),
                     mediaUrl = url,
                     referrer = headers?.optString("Referer").orEmpty().takeUnless { it == "null" }.orEmpty(),
                     cookie = effectiveCookie,
                 )
+                AppLogStore.info(
+                    ctx.applicationContext,
+                    "YtDlpResolve",
+                    "yt-dlp 网页媒体解析成功",
+                    diagnosticContext = mapOf(
+                        "页面主机" to safeHost(pageUrl),
+                        "视频标题" to title.take(120),
+                        "媒体时长秒" to result.durationSec.toString(),
+                        "候选格式数量" to formatCount.toString(),
+                        "可播放候选数量" to playableFormats.size.toString(),
+                        "是否有回退媒体直链" to (fallbackUrl != null).toString(),
+                        "最终格式类型" to when {
+                            formatCount == 0 -> "单一媒体地址"
+                            else -> "formats 列表"
+                        },
+                        "是否保留 Cookie 到当前会话" to effectiveCookie.isNotBlank().toString(),
+                    ),
+                )
+                result
             } catch (error: Exception) {
                 currentCoroutineContext().ensureActive()
+                AppLogStore.warning(
+                    ctx.applicationContext,
+                    "YtDlpResolve",
+                    "yt-dlp 网页媒体解析失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "页面主机" to safeHost(pageUrl),
+                        "是否提供 Cookie" to (!cookieHeader.isNullOrBlank()).toString(),
+                        "异常摘要" to describeError(error),
+                        "解析阶段" to (_updateState.value.updateStage.orEmpty().ifBlank { "网页媒体解析" }),
+                    ),
+                )
                 throw error
             } finally {
                 cancellationHandle?.dispose()
