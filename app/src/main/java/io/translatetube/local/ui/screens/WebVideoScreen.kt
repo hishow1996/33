@@ -152,45 +152,28 @@ internal data class WebVideoCandidate(
     val verified: Boolean = false,
 )
 
-/** One-line card summary: source type, resolution and codecs; bitrate stays in the expanded details. */
-private fun WebCandidateAudioHint.compactSummary(): String {
-    val info = mediaInfo
-    val parts = mutableListOf(
-        when (kind) {
-            WebCandidateAudioHintKind.DETECTING -> "正在检测音轨"
-            WebCandidateAudioHintKind.INDEPENDENT -> "独立音轨"
-            WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> "音画混合（低码率档）"
-            WebCandidateAudioHintKind.MUXED_DIRECT -> "音画混合直链"
-            WebCandidateAudioHintKind.NO_AUDIO -> "未检测到音轨"
-            WebCandidateAudioHintKind.FAILED -> "音轨检测失败"
-            WebCandidateAudioHintKind.UNKNOWN -> "音轨类型待确认"
-        },
-    )
-    if (info == null) return parts.first()
+/** The compact card shows only the detected audio-track type. */
+private fun WebCandidateAudioHint.compactSummary(): String = when (kind) {
+    WebCandidateAudioHintKind.DETECTING -> "检测中"
+    WebCandidateAudioHintKind.INDEPENDENT -> "独立音轨"
+    WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+    WebCandidateAudioHintKind.MUXED_DIRECT -> "音画混合"
+    WebCandidateAudioHintKind.NO_AUDIO -> "无音轨"
+    WebCandidateAudioHintKind.FAILED -> "检测失败"
+    WebCandidateAudioHintKind.UNKNOWN -> "待确认"
+}
+
+/** Keep resolution visible; codecs, bitrates and all remaining media fields stay under More. */
+private fun WebCandidateAudioHint.resolutionSummary(): String {
+    val info = mediaInfo ?: return "待识别"
+    if (info.hasVideo == false) return "无视频"
 
     val minHeight = info.videoHeightMin
     val maxHeight = info.videoHeightMax
-    val resolution = if (minHeight != null && maxHeight != null && minHeight != maxHeight) {
-        "${minHeight}p–${maxHeight}p"
-    } else {
-        WebMediaFormat.resolutionLabel(info.videoWidth, info.videoHeight)
+    if (minHeight != null && maxHeight != null && minHeight != maxHeight) {
+        return "${minHeight}p–${maxHeight}p"
     }
-    if (info.hasVideo != false) {
-        resolution?.let { parts += "视频 $it" }
-        info.videoCodec?.let { parts += it }
-    }
-    if (info.hasAudio == false) {
-        parts += "无音轨"
-    } else if (info.hasAudio == true) {
-        val audioParts = buildList {
-            info.audioCodec?.let { add(it) }
-            info.audioChannels?.let { add(WebMediaFormat.channels(it)) }
-            info.audioLanguage?.takeIf { it.isNotBlank() }?.let { add(it) }
-            if (info.audioTrackCount > 1) add("${info.audioTrackCount} 条音轨")
-        }
-        if (audioParts.isNotEmpty()) parts += "音频 ${audioParts.joinToString(" ")}"
-    }
-    return parts.distinct().joinToString(" · ")
+    return WebMediaFormat.resolutionLabel(info.videoWidth, info.videoHeight) ?: "待识别"
 }
 
 /** Detailed media fields for the opt-in expansion on each candidate card. */
@@ -2229,20 +2212,33 @@ fun WebVideoScreen(
                         items(displayCandidates, key = { it.url }) { candidate ->
                             val sourceHint = sourceHints[candidate.url]
                                 ?: WebCandidateVerifier.initialAudioHint(candidate.url)
-                            val detailRows = sourceHint.detailRows()
                             var showMediaDetails by remember(candidate.url) { mutableStateOf(false) }
-                            val hintColor = when (sourceHint.kind) {
-                                WebCandidateAudioHintKind.INDEPENDENT -> MaterialTheme.colorScheme.primary
-                                WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> MaterialTheme.colorScheme.tertiary
-                                WebCandidateAudioHintKind.MUXED_DIRECT -> MaterialTheme.colorScheme.tertiary
-                                WebCandidateAudioHintKind.NO_AUDIO -> MaterialTheme.colorScheme.error
-                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primary
-                                WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.error
-                                WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
-                            }
                             val reason = when {
                                 candidate.drmProtected -> "检测到 EME/DRM 标记，不能提取或绕过受保护的媒体音轨。"
                                 else -> WebMediaUrlPolicy.unsupportedReason(candidate.url)
+                            }
+                            val detailRows = buildList {
+                                addAll(sourceHint.detailRows())
+                                add("来源校验" to if (candidate.url in verifiedUrls) "已验证可访问" else "尚未验证")
+                                reason?.let { add("播放限制" to it) }
+                            }
+                            val audioChipContainer = when (sourceHint.kind) {
+                                WebCandidateAudioHintKind.INDEPENDENT,
+                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primaryContainer
+                                WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+                                WebCandidateAudioHintKind.MUXED_DIRECT -> MaterialTheme.colorScheme.tertiaryContainer
+                                WebCandidateAudioHintKind.NO_AUDIO,
+                                WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.errorContainer
+                                WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.surfaceVariant
+                            }
+                            val audioChipTextColor = when (sourceHint.kind) {
+                                WebCandidateAudioHintKind.INDEPENDENT,
+                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.onPrimaryContainer
+                                WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+                                WebCandidateAudioHintKind.MUXED_DIRECT -> MaterialTheme.colorScheme.onTertiaryContainer
+                                WebCandidateAudioHintKind.NO_AUDIO,
+                                WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.onErrorContainer
+                                WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
                             Card(
                                 modifier = Modifier
@@ -2252,124 +2248,59 @@ fun WebVideoScreen(
                                         fadeOutSpec = tween(durationMillis = 120),
                                     )
                                     .fillMaxWidth(),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                             ) {
-                                Row(
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(7.dp),
                                 ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    Text(
+                                        candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        candidate.url,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
-                                                modifier = Modifier.weight(1f),
-                                                style = MaterialTheme.typography.titleSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            if (candidate.url in verifiedUrls) {
-                                                Spacer(Modifier.width(6.dp))
-                                                Text(
-                                                    "已验证",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                )
-                                            }
-                                        }
                                         Text(
-                                            candidate.url,
+                                            sourceHint.compactSummary(),
+                                            modifier = Modifier
+                                                .background(
+                                                    color = audioChipContainer,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                )
+                                                .padding(horizontal = 9.dp, vertical = 7.dp),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = audioChipTextColor,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
-                                            sourceHint.compactSummary(),
+                                            sourceHint.resolutionSummary(),
+                                            modifier = Modifier
+                                                .background(
+                                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                )
+                                                .padding(horizontal = 9.dp, vertical = 7.dp),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = hintColor,
-                                            maxLines = 2,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
-                                        if (sourceHint.kind == WebCandidateAudioHintKind.FAILED) {
-                                            Text(
-                                                "重新检测",
-                                                modifier = Modifier
-                                                    .clickable {
-                                                        sourceHintAttempts = sourceHintAttempts - candidate.url
-                                                        sourceHints = sourceHints +
-                                                            (candidate.url to WebCandidateVerifier.initialAudioHint(candidate.url))
-                                                    }
-                                                    .padding(vertical = 2.dp),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.primary,
-                                            )
-                                        }
-                                        if (reason != null) {
-                                            Text(
-                                                reason,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.error,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                        }
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable { showMediaDetails = !showMediaDetails }
-                                                .padding(vertical = 3.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Text(
-                                                "更多参数",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.primary,
-                                            )
-                                            Spacer(Modifier.width(4.dp))
-                                            Icon(
-                                                imageVector = if (showMediaDetails) Icons.Filled.KeyboardArrowUp
-                                                    else Icons.Filled.KeyboardArrowDown,
-                                                contentDescription = if (showMediaDetails) "收起参数" else "展开参数",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(16.dp),
-                                            )
-                                        }
-                                        AnimatedVisibility(visible = showMediaDetails) {
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(top = 2.dp, bottom = 4.dp),
-                                                verticalArrangement = Arrangement.spacedBy(3.dp),
-                                            ) {
-                                                detailRows.forEach { (label, value) ->
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        verticalAlignment = Alignment.Top,
-                                                    ) {
-                                                        Text(
-                                                            label,
-                                                            modifier = Modifier.widthIn(min = 76.dp, max = 104.dp),
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        )
-                                                        Spacer(Modifier.width(8.dp))
-                                                        Text(
-                                                            value,
-                                                            modifier = Modifier.weight(1f),
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.onSurface,
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
                                     Button(
                                         modifier = Modifier
                                             .widthIn(min = 100.dp)
@@ -2434,6 +2365,71 @@ fun WebVideoScreen(
                                         Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(Modifier.width(4.dp))
                                         Text("翻译播放", maxLines = 1)
+                                    }
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { showMediaDetails = !showMediaDetails }
+                                            .padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            "更多",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Icon(
+                                            imageVector = if (showMediaDetails) Icons.Filled.KeyboardArrowUp
+                                                else Icons.Filled.KeyboardArrowDown,
+                                            contentDescription = if (showMediaDetails) "收起更多信息" else "展开更多信息",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                    AnimatedVisibility(visible = showMediaDetails) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(top = 2.dp, bottom = 4.dp),
+                                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                                        ) {
+                                            detailRows.forEach { (label, value) ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.Top,
+                                                ) {
+                                                    Text(
+                                                        label,
+                                                        modifier = Modifier.widthIn(min = 76.dp, max = 104.dp),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    )
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Text(
+                                                        value,
+                                                        modifier = Modifier.weight(1f),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurface,
+                                                    )
+                                                }
+                                            }
+                                            if (sourceHint.kind == WebCandidateAudioHintKind.FAILED) {
+                                                Text(
+                                                    "重新检测",
+                                                    modifier = Modifier
+                                                        .clickable {
+                                                            sourceHintAttempts = sourceHintAttempts - candidate.url
+                                                            sourceHints = sourceHints +
+                                                                (candidate.url to WebCandidateVerifier.initialAudioHint(candidate.url))
+                                                        }
+                                                        .padding(vertical = 4.dp),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
