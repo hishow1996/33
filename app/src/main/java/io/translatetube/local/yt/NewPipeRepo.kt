@@ -241,8 +241,13 @@ object NewPipeRepo {
             fetched
         }
 
-    fun init(ctx: Context) {
+    /** Install a context for diagnostics without forcing extractor initialization during cold start. */
+    fun setLogContext(ctx: Context) {
         appContext = ctx.applicationContext
+    }
+
+    fun init(ctx: Context) {
+        setLogContext(ctx)
         initOnce()
         logInfo(
             "YouTube 解析器初始化完成",
