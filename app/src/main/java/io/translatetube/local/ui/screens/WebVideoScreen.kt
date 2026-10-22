@@ -2516,7 +2516,14 @@ fun WebVideoScreen(
                                                         value,
                                                         modifier = Modifier.weight(1f),
                                                         style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurface,
+                                                        color = if (
+                                                            label == "播放限制" &&
+                                                            value.startsWith("此网站通过 blob/MSE 临时媒体流播放，无法直接读取独立音轨")
+                                                        ) {
+                                                            Color(0xFFD32F2F)
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurface
+                                                        },
                                                     )
                                                 }
                                             }
