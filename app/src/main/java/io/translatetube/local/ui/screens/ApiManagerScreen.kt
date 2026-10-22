@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import io.translatetube.local.data.ApiProfile
 import io.translatetube.local.data.AppDatabase
+import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.translate.Crypto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -217,8 +218,34 @@ fun ApiManagerScreen(onBack: () -> Unit) {
 
     // 手动切换翻译引擎：写 prefs 即刻生效（下次翻译起用新源）
     fun setActive(id: Long) {
+        val previousId = activeId
         activeId = id
         prefs.edit().putLong("active_api_id", id).apply()
+        if (previousId != id) {
+            val profile = profiles.firstOrNull { it.id == id }
+            val profileName = profile?.name ?: when (id) {
+                -1L -> "Google 翻译"
+                -2L -> "本地/混合翻译"
+                else -> "内置翻译服务"
+            }
+            scope.launch(Dispatchers.IO) {
+                AppLogStore.info(
+                    ctx.applicationContext,
+                    "ApiManagerScreen",
+                    "当前翻译服务已切换",
+                    diagnosticContext = mapOf(
+                        "原服务配置编号" to previousId.toString(),
+                        "新服务配置编号" to id.toString(),
+                        "新服务名称" to profileName.take(100),
+                        "新服务类型" to (profile?.type ?: "BUILTIN"),
+                        "新服务模型" to profile?.model.orEmpty().take(120),
+                        "是否启用" to (profile?.enabled ?: true).toString(),
+                        "API 密钥是否已配置" to profile?.apiKey?.isNotBlank().toString(),
+                        "安全说明" to "未记录 API Key、Authorization、完整 Base URL 或请求头",
+                    ),
+                )
+            }
+        }
     }
 
     fun testFreeModel(targetId: Long, name: String) {
@@ -228,8 +255,28 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 val engine = EngineFactory.getBuiltinEngine(targetId, ctx)
                     ?: throw IllegalStateException("未能创建引擎")
                 val started = System.currentTimeMillis()
+                AppLogStore.info(
+                    ctx.applicationContext,
+                    "ApiManagerScreen",
+                    "开始测试内置翻译服务连接",
+                    diagnosticContext = mapOf(
+                        "服务名称" to name,
+                        "服务配置编号" to targetId.toString(),
+                        "测试类型" to "内置免费模型连接测试",
+                    ),
+                )
                 engine.testConnection()
                 val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
+                AppLogStore.info(
+                    ctx.applicationContext,
+                    "ApiManagerScreen",
+                    "内置翻译服务连接测试成功",
+                    diagnosticContext = mapOf(
+                        "服务名称" to name,
+                        "服务配置编号" to targetId.toString(),
+                        "请求耗时 ms" to elapsed.toString(),
+                    ),
+                )
                 withContext(Dispatchers.Main) {
                     Toast.makeText(ctx, "$name 连接成功 · ${elapsed}ms", Toast.LENGTH_SHORT).show()
                     testingFreeModel = null
@@ -238,6 +285,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 throw c
             } catch (e: Exception) {
                 val msg = formatConnectionErrorMessage(e)
+                AppLogStore.warning(
+                    ctx.applicationContext,
+                    "ApiManagerScreen",
+                    "内置翻译服务连接测试失败",
+                    e,
+                    diagnosticContext = mapOf(
+                        "服务名称" to name,
+                        "服务配置编号" to targetId.toString(),
+                        "错误展示摘要" to msg.take(240),
+                        "测试类型" to "内置免费模型连接测试",
+                    ),
+                )
                 withContext(Dispatchers.Main) {
                     Toast.makeText(ctx, "$name $msg", Toast.LENGTH_LONG).show()
                     testingFreeModel = null
@@ -267,6 +326,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         } catch (e: Exception) {
             // 数据库/旧版本结构异常要显示出来，不应因 LaunchedEffect 未处理的异常带崩整个页面。
             android.util.Log.e("ApiManagerScreen", "读取 API 配置失败", e)
+            withContext(Dispatchers.IO) {
+                AppLogStore.error(
+                    ctx.applicationContext,
+                    "ApiManagerScreen",
+                    "读取已保存的翻译 API 配置失败",
+                    e,
+                    diagnosticContext = mapOf(
+                        "数据库操作" to "订阅 API 配置记录",
+                        "错误展示摘要" to (e.message ?: e.javaClass.simpleName).take(240),
+                    ),
+                )
+            }
             loadError = "API 配置暂时无法读取，请返回后重试。"
         }
     }
@@ -474,8 +545,31 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                                     scope.launch(Dispatchers.IO) {
                                         try {
                                             val started = System.currentTimeMillis()
+                                            AppLogStore.info(
+                                                ctx.applicationContext,
+                                                "ApiManagerScreen",
+                                                "开始测试已保存的翻译 API 连接",
+                                                diagnosticContext = mapOf(
+                                                    "服务名称" to p.name.take(100),
+                                                    "服务类型" to p.type,
+                                                    "服务配置编号" to p.id.toString(),
+                                                    "模型名称" to p.model.take(120),
+                                                ),
+                                            )
                                             EngineFactory.fromProfile(p).testConnection()
                                             val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(0L)
+                                            AppLogStore.info(
+                                                ctx.applicationContext,
+                                                "ApiManagerScreen",
+                                                "已保存的翻译 API 连接测试成功",
+                                                diagnosticContext = mapOf(
+                                                    "服务名称" to p.name.take(100),
+                                                    "服务类型" to p.type,
+                                                    "服务配置编号" to p.id.toString(),
+                                                    "模型名称" to p.model.take(120),
+                                                    "请求耗时 ms" to elapsed.toString(),
+                                                ),
+                                            )
                                             withContext(Dispatchers.Main) {
                                                 Toast.makeText(ctx, "${p.name} 连接成功 · ${elapsed}ms", Toast.LENGTH_SHORT).show()
                                             }
@@ -483,6 +577,19 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                                             throw c
                                         } catch (e: Exception) {
                                             val msg = apiConnectionFailureMessage(p, e)
+                                            AppLogStore.warning(
+                                                ctx.applicationContext,
+                                                "ApiManagerScreen",
+                                                "已保存的翻译 API 连接测试失败",
+                                                e,
+                                                diagnosticContext = mapOf(
+                                                    "服务名称" to p.name.take(100),
+                                                    "服务类型" to p.type,
+                                                    "服务配置编号" to p.id.toString(),
+                                                    "模型名称" to p.model.take(120),
+                                                    "错误展示摘要" to msg.take(240),
+                                                ),
+                                            )
                                             withContext(Dispatchers.Main) {
                                                 Toast.makeText(ctx, "${p.name} $msg", Toast.LENGTH_LONG).show()
                                             }
@@ -530,8 +637,38 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             onDismiss = { adding = false; editing = null },
             onSave = { p ->
                 scope.launch(Dispatchers.IO) {
-                    db.apiProfileDao().upsert(p)
-                    withContext(Dispatchers.Main) { adding = false; editing = null }
+                    try {
+                        db.apiProfileDao().upsert(p)
+                        AppLogStore.info(
+                            ctx.applicationContext,
+                            "ApiManagerScreen",
+                            if (p.id == 0L) "翻译 API 配置已新增" else "翻译 API 配置已保存",
+                            diagnosticContext = mapOf(
+                                "服务名称" to p.name.take(100),
+                                "服务类型" to p.type,
+                                "服务配置编号" to p.id.toString(),
+                                "模型名称" to p.model.take(120),
+                                "API 密钥是否已配置" to p.apiKey.isNotBlank().toString(),
+                                "Base URL 是否已填写" to p.baseUrl.isNotBlank().toString(),
+                                "安全说明" to "未记录 API Key、完整 Base URL 或请求头",
+                            ),
+                        )
+                        withContext(Dispatchers.Main) { adding = false; editing = null }
+                    } catch (failure: Exception) {
+                        AppLogStore.error(
+                            ctx.applicationContext,
+                            "ApiManagerScreen",
+                            "保存翻译 API 配置失败",
+                            failure,
+                            diagnosticContext = mapOf(
+                                "服务名称" to p.name.take(100),
+                                "服务类型" to p.type,
+                                "服务配置编号" to p.id.toString(),
+                                "数据库操作" to "upsert API profile",
+                            ),
+                        )
+                        throw failure
+                    }
                 }
             },
         )
@@ -1131,6 +1268,7 @@ private fun FreeModelConfigDialog(
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (ApiProfile) -> Unit) {
+    val ctx = LocalContext.current.applicationContext
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var type by remember { mutableStateOf(initial?.type ?: "OPENAI") }
     var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: "") }
@@ -1196,9 +1334,35 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             connectionMessage = null
             val profile = makeCurrentProfile()
             scope.launch(Dispatchers.IO) {
+                val startedAt = System.nanoTime()
+                AppLogStore.info(
+                    ctx,
+                    "ApiManagerScreen",
+                    "开始从翻译服务拉取模型列表",
+                    diagnosticContext = mapOf(
+                        "服务名称" to profile.name.take(100),
+                        "服务类型" to profile.type,
+                        "服务配置编号" to profile.id.toString(),
+                        "当前模型名称" to profile.model.take(120),
+                    ),
+                )
                 try {
                     val list = EngineFactory.fromProfile(profile).listModels()
                         ?: throw IllegalStateException("该类型不支持拉取模型")
+                    val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                    AppLogStore.info(
+                        ctx,
+                        "ApiManagerScreen",
+                        "翻译服务模型列表拉取完成",
+                        diagnosticContext = mapOf(
+                            "服务名称" to profile.name.take(100),
+                            "服务类型" to profile.type,
+                            "服务配置编号" to profile.id.toString(),
+                            "返回模型数量" to list.size.toString(),
+                            "请求耗时 ms" to elapsedMs.toString(),
+                            "返回模型示例" to list.take(10).joinToString(", ").take(300),
+                        ),
+                    )
                     withContext(Dispatchers.Main) {
                         models = list
                         pulling = false
@@ -1207,6 +1371,19 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    AppLogStore.warning(
+                        ctx,
+                        "ApiManagerScreen",
+                        "翻译服务模型列表拉取失败",
+                        e,
+                        diagnosticContext = mapOf(
+                            "服务名称" to profile.name.take(100),
+                            "服务类型" to profile.type,
+                            "服务配置编号" to profile.id.toString(),
+                            "当前模型名称" to profile.model.take(120),
+                            "请求耗时 ms" to (((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)).toString(),
+                        ),
+                    )
                     withContext(Dispatchers.Main) {
                         pullError = e.message ?: "拉取失败"
                         pulling = false
@@ -1224,9 +1401,34 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             val profile = makeCurrentProfile()
             connectionTestJob = scope.launch(Dispatchers.IO) {
                 val startedAt = System.nanoTime()
+                AppLogStore.info(
+                    ctx,
+                    "ApiManagerScreen",
+                    "开始测试翻译 API 配置连接",
+                    diagnosticContext = mapOf(
+                        "服务名称" to profile.name.take(100),
+                        "服务类型" to profile.type,
+                        "服务配置编号" to profile.id.toString(),
+                        "模型名称" to profile.model.take(120),
+                        "API 密钥是否已填写" to profile.apiKey.isNotBlank().toString(),
+                        "Base URL 是否已填写" to profile.baseUrl.isNotBlank().toString(),
+                    ),
+                )
                 try {
                     EngineFactory.fromProfile(profile).testConnection()
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                    AppLogStore.info(
+                        ctx,
+                        "ApiManagerScreen",
+                        "翻译 API 配置连接测试成功",
+                        diagnosticContext = mapOf(
+                            "服务名称" to profile.name.take(100),
+                            "服务类型" to profile.type,
+                            "服务配置编号" to profile.id.toString(),
+                            "模型名称" to profile.model.take(120),
+                            "请求耗时 ms" to elapsedMs.toString(),
+                        ),
+                    )
                     withContext(Dispatchers.Main) {
                         // Ignore results from a test whose model has since been changed.
                         if (connectionTestGeneration == testGeneration) {
@@ -1240,6 +1442,20 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     throw e
                 } catch (e: Exception) {
                     val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                    AppLogStore.warning(
+                        ctx,
+                        "ApiManagerScreen",
+                        "翻译 API 配置连接测试失败",
+                        e,
+                        diagnosticContext = mapOf(
+                            "服务名称" to profile.name.take(100),
+                            "服务类型" to profile.type,
+                            "服务配置编号" to profile.id.toString(),
+                            "模型名称" to profile.model.take(120),
+                            "请求耗时 ms" to elapsedMs.toString(),
+                            "错误分类摘要" to apiConnectionFailureMessage(profile, e).take(240),
+                        ),
+                    )
                     withContext(Dispatchers.Main) {
                         if (connectionTestGeneration == testGeneration) {
                             connectionMessage = "模型连接失败 · ${elapsedMs} ms · " +
