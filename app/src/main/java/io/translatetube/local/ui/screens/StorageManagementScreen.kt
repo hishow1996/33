@@ -101,7 +101,7 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
             data = snapshot
             withContext(Dispatchers.IO) {
                 val metrics = mapOf(
-                    "扫描总耗时/时间戳 ms" to snapshot.timestamp.toString(),
+                    "扫描完成时间戳 ms" to snapshot.timestamp.toString(),
                     "应用数据总占用 bytes" to snapshot.total.toString(),
                     "临时缓存 bytes" to snapshot.cache.toString(),
                     "字幕缓存条数" to snapshot.subtitleCount.toString(),
