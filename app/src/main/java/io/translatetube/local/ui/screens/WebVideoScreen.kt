@@ -2225,23 +2225,35 @@ fun WebVideoScreen(
                                 add("来源校验" to if (candidate.url in verifiedUrls) "已验证可访问" else "尚未验证")
                                 reason?.let { add("播放限制" to it) }
                             }
-                            val audioChipContainer = when (sourceHint.kind) {
+                            // 只有已识别出的具体音轨类型显示红色；检测中、待确认和检测失败使用中性样式。
+                            val audioTypeRecognized = sourceHint.kind in setOf(
                                 WebCandidateAudioHintKind.INDEPENDENT,
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
                                 WebCandidateAudioHintKind.MUXED_DIRECT,
                                 WebCandidateAudioHintKind.NO_AUDIO,
-                                WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.errorContainer
-                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.primaryContainer
-                                WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            val audioChipContainer = if (audioTypeRecognized) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
                             }
-                            val audioChipTextColor = when (sourceHint.kind) {
-                                WebCandidateAudioHintKind.INDEPENDENT,
-                                WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
-                                WebCandidateAudioHintKind.MUXED_DIRECT,
-                                WebCandidateAudioHintKind.NO_AUDIO,
-                                WebCandidateAudioHintKind.FAILED -> MaterialTheme.colorScheme.onErrorContainer
-                                WebCandidateAudioHintKind.DETECTING -> MaterialTheme.colorScheme.onPrimaryContainer
-                                WebCandidateAudioHintKind.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                            val audioChipTextColor = if (audioTypeRecognized) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            val resolutionSummary = sourceHint.resolutionSummary()
+                            val resolutionRecognized = resolutionSummary != "待识别" &&
+                                resolutionSummary != "无视频"
+                            val resolutionChipContainer = if (resolutionRecognized) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            }
+                            val resolutionChipTextColor = if (resolutionRecognized) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             }
                             Card(
                                 modifier = Modifier
@@ -2292,15 +2304,15 @@ fun WebVideoScreen(
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
-                                            sourceHint.resolutionSummary(),
+                                            resolutionSummary,
                                             modifier = Modifier
                                                 .background(
-                                                    color = MaterialTheme.colorScheme.errorContainer,
+                                                    color = resolutionChipContainer,
                                                     shape = RoundedCornerShape(8.dp),
                                                 )
                                                 .padding(horizontal = 9.dp, vertical = 5.dp),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onErrorContainer,
+                                            color = resolutionChipTextColor,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
