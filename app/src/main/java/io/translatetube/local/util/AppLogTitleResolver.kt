@@ -49,10 +49,10 @@ object AppLogTitleResolver {
                     "yt-dlp / 版本检查与更新"
                 else -> "yt-dlp / 视频解析"
             }
-            normalizedTag.contains("webaudiosource") ||
-                normalizedTag.contains("videosourcedetect") ||
-                normalizedTag.contains("videosourceprobe") ||
-                normalizedTag.contains("mediasourceprobe") ||
+            normalizedTag.contains("webaudio") ||
+                normalizedTag.contains("videosource") ||
+                normalizedTag.contains("mediasource") ||
+                normalizedTag.contains("streamsource") ||
                 hasAny("视频源检测", "独立音轨识别", "blob / mse", "视频源卡片") -> when {
                 hasAny("音轨", "audio track", "独立音频", "独立音轨") ->
                     "视频源检测 / 音轨识别"
