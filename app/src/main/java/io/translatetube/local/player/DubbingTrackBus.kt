@@ -20,9 +20,13 @@ class DubbingTrackBus {
     /** 挂载中的块（挂载时间升序投递；读取侧按媒体时间归并）。 */
     private class Block(val mediaTimeUs: Long, val samples: FloatArray)
 
+    private val stateLock = Any()
     private val newBlocks = java.util.concurrent.ConcurrentLinkedQueue<Block>()
     @Volatile private var installed: Array<Block> = emptyArray()
     @Volatile private var sinkSampleRate = 24_000
+    /** Mode changes invalidate in-flight resampling and reads as well as queued PCM blocks. */
+    @Volatile private var dubbingEnabled = true
+    @Volatile private var contentGeneration = 0L
 
     /** flush 后的流头媒体时间（微秒）；-1 表示未校准。 */
     @Volatile private var streamStartUs = -1L
@@ -41,7 +45,9 @@ class DubbingTrackBus {
 
     /** 挂一块配音 PCM；[samples] 按源采样率 [sourceSampleRate] 给出，内部线性重采样到 sink 率。 */
     fun feed(mediaTimeUs: Long, samples: FloatArray, sourceSampleRate: Int) {
-        if (samples.isEmpty() || sourceSampleRate <= 0) return
+        if (samples.isEmpty() || sourceSampleRate <= 0 || !dubbingEnabled) return
+        // A toggle/seek while resampling must prevent this old result from being re-enqueued.
+        val expectedGeneration = contentGeneration
         val target = sinkSampleRate
         val resampled = if (target == sourceSampleRate || target <= 0) samples else run {
             val ratio = sourceSampleRate.toDouble() / target
@@ -54,14 +60,34 @@ class DubbingTrackBus {
                 samples[low] * (1f - frac) + samples[high] * frac
             }
         }
-        newBlocks.add(Block(mediaTimeUs, resampled))
+        synchronized(stateLock) {
+            if (dubbingEnabled && contentGeneration == expectedGeneration) {
+                newBlocks.add(Block(mediaTimeUs, resampled))
+            }
+        }
+    }
+
+    /**
+     * Gate audible output immediately and discard all already queued/installed voice PCM.
+     * Keep the stream clock calibrated so original audio and video continue uninterrupted.
+     */
+    fun setDubbingEnabled(enabled: Boolean) {
+        synchronized(stateLock) {
+            dubbingEnabled = enabled
+            contentGeneration += 1L
+            newBlocks.clear()
+            installed = emptyArray()
+        }
     }
 
     /** seek/换曲/停播：清空总线和校准。 */
     fun reset() {
-        newBlocks.clear()
-        installed = emptyArray()
-        streamStartUs = -1L
+        synchronized(stateLock) {
+            contentGeneration += 1L
+            newBlocks.clear()
+            installed = emptyArray()
+            streamStartUs = -1L
+        }
     }
 
     /**
@@ -70,17 +96,24 @@ class DubbingTrackBus {
      * 每条都配到自己的窗口为止，绝不挤占下一句的开始时间。
      */
     fun readMixWindow(mediaTimeUs: Long, count: Int): FloatArray {
-        installPending()
         val out = FloatArray(count) { 0f }
-        if (installed.isEmpty()) return out
-        val rate = sinkSampleRate
+        var readGeneration = -1L
+        var rate = sinkSampleRate
+        val blocks = synchronized(stateLock) {
+            if (!dubbingEnabled) return out
+            installPendingLocked()
+            readGeneration = contentGeneration
+            rate = sinkSampleRate
+            installed
+        }
+        if (blocks.isEmpty()) return out
         var blockIdx = 0
         // 跳过完全在窗口之前的块（其播放已过）
-        while (blockIdx < installed.size && installed[blockIdx].mediaTimeUs + installed[blockIdx].samples.size * 1_000_000L / rate <= mediaTimeUs) {
+        while (blockIdx < blocks.size && blocks[blockIdx].mediaTimeUs + blocks[blockIdx].samples.size * 1_000_000L / rate <= mediaTimeUs) {
             blockIdx++
         }
-        while (blockIdx < installed.size && installed.isNotEmpty()) {
-            val block = installed[blockIdx]
+        while (blockIdx < blocks.size && blocks.isNotEmpty()) {
+            val block = blocks[blockIdx]
             val blockEndUs = block.mediaTimeUs + block.samples.size * 1_000_000L / rate
             if (block.mediaTimeUs >= mediaTimeUs + count * 1_000_000L / rate) break
             val blockStartUs = block.mediaTimeUs
@@ -94,11 +127,13 @@ class DubbingTrackBus {
             }
             blockIdx++
         }
+        // If disable/re-enable happened during this read, discard this stale window too.
+        if (!dubbingEnabled || contentGeneration != readGeneration) out.fill(0f)
         return out
     }
 
     /** 消费完毕的块（窗口已完全越过）随 install 淘汰，防内存增长。 */
-    private fun installPending() {
+    private fun installPendingLocked() {
         var dirty = false
         while (true) {
             val b = newBlocks.peek() ?: break
