@@ -417,7 +417,7 @@ object NewPipeRepo {
             android.util.Log.i("NewPipeRepo", "No YouTube subtitle tracks for video=$videoId")
             logWarning(
                 "YouTube 视频没有可用字幕轨",
-                diagnosticContext = mapOf(
+                context = mapOf(
                     "YouTube 视频 ID" to videoId,
                     "字幕轨数量" to "0",
                     "后续建议" to "由视频处理流程选择音轨提取与语音转写",
@@ -487,7 +487,7 @@ object NewPipeRepo {
         )
         logWarning(
             "YouTube 存在字幕轨但全部下载或解析失败",
-            diagnosticContext = mapOf(
+            context = mapOf(
                 "YouTube 视频 ID" to videoId,
                 "检测到字幕轨数量" to tracks.size.toString(),
                 "尝试过的字幕语言" to ordered.map { it.languageTag }.distinct().take(20).joinToString(", "),
@@ -529,7 +529,7 @@ object NewPipeRepo {
         if (selected == null) {
             logWarning(
                 "YouTube 转写音轨选择失败：没有可用音轨候选",
-                diagnosticContext = mapOf(
+                context = mapOf(
                     "YouTube 视频 ID" to videoId,
                     "识别到音轨候选数量" to streams.size.toString(),
                 ),
