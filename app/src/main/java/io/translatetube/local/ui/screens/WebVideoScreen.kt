@@ -2210,7 +2210,7 @@ fun WebVideoScreen(
                     }
                     LazyColumn(
                         modifier = Modifier.fillMaxWidth().weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         items(displayCandidates, key = { it.url }) { candidate ->
                             val sourceHint = sourceHints[candidate.url]
@@ -2269,8 +2269,8 @@ fun WebVideoScreen(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
                                 ) {
                                     Text(
                                         candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
@@ -2297,7 +2297,7 @@ fun WebVideoScreen(
                                                     color = audioChipContainer,
                                                     shape = RoundedCornerShape(8.dp),
                                                 )
-                                                .padding(horizontal = 9.dp, vertical = 4.dp),
+                                                .padding(horizontal = 9.dp, vertical = 3.dp),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = audioChipTextColor,
                                             maxLines = 1,
@@ -2310,7 +2310,7 @@ fun WebVideoScreen(
                                                     color = resolutionChipContainer,
                                                     shape = RoundedCornerShape(8.dp),
                                                 )
-                                                .padding(horizontal = 9.dp, vertical = 4.dp),
+                                                .padding(horizontal = 9.dp, vertical = 3.dp),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = resolutionChipTextColor,
                                             maxLines = 1,
@@ -2324,7 +2324,7 @@ fun WebVideoScreen(
                                                         color = MaterialTheme.colorScheme.errorContainer,
                                                         shape = RoundedCornerShape(8.dp),
                                                     )
-                                                    .padding(horizontal = 9.dp, vertical = 4.dp),
+                                                    .padding(horizontal = 9.dp, vertical = 3.dp),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                                 maxLines = 1,
