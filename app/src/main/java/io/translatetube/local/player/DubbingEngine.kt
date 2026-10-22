@@ -3180,6 +3180,9 @@ class DubbingEngine(
     }
 
     private companion object {
+        // Bound opportunistic look-ahead work and keep the initial playback wait short.
+        private const val MAX_PREFEED_CUES = 3
+        private const val PREFEED_STARTUP_WAIT_MS = 180L
         private val cacheInstallLock = Any()
         private val nextCacheWriterId = AtomicInteger(0)
         private const val TEMP_PCM_AGE_MS = 6L * 60L * 60L * 1_000L
