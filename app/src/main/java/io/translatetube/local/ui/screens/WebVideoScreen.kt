@@ -2254,8 +2254,8 @@ fun WebVideoScreen(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp),
                                 ) {
                                     Text(
                                         candidate.title.ifBlank { pageTitle.ifBlank { "网页视频" } },
@@ -2282,7 +2282,7 @@ fun WebVideoScreen(
                                                     color = audioChipContainer,
                                                     shape = RoundedCornerShape(8.dp),
                                                 )
-                                                .padding(horizontal = 9.dp, vertical = 7.dp),
+                                                .padding(horizontal = 9.dp, vertical = 5.dp),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = audioChipTextColor,
                                             maxLines = 1,
@@ -2295,7 +2295,7 @@ fun WebVideoScreen(
                                                     color = MaterialTheme.colorScheme.errorContainer,
                                                     shape = RoundedCornerShape(8.dp),
                                                 )
-                                                .padding(horizontal = 9.dp, vertical = 7.dp),
+                                                .padding(horizontal = 9.dp, vertical = 5.dp),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onErrorContainer,
                                             maxLines = 1,
@@ -2309,7 +2309,7 @@ fun WebVideoScreen(
                                                         color = MaterialTheme.colorScheme.errorContainer,
                                                         shape = RoundedCornerShape(8.dp),
                                                     )
-                                                    .padding(horizontal = 9.dp, vertical = 7.dp),
+                                                    .padding(horizontal = 9.dp, vertical = 5.dp),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                                 maxLines = 1,
