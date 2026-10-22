@@ -477,7 +477,8 @@ object AppLogStore {
             append("=".repeat(56)).append('\n')
             records.forEach { record ->
                 append(formatTime(record.timestampMs)).append(" [").append(record.level).append("] ")
-                    .append(record.tag).append(" · ").append(record.message).append('\n')
+                    .append(AppLogTitleResolver.title(record.tag, record.message))
+                    .append(" [模块：").append(record.tag).append("]").append('\n')
                 if (record.issueKey.isNotBlank() && isIssueLevel(record.level)) {
                     append("故障状态：")
                         .append(record.recoveredAtMs?.let { "已恢复（${formatTime(it)}）" } ?: "尚无恢复成功记录")
