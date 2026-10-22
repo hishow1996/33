@@ -508,6 +508,9 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        // Supply the application context for structured NewPipe/YouTube extraction diagnostics.
+        // The extractor itself is initialized lazily by the first metadata request.
+        NewPipeRepo.setLogContext(applicationContext)
         registerProcessingEnginePreferenceWatcher()
         // 先尽早建立前台通知，再初始化播放器；任何初始化异常都转成页面错误，
         // 避免点击“观看”后因 Service onCreate 抛异常而直接杀掉整个进程。
