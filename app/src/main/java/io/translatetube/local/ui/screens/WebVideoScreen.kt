@@ -399,6 +399,7 @@ fun WebVideoScreen(
                                 WebCandidateAudioHintKind.LOW_BITRATE_MUXED -> WebCandidateAudioHint(
                                     message = hint.message,
                                     kind = WebCandidateAudioHintKind.LOW_BITRATE_MUXED,
+                                    mediaInfo = hint.mediaInfo,
                                 )
                                 else -> null
                             }
