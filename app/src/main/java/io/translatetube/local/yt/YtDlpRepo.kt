@@ -243,10 +243,10 @@ object YtDlpRepo {
 
     /**
      * 多来源读取上游稳定版（依次尝试，任一成功即返回）：
-     * 1) PyPI 国内镜像（阿里云、清华）；
-     * 2) GitHub latest 发布页的最终重定向地址（不占 REST API 限额）；
-     * 3) GitHub REST API（未登录每小时仅 60 次，共享 IP 常 403，所以排在发布页之后）；
-     * 4) PyPI 官方源兜底。
+     * 1) GitHub 官方 latest 发布页（最终重定向到稳定版 tag，不占 REST API 限额）；
+     * 2) GitHub 官方 REST API；
+     * 3) 公开 GitHub API 代理作为官方 API 的可达性回退；
+     * 4) 仅当前述官方来源均不可达时，才使用 PyPI 镜像和官方源兜底。
      *
      * 每个来源遇到瞬时错误（超时、断连、5xx）会再试一次，见 [fetchVersionText]。
      * 显式设置 User-Agent：GitHub REST API 对缺少该请求头的客户端可能拒绝请求。
@@ -314,18 +314,7 @@ object YtDlpRepo {
             }
         }
 
-        // 各地网络可达性不同，依次尝试 PyPI 镜像、GitHub 发布页、GitHub API 和 PyPI 官方源。
-        // 必须选择 stable 版本，避免把 PyPI 上的 dev 预发布误报成 STABLE 更新。
-        pypiMirror(
-            url = "https://mirrors.aliyun.com/pypi/web/pypi/yt-dlp/json",
-            source = "Aliyun PyPI 镜像",
-        )?.let { return it }
-
-        pypiMirror(
-            url = "https://pypi.tuna.tsinghua.edu.cn/pypi/yt-dlp/json",
-            source = "Tsinghua PyPI 镜像",
-        )?.let { return it }
-
+        // 优先以 GitHub 官方 latest 发布页的最终 tag 作为版本基准，避免 PyPI 镜像缓存滞后。
         githubReleasePage()?.let { return it }
 
         // REST API 放在发布页之后：未登录限额低，共享 IP 常被 403。
@@ -345,11 +334,10 @@ object YtDlpRepo {
         val releaseApiPath = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
         listOf(
             "GH-Proxy 国内入口" to "https://gh-proxy.org",
+            "GH.llkk API 代理" to "https://gh.llkk.cc",
             "GHFast" to "https://ghfast.top",
             "GH-Proxy 备用入口" to "https://gh-proxy.com",
             "GHProxy.net" to "https://ghproxy.net",
-            "GH.llkk" to "https://gh.llkk.cc",
-            "Houlang 镜像" to "https://mirror.houlang.cloud",
         ).forEach { (label, proxy) ->
             val json = fetchVersionText(
                 url = "$proxy/$releaseApiPath",
@@ -362,10 +350,22 @@ object YtDlpRepo {
             recordProbe("GitHub API 镜像（$label）", "响应中没有可识别的稳定版 tag")
         }
 
-        // 官方 PyPI JSON 是最后兜底；解析 releases 列表中的稳定版，过滤 .dev / rc / a / b。
+        // 只有官方 GitHub 与其公开 API 代理都无法读取时，才退回 PyPI 元数据。
+        // PyPI 镜像可能有同步延迟，因此必须排在官方版本源之后。
+        pypiMirror(
+            url = "https://mirrors.aliyun.com/pypi/web/pypi/yt-dlp/json",
+            source = "Aliyun PyPI 镜像（备用）",
+        )?.let { return it }
+
+        pypiMirror(
+            url = "https://pypi.tuna.tsinghua.edu.cn/pypi/yt-dlp/json",
+            source = "Tsinghua PyPI 镜像（备用）",
+        )?.let { return it }
+
+        // 官方 PyPI JSON 作为最后兜底；只接受稳定版 tag，过滤 .dev / rc / a / b。
         pypiMirror(
             url = "https://pypi.org/pypi/yt-dlp/json",
-            source = "PyPI 官方源",
+            source = "PyPI 官方源（备用）",
         )?.let { return it }
 
         Log.w(TAG, "Unable to fetch yt-dlp stable version from all sources")
@@ -897,14 +897,12 @@ object YtDlpRepo {
             // 下载后仍会验证文件大小和 zipapp 内版本号，镜像错误页不会被安装。
             val candidates = listOf(
                 "GitHub 官方" to officialReleaseUrl,
-                // 常见国内 GitHub 文件加速服务；可用性会变化，始终逐个回退。
+                // 保留公开文档注明支持 Release 附件的代理；各服务可用性可能变化。
                 "GH-Proxy 国内入口" to "https://gh-proxy.org/$officialReleaseUrl",
                 "GHFast 镜像" to "https://ghfast.top/$officialReleaseUrl",
                 "GH-Proxy 备用入口" to "https://gh-proxy.com/$officialReleaseUrl",
                 "GHProxy.net 镜像" to "https://ghproxy.net/$officialReleaseUrl",
                 "GH.llkk 镜像" to "https://gh.llkk.cc/$officialReleaseUrl",
-                "Houlang 镜像" to "https://mirror.houlang.cloud/$officialReleaseUrl",
-                "旧版 GHProxy 镜像" to "https://mirror.ghproxy.com/$officialReleaseUrl",
             )
             val failures = mutableListOf<String>()
             var downloaded = false
