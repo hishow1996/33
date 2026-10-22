@@ -3359,6 +3359,33 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         detectedAsrLang,
                         transcribedLines.asSequence().map { it.text }.asIterable(),
                     )
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "Transcription",
+                        "原文语音转写与字幕时间轴整理完成",
+                        diagnosticContext = mapOf(
+                            "视频来源" to when {
+                                videoId != null -> "YouTube"
+                                remoteMediaUrl != null -> "网页视频/远程媒体"
+                                localUri != null -> "本地视频"
+                                else -> "其他"
+                            },
+                            "转写服务/引擎配置" to asrProvider,
+                            "选中的本地转写模型" to (localAsrEngineModelId ?: "未使用或未确定"),
+                            "服务商返回的语言" to detectedAsrLang.ifBlank { "未提供" },
+                            "时间轴确认后的源语言" to srcLang,
+                            "转写阶段原始有效时间片数量" to normalizedAsrLines.size.toString(),
+                            "清理音效和口头语后的字幕行数" to transcribedLines.size.toString(),
+                            "被清理掉的空/非语音字幕行数" to (normalizedAsrLines.size - transcribedLines.size).coerceAtLeast(0).toString(),
+                            "转写音频时长 ms" to asrTimelineDurationMs.toString(),
+                            "首句开始时间 ms" to (transcribedLines.firstOrNull()?.startMs?.toString() ?: "无"),
+                            "末句结束时间 ms" to (transcribedLines.lastOrNull()?.endMs?.toString() ?: "无"),
+                            "字幕时间轴是否有效" to "已通过 TranscriptTimelinePolicy.normalize",
+                            "是否准备缓存原文字幕" to ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()).toString(),
+                        ),
+                    )
+                }
 
                 // Keep the completed ASR transcript as an independent checkpoint. The bounded
                 // source-audio cache is retained for retries and later speaker diarization, while
@@ -4034,7 +4061,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         activeIdOverride: Long? = null,
         pipelineGeneration: Long? = null,
     ): List<SubLine> {
-        awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
+        val translationStartedAtNanos = System.nanoTime()
+        val earlyExternalTranslation = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
+        if (earlyExternalTranslation != null) {
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "Translation",
+                    "外部翻译字幕已准备完成，跳过自动翻译批次",
+                    diagnosticContext = mapOf(
+                        "输入字幕行数" to lines.size.toString(),
+                        "输出字幕行数" to earlyExternalTranslation.size.toString(),
+                        "源语言代码" to srcLang,
+                        "目标语言代码" to "zh",
+                        "流程" to "导入外部译文并沿用原时间轴",
+                    ),
+                )
+            }
+            return earlyExternalTranslation
+        }
         // Keep previously published subtitle rows immutable so Compose observes every translated batch.
         val translationJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         updateUiForSession(key, pipelineGeneration) { state ->
@@ -4103,6 +4148,35 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 pendingIndices += index
             }
         }
+        withContext(Dispatchers.IO) {
+            io.translatetube.local.util.AppLogStore.info(
+                this@PlaybackService,
+                "Translation",
+                "中文字幕翻译任务已开始",
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        key.startsWith("youtube:") -> "YouTube"
+                        key.startsWith("remote:") -> "网页视频/远程媒体"
+                        key.startsWith("local:") -> "本地视频"
+                        else -> "导入字幕/其他"
+                    },
+                    "翻译引擎名称" to engineName,
+                    "翻译引擎 ID" to (engine?.id ?: "未知"),
+                    "翻译配置编号" to activeId.toString(),
+                    "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                    "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                    "源语言代码" to srcLang,
+                    "目标语言代码" to tgt,
+                    "输入字幕行数" to lines.size.toString(),
+                    "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
+                    "无需翻译/已具备有效译文行数" to completed.toString(),
+                    "翻译批次总数" to ((pendingIndices.size + 9) / 10).toString(),
+                    "单批字幕行数" to "10",
+                    "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
+                    "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
+                ),
+            )
+        }
         updateUiForSession(key, pipelineGeneration) {
             it.copy(
                 engineName = engineName,
@@ -4124,6 +4198,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
             awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
             awaitProcessingResumed(key, pipelineGeneration)
+            val batchStartedAtNanos = System.nanoTime()
             // The playback layer calls the engine once per small batch, so carry the previous
             // completed cues here; otherwise engine-local context resets at every boundary.
             val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
@@ -4286,9 +4361,35 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
                 )
             }
-            // Keep UI progress per batch, but serialize the full cache less often.
-            // The first successful batch and final batch are always checkpointed.
+            // Keep structured logs bounded: record the first, final and periodic successful batches.
             val completedBatchCount = batchIndex + 1
+            if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
+                val batchResolvedCount = resolvedBatch.values.count { it.isNotBlank() }
+                val batchFallbackCount = resolvedBatch.values.count { it.isBlank() }
+                withContext(Dispatchers.IO) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "Translation",
+                        "中文字幕翻译批次处理完成",
+                        diagnosticContext = mapOf(
+                            "翻译引擎名称" to engineName,
+                            "翻译引擎 ID" to (engine?.id ?: "未知"),
+                            "批次进度" to "${completedBatchCount}/${translationBatches.size}",
+                            "本批字幕行数" to batchIndices.size.toString(),
+                            "本批已获得有效译文行数" to batchResolvedCount.toString(),
+                            "本批空译文/原声兜底行数" to batchFallbackCount.toString(),
+                            "本批重试次数" to attempt.toString(),
+                            "本批处理耗时 ms" to (((System.nanoTime() - batchStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                            "源语言代码" to src,
+                            "目标语言代码" to tgt,
+                            "当前累计已完成行数" to completed.coerceAtMost(updatedLines.size).toString(),
+                            "字幕总行数" to updatedLines.size.toString(),
+                            "翻译失败后是否采用原声兜底" to (batchFallbackCount > 0).toString(),
+                        ),
+                    )
+                }
+            }
+            // The first successful batch and final batch are always checkpointed.
             if (!io.translatetube.local.translate.TranslationCheckpointPolicy.shouldPersistCheckpoint(
                     completedBatchCount = completedBatchCount,
                     totalBatches = translationBatches.size,
@@ -4319,7 +4420,45 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             )
         }
-        awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
+        val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
+        if (externallyTranslatedFinal != null) {
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "Translation",
+                    "外部翻译字幕已导入并匹配到原字幕时间轴",
+                    diagnosticContext = mapOf(
+                        "输入原文字幕行数" to lines.size.toString(),
+                        "合并后字幕行数" to externallyTranslatedFinal.size.toString(),
+                        "源语言代码" to srcLang,
+                        "目标语言代码" to "zh",
+                        "合并规则" to "以原字幕时间戳为准，匹配译文文本",
+                    ),
+                )
+            }
+            return externallyTranslatedFinal
+        }
+        withContext(Dispatchers.IO) {
+            io.translatetube.local.util.AppLogStore.info(
+                this@PlaybackService,
+                "Translation",
+                "中文字幕翻译任务完成",
+                diagnosticContext = mapOf(
+                    "翻译引擎名称" to engineName,
+                    "翻译引擎 ID" to (engine?.id ?: "未知"),
+                    "翻译配置编号" to activeId.toString(),
+                    "源语言代码" to srcLang,
+                    "目标语言代码" to "zh",
+                    "字幕总行数" to updatedLines.size.toString(),
+                    "已获得非空中文译文行数" to updatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                    "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, srcLang) && it.zh.isNullOrBlank() }.toString(),
+                    "处理批次数" to translationBatches.size.toString(),
+                    "累计耗时 ms" to (((System.nanoTime() - translationStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                    "本次是否有在线/本地引擎请求" to pendingIndices.isNotEmpty().toString(),
+                    "结果已写入字幕缓存的检查方式" to "由调用方根据译文填充率与缓存完整性另行判断",
+                ),
+            )
+        }
         return updatedLines
     }
 
