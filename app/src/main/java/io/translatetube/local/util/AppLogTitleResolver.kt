@@ -62,6 +62,14 @@ object AppLogTitleResolver {
             }
             normalizedTag.contains("pikpak") || combined.contains("pikpak") ->
                 "PikPak / 分享页与媒体加载"
+            normalizedTag.contains("youtubeextractor") || normalizedTag.contains("newpiperepo") ->
+                when {
+                    hasAny("字幕") -> "YouTube / 字幕轨获取与解析"
+                    hasAny("转写音轨", "音轨选择", "audio") -> "YouTube / 转写音轨选择"
+                    else -> "YouTube / 视频元数据与媒体流"
+                }
+            normalizedTag.contains("storagemanagementscreen") ->
+                "存储管理 / 空间扫描与数据清理"
             normalizedTag.contains("webplayerconsole") ->
                 "网页播放器 / JavaScript 错误"
             normalizedTag.contains("webview") || normalizedTag.contains("webpage") ||
