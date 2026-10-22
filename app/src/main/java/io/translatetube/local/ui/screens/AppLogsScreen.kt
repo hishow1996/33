@@ -39,6 +39,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.util.AppLogRecord
+import io.translatetube.local.util.AppLogTitleResolver
 import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.util.AppLogDiagnostics
 import kotlinx.coroutines.Dispatchers
@@ -131,6 +132,8 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
         if (query.isBlank()) levelFiltered else levelFiltered.filter { record ->
             val diagnosis = AppLogDiagnostics.analyze(record)
             record.tag.contains(query, ignoreCase = true) ||
+                AppLogTitleResolver.featureLabel(record.tag, record.message).contains(query, ignoreCase = true) ||
+                AppLogTitleResolver.title(record.tag, record.message).contains(query, ignoreCase = true) ||
                 record.message.contains(query, ignoreCase = true) ||
                 record.details.contains(query, ignoreCase = true) ||
                 record.thread.contains(query, ignoreCase = true) ||
@@ -422,7 +425,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "${record.level} · ${record.tag}",
+                            "${record.level} · ${AppLogTitleResolver.featureLabel(record.tag, record.message)} · ${record.tag}",
                             color = levelColor(record.level),
                             style = MaterialTheme.typography.labelMedium,
                             maxLines = 1,
@@ -446,7 +449,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        record.message.ifBlank { "（无错误摘要）" },
+                        AppLogTitleResolver.title(record.tag, record.message),
                         color = Color(0xFF202124),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -588,7 +591,7 @@ private fun AppLogsScreenContent(onBack: () -> Unit) {
                             clipboard.setPrimaryClip(
                                 android.content.ClipData.newPlainText(
                                     "应用日志",
-                                    "${AppLogStore.formatTime(record.timestampMs)} [${record.level}] ${record.tag}\n${record.message}\n线程：${record.thread}\n故障编号：${record.issueKey}\n${record.details}",
+                                    "${AppLogStore.formatTime(record.timestampMs)} [${record.level}] ${AppLogTitleResolver.title(record.tag, record.message)}\n原始模块：${record.tag}\n线程：${record.thread}\n故障编号：${record.issueKey}\n${record.details}",
                                 ),
                             )
                             message = "日志详情已复制"
@@ -684,7 +687,7 @@ private fun LogRecordCard(record: AppLogRecord, onClick: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        record.message.ifBlank { record.tag },
+                        AppLogTitleResolver.title(record.tag, record.message),
                         modifier = Modifier.weight(1f),
                         color = Color(0xFF202124),
                         style = MaterialTheme.typography.bodyLarge,
