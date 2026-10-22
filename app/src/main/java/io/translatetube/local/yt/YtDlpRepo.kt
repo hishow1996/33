@@ -340,6 +340,25 @@ object YtDlpRepo {
             recordProbe("GitHub API", "响应中没有可识别的稳定版 tag")
         }
 
+        // GitHub API 在未登录限额、共享出口 IP 或网络路由异常时可能返回 403/429。
+        // 再尝试公开的 GitHub API 镜像；请求仅读取公开发行元数据，不携带令牌。
+        val releaseApiPath = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+        listOf(
+            "GHFast" to "https://ghfast.top",
+            "GH-Proxy" to "https://gh-proxy.com",
+            "GHProxy.net" to "https://ghproxy.net",
+        ).forEach { (label, proxy) ->
+            val json = fetchVersionText(
+                url = "$proxy/$releaseApiPath",
+                accept = "application/vnd.github+json",
+                maxBytes = MAX_RELEASE_METADATA_BYTES,
+                source = "GitHub API 镜像（$label）",
+            ) ?: return@forEach
+            val tag = YtDlpVersionPolicy.stableGitHubTag(json)
+            if (tag != null) return tag
+            recordProbe("GitHub API 镜像（$label）", "响应中没有可识别的稳定版 tag")
+        }
+
         // 官方 PyPI JSON 是最后兜底；解析 releases 列表中的稳定版，过滤 .dev / rc / a / b。
         pypiMirror(
             url = "https://pypi.org/pypi/yt-dlp/json",
@@ -869,19 +888,29 @@ object YtDlpRepo {
                 totalBytes = null,
             )
 
+            val officialReleaseUrl =
+                "https://github.com/yt-dlp/yt-dlp/releases/download/$version/${YoutubeDL.ytdlpBin}"
+            // 官方直连失败时依次尝试公开镜像，处理 GitHub 网页/API 可访问但 Release CDN 下载失败。
+            // 下载后仍会验证文件大小和 zipapp 内版本号，镜像错误页不会被安装。
             val candidates = listOf(
-                "https://github.com/yt-dlp/yt-dlp/releases/download/$version/${YoutubeDL.ytdlpBin}",
+                "GitHub 官方" to officialReleaseUrl,
+                "GHFast 镜像" to "https://ghfast.top/$officialReleaseUrl",
+                "GH-Proxy 镜像" to "https://gh-proxy.com/$officialReleaseUrl",
+                "GHProxy.net 镜像" to "https://ghproxy.net/$officialReleaseUrl",
             )
             val failures = mutableListOf<String>()
             var downloaded = false
-            for (candidate in candidates) {
+            for ((source, candidate) in candidates) {
                 var lastError: Exception? = null
                 for (attempt in 1..UPDATE_DOWNLOAD_ATTEMPTS) {
                     try {
+                        _updateState.value = _updateState.value.copy(
+                            updateStage = "正在从 $source 下载 yt-dlp $version",
+                        )
                         downloadedBytes = downloadYtDlpZipapp(candidate, tempFile!!, version) { done, total ->
                             totalBytes = total
                             _updateState.value = _updateState.value.copy(
-                                updateStage = "正在下载 yt-dlp " + version,
+                                updateStage = "正在从 $source 下载 yt-dlp $version",
                                 updateProgress = total?.let { ((done * 100L) / it).toInt().coerceIn(0, 99) },
                                 downloadedBytes = done,
                                 totalBytes = total,
@@ -892,16 +921,16 @@ object YtDlpRepo {
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         throw cancelled
                     } catch (e: NonRetryableDownloadException) {
-                        // HTTP 4xx、包过大/过小、版本不符：重试结果不会变。
-                        Log.w(TAG, "yt-dlp 更新包下载失败（不重试）：$candidate", e)
+                        // HTTP 4xx、包过大/过小、版本不符：跳过当前来源，继续尝试下一个来源。
+                        Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，不重试）：$candidate", e)
                         lastError = e
                         break
                     } catch (e: Exception) {
-                        Log.w(TAG, "yt-dlp 更新包下载失败（第 $attempt/$UPDATE_DOWNLOAD_ATTEMPTS 次）：$candidate", e)
+                        Log.w(TAG, "yt-dlp 更新包下载失败（来源：$source，第 $attempt/$UPDATE_DOWNLOAD_ATTEMPTS 次）：$candidate", e)
                         lastError = e
                         if (attempt < UPDATE_DOWNLOAD_ATTEMPTS) {
                             _updateState.value = _updateState.value.copy(
-                                updateStage = "下载失败，正在重试（第 ${attempt + 1}/$UPDATE_DOWNLOAD_ATTEMPTS 次）…",
+                                updateStage = "$source 下载失败，正在重试（第 ${attempt + 1}/$UPDATE_DOWNLOAD_ATTEMPTS 次）…",
                                 updateProgress = null,
                                 downloadedBytes = 0L,
                                 totalBytes = null,
@@ -911,7 +940,7 @@ object YtDlpRepo {
                     }
                 }
                 if (downloaded) break
-                failures += (java.net.URI(candidate).host ?: candidate) + "：" +
+                failures += "$source（${java.net.URI(candidate).host ?: candidate}）：" +
                     (lastError?.let { describeError(it) } ?: "未知错误")
             }
             if (!downloaded) throw java.io.IOException("获取更新包失败：" + failures.joinToString("；"))
