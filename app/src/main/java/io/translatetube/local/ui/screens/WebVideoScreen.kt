@@ -1532,8 +1532,7 @@ fun WebVideoScreen(
                                             lastCompletedUrl = lastCompletedNavigationUrl.get(),
                                         )
                                 val sameBilibiliVideoAlreadyDetected =
-                                    candidatesState.value.isNotEmpty() &&
-                                        WebVideoProbePolicy.isSameBilibiliVideoPage(url, currentPage)
+                                    WebVideoProbePolicy.isSameBilibiliVideoPage(url, currentPage)
                                 when {
                                     duplicateCompletedBilibiliPage || sameBilibiliVideoAlreadyDetected -> {
                                         // Bilibili may emit a repeated start callback after its video
