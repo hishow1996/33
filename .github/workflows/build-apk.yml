@@ -1,3 +1,4 @@
+# Explicit user-requested APK build trigger for latest main source after Bilibili duplicate-detection guard fix (2026-10-22).
 # Explicit one-time APK build for the panel drag position-change fix (2026-10-22).
 # Explicit one-time APK build trigger for video source card More panel UI update (2026-10-22).
 # Explicit one-time APK build for the webpage media card details update (2026-10-21).
