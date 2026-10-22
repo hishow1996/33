@@ -89,6 +89,7 @@ object YtDlpRepo {
 
     // 更新包较大，使用独立长超时客户端，避免版本查询的短超时中断下载。
     private const val MAX_UPDATE_DOWNLOAD_BYTES = 100L * 1024L * 1024L
+    private const val MIN_UPDATE_DOWNLOAD_BYTES = 512L * 1024L
     private val updateHttp = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -746,34 +747,12 @@ object YtDlpRepo {
         try {
             ensureReady(appCtx)
 
-            val metadataRequest = Request.Builder()
-                .url("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")
-                .header("User-Agent", "TranslateTube-Android")
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-                .header("Cache-Control", "no-cache")
-                .build()
-            val releaseJson = checkHttp.newCall(metadataRequest).execute().use { response ->
-                if (response.code != 200) {
-                    throw java.io.IOException("获取更新包信息失败：GitHub API HTTP " + response.code)
-                }
-                val body = response.body ?: throw java.io.IOException("更新包信息为空")
-                val contentLength = body.contentLength()
-                if (contentLength > MAX_RELEASE_METADATA_BYTES) {
-                    throw java.io.IOException("更新包元数据超过大小限制")
-                }
-                body.string().also {
-                    if (it.toByteArray(Charsets.UTF_8).size > MAX_RELEASE_METADATA_BYTES) {
-                        throw java.io.IOException("更新包元数据超过大小限制")
-                    }
-                }
-            }
-
-            val release = JSONObject(releaseJson)
-            val version = release.optString("tag_name").trim()
-            if (!YtDlpVersionPolicy.isStableTag(version)) {
-                throw java.io.IOException("上游返回的版本号无效：" + version)
-            }
+            // 不再依赖 api.github.com（未登录每小时 60 次，共享 IP 常 403）。
+            // 版本号复用检查更新的多源探测：PyPI 镜像 → GitHub → PyPI 官方
+            val version = fetchLatestReleaseTag()
+                ?: throw java.io.IOException(
+                    "获取更新包信息失败：" + (lastProbeDetail?.trimStart('；') ?: "所有版本源均未响应"),
+                )
 
             val currentVersion = detectLocalVersion(appCtx, allowProcess = false).version
                 ?: runCatching { YoutubeDL.version(appCtx) }.getOrNull()
@@ -801,24 +780,6 @@ object YtDlpRepo {
                 return@withContext "yt-dlp 解析规则已是最新版本；失败可能是站点限制或网络问题"
             }
 
-            val assets = release.optJSONArray("assets")
-                ?: throw java.io.IOException("上游发布信息中没有更新文件")
-            var downloadUrl: String? = null
-            var releaseAssetSize = 0L
-            for (index in 0 until assets.length()) {
-                val asset = assets.optJSONObject(index) ?: continue
-                if (asset.optString("name") == YoutubeDL.ytdlpBin) {
-                    downloadUrl = asset.optString("browser_download_url").trim()
-                    releaseAssetSize = asset.optLong("size", 0L)
-                    break
-                }
-            }
-            val url = downloadUrl?.takeIf { it.startsWith("https://") }
-                ?: throw java.io.IOException("上游没有提供有效的 yt-dlp 下载地址")
-            if (releaseAssetSize <= 0L || releaseAssetSize > MAX_UPDATE_DOWNLOAD_BYTES) {
-                throw java.io.IOException("上游更新包大小无效：" + releaseAssetSize + " 字节")
-            }
-
             val ytdlpDir = File(File(appCtx.noBackupFilesDir, YoutubeDL.baseName), YoutubeDL.ytdlpDirName)
             if (!ytdlpDir.exists() && !ytdlpDir.mkdirs()) {
                 throw java.io.IOException("无法创建 yt-dlp 安装目录")
@@ -826,96 +787,46 @@ object YtDlpRepo {
             targetFile = File(ytdlpDir, YoutubeDL.ytdlpBin)
             tempFile = File.createTempFile(".yt-dlp-update-", ".part", ytdlpDir)
 
-            totalBytes = releaseAssetSize
+            totalBytes = null
             _updateState.value = _updateState.value.copy(
                 updateStage = "正在下载 yt-dlp " + version,
-                updateProgress = 0,
+                updateProgress = null,
                 downloadedBytes = 0L,
-                totalBytes = totalBytes,
+                totalBytes = null,
             )
 
-            val downloadRequest = Request.Builder()
-                .url(url)
-                .header("User-Agent", "TranslateTube-Android")
-                .header("Accept", "application/octet-stream")
-                .build()
-
-            updateHttp.newCall(downloadRequest).execute().use { response ->
-                if (response.code != 200) {
-                    throw java.io.IOException("下载更新包失败：HTTP " + response.code)
-                }
-                val body = response.body ?: throw java.io.IOException("下载响应没有文件内容")
-                val responseLength = body.contentLength().takeIf { it > 0L }
-                totalBytes = responseLength ?: releaseAssetSize
-                if (totalBytes!! > MAX_UPDATE_DOWNLOAD_BYTES) {
-                    throw java.io.IOException("下载包超过安全大小限制")
-                }
-
-                _updateState.value = _updateState.value.copy(
-                    updateStage = "正在下载 yt-dlp " + version,
-                    updateProgress = 0,
-                    downloadedBytes = 0L,
-                    totalBytes = totalBytes,
-                )
-
-                val input = body.byteStream()
-                val output = FileOutputStream(tempFile!!)
-                input.use { source ->
-                    output.use { sink ->
-                        val buffer = ByteArray(64 * 1024)
-                        var lastPublishedAt = 0L
-                        var lastPublishedBytes = 0L
-                        while (true) {
-                            currentCoroutineContext().ensureActive()
-                            val count = source.read(buffer)
-                            if (count < 0) break
-                            if (count == 0) continue
-
-                            sink.write(buffer, 0, count)
-                            downloadedBytes += count.toLong()
-
-                            val now = android.os.SystemClock.elapsedRealtime()
-                            if (now - lastPublishedAt >= 120L ||
-                                downloadedBytes - lastPublishedBytes >= 512L * 1024L
-                            ) {
-                                val total = totalBytes
-                                val percent = total?.takeIf { it > 0L }?.let {
-                                    ((downloadedBytes * 100L) / it).toInt().coerceIn(0, 99)
-                                }
-                                _updateState.value = _updateState.value.copy(
-                                    updateStage = "正在下载 yt-dlp " + version,
-                                    updateProgress = percent,
-                                    downloadedBytes = downloadedBytes,
-                                    totalBytes = total,
-                                )
-                                lastPublishedAt = now
-                                lastPublishedBytes = downloadedBytes
-                            }
-                        }
-                        sink.fd.sync()
+            val candidates = listOf(
+                "https://github.com/yt-dlp/yt-dlp/releases/download/$version/${YoutubeDL.ytdlpBin}",
+            )
+            val failures = mutableListOf<String>()
+            var downloaded = false
+            for (candidate in candidates) {
+                try {
+                    downloadedBytes = downloadYtDlpZipapp(candidate, tempFile!!, version) { done, total ->
+                        totalBytes = total
+                        _updateState.value = _updateState.value.copy(
+                            updateStage = "正在下载 yt-dlp " + version,
+                            updateProgress = total?.let { ((done * 100L) / it).toInt().coerceIn(0, 99) },
+                            downloadedBytes = done,
+                            totalBytes = total,
+                        )
                     }
-                }
-
-                if (downloadedBytes <= 0L) {
-                    throw java.io.IOException("下载包为空")
-                }
-                if (responseLength != null && downloadedBytes != responseLength) {
-                    throw java.io.IOException(
-                        "下载长度不完整：收到 " + downloadedBytes + " / " + responseLength + " 字节",
-                    )
-                }
-                if (downloadedBytes != releaseAssetSize) {
-                    throw java.io.IOException(
-                        "下载文件大小与上游记录不一致：收到 " + downloadedBytes + " / " + releaseAssetSize + " 字节",
-                    )
+                    downloaded = true
+                    break
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (e: Exception) {
+                    Log.w(TAG, "yt-dlp 更新包下载失败：$candidate", e)
+                    failures += (java.net.URI(candidate).host ?: candidate) + "：" + describeError(e)
                 }
             }
+            if (!downloaded) throw java.io.IOException("获取更新包失败：" + failures.joinToString("；"))
 
             _updateState.value = _updateState.value.copy(
                 updateStage = "下载完成，正在校验文件…",
                 updateProgress = 100,
                 downloadedBytes = downloadedBytes,
-                totalBytes = totalBytes ?: releaseAssetSize,
+                totalBytes = totalBytes ?: downloadedBytes,
             )
 
             val downloadedVersion = tempFile!!.inputStream().use {
@@ -951,7 +862,7 @@ object YtDlpRepo {
             // 与 youtubedl-android 的版本缓存保持一致，避免下次重复下载同一版本。
             appCtx.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit()
                 .putString("dlpVersion", version)
-                .putString("dlpVersionName", release.optString("name").takeIf { it.isNotBlank() } ?: version)
+                .putString("dlpVersionName", version)
                 .apply()
 
             val now = System.currentTimeMillis()
@@ -977,7 +888,7 @@ object YtDlpRepo {
                 updateStage = "更新完成",
                 updateProgress = 100,
                 downloadedBytes = downloadedBytes,
-                totalBytes = totalBytes ?: releaseAssetSize,
+                totalBytes = totalBytes ?: downloadedBytes,
             )
             "yt-dlp 解析规则已更新到 " + version + "，可重试解析"
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -1010,6 +921,70 @@ object YtDlpRepo {
                 )
             }
         }
+    }
+
+    /**
+     * Download a yt-dlp zipapp with bounded size, complete-length and embedded-version checks.
+     * A failed candidate is retried by updateRules() using a fresh overwrite of the temp file.
+     */
+    private suspend fun downloadYtDlpZipapp(
+        url: String,
+        dest: File,
+        expectedVersion: String,
+        onProgress: (downloaded: Long, total: Long?) -> Unit,
+    ): Long {
+        require(url.startsWith("https://")) { "更新包地址必须是 HTTPS" }
+        val request = Request.Builder().url(url)
+            .header("User-Agent", "TranslateTube-Android")
+            .header("Accept", "application/octet-stream")
+            .build()
+        var received = 0L
+        updateHttp.newCall(request).execute().use { response ->
+            if (response.code != 200) throw java.io.IOException("HTTP " + response.code)
+            val body = response.body ?: throw java.io.IOException("响应没有文件内容")
+            val total = body.contentLength().takeIf { it > 0L }
+            if (total != null && total > MAX_UPDATE_DOWNLOAD_BYTES) {
+                throw java.io.IOException("下载包超过安全大小限制")
+            }
+            onProgress(0L, total)
+            body.byteStream().use { source ->
+                FileOutputStream(dest).use { sink ->
+                    val buffer = ByteArray(64 * 1024)
+                    var lastAt = 0L
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val n = source.read(buffer)
+                        if (n < 0) break
+                        if (n == 0) continue
+                        received += n
+                        if (received > MAX_UPDATE_DOWNLOAD_BYTES) {
+                            throw java.io.IOException("下载包超过安全大小限制")
+                        }
+                        sink.write(buffer, 0, n)
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (now - lastAt >= 120L) {
+                            onProgress(received, total)
+                            lastAt = now
+                        }
+                    }
+                    sink.fd.sync()
+                }
+            }
+            if (total != null && received != total) {
+                throw java.io.IOException("下载长度不完整：$received / $total 字节")
+            }
+        }
+        if (received < MIN_UPDATE_DOWNLOAD_BYTES) {
+            throw java.io.IOException("下载包过小，疑似错误页面")
+        }
+        val actual = dest.inputStream().use { YtDlpVersionPolicy.versionFromZipapp(it) }
+        if (actual != expectedVersion) {
+            throw java.io.IOException(
+                "更新包版本校验失败：预期 $expectedVersion，识别为 ${actual ?: "未知版本"}",
+            )
+        }
+        onProgress(received, received)
+        return received
     }
 
     /** 解析结果：可直接交给播放器的媒体地址 + 必要的请求头。 */
