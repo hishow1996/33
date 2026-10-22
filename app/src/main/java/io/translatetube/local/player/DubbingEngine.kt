@@ -846,12 +846,12 @@ class DubbingEngine(
                     bumpPrepared()
                     continue
                 }
+                var synthesisCallCount = 0
                 try {
                     // One cue must use one synthesis-rate snapshot for its primary attempt,
                     // adaptive retry and cache identity even if Settings changes mid-request.
                     val synthesisSpeed = speed
                     val synthesisStartedAtNanos = System.nanoTime()
-                    var synthesisCallCount = 0
                     var audio: io.translatetube.local.tts.TtsAudio? = null
                     var lastFailure: Exception? = null
                     // 块首行用合并文本一口气合成（相邻句衔接自然）；普通行保持原文。
