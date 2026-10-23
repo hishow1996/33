@@ -203,6 +203,8 @@ class PlaybackService : MediaSessionService() {
     private var remoteMediaCookie: String? = null
     @Volatile private var qualitySources: List<YouTubeQualitySource> = emptyList()
     @Volatile private var qualityAudioUrl: String = ""
+    /** 仅在本轮网页/本地视频源已挂载后，才读取其可选视频轨。 */
+    @Volatile private var adaptiveQualitySourceReady = false
     @Volatile private var activeOpenRequestToken: Long = 0L
     // A media key can be reopened from History without changing the key. Give each open
     // a unique generation so a cancelled previous pipeline cannot resume beside the new TTS engine.
@@ -638,6 +640,10 @@ class PlaybackService : MediaSessionService() {
                             } else state
                         }
                     }
+                }
+                override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                    // HLS/DASH 清单解析后，Media3 才会公开真实的视频轨与分辨率。
+                    refreshAdaptiveVideoQualityOptions()
                 }
             })
 
@@ -1243,6 +1249,7 @@ class PlaybackService : MediaSessionService() {
         this.remoteMediaTitle = remoteMediaTitle
         this.remoteMediaReferrer = remoteMediaReferrer
         this.remoteMediaUserAgent = remoteMediaUserAgent.orEmpty()
+        adaptiveQualitySourceReady = false
         // Publish the request token after its associated media identity.
         activeOpenRequestToken = requestToken
         // 兜底防护：blob:/data: 等网页内嵌地址绝不能进入 ExoPlayer（会以
@@ -1340,10 +1347,116 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 切换 YouTube 清晰度：保留当前播放位置与播放/暂停状态。 */
+    /**
+     * HLS/DASH 和其他多轨媒体由 Media3 管理清晰度。只暴露实际存在的多分辨率轨道，
+     * 避免把普通单分辨率 MP4 误显示成可切换画质。
+     */
+    private fun refreshAdaptiveVideoQualityOptions() {
+        if (!::pm.isInitialized || !adaptiveQualitySourceReady || videoId != null) return
+        if (remoteMediaUrl == null && localUri == null) return
+
+        val stateBefore = ui.value
+        if (stateBefore.key != videoKey) return
+        val actualOptions = pm.availableVideoQualityLabels()
+        val options = actualOptions.takeIf { it.size > 1 } ?: emptyList()
+        val actualSelected = pm.currentVideoQualityLabel().takeIf { it in options }.orEmpty()
+        if (stateBefore.qualityOptions == options && stateBefore.selectedQuality == actualSelected) return
+
+        ui.update { state ->
+            if (state.key == videoKey && videoId == null && adaptiveQualitySourceReady) {
+                state.copy(qualityOptions = options, selectedQuality = actualSelected)
+            } else {
+                state
+            }
+        }
+        if (stateBefore.qualityOptions != options) {
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackQuality",
+                if (options.isEmpty()) "当前网页/本地视频没有可手动切换的多档画质" else "已发现可切换的视频画质",
+                diagnosticContext = mapOf(
+                    "媒体来源" to if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                    "视频轨道清晰度" to (actualOptions.joinToString(",").ifBlank { "未检测到" }),
+                    "可切换档位数量" to options.size.toString(),
+                    "选择方式" to "Media3 视频轨覆盖，不重载媒体源",
+                    "播放位置毫秒" to (if (::pm.isInitialized) pm.position() else -1L).toString(),
+                ),
+            )
+        }
+    }
+
+    /** 网页/本地自适应视频只改变视频轨选择；不重新加载媒体源，因此不重置播放时间轴。 */
+    private fun selectAdaptiveVideoQuality(sessionKey: String, label: String) {
+        if (!adaptiveQualitySourceReady || label !in ui.value.qualityOptions) return
+        if (label == ui.value.selectedQuality) return
+
+        qualityJob?.cancel()
+        qualityJob = scope.launch {
+            try {
+                ensureCurrentSession(sessionKey)
+                if (videoId != null || !adaptiveQualitySourceReady) {
+                    throw kotlinx.coroutines.CancellationException("视频来源已改变，取消画质切换")
+                }
+                updateUiForSession(sessionKey) {
+                    it.copy(progress = "正在切换清晰度至 $label…", error = null)
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    ensureCurrentSession(sessionKey)
+                    if (!pm.selectVideoQuality(label)) {
+                        throw IllegalStateException("当前媒体清单未能选择 $label 视频轨")
+                    }
+                }
+                ensureCurrentSession(sessionKey)
+                updateUiForSession(sessionKey) {
+                    it.copy(selectedQuality = label, progress = "")
+                }
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackQuality",
+                    "网页/本地视频画质切换请求已应用",
+                    diagnosticContext = mapOf(
+                        "目标清晰度" to label,
+                        "切换方式" to "Media3 视频轨覆盖",
+                        "是否重新加载媒体源" to "否",
+                        "当前播放位置毫秒" to withContext(Dispatchers.Main) { pm.position() }.toString(),
+                        "字幕配音时间轴" to "沿用同一播放器时间轴",
+                    ),
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "PlaybackQuality",
+                    "网页/本地视频画质切换失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "目标清晰度" to label,
+                        "媒体来源" to if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                        "视频会话标识" to safeDiagnosticSessionFingerprint(sessionKey),
+                        "当前播放位置毫秒" to (if (::pm.isInitialized) pm.position() else -1L).toString(),
+                        "视频轨道清晰度" to (if (::pm.isInitialized) pm.availableVideoQualityLabels().joinToString(",") else "播放器未初始化"),
+                    ),
+                )
+                updateUiForSession(sessionKey) {
+                    it.copy(
+                        progress = "",
+                        error = "切换到 $label 失败；当前网页可能未公开该清晰度的视频轨。",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 切换清晰度：YouTube 使用提取出的独立流地址，网页/本地媒体使用 Media3 视频轨选择。 */
     fun selectQuality(label: String) {
         val sessionKey = ui.value.key
-        val sessionVideoId = videoId ?: return
+        if (!::pm.isInitialized || sessionKey.isBlank()) return
+        val sessionVideoId = videoId
+        if (sessionVideoId == null) {
+            selectAdaptiveVideoQuality(sessionKey, label)
+            return
+        }
         val source = qualitySources.firstOrNull { it.label == label } ?: return
         if (!::pm.isInitialized || sessionKey.isBlank() || source.label == ui.value.selectedQuality) return
         val previousSource = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }
@@ -3604,6 +3717,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     requestHeaders,
                     userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                 )
+                adaptiveQualitySourceReady = true
+                refreshAdaptiveVideoQualityOptions()
                 }
             }
 
