@@ -36,9 +36,11 @@ internal object DubbingCacheIdentity {
         // v10: cached PCM is now only ever compressed to fit its window (never stretched), and a
         // merged chunk's identity is its merged text/window. Older entries were slowed down to fill
         // their window, so they must be synthesized again.
+        // v11: every engine's PCM now has its leading/trailing silence trimmed (online engines such as
+        // Microsoft Edge TTS used to keep 100-300 ms of lead-in), so older entries start late.
         val engineHash = fingerprint(
-            "$engineKey-v10-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-fit"
+            "$engineKey-v11-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-fit"
         )
-        return "$lineIndex-v$speakerId-v10-speed-$engineHash-t$textHash.pcm"
+        return "$lineIndex-v$speakerId-v11-speed-$engineHash-t$textHash.pcm"
     }
 }

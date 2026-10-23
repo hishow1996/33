@@ -57,6 +57,15 @@ class TtsEdgeSilenceTrimmerTest {
     }
 
     @Test
+    fun trimmingAlreadyTrimmedAudioIsANoOp() {
+        // DubbingEngine trims every engine's output centrally; engines that already trim
+        // (Kokoro/Piper/System TTS) must pass through the second trim unchanged.
+        val samples = FloatArray(700) { i -> if (i in 300 until 400) 0.5f else 0f }
+        val once = TtsEdgeSilenceTrimmer.trim(samples, rate)
+        assertSame(once, TtsEdgeSilenceTrimmer.trim(once, rate))
+    }
+
+    @Test
     fun loudSignalPassthroughReturnsSameArray() {
         val samples = FloatArray(100) { 0.9f }
         assertSame(samples, TtsEdgeSilenceTrimmer.trim(samples, rate))

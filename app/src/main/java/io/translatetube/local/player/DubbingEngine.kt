@@ -884,9 +884,11 @@ class DubbingEngine(
                                     "所选引擎返回静音、无效采样或不支持的采样率（${generated.sampleRate} Hz）"
                                 )
                             }
-                            // 这里只保留引擎原始输出；时长拟合在下面（含必要时的原生提速重合成）
-                            // 之后对最终 PCM 统一做一次，避免对一版即将被替换的音频白做变速。
-                            audio = generated
+                            // 去掉首尾静音（对所有引擎统一生效）：在线引擎（微软 Edge 等）返回的音频
+                            // 开头常带 100～300ms 静音，不去掉的话配音永远比视频原声晚开口。
+                            // 时长拟合在下面（含必要时的原生提速重合成）之后对最终 PCM 统一做一次，
+                            // 避免对一版即将被替换的音频白做变速。
+                            audio = trimEdgeSilence(generated, ::checkSynthesisActive)
                             break
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
@@ -933,21 +935,27 @@ class DubbingEngine(
                             synthesisCallCount++
                             // 必须用与首次合成相同的文本：合并块是"两句一口气念"，只重合成
                             // 第一句会把第二句整句丢掉。
-                            val candidate = (synthesisTts ?: tts)!!.synthCancellable(
+                            val rawCandidate = (synthesisTts ?: tts)!!.synthCancellable(
                                 synthText, retrySpeed, line.speakerId, ::checkSynthesisActive,
                             )
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val candidateWithinSampleLimit =
-                                candidate.samples.size <= DubbingPcmValidation.MAX_SAMPLE_COUNT
+                                rawCandidate.samples.size <= DubbingPcmValidation.MAX_SAMPLE_COUNT
                             val candidateIsValid = candidateWithinSampleLimit && DubbingPcmValidation.isValidAudio(
-                                candidate.sampleRate,
-                                candidate.samples,
+                                rawCandidate.sampleRate,
+                                rawCandidate.samples,
                                 checkActive = {
                                     if (released || workerJob?.isActive == false) {
                                         throw kotlinx.coroutines.CancellationException("配音合成任务已取消")
                                     }
                                 },
                             )
+                            // 与首次合成一致：按去掉首尾静音后的真实说话时长比较和缓存。
+                            val candidate = if (candidateIsValid) {
+                                trimEdgeSilence(rawCandidate, ::checkSynthesisActive)
+                            } else {
+                                rawCandidate
+                            }
                             val currentDurationMs = readyAudio.samples.size.toDouble() * 1_000.0 /
                                 readyAudio.sampleRate.coerceAtLeast(1)
                             val candidateDurationMs = candidate.samples.size.toDouble() * 1_000.0 /
@@ -1372,6 +1380,22 @@ class DubbingEngine(
             if (shouldRestart) startSynthLoop()
             }
         }
+    }
+
+    /**
+     * 去掉合成音频首尾的静音（最多各 400ms，保留 25ms 余量），让配音的第一个字贴近字幕开口时间。
+     * 已经裁过的引擎（Kokoro/Piper/系统 TTS）再裁一次是空操作；全静音的音频原样保留。
+     */
+    private fun trimEdgeSilence(
+        audio: io.translatetube.local.tts.TtsAudio,
+        checkActive: () -> Unit,
+    ): io.translatetube.local.tts.TtsAudio {
+        val trimmed = io.translatetube.local.tts.TtsEdgeSilenceTrimmer.trim(
+            audio.samples,
+            audio.sampleRate,
+            checkActive,
+        )
+        return if (trimmed === audio.samples) audio else audio.copy(samples = trimmed)
     }
 
     /**
