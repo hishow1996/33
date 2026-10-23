@@ -2828,7 +2828,7 @@ class DubbingEngine(
     /**
      * 把一句配音 PCM 挂到共享混流总线，返回它实际开口的媒体时间（微秒）；被拒绝返回 -1。
      *
-     * - 期望开口时间 = 字幕开始 − 字幕/配音时间轴微调（与字幕选句同一个提前量），
+     * - 期望开口时间 = 字幕开始 − 固定提前量（与字幕选句同一个提前量），
      *   否则字幕提前了而配音还停在原始时间，听起来永远慢半拍。
      * - 上一句没说完时由总线把这一句排在后面：绝不叠音，视频也不暂停。
      * - 排队后如果会拖到窗口末尾之后，再额外压缩一点把时间债还掉（缓存里的音频不变），
@@ -2844,7 +2844,7 @@ class DubbingEngine(
     ): Long {
         val playIndex = resolveChunkIndex(index)
         val cue = lines.getOrNull(playIndex) ?: return -1L
-        val leadMs = SubtitleTimingOffset.read(appContext)
+        val leadMs = SubtitleTimingOffset.LEAD_MS
         val desiredUs = (cue.startMs - leadMs).coerceAtLeast(0L) * 1_000L
         // latestTimelineCursor 是 tick 的时间轴位置（已包含提前量），还原成真实播放头。
         val playheadUs = (latestTimelineCursor.positionMs - leadMs).coerceAtLeast(0L) * 1_000L
@@ -2892,7 +2892,7 @@ class DubbingEngine(
                     "排队延迟 ms" to (queuedDelayUs / 1_000L).toString(),
                     "本句音频时长 ms" to (durationUs / 1_000L).toString(),
                     "追赶压缩比例" to catchUpRatio.toString(),
-                    "字幕时间轴微调 ms" to leadMs.toString(),
+                    "字幕/配音提前量 ms" to leadMs.toString(),
                     "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
                 ),
             )

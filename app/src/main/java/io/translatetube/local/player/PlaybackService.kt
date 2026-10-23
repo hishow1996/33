@@ -6319,8 +6319,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     private fun tickFromPlayerCallback(ms: Long, source: String) {
         try {
-            // 字幕时间轴微调：正偏移让配音/字幕更早出现（对冲转写字幕时间戳的系统性偏晚），
-            // 配音与字幕共用同一偏移保证内容一致；不同来源的视频可各自校正。
+            // 固定提前量：让配音/字幕更早出现（对冲转写字幕时间戳的系统性偏晚），
+            // 配音与字幕共用同一个值保证内容一致。
             tick(ms + subtitleTimingOffsetMs())
         } catch (error: Exception) {
             val state = ui.value
@@ -6353,7 +6353,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     }
 
     // 与 DubbingEngine 挂载配音时使用同一个读取逻辑：字幕和配音一起提前/延后。
-    private fun subtitleTimingOffsetMs(): Long = SubtitleTimingOffset.read(this)
+    private fun subtitleTimingOffsetMs(): Long = SubtitleTimingOffset.LEAD_MS
 
     private fun tick(ms: Long) {
         val st = ui.value
