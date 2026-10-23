@@ -192,3 +192,5 @@ jobs:
 # Explicit user-requested APK build trigger after Kotlin compile fixes (2026-10-23).
 
 # Explicit user-requested APK build trigger after fixing Bilibili video ID nullability compile error (2026-10-23 evening).
+
+# Explicit user-requested APK build trigger (2026-10-24 Asia/Singapore).
