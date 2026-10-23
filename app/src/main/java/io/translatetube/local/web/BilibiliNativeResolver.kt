@@ -92,7 +92,7 @@ internal object BilibiliNativeResolver {
     private val videoIdPattern = Regex("""(?:^|/)video/(BV[A-Za-z0-9]{10}|av[0-9]+)""", RegexOption.IGNORE_CASE)
 
     /** 从 URL 提取 BV 号或 av 号（含展开与深链转换）。 */
-    private fun extractVideoId(url: String): Pair<String, Long?>? {
+    private fun extractVideoId(url: String): Pair<String?, Long?>? {
         val expanded = expandShortLink(url) ?: return null
         val webUrl = if (expanded.startsWith("bilibili://", ignoreCase = true)) {
             BilibiliDeepLinkPolicy.toWebUrl(expanded) ?: return null
