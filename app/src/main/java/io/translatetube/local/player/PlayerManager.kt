@@ -374,6 +374,7 @@ class PlayerManager(private val ctx: Context) {
 
     /** Clear stale playback before switching; a failed new source must not leave the old video running. */
     private fun clearPreviousYouTubeSource() {
+        clearVideoQualityOverrides()
         errorSink.value = null
         player.pause()
         player.stop()
