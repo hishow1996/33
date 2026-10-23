@@ -81,6 +81,7 @@ import io.translatetube.local.web.PikpakShare
 import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.web.SharedLinkTextParser
 import io.translatetube.local.web.BilibiliDeepLinkPolicy
+import io.translatetube.local.web.BilibiliNativeResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -844,6 +845,81 @@ fun WebVideoScreen(
         )
     }
 
+    // ---- B 站链接原生解析：不渲染 m 站页面，直接拿直链进播放器 ----
+    // 背景：m.bilibili.com 视频页在 WebView 里渲染不出播放器（只有推荐流封面），
+    // 推荐位小视频还被嗅探成已验证候选，挡住 yt-dlp 自动兜底——死锁无播放入口。
+    // B 站链接改走 view+playurl（HTML5 平台）直连，成功即进本地播放器
+    // （播放/字幕翻译/配音全链路），失败回退 WebView 老路。
+    val bilibiliScope = rememberCoroutineScope()
+    var bilibiliResolving by remember(initialUrl) { mutableStateOf(false) }
+    val bilibiliHandledAtStart = remember(initialUrl) { BilibiliNativeResolver.isBilibiliLink(initialUrl) }
+
+    fun tryBilibiliNative(target: String): Boolean {
+        if (!BilibiliNativeResolver.isBilibiliLink(target)) return false
+        if (bilibiliResolving) return true
+        bilibiliResolving = true
+        status = "已识别 B 站链接，正在直连解析视频…"
+        pageLoading = false
+        candidatesState.value = emptyList()
+        bilibiliScope.launch(Dispatchers.IO) {
+            val cookie = runCatching {
+                android.webkit.CookieManager.getInstance().getCookie("https://www.bilibili.com/")
+            }.getOrNull()
+            val result = runCatching { BilibiliNativeResolver.resolve(target, cookie) }.getOrNull()
+            mainHandler.post {
+                if (!screenActive.get()) return@post
+                bilibiliResolving = false
+                if (result != null) {
+                    status = "B 站解析成功：" + result.title
+                    io.translatetube.local.util.AppLogStore.info(
+                        context = appCtx,
+                        tag = "WebVideoParse",
+                        message = "B 站链接原生解析成功，直接进入播放器",
+                        diagnosticContext = mapOf(
+                            "解析器" to "bilibili-native",
+                            "视频标题" to result.title.take(80),
+                            "备用直链数量" to result.backupUrls.size.toString(),
+                        ),
+                    )
+                    onOpenMedia(
+                        result.playUrl,
+                        result.title,
+                        result.referer,
+                        cookie,
+                        result.userAgent,
+                    )
+                } else {
+                    status = "B 站直连解析失败，改用 yt-dlp 解析（规则更全但更慢）…"
+                    io.translatetube.local.util.AppLogStore.warning(
+                        context = appCtx,
+                        tag = "WebVideoParse",
+                        message = "B 站链接原生解析失败，回退 yt-dlp 解析",
+                        diagnosticContext = mapOf(
+                            "解析器" to "bilibili-native",
+                            "回退方式" to "yt-dlp 兜底解析",
+                        ),
+                        issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                            "WebVideoParse",
+                            "bilibili-native-fallback",
+                        ),
+                    )
+                    // 回退 yt-dlp：手机网络下 B 站提取器直连 API 可用性高。
+                    // 不回退 WebView——m 站页面渲染不出播放器，回去就是死锁。
+                    resetForNavigation(target)
+                    runYtDlp(target)
+                }
+            }
+        }
+        return true
+    }
+
+    // 初始链接就是 B 站：进页即拦截（WebView 工厂据此跳过首次加载）
+    androidx.compose.runtime.LaunchedEffect(initialUrl) {
+        if (bilibiliHandledAtStart) {
+            tryBilibiliNative(initialUrl)
+        }
+    }
+
     // PikPak 清单条目合并：按文件 id 去重（hook 与主动枚举两来源的 parentId 可能不一致，
     // 同一文件保留信息更全的一条：有直链优先、有真实父目录优先），
     // 视频条目自动并入候选列表（标题=文件名），并把 API 刚下发的直链直接标记已验证
@@ -1394,6 +1470,10 @@ fun WebVideoScreen(
                     // 受密码保护的分享保持官方网页原始验证流程：
                     // 用户在网页内手动输入提取码，不从粘贴文本自动填入私有接口。
                     pikpakPassCode = ""
+                    if (tryBilibiliNative(inputUrl)) {
+                        // B 站链接：原生直连解析（成功直接进播放器；失败函数内部回退 WebView）
+                        return@IconButton
+                    }
                     val normalized = WebMediaUrlPolicy.normalizePageUrl(inputUrl)
                     if (normalized == null) {
                         status = "网页地址无效，请输入 HTTP/HTTPS 链接。"
@@ -1568,6 +1648,18 @@ fun WebVideoScreen(
                             ): Boolean {
                                 if (!request.isForMainFrame) return false
                                 val originalUrl = request.url.toString()
+                                // B 站视频页（含 http 直达与 bilibili:// 深链）：页内点开
+                                // 推荐位/相关视频也走原生直连解析——m 站页面在 WebView 里
+                                // 渲染不出播放器，让 WebView 接管只会回到无播放入口的死锁。
+                                if (BilibiliDeepLinkPolicy.isVideoPageUrl(originalUrl)) {
+                                    mainHandler.post {
+                                        if (!screenActive.get()) return@post
+                                        address = originalUrl
+                                        status = "已识别 B 站视频页，正在直连解析…"
+                                    }
+                                    tryBilibiliNative(originalUrl)
+                                    return true
+                                }
                                 val convertedUrl = BilibiliDeepLinkPolicy.toWebUrl(originalUrl)
                                     ?: return false
                                 val safeUrl = WebMediaUrlPolicy.normalizePageUrl(convertedUrl)
@@ -1968,7 +2060,10 @@ fun WebVideoScreen(
 
                         }
                         val initial = WebMediaUrlPolicy.normalizePageUrl(initialUrl)
-                        if (initial != null) {
+                        if (bilibiliHandledAtStart) {
+                            // B 站链接：进页 LaunchedEffect 已启动原生解析，
+                            // WebView 不加载页面（m 站渲染不出播放器，加载无意义）。
+                        } else if (initial != null) {
                             // 初次进入页面也必须先切换 PikPak 专用移动浏览器 UA。
                             // 否则首次请求仍带系统 WebView 的 "; wv)" 标记，部分 PikPak
                             // 前端会进入降级分支，出现空白页；后续手动导航才应用 UA 已经太晚。

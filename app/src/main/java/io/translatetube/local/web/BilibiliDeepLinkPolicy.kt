@@ -21,6 +21,26 @@ internal object BilibiliDeepLinkPolicy {
         val page: Int?,
     )
 
+    /**
+     * 是否为 B 站视频页地址：http(s) 的 bilibili.com 系域名 /video/BV|av 路径，
+     * 或 bilibili:// 客户端视频深链。用于 WebView 导航拦截（页内点开 B 站视频
+     * 走原生直连解析，不让 m 站页面接管——其播放器在 WebView 内渲染不出来）。
+     */
+    fun isVideoPageUrl(rawUrl: String): Boolean {
+        val trimmed = rawUrl.trim()
+        if (trimmed.startsWith("bilibili://", ignoreCase = true) ||
+            trimmed.startsWith("bili://", ignoreCase = true)
+        ) {
+            return toWebUrl(trimmed) != null
+        }
+        val uri = runCatching { URI(trimmed) }.getOrNull() ?: return false
+        val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return false
+        if (scheme != "http" && scheme != "https") return false
+        val host = uri.host?.lowercase(Locale.ROOT) ?: return false
+        if (host != "bilibili.com" && !host.endsWith(".bilibili.com")) return false
+        return videoPathPattern.containsMatchIn(uri.path.orEmpty())
+    }
+
     fun toWebUrl(rawUrl: String): String? {
         val uri = runCatching { URI(rawUrl.trim()) }.getOrNull() ?: return null
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
