@@ -17,6 +17,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -66,6 +68,10 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
         )
     }
     var systemTtsVoiceMenuExpanded by remember { mutableStateOf(false) }
+    var dubbingSectionExpandRequest by remember { mutableStateOf(0) }
+    var transcriptionSectionExpandRequest by remember { mutableStateOf(0) }
+    val dubbingSectionRequester = remember { BringIntoViewRequester() }
+    val transcriptionSectionRequester = remember { BringIntoViewRequester() }
     var refreshingSystemTtsVoices by remember { mutableStateOf(false) }
     var systemTtsVoiceStatus by remember { mutableStateOf<String?>(null) }
     val systemTtsSettingsScope = androidx.compose.runtime.rememberCoroutineScope()
@@ -178,10 +184,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                 Text("‹", color = OnBg, style = MaterialTheme.typography.headlineMedium)
             }
             Spacer(Modifier.width(12.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("设置中心", style = MaterialTheme.typography.titleLarge, color = OnBg)
-                Text("个性化你的翻译体验", style = MaterialTheme.typography.bodySmall, color = SubText)
-            }
+            Text("设置", style = MaterialTheme.typography.titleLarge, color = OnBg)
         }
 
         // ===== 语音模型（方案 B：软件内下载） =====
@@ -275,7 +278,9 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column(
                         Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                            .background(Color.White.copy(alpha = 0.14f)).padding(9.dp),
+                            .background(Color.White.copy(alpha = 0.14f))
+                            .clickable { dubbingSectionExpandRequest += 1 }
+                            .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -292,7 +297,9 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                     }
                     Column(
                         Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                            .background(Color.White.copy(alpha = 0.14f)).padding(9.dp),
+                            .background(Color.White.copy(alpha = 0.14f))
+                            .clickable { transcriptionSectionExpandRequest += 1 }
+                            .padding(9.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -312,6 +319,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
                         .background(Color.White.copy(alpha = 0.14f))
+                        .clickable(onClick = onApiManager)
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -341,7 +349,11 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
 
 Section("翻译引擎", onHeaderClick = onApiManager) {}
 
-Section("转写引擎") {
+Section(
+    "转写引擎",
+    expandRequest = transcriptionSectionExpandRequest,
+    bringIntoViewRequester = transcriptionSectionRequester,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -589,7 +601,11 @@ Section("转写引擎") {
     }
 }
 
-Section("配音设置") {
+Section(
+    "配音设置",
+    expandRequest = dubbingSectionExpandRequest,
+    bringIntoViewRequester = dubbingSectionRequester,
+) {
             // 字幕/配音时间轴微调：对冲转写字幕时间戳的系统偏差（有的视频源整体偏晚）。
             var subtitleOffsetMs by remember {
                 mutableStateOf(
@@ -879,23 +895,24 @@ Section("视频源（yt-dlp）") {
 private fun Section(
     title: String,
     onHeaderClick: (() -> Unit)? = null,
+    expandRequest: Int = 0,
+    bringIntoViewRequester: BringIntoViewRequester? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(expandRequest) {
+        if (expandRequest > 0) {
+            expanded = true
+            withFrameNanos { }
+            bringIntoViewRequester?.bringIntoView()
+        }
+    }
     val glyph = when (title) {
         "翻译引擎", "翻译设置" -> Icons.Filled.Translate
         "配音设置" -> Icons.Filled.VolumeUp
         "模型管理", "视频源（yt-dlp）" -> Icons.Filled.Download
         "播放体验", "存储管理" -> Icons.Filled.FolderOpen
         else -> Icons.Filled.Info
-    }
-    val subtitle = when (title) {
-        "翻译引擎", "翻译设置" -> "API 服务商、翻译模型与密钥"
-        "视频源（yt-dlp）" -> "更新网页视频解析规则"
-        "播放体验" -> "悬浮窗和播放相关权限"
-        "存储管理" -> "查看占用、管理缓存和本地数据"
-        "关于应用" -> "版本信息与应用说明"
-        else -> "查看与管理相关选项"
     }
     val sectionBorderColor by animateColorAsState(
         targetValue = if (expanded) Color(0xFFB9CDF6) else Color(0xFFE8EDF5),
@@ -924,6 +941,9 @@ private fun Section(
         Column {
             Row(
                 Modifier.fillMaxWidth()
+                    .then(
+                        bringIntoViewRequester?.let { Modifier.bringIntoViewRequester(it) } ?: Modifier,
+                    )
                     .clip(RoundedCornerShape(20.dp))
                     .clickable {
                         if (onHeaderClick != null) onHeaderClick() else expanded = !expanded
@@ -945,17 +965,12 @@ private fun Section(
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(title, color = OnBg, style = MaterialTheme.typography.titleMedium)
-                    if (title != "转写引擎" && title != "配音设置" && title != "视频源（yt-dlp）") {
-                        Text(
-                            subtitle,
-                            color = SubText,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                        )
-                    }
-                }
+                Text(
+                    title,
+                    color = OnBg,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
                 if (onHeaderClick != null) {
                     Text("›", color = BrandBright, style = MaterialTheme.typography.headlineSmall)
                 } else {
