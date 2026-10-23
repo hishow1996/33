@@ -2798,7 +2798,11 @@ class DubbingEngine(
     }
 
     /** Wait briefly for the first ready cue to be mounted before the initial player start. */
-    suspend fun primeUpcomingCuesAndWait(positionMs: Long, lookAheadMs: Long = 2_500L) {
+    suspend fun primeUpcomingCuesAndWait(
+        positionMs: Long,
+        lookAheadMs: Long = 2_500L,
+        waitMs: Long = PREFEED_STARTUP_WAIT_MS,
+    ) {
         if (released || usesImmediateTimelinePlayback || lines.isEmpty()) return
         primeUpcomingCues(positionMs, lookAheadMs)
         val position = positionMs.coerceAtLeast(0L)
@@ -2816,7 +2820,7 @@ class DubbingEngine(
             }
             .minWithOrNull(compareBy<Int> { lines[it].startMs }.thenBy { it }) ?: return
         val completion = prefeedCompletions["$busGeneration:$firstIndex"] ?: return
-        kotlinx.coroutines.withTimeoutOrNull(PREFEED_STARTUP_WAIT_MS) { completion.await() }
+        kotlinx.coroutines.withTimeoutOrNull(waitMs.coerceAtLeast(0L)) { completion.await() }
     }
 
     private fun mixCueKey(index: Int): String = "$cacheWriterId:${resolveChunkIndex(index)}"

@@ -106,6 +106,25 @@ class DubbingTrackBusTest {
     }
 
     @Test
+    fun rewindingTheReadHeadLetsStartupCuesKeepTheirOwnTimeAndSurviveTheFlush() {
+        val bus = newBus()
+        val generation = bus.generationToken()
+        // 播放器预读阶段已经读到 700ms：此后挂载的开场句会被顶到读头之后
+        bus.readMixWindow(0L, 700)
+        assertEquals(ms(800), bus.feedSequenced("stale", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+        bus.removeCuesWithPrefix("stale")
+
+        // 开播前归零读头：同一句按自己的期望时间 200ms 开口，已挂载的句子不会被清掉
+        bus.rewindReadHead()
+        assertEquals(ms(200), bus.feedSequenced("first", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+        assertTrue(bus.hasCue("first"))
+        // 播放器 flush 后从头重读：开头这句能混进去
+        val mixed = bus.readMixWindow(0L, 400)
+        assertEquals(0f, mixed[100], 0.0001f)
+        assertEquals(0.5f, mixed[250], 0.0001f)
+    }
+
+    @Test
     fun cueCallerKnowsIsNotYetDueIsNotMovedEarlier() {
         val bus = newBus()
         val generation = bus.generationToken()

@@ -326,6 +326,19 @@ class DubbingTrackBus {
         }
     }
 
+    /**
+     * 渲染头归零，但保留已挂载的句子。
+     *
+     * 播放器在点播放之前就会预读并混好开头一小段音频（读头因此停在开头之后）。开播前
+     * 先调用它，再挂载起播位置附近的句子：这些句子会按各自的期望时间开口，而不是被预读
+     * 留下的旧读头顶到后面；随后播放器 flush 音频管线重新读一遍，开头一样能混进配音。
+     */
+    fun rewindReadHead() {
+        synchronized(stateLock) {
+            latestReadUs = Long.MIN_VALUE
+        }
+    }
+
     /** Seek / source replacement: invalidate old blocks and asynchronous publishers. */
     fun reset() {
         synchronized(stateLock) {

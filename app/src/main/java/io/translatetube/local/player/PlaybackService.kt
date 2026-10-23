@@ -137,6 +137,12 @@ private data class YouTubeStreamChoices(
     val defaultQuality: YouTubeQualitySource,
 )
 
+/** 开播前等待第一句配音挂上混流总线的最长时间（视频还没开始播，不影响观看）。 */
+private const val STARTUP_MOUNT_WAIT_MS = 800L
+
+/** 开播前 flush 之后，位置不连续回调保留总线的有效期。 */
+private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
+
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var pm: PlayerManager
@@ -619,7 +625,14 @@ class PlaybackService : MediaSessionService() {
                     // 混流总线：seek 后音频流会 flush；清空旧块并按新媒体头重设时钟基点，
                     // 下一次 playAt()（本次 tick 立即触发）重新挂载正确时间窗的块。
                     if (::pm.isInitialized) {
-                        pm.dubbingBus.reset()
+                        if (System.nanoTime() < keepDubbingBusUntilNanos) {
+                            // 开播前的 flush（见 startPlaybackWithMountedDubbing）：配音已经挂好，
+                            // 只把读头和时钟基点对齐到新位置，不能清总线，否则第一句又要重新挂。
+                            keepDubbingBusUntilNanos = 0L
+                            pm.dubbingBus.rewindReadHead()
+                        } else {
+                            pm.dubbingBus.reset()
+                        }
                         pm.dubbingBus.setStreamStartUs(newPosition.positionMs * 1000L)
                     }
                     lastLineIdx = Int.MIN_VALUE
@@ -768,9 +781,48 @@ class PlaybackService : MediaSessionService() {
             kotlinx.coroutines.delay(100L)
         }
 
+        // 起播位置附近的配音由 startPlaybackWithMountedDubbing() 在真正开播前挂载。
         awaitProcessingResumed(sessionKey, pipelineGeneration)
         ensureCurrentSession(sessionKey, pipelineGeneration)
-        if (::pm.isInitialized) engine.primeUpcomingCuesAndWait(pm.position(), lookAheadMs = 2_500L)
+    }
+
+    /** 开播前的 flush 会触发一次位置不连续回调；这段时间内保留已挂载的配音，不清总线。 */
+    @Volatile private var keepDubbingBusUntilNanos = 0L
+
+    /**
+     * 开播：先把起播位置附近的配音挂到混流总线，再让播放器音频管线从起播位置重读一遍，最后 play。
+     *
+     * 播放器在点播放之前就会预读并混好开头一小段音频（几百毫秒）。如果那时第一句配音还没挂上
+     * 总线，这一段就只有原声，配音只能等预读之后才开口——表现为"视频已经开始说话了，中文
+     * 配音还没开始，中途才接上"。所以必须：挂好第一批句子 → flush 一次音频管线（保留总线）→
+     * 播放，让开头的音频带着配音重新混一遍。
+     *
+     * @param seekToMs 非空表示需要先跳到该位置（续播）；为空表示从播放器当前位置开始。
+     * @param ensureCurrent 每次等待之后检查会话是否仍然有效，失效时抛出取消。
+     */
+    private suspend fun startPlaybackWithMountedDubbing(
+        seekToMs: Long?,
+        ensureCurrent: suspend () -> Unit,
+    ) {
+        val startMs = (seekToMs ?: pm.position()).coerceAtLeast(0L)
+        val engine = dubbing
+        val mountsOnBus = engine != null && ui.value.dubbingOn && !engine.usesImmediateTimelinePlayback
+        if (engine != null && mountsOnBus) {
+            // 预读已经把读头推到开头之后：归零，让第一批句子按各自的期望时间挂载。
+            pm.dubbingBus.rewindReadHead()
+            engine.primeUpcomingCuesAndWait(
+                startMs + subtitleTimingOffsetMs(),
+                lookAheadMs = 2_500L,
+                waitMs = STARTUP_MOUNT_WAIT_MS,
+            )
+            ensureCurrent()
+            keepDubbingBusUntilNanos = System.nanoTime() + STARTUP_FLUSH_KEEP_BUS_NANOS
+            pm.seekTo(startMs)
+        } else if (seekToMs != null) {
+            pm.seekTo(startMs)
+        }
+        primeSubtitleHighlightAtPlaybackStart(pm.position())
+        pm.play()
     }
 
     private fun updateProcessingNotification(state: PlayerUiState) {
@@ -1938,7 +1990,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 )
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(sessionKey, pipelineGeneration)
-                    pm.play()
+                    startPlaybackWithMountedDubbing(null) {
+                        ensureCurrentSession(sessionKey, pipelineGeneration)
+                    }
                 }
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
@@ -2299,7 +2353,9 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (resumePlaybackAfterImport) {
                     withContext(Dispatchers.Main) {
                         ensureCurrentSession(sessionKey, pipelineGeneration)
-                        pm.play()
+                        startPlaybackWithMountedDubbing(null) {
+                            ensureCurrentSession(sessionKey, pipelineGeneration)
+                        }
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -4005,16 +4061,17 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                 ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key, pipelineGeneration)
-                    pm.seekTo(resumeSec * 1000)
-                    primeSubtitleHighlightAtPlaybackStart(pm.position())
-                    pm.play()
+                    startPlaybackWithMountedDubbing(resumeSec * 1000) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                    }
                 }
             } else {
                 ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key, pipelineGeneration)
-                    primeSubtitleHighlightAtPlaybackStart(pm.position())
-                    pm.play()
+                    startPlaybackWithMountedDubbing(null) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                    }
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
