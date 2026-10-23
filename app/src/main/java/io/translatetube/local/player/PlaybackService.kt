@@ -1370,18 +1370,27 @@ class PlaybackService : MediaSessionService() {
             }
         }
         if (stateBefore.qualityOptions != options) {
-            io.translatetube.local.util.AppLogStore.info(
-                this,
-                "PlaybackQuality",
-                if (options.isEmpty()) "当前网页/本地视频没有可手动切换的多档画质" else "已发现可切换的视频画质",
-                diagnosticContext = mapOf(
-                    "媒体来源" to if (remoteMediaUrl != null) "网页视频" else "本地视频",
-                    "视频轨道清晰度" to (actualOptions.joinToString(",").ifBlank { "未检测到" }),
-                    "可切换档位数量" to options.size.toString(),
-                    "选择方式" to "Media3 视频轨覆盖，不重载媒体源",
-                    "播放位置毫秒" to (if (::pm.isInitialized) pm.position() else -1L).toString(),
-                ),
+            val logMessage = if (options.isEmpty()) {
+                "当前网页/本地视频没有可手动切换的多档画质"
+            } else {
+                "已发现可切换的视频画质"
+            }
+            val diagnostics = mapOf(
+                "媒体来源" to if (remoteMediaUrl != null) "网页视频" else "本地视频",
+                "视频轨道清晰度" to (actualOptions.joinToString(",").ifBlank { "未检测到" }),
+                "可切换档位数量" to options.size.toString(),
+                "选择方式" to "Media3 视频轨覆盖，不重载媒体源",
+                "播放位置毫秒" to (if (::pm.isInitialized) pm.position() else -1L).toString(),
             )
+            // 播放器轨道回调可能在主线程触发，日志文件写入转移到 IO，避免卡顿。
+            scope.launch(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackQuality",
+                    logMessage,
+                    diagnosticContext = diagnostics,
+                )
+            }
         }
     }
 
