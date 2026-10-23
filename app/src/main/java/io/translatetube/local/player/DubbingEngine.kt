@@ -146,6 +146,7 @@ class DubbingEngine(
     /** Emit first-output milestones once per attached subtitle session, not once per cue. */
     private val firstPlaybackReported = AtomicBoolean(false)
     private val firstPlaybackCompletedReported = AtomicBoolean(false)
+    private val firstQueuedDelayReported = AtomicBoolean(false)
     private val audioOutputPathReported = AtomicBoolean(false)
     private var lines: List<SubLine> = emptyList()
     private var timeline = DubbingTimeline(emptyList())
@@ -883,54 +884,9 @@ class DubbingEngine(
                                     "所选引擎返回静音、无效采样或不支持的采样率（${generated.sampleRate} Hz）"
                                 )
                             }
-                            // WSOLA 变速不变调：把整块 PCM 精确拉到字幕窗口（含借用间隙），
-                            // 播放层不再变调变速，每一条都能在窗口内配完。
-                            val chunkEndMs = chunkWindowEndByFirst[idx]
-                            audio = if (chunkEndMs != null) {
-                                val ratio = Wsola.ratioFor(
-                                    generated.samples.size,
-                                    generated.sampleRate,
-                                    chunkEndMs - line.startMs,
-                                )
-                                if (ratio in 0.97f..1.03f) {
-                                    generated
-                                } else {
-                                    // Alignment is post-processing: if it fails, keep the valid
-                                    // provider PCM and let timeline recovery handle its duration.
-                                    // Never report a successfully synthesized sentence as a TTS failure.
-                                    val alignedSamples = try {
-                                        Wsola.stretch(generated.samples, ratio)
-                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                        throw cancelled
-                                    } catch (alignmentError: Exception) {
-                                        android.util.Log.w(
-                                            "DubbingEngine",
-                                            "WSOLA alignment failed for line ${idx + 1}; preserving original synthesized PCM",
-                                            alignmentError,
-                                        )
-                                        runCatching {
-                                            io.translatetube.local.util.AppLogStore.warning(
-                                                appContext,
-                                                "DubbingEngine",
-                                                "第 ${idx + 1}/${lines.size} 句配音时长对齐失败，已保留成功合成的原始音频",
-                                                alignmentError,
-                                                diagnosticContext = mapOf(
-                                                    "字幕行号" to "${idx + 1}/${lines.size}",
-                                                    "配音引擎" to (tts?.name ?: "未知引擎"),
-                                                    "合成音频样本数" to generated.samples.size.toString(),
-                                                    "合成采样率 Hz" to generated.sampleRate.toString(),
-                                                    "目标对齐比例" to ratio.toString(),
-                                                    "恢复策略" to "跳过 WSOLA 变速对齐，缓存并继续使用原始合成 PCM",
-                                                ),
-                                            )
-                                        }
-                                        generated.samples
-                                    }
-                                    generated.copy(samples = alignedSamples)
-                                }
-                            } else {
-                                generated
-                            }
+                            // 这里只保留引擎原始输出；时长拟合在下面（含必要时的原生提速重合成）
+                            // 之后对最终 PCM 统一做一次，避免对一版即将被替换的音频白做变速。
+                            audio = generated
                             break
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
@@ -951,7 +907,12 @@ class DubbingEngine(
                     }
                     val firstAudio = audio ?: throw (lastFailure
                         ?: IllegalStateException("配音引擎没有返回有效音频"))
-                    val cueDurationMs = (line.endMs - line.startMs).coerceAtLeast(1L)
+                    // 本块可用的时间窗口：块首行开始 → 块末（含借用的静音间隙）。合并块覆盖两句，
+                    // 必须按整块窗口而不是单行时长判断，否则会误以为"太长"而反复重合成。
+                    val windowMs = ((chunkWindowEndByFirst[idx] ?: line.endMs) - line.startMs).coerceAtLeast(1L)
+                    // WSOLA 单独最多压缩 MAX_COMPRESS 倍；原始音频超出这个预算时，才值得让引擎
+                    // 原生提速重新合成（原生提速的韵律比大比例变速自然）。
+                    val cueDurationMs = DubbingFitPolicy.nativeRetryBudgetMs(windowMs)
                     // TTS engines may not scale linearly with their requested speech rate. Measure
                     // each accepted render and allow up to two adaptive passes before playback,
                     // stopping as soon as the measured PCM fits the safe timeline multiplier.
@@ -970,8 +931,10 @@ class DubbingEngine(
                         try {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             synthesisCallCount++
+                            // 必须用与首次合成相同的文本：合并块是"两句一口气念"，只重合成
+                            // 第一句会把第二句整句丢掉。
                             val candidate = (synthesisTts ?: tts)!!.synthCancellable(
-                                text, retrySpeed, line.speakerId, ::checkSynthesisActive,
+                                synthText, retrySpeed, line.speakerId, ::checkSynthesisActive,
                             )
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val candidateWithinSampleLimit =
@@ -1096,6 +1059,9 @@ class DubbingEngine(
                                 "calls=${synthesisCallCount}",
                         )
                     }
+                    // 时长拟合：整块 PCM 比窗口长才压缩（变速不变调），够放的保持自然语速，绝不拉长。
+                    // 缓存里存的就是拟合后的最终音频；挂载时的排队/追赶由总线处理。
+                    readyAudio = fitAudioToWindow(idx, readyAudio, windowMs)
                     val maxUsefulSamples = DubbingSynthesisPolicy.maxUsefulSampleCount(
                         sampleRate = readyAudio.sampleRate,
                         cueDurationMs = cueDurationMs,
@@ -1408,6 +1374,47 @@ class DubbingEngine(
         }
     }
 
+    /**
+     * 把合成结果按窗口压缩（只压不拉，规则见 [DubbingFitPolicy.synthesisRatio]）。
+     * 对齐只是后处理：失败就保留已验证的原始 PCM，绝不把合成成功的句子报成 TTS 失败。
+     */
+    private fun fitAudioToWindow(
+        idx: Int,
+        audio: io.translatetube.local.tts.TtsAudio,
+        windowMs: Long,
+    ): io.translatetube.local.tts.TtsAudio {
+        val ratio = DubbingFitPolicy.synthesisRatio(audio.samples.size, audio.sampleRate, windowMs)
+        if (ratio >= 1f) return audio
+        return try {
+            audio.copy(samples = Wsola.stretch(audio.samples, ratio))
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (alignmentError: Exception) {
+            android.util.Log.w(
+                "DubbingEngine",
+                "WSOLA alignment failed for line ${idx + 1}; preserving original synthesized PCM",
+                alignmentError,
+            )
+            runCatching {
+                io.translatetube.local.util.AppLogStore.warning(
+                    appContext,
+                    "DubbingEngine",
+                    "第 ${idx + 1}/${lines.size} 句配音时长对齐失败，已保留成功合成的原始音频",
+                    alignmentError,
+                    diagnosticContext = mapOf(
+                        "字幕行号" to "${idx + 1}/${lines.size}",
+                        "配音引擎" to (tts?.name ?: "未知引擎"),
+                        "合成音频样本数" to audio.samples.size.toString(),
+                        "合成采样率 Hz" to audio.sampleRate.toString(),
+                        "目标对齐比例" to ratio.toString(),
+                        "恢复策略" to "跳过 WSOLA 变速对齐，缓存并继续使用原始合成 PCM；挂载时由总线排队避免叠音",
+                    ),
+                )
+            }
+            audio
+        }
+    }
+
     private fun requestTtsFallback(index: Int, detail: String): Boolean {
         if (!tts?.name.orEmpty().contains("系统TTS")) return false
         if (!fallbackRequested.compareAndSet(false, true)) return true
@@ -1602,14 +1609,23 @@ class DubbingEngine(
 
     private fun cacheFile(idx: Int, cacheSpeed: Float = speed): File {
         val line = lines.getOrNull(idx)
-        val cueDurationMs = ((line?.endMs ?: 0L) - (line?.startMs ?: 0L)).coerceAtLeast(0L)
+        // 块首行缓存的是"合并后的整块 PCM"：身份必须由合并后的文本和块窗口决定，
+        // 这样合并伙伴（下一句译文/时间）变化时旧缓存不会被误用。
+        val translated = line?.zh
+        val identityText = if (translated.isNullOrBlank()) {
+            ""
+        } else {
+            chunkTextByFirst[idx]?.takeIf { it.isNotBlank() } ?: translated
+        }
+        val windowEndMs = chunkWindowEndByFirst[idx] ?: line?.endMs ?: 0L
+        val cueDurationMs = (windowEndMs - (line?.startMs ?: 0L)).coerceAtLeast(0L)
         return File(
             cacheDir,
             DubbingCacheIdentity.fileName(
                 lineIndex = idx,
                 speakerId = line?.speakerId ?: -1,
                 engineKey = tts?.cacheKey ?: tts?.name ?: "unknown",
-                text = line?.zh ?: "",
+                text = identityText,
                 speed = cacheSpeed,
                 cueDurationMs = cueDurationMs,
             ),
@@ -1921,19 +1937,9 @@ class DubbingEngine(
                     // a non-empty cache must not override a deliberately blank translation.
                     throw java.io.IOException("PCM 缓存音频状态与字幕译文不一致")
                 }
-                // 缓存污染自校验：合并块的 PCM 时长应贴合块窗口。旧版本按单行缓存的
-                // PCM（时长≈行窗口）混进块窗口时视为失效，删除后重新合成整块。
-                val chunkEndForValidation = chunkWindowEndByFirst[playIdx]
-                if (hasAudio && chunkEndForValidation != null) {
-                    val lineForValidation = lines.getOrNull(playIdx)
-                    if (lineForValidation != null) {
-                        val pcmMs = samples.size * 1000L / sr.coerceAtLeast(1)
-                        val windowMs = (chunkEndForValidation - lineForValidation.startMs).coerceAtLeast(1L)
-                        if (pcmMs < windowMs * 55 / 100 || pcmMs > windowMs * 165 / 100) {
-                            throw java.io.IOException("PCM 缓存时长与合并块窗口不符，重新合成")
-                        }
-                    }
-                }
+                // 合并块的文本与窗口已经是缓存标识的一部分（见 cacheFile），合并关系变化时旧缓存
+                // 自然不会命中，不再需要按时长猜测缓存是否"串台"。够放的句子保持自然时长，
+                // 比窗口短是正常的，按时长校验反而会把有效缓存当成污染、无限重合成。
                 if (!hasAudio) {
                     markCuePrepared(playIdx, hasAudio = false)
                 } else {
@@ -2740,14 +2746,13 @@ class DubbingEngine(
                             }
                         }
                         if (output.samples.isEmpty()) return@execute
-                        val cue = lines.getOrNull(resolveChunkIndex(index)) ?: return@execute
-                        published = outputBus.feed(
-                            cueKey = mixCueKey(index),
-                            mediaTimeUs = cue.startMs.coerceAtLeast(0L) * 1_000L,
+                        if (lines.getOrNull(resolveChunkIndex(index)) == null) return@execute
+                        published = publishCueToBus(
+                            index = index,
                             samples = output.samples,
-                            sourceSampleRate = output.sampleRate,
-                            expectedGeneration = busGeneration,
-                        ) { !released && outputBus.generationToken() == busGeneration }
+                            sampleRate = output.sampleRate,
+                            busGeneration = busGeneration,
+                        ) { !released && outputBus.generationToken() == busGeneration } >= 0L
                     } catch (_: kotlinx.coroutines.CancellationException) {
                         // Seek, mode change or engine replacement invalidated the asynchronous task.
                     } catch (error: Exception) {
@@ -2791,6 +2796,94 @@ class DubbingEngine(
     }
 
     private fun mixCueKey(index: Int): String = "$cacheWriterId:${resolveChunkIndex(index)}"
+
+    /**
+     * 把一句配音 PCM 挂到共享混流总线，返回它实际开口的媒体时间（微秒）；被拒绝返回 -1。
+     *
+     * - 期望开口时间 = 字幕开始 − 字幕/配音时间轴微调（与字幕选句同一个提前量），
+     *   否则字幕提前了而配音还停在原始时间，听起来永远慢半拍。
+     * - 上一句没说完时由总线把这一句排在后面：绝不叠音，视频也不暂停。
+     * - 排队后如果会拖到窗口末尾之后，再额外压缩一点把时间债还掉（缓存里的音频不变），
+     *   避免延迟越积越多。
+     * - 准备晚了的句子从当前播放头之后整句播出，而不是从中间切入丢掉开头。
+     */
+    private fun publishCueToBus(
+        index: Int,
+        samples: FloatArray,
+        sampleRate: Int,
+        busGeneration: Long,
+        isStillCurrent: () -> Boolean,
+    ): Long {
+        val playIndex = resolveChunkIndex(index)
+        val cue = lines.getOrNull(playIndex) ?: return -1L
+        val leadMs = SubtitleTimingOffset.read(appContext)
+        val desiredUs = (cue.startMs - leadMs).coerceAtLeast(0L) * 1_000L
+        // latestTimelineCursor 是 tick 的时间轴位置（已包含提前量），还原成真实播放头。
+        val playheadUs = (latestTimelineCursor.positionMs - leadMs).coerceAtLeast(0L) * 1_000L
+        val key = mixCueKey(index)
+        val durationUs = samples.size * 1_000_000L / sampleRate.coerceAtLeast(1)
+
+        var output = samples
+        val projectedStartUs = outputBus.projectStartUs(key, desiredUs, playheadUs, durationUs)
+        val windowEndMs = chunkWindowEndByFirst[playIndex] ?: cue.endMs
+        val endLimitUs = (windowEndMs - leadMs + DubbingFitPolicy.CATCH_UP_TOLERANCE_MS)
+            .coerceAtLeast(0L) * 1_000L
+        val catchUpRatio = DubbingFitPolicy.catchUpRatio(projectedStartUs, durationUs, endLimitUs)
+        if (catchUpRatio < 1f) {
+            output = try {
+                Wsola.stretch(samples, catchUpRatio)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // 追赶压缩只是优化；失败就按原速排队播放，绝不因此丢句。
+                android.util.Log.w("DubbingEngine", "Catch-up compression failed for line ${index + 1}", error)
+                samples
+            }
+        }
+
+        val startedAtUs = outputBus.feedSequenced(
+            cueKey = key,
+            desiredMediaTimeUs = desiredUs,
+            notBeforeUs = playheadUs,
+            samples = output,
+            sourceSampleRate = sampleRate,
+            expectedGeneration = busGeneration,
+            isStillCurrent = isStillCurrent,
+        )
+        val queuedDelayUs = startedAtUs - desiredUs
+        if (startedAtUs >= 0L && queuedDelayUs > 300_000L &&
+            firstQueuedDelayReported.compareAndSet(false, true)
+        ) {
+            logDubbingInfo(
+                "配音句子被前一句顶后开口（已排队，不叠音、不暂停视频）",
+                mapOf(
+                    "字幕行号" to "${playIndex + 1}/${lines.size}",
+                    "字幕开始时间 ms" to cue.startMs.toString(),
+                    "期望开口时间 ms" to (desiredUs / 1_000L).toString(),
+                    "实际开口时间 ms" to (startedAtUs / 1_000L).toString(),
+                    "排队延迟 ms" to (queuedDelayUs / 1_000L).toString(),
+                    "本句音频时长 ms" to (durationUs / 1_000L).toString(),
+                    "追赶压缩比例" to catchUpRatio.toString(),
+                    "字幕时间轴微调 ms" to leadMs.toString(),
+                    "当前视频位置 ms" to latestTimelineCursor.positionMs.toString(),
+                ),
+            )
+        }
+        return startedAtUs
+    }
+
+    /**
+     * 清掉本引擎挂在共享总线上的所有句子，并允许它们按新内容重新预挂载。
+     * 总线属于播放器、由所有引擎共用：引擎被替换或重新合成后，如果旧音频还留在总线上，
+     * 到点就会和新配音叠在一起一起播出。
+     */
+    private fun purgeMountedCues() {
+        outputBus.removeCuesWithPrefix("$cacheWriterId:")
+        synchronized(prefedCueKeys) {
+            prefedCueKeys.clear()
+            prefeedCompletions.clear()
+        }
+    }
 
     /**
      * Keep a live System TTS utterance or an overlong PCM tail alive across normal subtitle
@@ -3136,6 +3229,27 @@ class DubbingEngine(
                     // 时钟（seek/暂停/倍速天然跟随），句间停顿与超窗截断由总线时间窗
                     // 自然完成，绝不排队等上一句读完。
                     val pcmLine = lines.getOrNull(resolveChunkIndex(idx)) ?: line
+                    // 预挂载已经把这一句排进总线：不重新读盘、不重新压缩、不重新排队，
+                    // 否则每次 tick/恢复/换行都会把已排好的时间线再扰动一遍。
+                    if (outputBus.hasCue(mixCueKey(idx))) {
+                        val alreadyMounted = synchronized(playbackControlLock) {
+                            val current = !released && playbackGeneration.get() == generation &&
+                                _currentLine.value == idx && isActivePlaybackAllowedLocked() &&
+                                outputBus.generationToken() == busGenerationAtRequest
+                            if (current) {
+                                lastFedLine = idx
+                                playbackStartedLine = idx
+                            }
+                            current
+                        }
+                        if (alreadyMounted) {
+                            runCatching { onPlaybackStarted?.invoke(idx) }
+                                .onFailure {
+                                    android.util.Log.w("DubbingEngine", "Could not publish dubbing playback state", it)
+                                }
+                        }
+                        return@execute
+                    }
                     val loaded = load(idx) {
                         !released && playbackGeneration.get() == generation
                     } ?: run {
@@ -3158,16 +3272,14 @@ class DubbingEngine(
                             _currentLine.value == idx && isActivePlaybackAllowedLocked()
                     }
                     if (!canFeed) return@execute
-                    val acceptedFeed = outputBus.feed(
-                        cueKey = mixCueKey(idx),
-                        mediaTimeUs = pcmLine.startMs.coerceAtLeast(0L) * 1_000L,
+                    val acceptedFeed = publishCueToBus(
+                        index = idx,
                         samples = outputPcm.samples,
-                        sourceSampleRate = outputPcm.sampleRate,
-                        expectedGeneration = busGenerationAtRequest,
-                        isStillCurrent = {
-                            !released && playbackGeneration.get() == generation && _currentLine.value == idx
-                        },
-                    )
+                        sampleRate = outputPcm.sampleRate,
+                        busGeneration = busGenerationAtRequest,
+                    ) {
+                        !released && playbackGeneration.get() == generation && _currentLine.value == idx
+                    } >= 0L
                     if (!acceptedFeed) {
                         clearUnstartedLineIfCurrent(idx, generation)
                         return@execute
@@ -3325,6 +3437,8 @@ class DubbingEngine(
         val oldSynthesis = synchronized(synthStartLock) { synthJob }
         oldCacheInit?.cancel()
         oldSynthesis?.cancel()
+        // 语速/配置变了：总线上按旧配置合成的句子已经过期，撤掉后按新缓存重新预挂载。
+        purgeMountedCues()
         synchronized(mem) { mem.clear() }
         resetReadinessForCurrentConfiguration()
         synchronized(pending) {
@@ -3467,6 +3581,9 @@ class DubbingEngine(
             if (released) return
             released = true
         }
+        // 共享总线属于播放器：旧引擎挂上去的句子必须随引擎一起撤掉，
+        // 否则新引擎的配音会和旧引擎残留的音频叠在一起播出。
+        purgeMountedCues()
         logDubbingInfo(
             "配音引擎开始释放",
             mapOf(

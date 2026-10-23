@@ -592,7 +592,12 @@ Section("转写引擎") {
 Section("配音设置") {
             // 字幕/配音时间轴微调：对冲转写字幕时间戳的系统偏差（有的视频源整体偏晚）。
             var subtitleOffsetMs by remember {
-                mutableStateOf(prefs.getLong("subtitle_offset_ms", 300L))
+                mutableStateOf(
+                    prefs.getLong(
+                        io.translatetube.local.player.SubtitleTimingOffset.PREF_KEY,
+                        io.translatetube.local.player.SubtitleTimingOffset.DEFAULT_LEAD_MS,
+                    )
+                )
             }
             Column(Modifier.fillMaxWidth()) {
                 Text("字幕/配音时间轴微调", color = OnBg, style = MaterialTheme.typography.bodyMedium)

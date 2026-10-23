@@ -32,10 +32,13 @@ internal object DubbingCacheIdentity {
         }
 
         val textHash = fingerprint(text)
-        // Bump v9 when cached PCM acceptance limits change; include the bounded cue window.
+        // Bump the version when cached PCM content rules change; include the bounded cue window.
+        // v10: cached PCM is now only ever compressed to fit its window (never stretched), and a
+        // merged chunk's identity is its merged text/window. Older entries were slowed down to fill
+        // their window, so they must be synthesized again.
         val engineHash = fingerprint(
-            "$engineKey-v9-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-adaptive"
+            "$engineKey-v10-speed-$speed-cue-ms-${cueDurationMs.coerceAtLeast(0L)}-fit"
         )
-        return "$lineIndex-v$speakerId-v9-speed-$engineHash-t$textHash.pcm"
+        return "$lineIndex-v$speakerId-v10-speed-$engineHash-t$textHash.pcm"
     }
 }

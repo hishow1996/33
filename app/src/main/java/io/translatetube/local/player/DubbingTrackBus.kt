@@ -5,16 +5,31 @@ package io.translatetube.local.player
  *
  * 块在后台生产线程重采样、排序和去重；渲染线程只遍历有交集的块并累加样本，
  * 不在读侧排序，也不为每个块分配中间缓冲区。
+ *
+ * 两种挂载方式：
+ * - [feed]：块固定在给定的媒体时间，重叠的块直接相加（原有契约，保持不变）；
+ * - [feedSequenced]：配音句子专用。句子按期望时间依次开口，上一句没说完就排在它后面，
+ *   绝不叠音；准备晚了的句子从渲染头之后整句播出，不丢开头。排版规则见 [DubbingCueLayout]。
  */
 class DubbingTrackBus {
 
     private class Block(
         val cueKey: String?,
+        /** 期望的媒体时间（微秒）。排队块的实际开口时间可能晚于它。 */
         val mediaTimeUs: Long,
+        /** 实际开口帧位置。 */
         val startFrame: Long,
         val samples: FloatArray,
+        /** 排队块参与排版；普通块固定在 [startFrame]。 */
+        val sequenced: Boolean = false,
+        /** 排队块自己的开口下限（挂载时的播放头）。 */
+        val notBeforeFrame: Long = Long.MIN_VALUE,
     ) {
         val endFrame: Long = startFrame + samples.size.toLong()
+
+        fun withStart(frame: Long): Block =
+            if (frame == startFrame) this
+            else Block(cueKey, mediaTimeUs, frame, samples, sequenced, notBeforeFrame)
     }
 
     private val stateLock = Any()
@@ -55,7 +70,9 @@ class DubbingTrackBus {
         sourceSampleRate = sourceSampleRate,
         expectedGeneration = null,
         isStillCurrent = null,
-    )
+        sequenced = false,
+        notBeforeUs = Long.MIN_VALUE,
+    ) >= 0L
 
     /** Refeeding the same cue replaces its prior block instead of doubling its loudness. */
     fun feed(
@@ -72,6 +89,34 @@ class DubbingTrackBus {
         sourceSampleRate = sourceSampleRate,
         expectedGeneration = expectedGeneration,
         isStillCurrent = isStillCurrent,
+        sequenced = false,
+        notBeforeUs = Long.MIN_VALUE,
+    ) >= 0L
+
+    /**
+     * 配音句子专用挂载：按 [desiredMediaTimeUs] 排队开口，不与其它排队句叠音。
+     * [notBeforeUs] 是调用方已知的当前播放头（真实媒体时间），句子不会早于它开口。
+     * 已经开始播放的同一句不会被替换或移动。
+     *
+     * @return 实际开口的媒体时间（微秒）；被拒绝（过期、已关闭配音等）返回 -1。
+     */
+    fun feedSequenced(
+        cueKey: String,
+        desiredMediaTimeUs: Long,
+        notBeforeUs: Long,
+        samples: FloatArray,
+        sourceSampleRate: Int,
+        expectedGeneration: Long? = null,
+        isStillCurrent: (() -> Boolean)? = null,
+    ): Long = feedInternal(
+        cueKey = cueKey,
+        mediaTimeUs = desiredMediaTimeUs,
+        samples = samples,
+        sourceSampleRate = sourceSampleRate,
+        expectedGeneration = expectedGeneration,
+        isStillCurrent = isStillCurrent,
+        sequenced = true,
+        notBeforeUs = notBeforeUs,
     )
 
     private fun feedInternal(
@@ -81,14 +126,16 @@ class DubbingTrackBus {
         sourceSampleRate: Int,
         expectedGeneration: Long?,
         isStillCurrent: (() -> Boolean)?,
-    ): Boolean {
-        if (samples.isEmpty() || sourceSampleRate <= 0 || mediaTimeUs < 0L) return false
+        sequenced: Boolean,
+        notBeforeUs: Long,
+    ): Long {
+        if (samples.isEmpty() || sourceSampleRate <= 0 || mediaTimeUs < 0L) return -1L
         val snapshot = synchronized(stateLock) {
-            if (!dubbingEnabled) return false
-            if (expectedGeneration != null && expectedGeneration != contentGeneration) return false
+            if (!dubbingEnabled) return -1L
+            if (expectedGeneration != null && expectedGeneration != contentGeneration) return -1L
             Triple(contentGeneration, sinkSampleRate, latestReadUs)
         }
-        if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return false
+        if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return -1L
 
         val targetRate = snapshot.second
         val resampled = if (targetRate == sourceSampleRate) {
@@ -107,17 +154,28 @@ class DubbingTrackBus {
             }
         }
 
-        if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return false
+        if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return -1L
         synchronized(stateLock) {
-            if (!dubbingEnabled || contentGeneration != snapshot.first) return false
-            if (expectedGeneration != null && contentGeneration != expectedGeneration) return false
-            if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return false
+            if (!dubbingEnabled || contentGeneration != snapshot.first) return -1L
+            if (expectedGeneration != null && contentGeneration != expectedGeneration) return -1L
+            if (isStillCurrent?.let { runCatching(it).getOrDefault(false) } == false) return -1L
 
             val readHead = latestReadUs
+            val readHeadFrame = if (readHead == Long.MIN_VALUE) Long.MIN_VALUE
+                else frameAtUs(readHead, targetRate)
             val cutoffUs = if (readHead == Long.MIN_VALUE) Long.MIN_VALUE
                 else (readHead - RETAIN_PAST_MS * 1_000L).coerceAtLeast(0L)
             val cutoffFrame = if (cutoffUs == Long.MIN_VALUE) Long.MIN_VALUE
                 else frameAtUs(cutoffUs, targetRate)
+
+            // 同一句已经开始播放：不替换、不移动，避免半句重播或断开。
+            if (sequenced && cueKey != null && readHeadFrame != Long.MIN_VALUE) {
+                val playing = installed.firstOrNull {
+                    it.sequenced && it.cueKey == cueKey && it.startFrame < readHeadFrame
+                }
+                if (playing != null) return usAtFrame(playing.startFrame, targetRate)
+            }
+
             val next = ArrayList<Block>(installed.size + 1)
             for (block in installed) {
                 val sameCue = cueKey != null && block.cueKey == cueKey
@@ -125,17 +183,137 @@ class DubbingTrackBus {
                 if (!sameCue && stillRelevant) next.add(block)
             }
 
-            val startFrame = frameAtUs(mediaTimeUs, targetRate)
-            val endFrame = startFrame + resampled.size.toLong()
+            val desiredFrame = frameAtUs(mediaTimeUs, targetRate)
+            val notBeforeFrame = if (notBeforeUs == Long.MIN_VALUE) Long.MIN_VALUE
+                else frameAtUs(notBeforeUs.coerceAtLeast(0L), targetRate)
+            val placedStart: Long
+            if (sequenced) {
+                val laidOut = layoutSequenced(
+                    existing = next,
+                    candidate = Candidate(desiredFrame, resampled.size.toLong(), notBeforeFrame),
+                    rate = targetRate,
+                    readHeadFrame = readHeadFrame,
+                )
+                for (i in next.indices) next[i] = next[i].withStart(laidOut.existingStarts[i])
+                placedStart = laidOut.candidateStart
+            } else {
+                placedStart = desiredFrame
+            }
+            val endFrame = placedStart + resampled.size.toLong()
             if (cutoffFrame != Long.MIN_VALUE && endFrame <= cutoffFrame) {
                 installed = next.toTypedArray()
-                return false
+                return -1L
             }
-            next.add(Block(cueKey, mediaTimeUs, startFrame, resampled))
+            next.add(Block(cueKey, mediaTimeUs, placedStart, resampled, sequenced, notBeforeFrame))
             next.sortWith(compareBy<Block> { it.startFrame }.thenBy { it.mediaTimeUs })
             installed = next.toTypedArray()
+            return usAtFrame(placedStart, targetRate)
         }
-        return true
+    }
+
+    /**
+     * 预演：如果现在挂载这一句，它会在什么时候开口（媒体时间，微秒）？不改变任何状态。
+     * 调用方据此判断这句是否被前面的句子顶后太多，需要追赶压缩。
+     */
+    fun projectStartUs(
+        cueKey: String,
+        desiredMediaTimeUs: Long,
+        notBeforeUs: Long,
+        durationUs: Long,
+    ): Long {
+        if (desiredMediaTimeUs < 0L || durationUs <= 0L) return desiredMediaTimeUs
+        synchronized(stateLock) {
+            if (!dubbingEnabled) return desiredMediaTimeUs
+            val rate = sinkSampleRate
+            val readHead = latestReadUs
+            val readHeadFrame = if (readHead == Long.MIN_VALUE) Long.MIN_VALUE
+                else frameAtUs(readHead, rate)
+            val playing = readHeadFrame != Long.MIN_VALUE && installed.any {
+                it.sequenced && it.cueKey == cueKey && it.startFrame < readHeadFrame
+            }
+            if (playing) {
+                val block = installed.first { it.sequenced && it.cueKey == cueKey }
+                return usAtFrame(block.startFrame, rate)
+            }
+            val others = installed.filter { !(it.cueKey != null && it.cueKey == cueKey) }
+            val laidOut = layoutSequenced(
+                existing = others,
+                candidate = Candidate(
+                    desiredFrame = frameAtUs(desiredMediaTimeUs, rate),
+                    lengthFrames = (durationUs * rate / 1_000_000L).coerceAtLeast(1L),
+                    notBeforeFrame = if (notBeforeUs == Long.MIN_VALUE) Long.MIN_VALUE
+                        else frameAtUs(notBeforeUs.coerceAtLeast(0L), rate),
+                ),
+                rate = rate,
+                readHeadFrame = readHeadFrame,
+            )
+            return usAtFrame(laidOut.candidateStart, rate)
+        }
+    }
+
+    /** 这一句（按 cueKey）是否已经挂在总线上。 */
+    fun hasCue(cueKey: String): Boolean = installed.any { it.cueKey == cueKey }
+
+    /**
+     * 移除某个前缀下的所有句子。引擎被替换/重新合成时调用，防止旧引擎的音频留在共享总线上
+     * 到点后与新配音叠在一起。
+     */
+    fun removeCuesWithPrefix(prefix: String) {
+        if (prefix.isEmpty()) return
+        synchronized(stateLock) {
+            val kept = installed.filter { it.cueKey?.startsWith(prefix) != true }
+            if (kept.size != installed.size) installed = kept.toTypedArray()
+        }
+    }
+
+    private class Candidate(
+        val desiredFrame: Long,
+        val lengthFrames: Long,
+        val notBeforeFrame: Long,
+    )
+
+    private class LaidOut(val existingStarts: LongArray, val candidateStart: Long)
+
+    /**
+     * 对所有排队块加上候选块一起重新排版。普通块（[feed]）不参与，保持原位。
+     * 已经开始播放（开口早于渲染头）的块位置固定。
+     */
+    private fun layoutSequenced(
+        existing: List<Block>,
+        candidate: Candidate,
+        rate: Int,
+        readHeadFrame: Long,
+    ): LaidOut {
+        val indices = ArrayList<Int>(existing.size)
+        val items = ArrayList<DubbingCueLayout.Item>(existing.size + 1)
+        for (i in existing.indices) {
+            val block = existing[i]
+            if (!block.sequenced) continue
+            indices.add(i)
+            val started = readHeadFrame != Long.MIN_VALUE && block.startFrame < readHeadFrame
+            items.add(
+                DubbingCueLayout.Item(
+                    desiredFrame = frameAtUs(block.mediaTimeUs, rate),
+                    lengthFrames = block.samples.size.toLong(),
+                    notBeforeFrame = block.notBeforeFrame,
+                    frozenStartFrame = if (started) block.startFrame else null,
+                )
+            )
+        }
+        items.add(
+            DubbingCueLayout.Item(
+                desiredFrame = candidate.desiredFrame,
+                lengthFrames = candidate.lengthFrames,
+                notBeforeFrame = candidate.notBeforeFrame,
+            )
+        )
+        val floor = if (readHeadFrame == Long.MIN_VALUE) Long.MIN_VALUE
+            else readHeadFrame + rate.toLong() * MIN_LEAD_MS / 1_000L
+        val gap = rate.toLong() * SENTENCE_GAP_MS / 1_000L
+        val starts = DubbingCueLayout.layout(items, gap, floor)
+        val existingStarts = LongArray(existing.size) { existing[it].startFrame }
+        for (k in indices.indices) existingStarts[indices[k]] = starts[k]
+        return LaidOut(existingStarts, starts[items.size - 1])
     }
 
     /** Turning dubbing off clears queued voice immediately and invalidates all in-flight feeds. */
@@ -191,6 +369,8 @@ class DubbingTrackBus {
         val readGeneration = snapshot.third
         val windowStartFrame = frameAtUs(mediaTimeUs, rate)
         val windowEndFrame = windowStartFrame + count.toLong()
+        val fadeInFrames = rate * FADE_IN_MS / 1_000
+        val fadeOutFrames = rate * FADE_OUT_MS / 1_000
 
         for (block in blocks) {
             if (block.startFrame >= windowEndFrame) break
@@ -199,9 +379,24 @@ class DubbingTrackBus {
             val sourceStart = (windowStartFrame - block.startFrame).coerceAtLeast(0L).toInt()
             val copyCount = minOf(count - destinationStart, block.samples.size - sourceStart)
             if (copyCount <= 0) continue
+            // 块首尾各做一小段淡入淡出，避免边界处的爆音；中间部分原样相加。
+            val length = block.samples.size
+            val fadeIn = minOf(fadeInFrames, length / 2)
+            val fadeOut = minOf(fadeOutFrames, length / 2)
+            val steadyEnd = length - fadeOut
             var i = 0
             while (i < copyCount) {
-                out[destinationStart + i] += block.samples[sourceStart + i]
+                val position = sourceStart + i
+                val sample = block.samples[position]
+                out[destinationStart + i] += if (position in fadeIn until steadyEnd) {
+                    sample
+                } else {
+                    var gain = 1f
+                    if (position < fadeIn) gain = position.toFloat() / fadeIn
+                    val fromEnd = length - position
+                    if (fromEnd <= fadeOut) gain = minOf(gain, fromEnd.toFloat() / fadeOut)
+                    sample * gain
+                }
                 i++
             }
         }
@@ -223,7 +418,19 @@ class DubbingTrackBus {
             (safeUs % 1_000_000L) * sampleRate.toLong() / 1_000_000L
     }
 
+    private fun usAtFrame(frame: Long, sampleRate: Int): Long {
+        val safeFrame = frame.coerceAtLeast(0L)
+        return (safeFrame / sampleRate) * 1_000_000L +
+            (safeFrame % sampleRate) * 1_000_000L / sampleRate
+    }
+
     private companion object {
         const val RETAIN_PAST_MS = 5_000L
+        /** 句与句之间排队时保留的最小停顿，相当于一个逗号的自然间隔。 */
+        const val SENTENCE_GAP_MS = 120L
+        /** 迟到句子的开口位置在渲染头之后留出的安全余量，大于音频缓冲区的单次处理量。 */
+        const val MIN_LEAD_MS = 100L
+        const val FADE_IN_MS = 6
+        const val FADE_OUT_MS = 12
     }
 }
