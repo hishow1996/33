@@ -588,10 +588,12 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     )
                 }
                 Spacer(Modifier.width(4.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("视频播放", color = OnBg, style = MaterialTheme.typography.titleLarge)
-                    Text("外文原声 · 中文配音", color = SubText, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-                }
+                Text(
+                    "视频播放",
+                    color = OnBg,
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f),
+                )
                 Box {
                     IconButton(
                         onClick = { advancedMenuExpanded = true },
