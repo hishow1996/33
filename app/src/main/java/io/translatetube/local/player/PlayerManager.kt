@@ -455,6 +455,7 @@ class PlayerManager(private val ctx: Context) {
         requestHeaders: Map<String, String> = emptyMap(),
         userAgent: String? = null,
     ) {
+        clearVideoQualityOverrides()
         errorSink.value = null
         val item = MediaItem.Builder()
             .setUri(uri)
@@ -476,6 +477,91 @@ class PlayerManager(private val ctx: Context) {
             player.setMediaSource(remoteMediaSourceFactory.createMediaSource(item))
         }
         player.prepare()
+    }
+
+    /** 当前媒体流实际暴露且设备可解码的视频清晰度；静态单画质视频不会产生可切换菜单。 */
+    fun availableVideoQualityLabels(): List<String> {
+        if (released) return emptyList()
+        return runCatching {
+            player.currentTracks.groups.asSequence()
+                .filter { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
+                .flatMap { group ->
+                    (0 until group.length).asSequence()
+                        .filter { group.isTrackSupported(it) }
+                        .map { group.getTrackFormat(it).height }
+                }
+                .filter { it > 0 }
+                .distinct()
+                .sortedDescending()
+                .map { "${it}p" }
+                .toList()
+        }.onFailure {
+            android.util.Log.w("PlayerManager", "读取网页视频可用画质失败", it)
+        }.getOrDefault(emptyList())
+    }
+
+    /** 返回当前已选视频轨的分辨率标签。 */
+    fun currentVideoQualityLabel(): String {
+        if (released) return ""
+        return runCatching {
+            player.currentTracks.groups.asSequence()
+                .filter { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
+                .flatMap { group ->
+                    (0 until group.length).asSequence()
+                        .filter { group.isTrackSelected(it) }
+                        .map { group.getTrackFormat(it).height }
+                }
+                .firstOrNull { it > 0 }
+                ?.let { "${it}p" }
+                .orEmpty()
+        }.onFailure {
+            android.util.Log.w("PlayerManager", "读取当前视频画质失败", it)
+        }.getOrDefault("")
+    }
+
+    /**
+     * 对当前自适应媒体清单锁定一个视频轨。
+     * 这里只更新 Media3 的视频轨选择参数，不重载媒体源、不 seek，音频轨与配音时间轴保持连续。
+     */
+    fun selectVideoQuality(label: String): Boolean {
+        if (released) return false
+        val targetHeight = label.removeSuffix("p").toIntOrNull()?.takeIf { it > 0 } ?: return false
+        return runCatching {
+            val matchingTrack = player.currentTracks.groups.asSequence()
+                .filter { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
+                .flatMap { group ->
+                    (0 until group.length).asSequence().map { trackIndex -> group to trackIndex }
+                }
+                .firstOrNull { (group, trackIndex) ->
+                    group.isTrackSupported(trackIndex) &&
+                        group.getTrackFormat(trackIndex).height == targetHeight
+                } ?: return false
+
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                .setOverrideForType(
+                    androidx.media3.common.TrackSelectionOverride(
+                        matchingTrack.first.mediaTrackGroup,
+                        listOf(matchingTrack.second),
+                    ),
+                )
+                .build()
+            true
+        }.onFailure {
+            android.util.Log.w("PlayerManager", "应用网页视频画质选择失败：$label", it)
+        }.getOrDefault(false)
+    }
+
+    /** 更换媒体源时清除旧视频轨覆盖，避免同结构的新流继承上个视频的锁定画质。 */
+    private fun clearVideoQualityOverrides() {
+        if (released) return
+        runCatching {
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                .build()
+        }.onFailure {
+            android.util.Log.w("PlayerManager", "清除旧视频画质选择失败", it)
+        }
     }
 
     fun play() {
