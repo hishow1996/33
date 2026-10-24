@@ -578,7 +578,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             "用户请求取消模型下载/安装任务",
             details = modelKindDetails(kind) + mapOf(
                 "取消前任务是否活跃" to (job?.isActive == true).toString(),
-                "取消前下载文件大小 bytes" to File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp").length().toString(),
+                "续传策略" to "取消或网络中断时保留按下载源隔离的断点文件",
             ),
         )
         when (kind) {
@@ -728,7 +728,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         destDir: File,
     ) {
         val downloadStartedAtMs = System.currentTimeMillis()
-        val pkg = File(ctx.cacheDir, "${kind.name}_model.tar.bz2.tmp")
+        val archiveName = when {
+            kind == ModelKind.TTS -> "TTS_model.tar.bz2.tmp"
+            ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> "ASR_sensevoice_model.tar.bz2.tmp"
+            else -> "ASR_whisper_model.tar.bz2.tmp"
+        }
+        val pkg = File(ctx.cacheDir, archiveName)
+        val maxArchiveBytes = 512L * 1024 * 1024
+        val expectedArchiveSha256 = when {
+            kind == ModelKind.TTS -> "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
+            ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) ->
+                "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
+            else -> null
+        }
+        val reusablePackage = ResumableModelArchiveDownloader.isReusableArchive(pkg, maxArchiveBytes, expectedArchiveSha256)
+        if (pkg.exists() && !reusablePackage) pkg.delete()
         logModelInfo(
             "模型压缩包下载与安装阶段开始",
             modelKindDetails(kind) + mapOf(
@@ -740,19 +754,28 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         )
         state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0)
         val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
+        val expectedArchiveBytes = when {
+            kind == ModelKind.TTS -> 147_031_220L
+            ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> 165_783_878L
+            else -> 207_557_382L
+        }
+        val resumableBytes = (if (reusablePackage) pkg.length() else {
+            urls.maxOfOrNull { url -> ResumableModelArchiveDownloader.partFileFor(pkg, url).length() } ?: 0L
+        }).coerceAtMost(expectedArchiveBytes)
+        val remainingArchiveBytes = (expectedArchiveBytes - resumableBytes).coerceAtLeast(0L)
         val requiredStorageBytes = when (kind) {
             ModelKind.TTS -> ModelStoragePreflightPolicy.requiredBytes(
-                archiveBytes = 147_031_220L,
+                archiveBytes = remainingArchiveBytes,
                 extractedBytes = 207L * ModelStoragePreflightPolicy.MIB,
             )
             ModelKind.ASR -> if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) {
                 ModelStoragePreflightPolicy.requiredBytes(
-                    archiveBytes = 165_783_878L,
+                    archiveBytes = remainingArchiveBytes,
                     extractedBytes = 228L * ModelStoragePreflightPolicy.MIB,
                 )
             } else {
                 ModelStoragePreflightPolicy.requiredBytes(
-                    archiveBytes = 207_557_382L,
+                    archiveBytes = remainingArchiveBytes,
                     extractedBytes = 160L * ModelStoragePreflightPolicy.MIB,
                 )
             }
@@ -762,9 +785,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             parentDir.usableSpace,
         )
         if (!ModelStoragePreflightPolicy.hasEnoughSpace(usableSpace, requiredStorageBytes)) {
-            // A previous force-stop may have left a non-resumable partial archive in cache.
-            // Free it before returning a storage error so the user can reclaim space and retry.
-            pkg.delete()
+            // Keep downloaded parts intact so the user can resume after freeing storage.
             state.value = ModelState(
                 status = ModelStatus.FAILED,
                 error = "可用存储空间不足：下载和安装该模型预计至少需要 ${ModelStoragePreflightPolicy.roundedUpMiB(requiredStorageBytes)} MB 可用空间，请释放空间后重试。",
@@ -781,122 +802,85 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             )
             return
         }
+        val orderedSources = ResumableModelArchiveDownloader.orderSourcesByResumeProgress(pkg, urls)
+        val sourceAttempts = buildList<Pair<Int, String>> {
+            if (reusablePackage) add(-1 to "")
+            addAll(orderedSources)
+        }
         var lastError: String? = null
         var primarySourceWasSlow = false
-        for ((sourceIndex, url) in urls.withIndex()) {
+        for ((sourceIndex, url) in sourceAttempts) {
             awaitDownloadsResumed()
-            // Reset the phase before every fallback source. Otherwise an extraction error leaves
-            // the UI stuck on "installing" while the manager is downloading the next mirror.
+            val reuseExistingPackage = sourceIndex == -1
+            val sourcePart = if (reuseExistingPackage) null else ResumableModelArchiveDownloader.partFileFor(pkg, url)
+            val existingPartBytes = sourcePart?.length() ?: pkg.length()
+            val attemptLabel = sourceAttempts.indexOf(sourceIndex to url) + 1
             state.value = ModelState(
-                status = ModelStatus.DOWNLOADING,
-                progress = 0,
-                totalMB = 0,
+                status = if (reuseExistingPackage) ModelStatus.EXTRACTING else ModelStatus.DOWNLOADING,
+                progress = if (reuseExistingPackage) 99 else 0,
+                downloadedMB = existingPartBytes / 1_048_576L,
+                totalMB = if (reuseExistingPackage) (pkg.length() + 1_048_575L) / 1_048_576L else 0L,
                 stageMessage = when {
+                    reuseExistingPackage -> "已下载的模型包完整，正在继续安装…"
+                    existingPartBytes > 0L -> "正在续传上次未完成的模型包…"
                     sourceIndex == 0 -> "正在连接官方模型源…"
-                    primarySourceWasSlow -> "官方源速度较慢，正在切换加速源（${sourceIndex + 1}/${urls.size}）…"
-                    else -> "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
+                    primarySourceWasSlow -> "官方源速度较慢，正在切换加速源（${attemptLabel}/${sourceAttempts.size}）…"
+                    else -> "官方源不可用，正在切换下载源（${attemptLabel}/${sourceAttempts.size}）…"
                 },
             )
             var downloadedArchiveSha256: String? = null
             logModelInfo(
-                "开始尝试模型下载源",
+                if (reuseExistingPackage) "复用已下载模型包，继续安装" else "开始尝试模型下载源或断点续传",
                 modelKindDetails(kind) + mapOf(
-                    "下载源序号" to (sourceIndex + 1).toString(),
+                    "下载源序号" to if (reuseExistingPackage) "已下载压缩包" else (sourceIndex + 1).toString(),
                     "候选下载源总数" to urls.size.toString(),
-                    "下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                    "下载源主机" to if (reuseExistingPackage) "本地缓存" else (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
                     "当前阶段" to state.value.stageMessage.orEmpty(),
+                    "当前断点大小 bytes" to existingPartBytes.toString(),
                     "是否使用备用源" to (sourceIndex > 0).toString(),
                 ),
             )
             try {
-                withContext(Dispatchers.IO) {
-                    val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
-                    executeCancellable(http.newCall(req)) { resp ->
-                        if (!HttpDownloadResponsePolicy.isCompleteGetResponse(resp.code)) {
-                            throw IllegalStateException("模型下载需要完整 HTTP 200 响应，收到 HTTP ${resp.code}")
-                        }
-                        val body = resp.body ?: throw IllegalStateException("空响应")
-                        val sourceStartedAtNanos = System.nanoTime()
-                        val maxArchiveBytes = 512L * 1024 * 1024
-                        val expectedBytes = body.contentLength()
-                        if (!HttpDownloadResponsePolicy.isValidExpectedLength(expectedBytes, maxArchiveBytes)) {
-                            throw IllegalStateException("模型压缩包响应声明的文件大小无效或超过限制")
-                        }
-                        val total = expectedBytes.takeIf { it > 0L } ?: 0L
-                        val downloadDigest = if (kind == ModelKind.TTS || ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) {
-                            java.security.MessageDigest.getInstance("SHA-256")
-                        } else null
-                        body.byteStream().use { ins ->
-                            FileOutputStream(pkg).use { out ->
-                                val buf = ByteArray(256 * 1024)
-                                var got = 0L
-                                var lastProgressBytes = 0L
-                                var lastProgressAtNanos = System.nanoTime()
-                                if (total > maxArchiveBytes) {
-                                    throw IllegalStateException("模型压缩包超过大小限制")
-                                }
-                                while (true) {
-                                    awaitDownloadsResumed()
-                                    if (state.value.status == ModelStatus.FAILED) throw kotlinx.coroutines.CancellationException("用户取消")
-                                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                    val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
-                                    if (n < 0) break
-                                    got += n
-                                    if (got > maxArchiveBytes) throw IllegalStateException("模型压缩包超过大小限制")
-                                    val elapsedMillis = (System.nanoTime() - sourceStartedAtNanos) / 1_000_000L
-                                    if (HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, got, elapsedMillis)) {
-                                        throw SlowDownloadSourceException(got, elapsedMillis)
-                                    }
-                                    out.write(buf, 0, n)
-                                    downloadDigest?.update(buf, 0, n)
-                                    val nowNanos = System.nanoTime()
-                                    if (got - lastProgressBytes >= 512L * 1024L ||
-                                        nowNanos - lastProgressAtNanos >= 250_000_000L
-                                    ) {
-                                        val pct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
-                                        state.value = state.value.copy(
-                                            progress = pct,
-                                            downloadedMB = got / 1048576,
-                                            totalMB = total / 1048576,
-                                            stageMessage = "正在下载模型包…",
-                                        )
-                                        lastProgressBytes = got
-                                        lastProgressAtNanos = nowNanos
-                                    }
-                                }
-                                val finalPct = if (total > 0) (got * 100 / total).toInt().coerceIn(0, 99) else 0
-                                state.value = state.value.copy(
-                                    progress = finalPct,
-                                    downloadedMB = got / 1048576,
-                                    totalMB = total / 1048576,
-                                    stageMessage = "正在下载模型包…",
-                                )
-                                if (!HttpDownloadResponsePolicy.isCompletePayload(
-                                        expectedBytes, got, maxArchiveBytes
-                                    )
-                                ) {
-                                    throw java.io.IOException(
-                                        "模型压缩包下载不完整或大小异常：预期 ${expectedBytes} 字节，实际收到 ${got} 字节"
-                                    )
-                                }
-                                downloadedArchiveSha256 = downloadDigest?.digest()
-                                    ?.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-                                out.flush()
-                                out.fd.sync()
+                if (reuseExistingPackage) {
+                    downloadedArchiveSha256 = expectedArchiveSha256?.let { ResumableModelArchiveDownloader.sha256File(pkg) }
+                } else {
+                    val partFile = sourcePart ?: throw java.io.IOException("模型下载断点路径缺失")
+                    val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                    val downloadResult = ResumableModelArchiveDownloader.download(
+                        client = http,
+                        url = url,
+                        partFile = partFile,
+                        maxBytes = maxArchiveBytes,
+                        expectedSha256 = expectedArchiveSha256,
+                        awaitResume = { awaitDownloadsResumed() },
+                        checkActive = {
+                            ownerJob?.ensureActive()
+                            if (state.value.status == ModelStatus.FAILED) {
+                                throw kotlinx.coroutines.CancellationException("用户取消")
                             }
-                        }
-                    }
+                        },
+                        shouldFallbackToMirror = { received, elapsed ->
+                            HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, received, elapsed)
+                        },
+                        onProgress = { got, total ->
+                            val pct = if (total > 0L) (got.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 99) else 0
+                            state.value = state.value.copy(
+                                progress = pct,
+                                downloadedMB = got / 1_048_576L,
+                                totalMB = if (total > 0L) (total + 1_048_575L) / 1_048_576L else 0L,
+                                stageMessage = "正在下载模型包（支持断点续传）…",
+                            )
+                        },
+                    )
+                    downloadedArchiveSha256 = downloadResult.sha256
+                    AtomicFileInstaller.install(partFile, pkg)
+                    ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
                 }
                 awaitDownloadsResumed()
                 state.value = state.value.copy(progress = 99, stageMessage = "正在校验模型压缩包…")
                 // Verify the TTS and SenseVoice archives against official release SHA-256 digests.
                 // The current Whisper archive does not publish an asset digest.
-                val expectedArchiveSha256 = when {
-                    kind == ModelKind.TTS -> "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
-                    ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) ->
-                        "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63"
-                    else -> null
-                }
+                // TTS/SenseVoice checksums were verified by the resumable downloader.
                 if (expectedArchiveSha256 != null) {
                     val actual = downloadedArchiveSha256
                         ?: throw java.io.IOException("模型压缩包未能完成 SHA-256 校验")
@@ -949,12 +933,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
                         )
-                        for ((index, url) in vadUrls.withIndex()) {
+                        for ((index, url) in ResumableModelArchiveDownloader.orderSourcesByResumeProgress(vad, vadUrls)) {
                             state.value = ModelState(
                                 status = ModelStatus.DOWNLOADING,
                                 progress = 0,
                                 totalMB = 1,
-                                stageMessage = if (index == 0) "正在下载语音检测模型…" else "正在切换语音检测模型下载源…",
+                                stageMessage = if (ResumableModelArchiveDownloader.partFileFor(vad, url).length() > 0L) "正在续传语音检测模型…" else if (index == 0) "正在下载语音检测模型…" else "正在切换语音检测模型下载源…",
                             )
                             try {
                                 downloadTo(
@@ -1008,6 +992,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 if (!installed) throw java.io.IOException("模型文件安装后完整性检查未通过")
                 val installedArchiveBytes = pkg.length()
                 pkg.delete()
+                ResumableModelArchiveDownloader.cleanupPartialFiles(pkg)
                 state.value = state.value.copy(
                     status = ModelStatus.READY,
                     progress = 100,
@@ -1031,9 +1016,9 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 )
                 return
             } catch (e: kotlinx.coroutines.CancellationException) {
-                pkg.delete()
                 return
             } catch (e: Exception) {
+                if (reuseExistingPackage || state.value.status == ModelStatus.EXTRACTING) pkg.delete()
                 lastError = e.message ?: e.javaClass.simpleName
                 if (sourceIndex == 0) {
                     primarySourceWasSlow = e is SlowDownloadSourceException
@@ -1056,7 +1041,6 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 Log.w("ModelDL", "$kind 源失败: $lastError，尝试下一源")
             }
         }
-        pkg.delete()
         state.value = state.value.copy(status = ModelStatus.FAILED, error = lastError ?: "全部下载源失败")
         logModelError(
             "模型全部下载源尝试失败",
@@ -1066,7 +1050,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 "最后一次失败原因" to (lastError ?: "未提供失败原因").take(360),
                 "最终阶段" to state.value.stageMessage.orEmpty().ifBlank { state.value.status.name },
                 "累计耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
-                "临时压缩包已清理" to (!pkg.exists()).toString(),
+                "完整压缩包是否保留供续传" to pkg.exists().toString(),
             ),
         )
     }
@@ -1090,12 +1074,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
         )
-        for ((index, url) in urls.withIndex()) {
+        for ((index, url) in ResumableModelArchiveDownloader.orderSourcesByResumeProgress(vad, urls)) {
             state.value = ModelState(
                 status = ModelStatus.DOWNLOADING,
                 progress = 0,
                 totalMB = 1,
-                stageMessage = if (index == 0) "正在补下载语音检测模型…" else "正在切换语音检测模型下载源…",
+                stageMessage = if (ResumableModelArchiveDownloader.partFileFor(vad, url).length() > 0L) "正在续传语音检测模型…" else if (index == 0) "正在补下载语音检测模型…" else "正在切换语音检测模型下载源…",
             )
             try {
                 downloadTo(
@@ -1173,57 +1157,21 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
     ) = withContext(Dispatchers.IO) {
         val parent = dest.parentFile ?: throw java.io.IOException("模型目录无效")
         if (!parent.exists() && !parent.mkdirs()) throw java.io.IOException("无法创建模型目录")
-        val temp = File(parent, dest.name + ".download")
-        temp.delete()
-        try {
-            awaitDownloadsResumed()
-            val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
-            executeCancellable(http.newCall(req)) { resp ->
-                if (!HttpDownloadResponsePolicy.isCompleteGetResponse(resp.code)) {
-                    throw IllegalStateException("附属模型下载需要完整 HTTP 200 响应，收到 HTTP ${resp.code}")
-                }
-                val body = resp.body ?: throw IllegalStateException("下载响应为空")
-                val maxBytes = 16L * 1024 * 1024
-                val expectedBytes = body.contentLength()
-                if (!HttpDownloadResponsePolicy.isValidExpectedLength(expectedBytes, maxBytes)) {
-                    throw IllegalStateException("附属模型响应声明的文件大小无效或超过限制")
-                }
-                var written = 0L
-                onProgress?.invoke(0L, expectedBytes)
-                body.byteStream().use { input ->
-                    FileOutputStream(temp).use { output ->
-                        val buffer = ByteArray(32 * 1024)
-                        while (true) {
-                            awaitDownloadsResumed()
-                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
-                            if (count < 0) break
-                            written += count
-                            if (written > maxBytes) throw IllegalStateException("附属模型超过大小限制")
-                            output.write(buffer, 0, count)
-                            onProgress?.invoke(written, expectedBytes)
-                        }
-                        output.flush()
-                        output.fd.sync()
-                    }
-                }
-                if (!HttpDownloadResponsePolicy.isCompletePayload(expectedBytes, written, maxBytes)) {
-                    throw java.io.IOException(
-                        "附属模型下载不完整或大小异常：预期 ${expectedBytes} 字节，实际收到 ${written} 字节"
-                    )
-                }
-            }
-            val checksumJob = kotlinx.coroutines.currentCoroutineContext()[Job]
-            if (expectedSha256 != null &&
-                !sha256(temp) { checksumJob?.ensureActive() }.equals(expectedSha256, ignoreCase = true)
-            ) {
-                throw java.io.IOException("附属模型 SHA-256 校验失败")
-            }
-            AtomicFileInstaller.install(temp, dest)
-        } catch (e: Exception) {
-            temp.delete()
-            throw e
-        }
+        val partFile = ResumableModelArchiveDownloader.partFileFor(dest, url)
+        val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+        ResumableModelArchiveDownloader.download(
+            client = http,
+            url = url,
+            partFile = partFile,
+            maxBytes = 16L * 1024 * 1024,
+            expectedSha256 = expectedSha256,
+            awaitResume = { awaitDownloadsResumed() },
+            checkActive = { ownerJob?.ensureActive() },
+            onProgress = { got, total -> onProgress?.invoke(got, total) },
+        )
+        AtomicFileInstaller.install(partFile, dest)
+        ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
+        ResumableModelArchiveDownloader.cleanupPartialFiles(dest)
     }
 
     private fun isModelDirectoryReady(dir: File): Boolean = when {
