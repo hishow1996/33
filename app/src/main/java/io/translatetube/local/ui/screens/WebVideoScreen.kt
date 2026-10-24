@@ -39,7 +39,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.ArrowRightAlt
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
@@ -1471,7 +1471,8 @@ fun WebVideoScreen(
                     },
                 ) {
                     Icon(
-                        Icons.Filled.ArrowBack,
+                        Icons.Filled.ArrowRightAlt,
+                        modifier = Modifier.graphicsLayer { scaleX = -1f },
                         contentDescription = "返回网页上一页",
                     )
                 }
@@ -1503,7 +1504,7 @@ fun WebVideoScreen(
                         webViewState.value?.loadUrl(normalized)
                     }
                 }) {
-                    Icon(Icons.Filled.ArrowForwardIos, contentDescription = "打开网页")
+                    Icon(Icons.Filled.ArrowRightAlt, contentDescription = "打开网页")
                 }
             }
 
