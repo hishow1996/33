@@ -240,13 +240,16 @@ class DubbingAudioProcessor(
                 val right = readSample(inputBuffer, isFloat)
                 activeSplitter.process(left, right)
                 bedAllowed += (bedTarget - bedAllowed) * bedFade
-                // 音乐/环境声底不跟着人声一起静音或压到 15%：配音期间只轻微让位，保证配音清晰。
+                // 原声开着时，音乐/环境声底不跟着人声一起压到 15%：配音期间只轻微让位，保证配音清晰。
                 val duckDepth = ((1f - duckGain) / (1f - DUCK_LEVEL)).coerceIn(0f, 1f)
                 val bedGain = 1f - (1f - BED_DUCK_LEVEL) * duckDepth
                 val bedWeight = (activeSplitter.usable * bedAllowed).coerceIn(0f, 1f)
                 val speechPart = activeSplitter.center * sourceGain
-                val separatedLeft = activeSplitter.bedLeft * bedGain + speechPart
-                val separatedRight = activeSplitter.bedRight * bedGain + speechPart
+                // 原声被关闭（appliedOriginalGain=0）时音乐底也一起关：用户关原声就是要一点原声都听不到，
+                // 立体声拆分不可能把人声分得完全干净，残留会被听成"原声没关"。
+                val bedLevel = bedGain * appliedOriginalGain
+                val separatedLeft = activeSplitter.bedLeft * bedLevel + speechPart
+                val separatedRight = activeSplitter.bedRight * bedLevel + speechPart
                 // 立体声内容不足（双声道一模一样的假立体声）时 bedWeight→0，退回整体压低/静音。
                 val sourceLeft = bedWeight * separatedLeft + (1f - bedWeight) * left * sourceGain
                 val sourceRight = bedWeight * separatedRight + (1f - bedWeight) * right * sourceGain
