@@ -608,7 +608,7 @@ Section(
     expandRequest = dubbingSectionExpandRequest,
     bringIntoViewRequester = dubbingSectionRequester,
 ) {
-            EngineOption("kokoro", "Kokoro 神经网络", ttsEngine) { e ->
+            EngineOption("kokoro", "Kokoro", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
                         ctx,
