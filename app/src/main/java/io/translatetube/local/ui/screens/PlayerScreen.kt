@@ -569,10 +569,18 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onGoSettings = onGoSettings,
             )
         } else {
-        Column(Modifier.fillMaxSize().background(Color(0xFFF2F6FC))) {
-            // ===== 顶部栏 =====
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+        Column(Modifier.fillMaxSize()) {
+            // ===== 顶部栏（保留原导航栏外观与位置） =====
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp)
+                    .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                    .background(Color(0xFFF2F6FC))
+                    .padding(horizontal = 8.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 IconButton(
@@ -747,6 +755,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         )
                     }
                 }
+            }
             }
 
             // ===== 视频画面（常驻容器，浮窗时 tv 被摘走；竖屏视频自适应比例） =====
