@@ -373,7 +373,7 @@ dependencies {
     add("implementation", files(newPipeTransitiveFiles))
 
     // yt-dlp 通用站点提取（B站/TikTok/Twitter 等 1000+ 网站；YouTube 仍走 NewPipe 优先）
-    implementation("io.github.junkfood02.youtubedl-android:library:0.17.4")
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
 
     // 离线翻译（bundled 引擎，不依赖 GMS）
     implementation("com.google.mlkit:translate:17.0.3")
