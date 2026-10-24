@@ -217,6 +217,14 @@ class MainActivity : ComponentActivity() {
                 }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
                 var storageHistoryOnly by remember { mutableStateOf(false) }
+                // History uses the storage screen in a restricted mode. Clear the mode only after
+                // the old storage route is no longer displayed, preventing a one-frame flash of
+                // the full storage-management screen during navigation.
+                LaunchedEffect(displayedScreen) {
+                    if (displayedScreen != Screen.STORAGE && storageHistoryOnly) {
+                        storageHistoryOnly = false
+                    }
+                }
                 var logsReturnScreen by remember { mutableStateOf(Screen.SETTINGS) }
                 // Preserve the source page independently from the temporary media URL selected
                 // for playback so returning from parsing never launches source detection again.
@@ -251,7 +259,7 @@ class MainActivity : ComponentActivity() {
                         Screen.SETTINGS -> screen = previousScreen
                         Screen.API -> screen = Screen.SETTINGS
                         Screen.LOGS -> screen = logsReturnScreen
-                        Screen.STORAGE -> screen = Screen.SETTINGS
+                        Screen.STORAGE -> screen = if (storageHistoryOnly) Screen.HOME else Screen.SETTINGS
                         Screen.HOME -> {
                             val now = android.os.SystemClock.elapsedRealtime()
                             if (lastHomeBackPressedAt > 0L && now - lastHomeBackPressedAt <= 2_000L) {
@@ -468,12 +476,10 @@ class MainActivity : ComponentActivity() {
                             Screen.LOGS -> AppLogsScreen(onBack = { screen = logsReturnScreen })
                             Screen.STORAGE -> StorageManagementScreen(
                                 onBack = {
-                                    if (storageHistoryOnly) {
-                                        storageHistoryOnly = false
-                                        screen = Screen.HOME
-                                    } else {
-                                        screen = Screen.SETTINGS
-                                    }
+                                    // Keep history-only mode until the displayed route has changed.
+                                    // Otherwise StorageManagementScreen briefly renders its full
+                                    // management view during the HOME transition.
+                                    screen = if (storageHistoryOnly) Screen.HOME else Screen.SETTINGS
                                 },
                                 historyOnly = storageHistoryOnly,
                                 onOpenLogs = {
