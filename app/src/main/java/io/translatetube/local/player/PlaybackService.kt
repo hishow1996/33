@@ -1635,7 +1635,6 @@ class PlaybackService : MediaSessionService() {
             }
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
-        processingEngineConfigFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
