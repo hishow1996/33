@@ -821,7 +821,8 @@ class DubbingEngine(
                 }
                 // 只配中文译文；未翻译的行写空标记（原声顶上，且进度能连续推进）
                 val text = line.zh
-                if (text.isNullOrBlank()) {
+                // 只有标点/符号/表情的译文念不出声，任何引擎都会拿不到音频：当作静音句，不报合成失败。
+                if (text.isNullOrBlank() || !io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(text)) {
                     val markerSpeed = speed
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     // An empty translation is intentionally silent. Persisting its empty marker is

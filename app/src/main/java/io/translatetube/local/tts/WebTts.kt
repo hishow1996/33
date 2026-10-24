@@ -31,8 +31,10 @@ internal class WebTts : TtsEngine {
         .build()
 
     override fun synth(text: String, speed: Float, speakerId: Int): TtsAudio {
-        val spoken = text.trim()
-        if (spoken.isBlank()) return TtsAudio(FloatArray(0), TARGET_RATE_HZ)
+        val spoken = TtsTextPolicy.sanitizeForSpeech(text)
+        if (spoken.isBlank() || !TtsTextPolicy.hasSpeakableContent(spoken)) {
+            return TtsAudio(FloatArray(0), TARGET_RATE_HZ)
+        }
         TtsTextPolicy.validate(spoken)
         val chunks = splitForRequest(spoken)
         var samples = FloatArray(0)

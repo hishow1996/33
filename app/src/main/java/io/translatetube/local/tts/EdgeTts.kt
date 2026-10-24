@@ -58,8 +58,11 @@ internal class EdgeTts : TtsEngine {
     ): TtsAudio {
         checkOpen()
         checkActive()
-        val spoken = text.trim()
-        if (spoken.isBlank()) return TtsAudio(FloatArray(0), TARGET_RATE_HZ)
+        // 控制符、表情等字符会让服务端直接返回 0 字节音频，发送前先清掉。
+        val spoken = TtsTextPolicy.sanitizeForSpeech(text)
+        if (spoken.isBlank() || !TtsTextPolicy.hasSpeakableContent(spoken)) {
+            return TtsAudio(FloatArray(0), TARGET_RATE_HZ)
+        }
         TtsTextPolicy.validate(spoken)
         val voice = VOICES[Math.floorMod(if (speakerId < 0) 0 else speakerId, VOICES.size)]
         val rate = (((speed.takeIf { it.isFinite() } ?: 1.0f) - 1.0f) * 100f)
@@ -68,10 +71,7 @@ internal class EdgeTts : TtsEngine {
         for (part in splitForRequest(spoken)) {
             checkOpen()
             checkActive()
-            val mp3 = synthesizeMp3(part, voice, rate)
-            checkOpen()
-            checkActive()
-            val decoded = decodeMp3(mp3).first
+            val decoded = synthesizePart(part, voice, rate, checkActive)
             if (decoded.isNotEmpty()) decodedParts += decoded
         }
         if (decodedParts.isEmpty()) {
@@ -84,6 +84,76 @@ internal class EdgeTts : TtsEngine {
         decodedParts.forEach { System.arraycopy(it, 0, merged, cursor, it.size); cursor += it.size }
         return TtsAudio(merged, TARGET_RATE_HZ)
     }
+
+    /**
+     * 合成一段文本。服务端偶尔对同一段文本返回 0 字节音频（限流、特殊内容）：先用新连接原样重试，
+     * 仍然拿不到就按句读切成小段逐段合成，只有"确实没有可念内容"的小段才允许静音跳过。
+     */
+    private fun synthesizePart(
+        part: String,
+        voice: String,
+        ratePercent: Int,
+        checkActive: () -> Unit,
+    ): FloatArray {
+        var lastEmpty: EmptyAudioException? = null
+        for (attempt in 0 until EMPTY_AUDIO_ATTEMPTS) {
+            checkOpen()
+            checkActive()
+            try {
+                val mp3 = synthesizeMp3(part, voice, ratePercent)
+                checkOpen()
+                checkActive()
+                return decodeMp3(mp3).first
+            } catch (empty: EmptyAudioException) {
+                lastEmpty = empty
+                if (attempt < EMPTY_AUDIO_ATTEMPTS - 1) sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS * (attempt + 1), checkActive)
+            }
+        }
+        val pieces = TtsTextPolicy.splitIntoPieces(part)
+        if (pieces.size > 1) {
+            val decodedPieces = ArrayList<FloatArray>()
+            for (piece in pieces) {
+                if (!TtsTextPolicy.hasSpeakableContent(piece)) continue
+                var pieceAudio: FloatArray? = null
+                for (attempt in 0 until 2) {
+                    checkOpen()
+                    checkActive()
+                    try {
+                        val mp3 = synthesizeMp3(piece, voice, ratePercent)
+                        checkOpen()
+                        checkActive()
+                        pieceAudio = decodeMp3(mp3).first
+                        break
+                    } catch (empty: EmptyAudioException) {
+                        lastEmpty = empty
+                        if (attempt == 0) sleepChecking(EMPTY_AUDIO_RETRY_DELAY_MS, checkActive)
+                    }
+                }
+                val audio = pieceAudio ?: throw lastEmpty!!
+                if (audio.isNotEmpty()) decodedPieces += audio
+            }
+            if (decodedPieces.isNotEmpty()) {
+                val merged = FloatArray(decodedPieces.sumOf { it.size })
+                var cursor = 0
+                decodedPieces.forEach { System.arraycopy(it, 0, merged, cursor, it.size); cursor += it.size }
+                return merged
+            }
+        }
+        throw lastEmpty ?: IllegalStateException("微软 Edge TTS 没有返回可解码的音频，请检查网络后重试")
+    }
+
+    private fun sleepChecking(totalMs: Long, checkActive: () -> Unit) {
+        var remaining = totalMs
+        while (remaining > 0L) {
+            checkActive()
+            val slice = minOf(100L, remaining)
+            Thread.sleep(slice)
+            remaining -= slice
+        }
+    }
+
+    /** 服务端正常结束请求，但没有给出足够的音频数据。 */
+    private class EmptyAudioException(message: String) : IllegalArgumentException(message)
 
     private fun synthesizeMp3(text: String, voice: String, ratePercent: Int): ByteArray {
         checkOpen()
@@ -187,7 +257,7 @@ internal class EdgeTts : TtsEngine {
             }
             failure.get()?.let { throw it }
             val mp3 = synchronized(output) { output.toByteArray() }
-            require(mp3.size >= MIN_MP3_BYTES) { "微软 Edge TTS 返回音频过短（${mp3.size} 字节）" }
+            if (mp3.size < MIN_MP3_BYTES) throw EmptyAudioException("微软 Edge TTS 返回音频过短（${mp3.size} 字节）")
             return mp3
         } finally {
             activeSockets.remove(socket)
@@ -347,6 +417,8 @@ internal class EdgeTts : TtsEngine {
         const val MAX_REQUEST_BYTES = 3_500
         const val SOFT_REQUEST_BYTES = 1_700
         const val MIN_MP3_BYTES = 256
+        const val EMPTY_AUDIO_ATTEMPTS = 3
+        const val EMPTY_AUDIO_RETRY_DELAY_MS = 400L
         const val SYNTHESIS_TIMEOUT_SECONDS = 45L
         const val MAX_DECODE_LOOPS = 10_000
         const val MAX_OUTPUT_SAMPLES = 24_000L * 90L
