@@ -103,18 +103,29 @@ private object ReadyHistorySessionConfigStore {
         return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
-    fun save(context: Context, videoKey: String, fingerprint: String) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(storageKey(videoKey), fingerprint)
+    fun save(
+        context: Context,
+        videoKey: String,
+        fingerprint: String,
+        ignoreTranscription: Boolean,
+    ) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        prefs.edit()
+            .putString(key, fingerprint)
+            .putBoolean("$key-ignore-transcription", ignoreTranscription)
             .apply()
     }
 
-    fun matches(context: Context, videoKey: String, ignoreTranscription: Boolean): Boolean {
+    fun matches(context: Context, videoKey: String, isYouTube: Boolean): Boolean {
         if (videoKey.isBlank()) return false
-        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(storageKey(videoKey), null)
-            ?: return false
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        val saved = prefs.getString(key, null) ?: return false
+        // Only a YouTube run that actually used YouTube captions may ignore ASR settings.
+        // A YouTube video without captions uses ASR, so its chosen transcription engine matters.
+        val ignoreTranscription = prefs.getBoolean("$key-ignore-transcription", false)
+        if (ignoreTranscription && !isYouTube) return false
         return saved.isNotBlank() && saved == fingerprint(context, ignoreTranscription)
     }
 
@@ -286,6 +297,7 @@ class PlaybackService : MediaSessionService() {
     // preference-listener baseline above, this value must not change just because settings are
     // edited while the READY player is idle on the Home screen.
     @Volatile private var completedReadySessionKey = ""
+    @Volatile private var completedReadySessionIgnoresTranscription = false
     @Volatile private var completedReadySessionEngineFingerprint = ""
     private var enginePreferencesListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Volatile private var enginePreferenceRestartJob: Job? = null
@@ -365,7 +377,9 @@ class PlaybackService : MediaSessionService() {
             return false
         }
 
-        val currentFingerprint = processingEnginePreferenceFingerprint(ignoreTranscription = isYouTube)
+        val ignoreTranscription = completedReadySessionIgnoresTranscription
+        if (ignoreTranscription && !isYouTube) return false
+        val currentFingerprint = processingEnginePreferenceFingerprint(ignoreTranscription = ignoreTranscription)
         if (completedReadySessionEngineFingerprint.isBlank() ||
             currentFingerprint != completedReadySessionEngineFingerprint
         ) {
@@ -1389,9 +1403,6 @@ class PlaybackService : MediaSessionService() {
             }
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
-        val runEngineFingerprint = processingEnginePreferenceFingerprint(
-            ignoreTranscription = key.startsWith("youtube:", ignoreCase = true),
-        )
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
@@ -1509,9 +1520,24 @@ class PlaybackService : MediaSessionService() {
                     !finishedState.waitingForTranscriptionEngine &&
                     !finishedState.waitingForDubbingEngine
                 ) {
+                    // Only a YouTube subtitle-based run is independent of the ASR configuration.
+                    // No-caption YouTube runs are marked YOUTUBE_SPEECH_RECOGNITION and must
+                    // include the selected transcription engine in history compatibility checks.
+                    val ignoreTranscription =
+                        key.startsWith("youtube:", ignoreCase = true) &&
+                            finishedState.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+                    val completedFingerprint = processingEnginePreferenceFingerprint(
+                        ignoreTranscription = ignoreTranscription,
+                    )
                     completedReadySessionKey = key
-                    completedReadySessionEngineFingerprint = runEngineFingerprint
-                    ReadyHistorySessionConfigStore.save(this@PlaybackService, key, runEngineFingerprint)
+                    completedReadySessionIgnoresTranscription = ignoreTranscription
+                    completedReadySessionEngineFingerprint = completedFingerprint
+                    ReadyHistorySessionConfigStore.save(
+                        this@PlaybackService,
+                        key,
+                        completedFingerprint,
+                        ignoreTranscription,
+                    )
                 }
             }
         }
