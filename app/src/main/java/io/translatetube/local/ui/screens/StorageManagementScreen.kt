@@ -436,13 +436,14 @@ fun StorageManagementScreen(
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(category?.title ?: "存储管理", color = OnBg, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (category == null) "本地数据总览 · 不会自动上传"
-                    else if (historyOnly && category == StorageCategory.HISTORY) "查看、续播与清理记录"
-                    else "分类占用与可执行操作",
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                if (!(historyOnly && category == StorageCategory.HISTORY)) {
+                    Text(
+                        if (category == null) "本地数据总览 · 不会自动上传"
+                        else "分类占用与可执行操作",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
             IconButton(onClick = { refresh++ }, enabled = !scanning && !actionBusy) {
                 Icon(Icons.Filled.Refresh, "重新统计", tint = BrandBright)
@@ -675,34 +676,20 @@ private fun StorageHistoryDetail(
                 border = BorderStroke(1.dp, OutlineSoft),
             ) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text("视频历史记录", color = OnBg, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                if (loaded) "${videos.size} 条记录 · 收藏 ${videos.count { it.isFavorite }} 条" else "正在加载记录…",
-                                color = SubText,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        TextButton(
-                            enabled = !busy && !actionBusy && videos.isNotEmpty(),
-                            onClick = onToggleSelectionMode,
-                        ) { Text(if (selectionMode) "取消多选" else "多选") }
-                    }
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         FilterChip(
                             selected = !favoritesOnly,
                             onClick = { if (favoritesOnly) onToggleFavoritesOnly() },
-                            label = { Text("全部记录") },
+                            label = { Text("全部") },
                         )
                         FilterChip(
                             selected = favoritesOnly,
                             onClick = { if (!favoritesOnly) onToggleFavoritesOnly() },
-                            label = { Text("收藏 ${videos.count { it.isFavorite }}") },
+                            label = { Text("收藏") },
                             leadingIcon = {
                                 Icon(
                                     Icons.Filled.Star,
@@ -711,6 +698,12 @@ private fun StorageHistoryDetail(
                                 )
                             },
                         )
+                        Spacer(Modifier.weight(1f))
+                        TextButton(
+                            enabled = !busy && !actionBusy && videos.isNotEmpty(),
+                            onClick = onToggleSelectionMode,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                        ) { Text(if (selectionMode) "取消多选" else "多选") }
                     }
                     Row(
                         Modifier.fillMaxWidth(),
@@ -733,12 +726,7 @@ private fun StorageHistoryDetail(
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed),
                             ) { Text("删除所选（${selectedKeys.size}）") }
                         } else {
-                            Text(
-                                "可单条删除，也可多选或一次清空全部记录",
-                                modifier = Modifier.weight(1f),
-                                color = SubText,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                            Spacer(Modifier.weight(1f))
                         }
                         Button(
                             enabled = !busy && !actionBusy && videos.isNotEmpty(),
@@ -748,12 +736,6 @@ private fun StorageHistoryDetail(
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                         ) { Text("全部清除") }
                     }
-                    Text(
-                        "清除历史时会同步删除对应的字幕/翻译、配音及转写音轨缓存；手机原始视频和已下载模型会保留。",
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    if (busy) Text("播放、处理或模型下载期间暂不能清理。", color = DangerRed, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
