@@ -1490,10 +1490,20 @@ fun WebVideoScreen(
             BoxWithConstraints(
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
-            // 固定网页窗口高度：默认视频源面板的顶部就是网页窗口底边。
-            // 面板拖动或收起时只改变面板，不重新测量/缩放网页窗口。
-            val panelPeekHeight = 112.dp.coerceAtMost(maxHeight)
-            val fixedWebHeight = (maxHeight - panelPeekHeight).coerceAtLeast(0.dp)
+            // 键盘弹出时网页应使用完整的可用高度；平时仍保留原来的面板预留区。
+            // IME 只影响临时布局，不修改 sourcePanelHeightDp，从而在键盘收起后恢复面板原高度。
+            val density = LocalDensity.current
+            val imeVisible = WindowInsets.ime.getBottom(density) > 0
+            val panelPeekHeight = if (imeVisible) {
+                0.dp
+            } else {
+                112.dp.coerceAtMost(maxHeight)
+            }
+            val fixedWebHeight = if (imeVisible) {
+                maxHeight
+            } else {
+                (maxHeight - panelPeekHeight).coerceAtLeast(0.dp)
+            }
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2105,7 +2115,6 @@ fun WebVideoScreen(
             // 确保无论面板被拖到多高，点击顶部横线都能按屏幕上的开/收状态完全收起。
             val latestPanelCollapsed by rememberUpdatedState(panelCollapsed)
             val latestPanelExpandedHeight by rememberUpdatedState(panelExpandedHeight.value)
-            val density = LocalDensity.current
             // Scaffold 内容默认避开系统导航栏；偏移一个导航栏 inset，
             // 让收起态的横线贴到物理屏幕底边，而不是停在应用内容底边。
             val bottomSystemInset = with(density) {
@@ -2171,7 +2180,7 @@ fun WebVideoScreen(
             // 面板下拉时，固定网页窗口与面板之间露出的空白区域专门承载加载、
             // 媒体检测、候选验证和 yt-dlp 状态；覆盖面板本身只呈现来源列表。
             val statusGapHeight = (panelPeekHeight - targetPanelHeight).coerceAtLeast(0.dp)
-            if (statusGapHeight >= 36.dp) {
+            if (!imeVisible && statusGapHeight >= 36.dp) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -2354,7 +2363,7 @@ fun WebVideoScreen(
                     }
                 }
             }
-            if (!panelCollapsed) {
+            if (!imeVisible && !panelCollapsed) {
                 Card(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -2757,35 +2766,37 @@ fun WebVideoScreen(
             }
             }
 
-            // 这个把手 Box 在展开/收起之间保持同一个组合节点，避免拖动中途被销毁。
-            // 收起时只有透明触控热区；可见横线贴在屏幕底边，不绘制面板区域。
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(if (panelCollapsed) 24.dp else targetPanelHeight)
-                    .offset(y = if (panelCollapsed) bottomSystemInset else 0.dp),
-                contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.TopCenter,
-            ) {
+            // 键盘弹出期间隐藏底部把手，避免在键盘上方留下多余触控区或横线。
+            // 键盘收起后仍使用同一个把手和原来的拖动/点击手势。
+            if (!imeVisible) {
                 Box(
                     modifier = Modifier
-                        .width(80.dp)
-                        .height(24.dp)
-                        .then(panelHandleModifier),
-                    contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(if (panelCollapsed) 24.dp else targetPanelHeight)
+                        .offset(y = if (panelCollapsed) bottomSystemInset else 0.dp),
+                    contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.TopCenter,
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(
-                                width = if (panelCollapsed) 48.dp else 36.dp,
-                                height = if (panelCollapsed) 6.dp else 4.dp,
-                            )
-                            .background(
-                                color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
-                                    else MaterialTheme.colorScheme.outlineVariant,
-                                shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
-                            ),
-                    )
+                            .width(80.dp)
+                            .height(24.dp)
+                            .then(panelHandleModifier),
+                        contentAlignment = if (panelCollapsed) Alignment.BottomCenter else Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(
+                                    width = if (panelCollapsed) 48.dp else 36.dp,
+                                    height = if (panelCollapsed) 6.dp else 4.dp,
+                                )
+                                .background(
+                                    color = if (panelCollapsed) MaterialTheme.colorScheme.onSurfaceVariant
+                                        else MaterialTheme.colorScheme.outlineVariant,
+                                    shape = RoundedCornerShape(if (panelCollapsed) 3.dp else 2.dp),
+                                ),
+                        )
+                    }
                 }
             }
 
