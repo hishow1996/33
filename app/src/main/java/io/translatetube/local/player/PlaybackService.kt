@@ -7036,6 +7036,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 }
                 safelySetOriginalVolume(if (st.originalVolume <= 0f) 0f else 1f, "catch-up dubbing playback")
             } else if (dubLine >= 0 && d.isSilent(dubLine)) {
+                d.logSilentCueFallback(dubLine)
                 if (d.currentLineIdx() >= 0) d.stop()
                 // No synthesized voice is playing for this cue, so source audio is the only
                 // available narration; it can never overlap a live dubbed cue.
