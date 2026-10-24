@@ -630,7 +630,7 @@ Section(
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            EngineOption("web", "在线语音 · 推荐，无需下载（需网络）", ttsEngine) { e ->
+            EngineOption("web", "在线语音（需联网）", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
                         ctx,
@@ -641,7 +641,7 @@ Section(
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            EngineOption("edge", "微软 Edge TTS · 神经语音（需网络）", ttsEngine) { e ->
+            EngineOption("edge", "微软 Edge TTS（需联网）", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
                         ctx,
