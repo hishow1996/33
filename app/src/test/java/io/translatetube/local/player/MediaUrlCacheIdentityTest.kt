@@ -161,4 +161,16 @@ class MediaUrlCacheIdentityTest {
         assertFalse(first.contains("old"))
         assertFalse(first.contains("new"))
     }
+    @Test
+    fun rotatingHlsSegmentSignaturesDoNotInvalidateAudioCacheIdentity() {
+        val first = "https://em-h.example/hls/c6251/videos/202609/03/61165795/240P_1000K_61165795.mp4/seg-1-v1-a1.ts?validfrom=100&validto=200&ipa=old-ipa&hdl=old-hdl&hash=old-hash"
+        val refreshed = "https://EM-H.example:443/hls/c6251/videos/202609/03/61165795/240P_1000K_61165795.mp4/seg-1-v1-a1.ts?validfrom=300&validto=400&ipa=new-ipa&hdl=new-hdl&hash=new-hash"
+
+        assertEquals(MediaUrlCacheIdentity.key(first), MediaUrlCacheIdentity.key(refreshed))
+        val canonical = MediaUrlCacheIdentity.canonicalUrl(first)
+        assertFalse(canonical.contains("old-ipa"))
+        assertFalse(canonical.contains("old-hdl"))
+        assertFalse(canonical.contains("old-hash"))
+    }
+
 }

@@ -69,6 +69,24 @@ enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, 
  * distinguish unchanged settings after the in-memory playback service has been recreated, without
  * persisting API secrets or subtitle text in SharedPreferences.
  */
+private enum class EngineConfigDomain {
+    TRANSCRIPTION,
+    TRANSLATION,
+    DUBBING,
+}
+
+private data class EngineConfigFingerprints(
+    val transcription: String,
+    val translation: String,
+    val dubbing: String,
+)
+
+private enum class EngineRestartStage {
+    TRANSCRIPTION,
+    TRANSLATION,
+    DUBBING,
+}
+
 private object ReadyHistorySessionConfigStore {
     private const val PREFS_NAME = "ready_history_session_config"
     private const val KEY_PREFIX = "video_"
@@ -76,12 +94,17 @@ private object ReadyHistorySessionConfigStore {
     fun isRelevantPreferenceKey(key: String): Boolean =
         key == "active_api_id" ||
             key.startsWith("asr_") ||
+            key.startsWith("local_asr_") ||
+            key.startsWith("whisper_") ||
+            key.startsWith("sensevoice_") ||
             key.startsWith("tts_") ||
+            key.startsWith("edge_tts_") ||
             key.startsWith("piper_") ||
             key.startsWith("kokoro_") ||
             key.startsWith("system_tts_") ||
             key.startsWith("free_gemini_") ||
             key.startsWith("free_deepseek_") ||
+            key.contains("transcription", ignoreCase = true) ||
             key.contains("translate", ignoreCase = true) ||
             key.contains("translation", ignoreCase = true)
 
@@ -104,17 +127,69 @@ private object ReadyHistorySessionConfigStore {
         return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
+    fun fingerprints(context: Context): EngineConfigFingerprints = EngineConfigFingerprints(
+        transcription = domainFingerprint(context, EngineConfigDomain.TRANSCRIPTION),
+        translation = domainFingerprint(context, EngineConfigDomain.TRANSLATION),
+        dubbing = domainFingerprint(context, EngineConfigDomain.DUBBING),
+    )
+
+    fun savedFingerprints(context: Context, videoKey: String): EngineConfigFingerprints? {
+        if (videoKey.isBlank()) return null
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        val transcription = prefs.getString(key + "-transcription-fingerprint", null) ?: return null
+        val translation = prefs.getString(key + "-translation-fingerprint", null) ?: return null
+        val dubbing = prefs.getString(key + "-dubbing-fingerprint", null) ?: return null
+        if (transcription.isBlank() || translation.isBlank() || dubbing.isBlank()) return null
+        return EngineConfigFingerprints(transcription, translation, dubbing)
+    }
+
+    private fun domainFingerprint(context: Context, domain: EngineConfigDomain): String {
+        val entries = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
+            .filter { belongsToDomain(it.key, domain) }
+            .sortedBy { it.key }
+            .joinToString("\n") { entry ->
+                val value = when (val raw = entry.value) {
+                    is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
+                    else -> raw?.toString().orEmpty()
+                }
+                "${entry.key}=$value"
+            }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(entries.toByteArray(Charsets.UTF_8))
+            .take(12)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun belongsToDomain(key: String, domain: EngineConfigDomain): Boolean = when (domain) {
+        EngineConfigDomain.TRANSCRIPTION ->
+            key.startsWith("asr_") || key.startsWith("local_asr_") ||
+                key.startsWith("whisper_") || key.startsWith("sensevoice_") ||
+                key.contains("transcription", ignoreCase = true)
+        EngineConfigDomain.TRANSLATION ->
+            key == "active_api_id" || key.startsWith("free_gemini_") ||
+                key.startsWith("free_deepseek_") || key.contains("translate", ignoreCase = true) ||
+                key.contains("translation", ignoreCase = true)
+        EngineConfigDomain.DUBBING ->
+            key.startsWith("tts_") || key.startsWith("edge_tts_") ||
+                key.startsWith("piper_") || key.startsWith("kokoro_") ||
+                key.startsWith("system_tts_")
+    }
     fun save(
         context: Context,
         videoKey: String,
         fingerprint: String,
         ignoreTranscription: Boolean,
+        fingerprints: EngineConfigFingerprints,
     ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
         prefs.edit()
             .putString(key, fingerprint)
             .putBoolean("$key-ignore-transcription", ignoreTranscription)
+            .putString(key + "-transcription-fingerprint", fingerprints.transcription)
+            .putString(key + "-translation-fingerprint", fingerprints.translation)
+            .putString(key + "-dubbing-fingerprint", fingerprints.dubbing)
             .apply()
     }
 
@@ -390,19 +465,58 @@ class PlaybackService : MediaSessionService() {
             state.phase != Phase.READY ||
             state.waitingForTranscriptionEngine ||
             state.waitingForDubbingEngine
-        ) {
-            return false
-        }
+        ) return false
 
         val ignoreTranscription = completedReadySessionIgnoresTranscription
         if (ignoreTranscription && !isYouTube) return false
         val currentFingerprint = processingEnginePreferenceFingerprint(ignoreTranscription = ignoreTranscription)
-        if (completedReadySessionEngineFingerprint.isBlank() ||
-            currentFingerprint != completedReadySessionEngineFingerprint
-        ) {
-            return false
+        val previousDomains = ReadyHistorySessionConfigStore.savedFingerprints(this, key)
+        val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this)
+        val restartStage = previousDomains?.let { previous ->
+            chooseEngineRestartStage(previous, currentDomains, state, ignoreTranscription)
         }
 
+        if (restartStage != null && state.lines.isNotEmpty()) {
+            val restartState = stateForEngineRestart(state, restartStage)
+            val importedRestartLines = if (this.importedLines != null) restartState?.lines else null
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "引擎配置变化，按最早受影响阶段恢复视频处理",
+                diagnosticContext = mapOf(
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "恢复阶段" to restartStage.name,
+                    "转写配置是否变化" to (previousDomains.transcription != currentDomains.transcription).toString(),
+                    "翻译配置是否变化" to (previousDomains.translation != currentDomains.translation).toString(),
+                    "配音配置是否变化" to (previousDomains.dubbing != currentDomains.dubbing).toString(),
+                    "已复用字幕行数" to state.lines.size.toString(),
+                    "音轨处理策略" to when (restartStage) {
+                        EngineRestartStage.TRANSCRIPTION -> "复用已缓存音轨；重新转写、翻译和配音"
+                        EngineRestartStage.TRANSLATION -> "复用原文字幕和时间轴；重新翻译和配音"
+                        EngineRestartStage.DUBBING -> "复用原文、中文字幕和时间轴；仅重新生成配音"
+                    },
+                ),
+            )
+            open(
+                key = key,
+                videoId = videoId,
+                localUri = localUri,
+                importedLines = importedRestartLines,
+                resumeState = restartState,
+                remoteMediaUrl = remoteMediaUrl,
+                remoteMediaTitle = remoteMediaTitle,
+                remoteMediaReferrer = remoteMediaReferrer,
+                remoteMediaCookie = remoteMediaCookie,
+                remoteMediaUserAgent = remoteMediaUserAgent,
+                requestToken = requestToken,
+                reuseMountedMediaForRestart = true,
+            )
+            return true
+        }
+
+        if (completedReadySessionEngineFingerprint.isBlank() || currentFingerprint != completedReadySessionEngineFingerprint) {
+            return false
+        }
         return try {
             if (!state.isPlaying) pm.play()
             activeOpenRequestToken = requestToken
@@ -423,6 +537,63 @@ class PlaybackService : MediaSessionService() {
             android.util.Log.w("PlaybackService", "Unable to resume completed history session", error)
             false
         }
+    }
+
+    private fun chooseEngineRestartStage(
+        previous: EngineConfigFingerprints,
+        current: EngineConfigFingerprints,
+        state: PlayerUiState,
+        ignoreTranscription: Boolean,
+    ): EngineRestartStage? {
+        val importedFlow = state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+        if (!ignoreTranscription && !importedFlow && previous.transcription != current.transcription) {
+            return EngineRestartStage.TRANSCRIPTION
+        }
+        if (previous.translation != current.translation) {
+            if (state.lines.isEmpty()) return null
+            return if (
+                isChineseLanguage(state.sourceLang) ||
+                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+            ) EngineRestartStage.DUBBING else EngineRestartStage.TRANSLATION
+        }
+        if (previous.dubbing != current.dubbing) {
+            if (state.lines.isEmpty()) return null
+            val hasMissingTranslation = !isChineseLanguage(state.sourceLang) &&
+                state.processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+                state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
+            return if (hasMissingTranslation) null else EngineRestartStage.DUBBING
+        }
+        return null
+    }
+
+    private fun stateForEngineRestart(
+        state: PlayerUiState,
+        stage: EngineRestartStage,
+    ): PlayerUiState? = when (stage) {
+        EngineRestartStage.TRANSCRIPTION -> null
+        EngineRestartStage.TRANSLATION -> state.copy(
+            lines = state.lines.mapIndexed { index, line -> line.copy(index = index, zh = null) },
+            translatedLineCount = 0,
+            preparedUntil = 0,
+            preparedCount = 0,
+            waitingForTranscriptionEngine = false,
+            waitingForDubbingEngine = false,
+            dubbingHasErrors = false,
+            error = null,
+            failedPhase = null,
+            failedProgress = "",
+        )
+        EngineRestartStage.DUBBING -> state.copy(
+            preparedUntil = 0,
+            preparedCount = 0,
+            waitingForTranscriptionEngine = false,
+            waitingForDubbingEngine = false,
+            dubbingHasErrors = false,
+            error = null,
+            failedPhase = null,
+            failedProgress = "",
+        )
     }
 
     private fun beginPipelineGeneration(): Long = synchronized(pipelineGenerationLock) {
@@ -1401,7 +1572,12 @@ class PlaybackService : MediaSessionService() {
         remoteMediaCookie: String? = null,
         remoteMediaUserAgent: String? = null,
         requestToken: Long = 0L,
+        reuseMountedMediaForRestart: Boolean = false,
     ) {
+        // Keep the current source mounted during a same-video stage restart. In particular,
+        // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
+        val reuseMountedMedia = (resumeState != null || reuseMountedMediaForRestart) &&
+            key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
         if (!playerReady || !::pm.isInitialized) {
@@ -1435,7 +1611,7 @@ class PlaybackService : MediaSessionService() {
         this.remoteMediaTitle = remoteMediaTitle
         this.remoteMediaReferrer = remoteMediaReferrer
         this.remoteMediaUserAgent = remoteMediaUserAgent.orEmpty()
-        adaptiveQualitySourceReady = false
+        if (!reuseMountedMedia) adaptiveQualitySourceReady = false
         // Publish the request token after its associated media identity.
         activeOpenRequestToken = requestToken
         // 兜底防护：blob:/data: 等网页内嵌地址绝不能进入 ExoPlayer（会以
@@ -1458,8 +1634,10 @@ class PlaybackService : MediaSessionService() {
         // Preserve parsed metadata/subtitles when resuming a translation failure.
         if (videoId != null && resumeState == null) NewPipeRepo.invalidate(videoId)
         qualityJob?.cancel()
-        qualitySources = emptyList()
-        qualityAudioUrl = ""
+        if (!reuseMountedMedia) {
+            qualitySources = emptyList()
+            qualityAudioUrl = ""
+        }
         lastLineIdx = Int.MIN_VALUE
         val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge") ?: "edge"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
@@ -1493,6 +1671,12 @@ class PlaybackService : MediaSessionService() {
             durationMs = resumeState?.durationMs ?: 0L,
             lines = resumeState?.lines ?: emptyList(),
             totalLines = resumeState?.totalLines ?: 0,
+            dubbingOn = resumeState?.dubbingOn ?: true,
+            muteOriginal = resumeState?.muteOriginal ?: true,
+            audioOnly = resumeState?.audioOnly ?: false,
+            videoAspect = resumeState?.videoAspect ?: (16f / 9f),
+            qualityOptions = resumeState?.qualityOptions ?: emptyList(),
+            selectedQuality = resumeState?.selectedQuality.orEmpty(),
             sourceLang = resumeState?.sourceLang.orEmpty(),
             engineName = resumeState?.engineName.orEmpty(),
             translationCacheKey = effectiveTranslationCacheKey,
@@ -1528,7 +1712,7 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
-                runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
+                runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie, reuseMountedMedia)
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
                 if (
@@ -1546,6 +1730,7 @@ class PlaybackService : MediaSessionService() {
                     val completedFingerprint = processingEnginePreferenceFingerprint(
                         ignoreTranscription = ignoreTranscription,
                     )
+                    val completedDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                     completedReadySessionKey = key
                     completedReadySessionIgnoresTranscription = ignoreTranscription
                     completedReadySessionEngineFingerprint = completedFingerprint
@@ -1554,6 +1739,7 @@ class PlaybackService : MediaSessionService() {
                         key,
                         completedFingerprint,
                         ignoreTranscription,
+                        completedDomainFingerprints,
                     )
                 }
             }
@@ -2652,6 +2838,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         requestedRemoteMediaTitle: String = "",
         requestedRemoteMediaReferrer: String = "",
         requestedRemoteMediaCookie: String? = null,
+        reuseMountedMedia: Boolean = false,
     ) {
         // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
         // switch this session to the existing yt-dlp media URL pipeline and continue with audio ASR.
@@ -3850,8 +4037,11 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 if (externalTranslatedLines != null) {
                     translatedLines = externalTranslatedLines
                 } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                    updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
-                    translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
+                    val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
+                    if (needsTranslation) {
+                        updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
+                        translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
+                    }
                 } else if (translatedLines.isNotEmpty()) {
                     // Source captions are not translator output: preserve repeated words and text that
                     // happens to resemble a progress label instead of running translation cleanup on it.
@@ -3899,6 +4089,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             }
 
             // ---- 4. 流装配 ----
+            if (!reuseMountedMedia) {
             if (videoId != null) {
                 val streamInfo = NewPipeRepo.streams(videoId)
                 ensureCurrentSession(key, pipelineGeneration)
@@ -3952,6 +4143,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 refreshAdaptiveVideoQualityOptions()
                 }
             }
+            } // Keep the existing stream for a selective stage restart.
 
             // Drain any retired speech engine and unload the native ASR model before
             // allocating the selected TTS runtime. Reopening a history item can reuse ASR and

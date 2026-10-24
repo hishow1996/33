@@ -33,6 +33,8 @@ internal object MediaUrlCacheIdentity {
         "__token__",
     )
 
+    private val hlsSignedParameterNames = setOf("validfrom", "validto", "ipa", "hdl", "hash")
+
     // Generic credentials can sometimes double as the only media identifier (for example,
     // /stream?token=asset-id). Strip them only when another stable identity is available.
     private val genericCredentialParameterNames = setOf(
@@ -107,6 +109,10 @@ internal object MediaUrlCacheIdentity {
 
         // Keep generic tokens distinct on opaque endpoints that expose no other stable media
         // identity. Hash their values instead of retaining raw credentials in the canonical URL.
+        val hasHlsSignedQuery = hasMediaFilePath &&
+            decodedNames.any { it == "validfrom" } &&
+            decodedNames.any { it == "validto" } &&
+            decodedNames.any { it == "hash" }
         val stableQuery = params.mapIndexedNotNull { index, part ->
             val name = decodedNames[index]
             when {
@@ -116,6 +122,7 @@ internal object MediaUrlCacheIdentity {
                     val value = part.substringAfter('=', missingDelimiterValue = "")
                     "$key=${sha256(value)}"
                 }
+                name in hlsSignedParameterNames && hasHlsSignedQuery -> null
                 name in authParameterNames -> null
                 hasAwsSignature && name.startsWith("x-amz-") -> null
                 hasGoogleSignature && name.startsWith("x-goog-") -> null
