@@ -39,33 +39,31 @@ internal object ReadySessionSnapshotStore {
     ): ReadyPlaybackSessionSnapshot? {
         if (!isSupportedVideoKey(videoKey)) return null
         val directory = directory(context)
-        val prefix = filePrefix(videoKey)
-        val files = directory.listFiles { _, name ->
-            name.startsWith(prefix) && name.endsWith(".json")
-        } ?: return null
-
-        for (file in files.sortedByDescending { it.lastModified() }) {
+        val expectedKeyHash = keyHash(videoKey)
+        // The fingerprint and transcription-ignore flag are part of the file name; probe no more
+        // than two exact candidates instead of parsing all prior snapshots on the calling thread.
+        for (ignoreTranscription in listOf(true, false)) {
+            val currentFingerprint = runCatching {
+                fingerprintFor(ignoreTranscription)
+            }.getOrDefault("")
+            if (!fingerprintPattern.matches(currentFingerprint)) continue
+            val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
+            val file = File(directory, "ready_" + expectedKeyHash + "_" + currentFingerprint + suffix)
             if (!file.isFile || file.length() < 1L || file.length() > MAX_SNAPSHOT_BYTES) {
                 if (file.exists() && file.length() > MAX_SNAPSHOT_BYTES) file.delete()
                 continue
             }
             val root = readRoot(file) ?: continue
             if (root.optInt("version", -1) != SNAPSHOT_VERSION) continue
-            if (root.optString("keyHash") != keyHash(videoKey)) continue
-
-            val storedFingerprint = root.optString("fingerprint")
-            if (!fingerprintPattern.matches(storedFingerprint)) continue
-            val ignoreTranscription = root.optBoolean("ignoreTranscription", false)
-            val matchesCurrent = runCatching {
-                fingerprintFor(ignoreTranscription) == storedFingerprint
-            }.getOrDefault(false)
-            if (!matchesCurrent) continue
+            if (root.optString("keyHash") != expectedKeyHash) continue
+            if (root.optString("fingerprint") != currentFingerprint) continue
+            if (root.optBoolean("ignoreTranscription", false) != ignoreTranscription) continue
 
             val stateObject = root.optJSONObject("state") ?: continue
             val state = decodeState(videoKey, stateObject) ?: continue
             val savedAt = root.optLong("savedAt", file.lastModified()).coerceAtLeast(0L)
             runCatching { file.setLastModified(System.currentTimeMillis()) }
-            return ReadyPlaybackSessionSnapshot(storedFingerprint, ignoreTranscription, state, savedAt)
+            return ReadyPlaybackSessionSnapshot(currentFingerprint, ignoreTranscription, state, savedAt)
         }
         return null
     }
