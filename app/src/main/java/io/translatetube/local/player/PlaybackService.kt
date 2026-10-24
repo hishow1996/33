@@ -1205,9 +1205,38 @@ class PlaybackService : MediaSessionService() {
             kotlinx.coroutines.delay(100L)
         }
 
-        // 起播位置附近的配音由 startPlaybackWithMountedDubbing() 在真正开播前挂载。
+        // Never start source-only playback if the initial usable voice failed or is still unavailable.
+        // A failed cue is counted as "prepared" by the queue so progress can continue, but it is
+        // not an audible dubbing result and must not be mistaken for a successful startup buffer.
         awaitProcessingResumed(sessionKey, pipelineGeneration)
         ensureCurrentSession(sessionKey, pipelineGeneration)
+        val firstAudibleCue = spokenIndices.firstOrNull { index ->
+            lines[index].zh?.let {
+                io.translatetube.local.tts.TtsTextPolicy.hasSpeakableContent(it)
+            } == true
+        } ?: return
+        val firstCueHasAudio = engine.isPrepared(firstAudibleCue) && !engine.isSilent(firstAudibleCue)
+        if (!firstCueHasAudio) {
+            val terminalFailure = engine.isSilent(firstAudibleCue)
+            val hint = if (terminalFailure) {
+                "所选配音引擎未能生成首句中文配音，视频已暂停。请检查在线语音网络/服务或本地模型文件后，重新处理此视频。"
+            } else {
+                "等待首句中文配音超过启动等待时间，视频保持暂停。请检查网络连接、语音服务或模型状态后重新处理。"
+            }
+            updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                state.copy(
+                    waitingForDubbingEngine = !terminalFailure,
+                    dubbingHasErrors = state.dubbingHasErrors || terminalFailure,
+                    dubbingStatus = if (terminalFailure) "首句配音生成失败，视频已暂停" else "首句配音尚未就绪，视频保持暂停",
+                    noModelHint = state.noModelHint ?: hint,
+                    progress = if (terminalFailure) "首句配音生成失败，视频已暂停" else "等待首句配音生成完成；视频暂不播放",
+                )
+            }
+            withContext(Dispatchers.Main) {
+                if (videoKey == sessionKey && ui.value.key == sessionKey) pm.pause()
+            }
+            return
+        }
     }
 
     /** 开播前的 flush 会触发一次位置不连续回调；这段时间内保留已挂载的配音，不清总线。 */
@@ -4369,10 +4398,9 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     "piper" -> piperModelReadyForChinese()
                     else -> false
                 }
-                // Chinese source material speaks the target language, but the dubbing switch is an
-                // explicit user preference: when the selected engine is ready, build it and read
-                // the Chinese cues (with the original kept audible by default). Only degrade to
-                // subtitle-over-original when the engine itself is not ready yet.
+                // Chinese source material still respects the explicitly selected TTS engine.
+                // If the selected engine is unavailable, the common waiting state below blocks
+                // playback instead of silently degrading to source-only narration.
                 if (selectedEngineReady) {
                     try {
                         // Pass the saved selection explicitly so a settings change during parsing
@@ -6423,12 +6451,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     }
 
     /**
-     * Centralize synthesis-failure reporting for normal playback and imported subtitles.
-     * The explicitly selected TTS engine is retained; the source audio is restored on failure.
-     */
-    /**
      * Report synthesis failures without silently replacing the engine selected in Settings.
-     * In particular, System TTS remains System TTS; source audio is restored for failed cues.
+     * When the selected engine cannot produce voice output, pause the video rather than
+     * silently substituting the original audio as an automatic fallback.
      */
     private fun pausePlaybackAfterDubbingFailure(
         engine: DubbingEngine,
@@ -6506,12 +6531,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             if (engine.currentTtsName != "系统TTS" || !isCurrentDubbingEngine(engine, sessionKey)) {
                 false
             } else {
-                // Return false so DubbingEngine marks this cue unavailable and restores the
-                // source audio. Never replace the user's explicitly selected System TTS engine.
+                // Return false so DubbingEngine marks this cue unavailable. Never replace the
+                // user's explicitly selected System TTS engine; pause video instead of source fallback.
                 updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                     state.copy(
                         dubbingStatus = "系统 TTS 合成失败，保持当前引擎",
-                        noModelHint = "系统 TTS 合成失败：$detail。应用不会自动切换到本地模型，也不会要求下载 Kokoro/Piper。请检查手机设置中的文字转语音服务、中文语音数据和可用音色；视频音量遵循播放页的原声开关。",
+                        noModelHint = "系统 TTS 合成失败：$detail。应用不会自动切换到本地模型，也不会要求下载 Kokoro/Piper。视频已暂停；请检查手机设置中的文字转语音服务、中文语音数据和可用音色后重新处理。",
                         dubbingHasErrors = true,
                         activeDubbingLine = -1,
                     )
@@ -6525,17 +6550,17 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             val activeName = engine.currentTtsName.ifBlank { tts.name }
             val systemTtsSelected = activeName.contains("系统TTS")
             val message = if (systemTtsSelected) {
-                "系统 TTS 合成或输出失败：$detail。当前保持系统 TTS，不会自动切换或要求下载本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色；视频音量遵循播放页的原声开关。"
+                "系统 TTS 合成或输出失败：$detail。当前保持系统 TTS，不会自动切换或要求下载本地模型。视频已暂停，请检查手机的文字转语音服务、中文语音数据和可用音色后重新处理。"
             } else {
-                "当前配音引擎「$activeName」合成或输出失败，已恢复原声。$detail"
+                "当前配音引擎「$activeName」合成或输出失败，视频已暂停。$detail"
             }
             updateUiForCurrentDubbingEngine(engine, sessionKey) { state ->
                 state.copy(
                     ttsEngineName = activeName,
                     dubbingStatus = if (systemTtsSelected) {
-                        "系统 TTS 合成失败，保持当前引擎并恢复原声"
+                        "系统 TTS 合成失败，视频已暂停"
                     } else {
-                        "$activeName 合成或播放失败，已恢复原声"
+                        "$activeName 合成或播放失败，视频已暂停"
                     },
                     noModelHint = message,
                     // Keep the selected engine and the user's audio preference; the error hint
