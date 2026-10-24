@@ -1471,8 +1471,7 @@ fun WebVideoScreen(
                     },
                 ) {
                     Icon(
-                        Icons.Filled.ArrowRightAlt,
-                        modifier = Modifier.graphicsLayer { scaleX = -1f },
+                        Icons.Filled.ArrowBack,
                         contentDescription = "返回网页上一页",
                     )
                 }
