@@ -297,34 +297,44 @@ class MainActivity : ComponentActivity() {
                                 alpha = pageMotion.value
                             },
                     ) {
-                        // Keep the WebView mounted underneath the player so navigating back
-                        // restores its candidate list and page state without triggering a reload.
+                        // Keep the WebView alive beneath both the player and Home. Returning Home
+                        // only hides/pauses the page; it must not destroy the WebView, JS session,
+                        // detected source cards, or current in-page navigation state.
                         val keepWebDetectionMounted = displayedScreen == Screen.WEB ||
                             (
-                                returnToWebAfterPlayer &&
-                                    !webDetectionUrl.isNullOrBlank() &&
-                                    displayedScreen != Screen.HOME &&
-                                    (displayedScreen == Screen.PLAYER || previousScreen == Screen.PLAYER)
+                                !webDetectionUrl.isNullOrBlank() &&
+                                    (
+                                        displayedScreen == Screen.HOME ||
+                                            (
+                                                returnToWebAfterPlayer &&
+                                                    displayedScreen != Screen.HOME &&
+                                                    (displayedScreen == Screen.PLAYER || previousScreen == Screen.PLAYER)
+                                            )
+                                    )
                             )
                         if (keepWebDetectionMounted) {
-                            WebVideoScreen(
-                                initialUrl = webDetectionUrl.orEmpty(),
-                                visible = displayedScreen == Screen.WEB,
-                                onBack = { screen = Screen.HOME },
-                                onOpenMedia = { url, title, referrer, cookie, userAgent ->
-                                    returnToWebAfterPlayer = true
-                                    advancePlayRequest(
-                                        PlayRequest(
-                                            mediaUrl = url,
-                                            mediaTitle = title,
-                                            mediaReferrer = referrer,
-                                            mediaCookie = cookie,
-                                            mediaUserAgent = userAgent,
+                            // Recreate only when the user submits a different start URL. The same
+                            // URL keeps its existing WebView even if the user browsed to another page.
+                            key(webDetectionUrl) {
+                                WebVideoScreen(
+                                    initialUrl = webDetectionUrl.orEmpty(),
+                                    visible = displayedScreen == Screen.WEB,
+                                    onBack = { screen = Screen.HOME },
+                                    onOpenMedia = { url, title, referrer, cookie, userAgent ->
+                                        returnToWebAfterPlayer = true
+                                        advancePlayRequest(
+                                            PlayRequest(
+                                                mediaUrl = url,
+                                                mediaTitle = title,
+                                                mediaReferrer = referrer,
+                                                mediaCookie = cookie,
+                                                mediaUserAgent = userAgent,
+                                            )
                                         )
-                                    )
-                                    screen = Screen.PLAYER
-                                },
-                            )
+                                        screen = Screen.PLAYER
+                                    },
+                                )
+                            }
                         }
 
                         when (displayedScreen) {
