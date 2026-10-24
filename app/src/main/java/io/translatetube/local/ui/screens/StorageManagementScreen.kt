@@ -720,7 +720,7 @@ private fun StorageHistoryDetail(
                         if (selectionMode) {
                             OutlinedButton(
                                 modifier = Modifier.weight(1f),
-                                enabled = !busy && !actionBusy && videos.isNotEmpty(),
+                                enabled = !busy && !actionBusy && shownVideos.isNotEmpty(),
                                 onClick = { onToggleSelectAll(shownVideos.map { it.key }) },
                                 shape = RoundedCornerShape(11.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
