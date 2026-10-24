@@ -39,6 +39,12 @@ internal object DubbingTranslationPolicy {
                 null,
                 "原始译文非空，但清理占位内容/非字幕文本后为空",
             )
+        if (cleaned.isBlank()) {
+            return DubbingTranslationResolution(
+                null,
+                "原始译文非空，但清理占位内容/非字幕文本后为空",
+            )
+        }
         if (SubtitleTranslationQualityPolicy.isSourceEcho(sourceText, cleaned, detectedSource)) {
             return DubbingTranslationResolution(null, "译文与原文相同，命中原文回显过滤规则")
         }
