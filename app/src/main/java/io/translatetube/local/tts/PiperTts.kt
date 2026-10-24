@@ -125,8 +125,9 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         checkActive()
         val sampleRate = audio.sampleRate
         if (sampleRate !in 8_000..192_000 || audio.samples.isEmpty()) {
-            android.util.Log.w("PiperTts", "Invalid generated audio: rate=$sampleRate samples=${audio.samples.size}")
-            return TtsAudio(FloatArray(0), sampleRate.coerceIn(8_000, 192_000))
+            throw IllegalStateException(
+                "Piper 模型返回无效音频：采样率=${sampleRate} Hz，样本数=${audio.samples.size}；请检查模型文件和本次推理结果"
+            )
         }
         val clean = TtsPcmSanitizer.sanitizeInPlace(audio.samples, checkActive)
         val trimmed = TtsEdgeSilenceTrimmer.trim(clean, sampleRate, checkActive)
