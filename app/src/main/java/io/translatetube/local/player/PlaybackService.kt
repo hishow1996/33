@@ -62,6 +62,68 @@ import java.io.OutputStreamWriter
 import java.security.MessageDigest
 
 enum class Phase { IDLE, PARSING, DOWNLOADING_AUDIO, TRANSCRIBING, TRANSLATING, SYNTHESIZING, READY, ERROR }
+
+/**
+ * Persists only a one-way configuration fingerprint per history item. It lets history routing
+ * distinguish unchanged settings after the in-memory playback service has been recreated, without
+ * persisting API secrets or subtitle text in SharedPreferences.
+ */
+private object ReadyHistorySessionConfigStore {
+    private const val PREFS_NAME = "ready_history_session_config"
+    private const val KEY_PREFIX = "video_"
+
+    fun isRelevantPreferenceKey(key: String): Boolean =
+        key == "active_api_id" ||
+            key.startsWith("asr_") ||
+            key.startsWith("tts_") ||
+            key.startsWith("piper_") ||
+            key.startsWith("kokoro_") ||
+            key.startsWith("system_tts_") ||
+            key.startsWith("free_gemini_") ||
+            key.startsWith("free_deepseek_") ||
+            key.contains("translate", ignoreCase = true) ||
+            key.contains("translation", ignoreCase = true)
+
+    fun fingerprint(context: Context, ignoreTranscription: Boolean = false): String {
+        val relevant = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
+            .filter { entry ->
+                isRelevantPreferenceKey(entry.key) &&
+                    !(ignoreTranscription && entry.key.startsWith("asr_", ignoreCase = true))
+            }
+            .sortedBy { it.key }
+            .joinToString("\n") { entry ->
+                val value = when (val raw = entry.value) {
+                    is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
+                    else -> raw?.toString().orEmpty()
+                }
+                "${entry.key}=$value"
+            }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(relevant.toByteArray(Charsets.UTF_8))
+        return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    fun save(context: Context, videoKey: String, fingerprint: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(storageKey(videoKey), fingerprint)
+            .apply()
+    }
+
+    fun matches(context: Context, videoKey: String, ignoreTranscription: Boolean): Boolean {
+        if (videoKey.isBlank()) return false
+        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(storageKey(videoKey), null)
+            ?: return false
+        return saved.isNotBlank() && saved == fingerprint(context, ignoreTranscription)
+    }
+
+    private fun storageKey(videoKey: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(videoKey.toByteArray(Charsets.UTF_8))
+        return KEY_PREFIX + digest.take(16).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+}
+
 private data class PartialAsrTranscript(
     val processedSegments: Int,
     val rows: List<Triple<Long, Long, String>>,
@@ -258,6 +320,10 @@ class PlaybackService : MediaSessionService() {
         const val ACTION_TOGGLE_PROCESSING_PAUSE = "io.translatetube.local.action.TOGGLE_PROCESSING_PAUSE"
         const val ACTION_CANCEL_PROCESSING = "io.translatetube.local.action.CANCEL_PROCESSING"
         const val EXTRA_PROCESSING_SESSION_KEY = "io.translatetube.local.extra.PROCESSING_SESSION_KEY"
+
+        /** True only when this history item was previously completed with the currently selected engines. */
+        fun hasCompatibleHistorySnapshot(context: Context, key: String, isYouTube: Boolean): Boolean =
+            ReadyHistorySessionConfigStore.matches(context, key, ignoreTranscription = isYouTube)
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -361,39 +427,14 @@ class PlaybackService : MediaSessionService() {
     )
 
     private fun isProcessingEnginePreferenceKey(key: String): Boolean =
-        key == "active_api_id" ||
-            key.startsWith("asr_") ||
-            key.startsWith("tts_") ||
-            key.startsWith("piper_") ||
-            key.startsWith("kokoro_") ||
-            key.startsWith("system_tts_") ||
-            key.startsWith("free_gemini_") ||
-            key.startsWith("free_deepseek_") ||
-            key.contains("translate", ignoreCase = true) ||
-            key.contains("translation", ignoreCase = true)
+        ReadyHistorySessionConfigStore.isRelevantPreferenceKey(key)
 
     /**
      * Hash only the settings that influence transcription, translation or synthesis.
      * The fingerprint is diagnostic-safe: API keys and other preference values are never logged.
      */
-    private fun processingEnginePreferenceFingerprint(ignoreTranscription: Boolean = false): String {
-        val relevant = getSharedPreferences("settings", MODE_PRIVATE).all.entries
-            .filter { entry ->
-                isProcessingEnginePreferenceKey(entry.key) &&
-                    !(ignoreTranscription && entry.key.startsWith("asr_", ignoreCase = true))
-            }
-            .sortedBy { entry -> entry.key }
-            .joinToString("\n") { entry ->
-                val value = when (val raw = entry.value) {
-                    is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
-                    else -> raw?.toString().orEmpty()
-                }
-                "${entry.key}=$value"
-            }
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(relevant.toByteArray(Charsets.UTF_8))
-        return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
-    }
+    private fun processingEnginePreferenceFingerprint(ignoreTranscription: Boolean = false): String =
+        ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription)
 
     private fun shouldRestartForEnginePreferenceChange(state: PlayerUiState): Boolean =
         isProcessingPhase(state.phase) || (
@@ -1470,6 +1511,7 @@ class PlaybackService : MediaSessionService() {
                 ) {
                     completedReadySessionKey = key
                     completedReadySessionEngineFingerprint = runEngineFingerprint
+                    ReadyHistorySessionConfigStore.save(this@PlaybackService, key, runEngineFingerprint)
                 }
             }
         }
