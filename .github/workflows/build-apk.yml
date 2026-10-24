@@ -52,11 +52,8 @@ name: Build Android APK
 # Explicit rebuild trigger after limiting dubbing speed to a natural synchronization rate.
 # Re-run JVM tests after aligning legacy timing assertions with the 1.35x natural-rate limit.
 on:
-  # Manual dispatch remains available; this push trigger is only for explicit build-request commits.
+  # Manual-only builds: normal commits do not start APK builds.
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
