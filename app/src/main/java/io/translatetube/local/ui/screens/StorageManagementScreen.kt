@@ -84,6 +84,7 @@ fun StorageManagementScreen(
     onBack: () -> Unit,
     onOpenLogs: () -> Unit,
     onPlay: (PlayRequest) -> Unit = {},
+    historyOnly: Boolean = false,
 ) {
     val ctx = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
@@ -96,7 +97,7 @@ fun StorageManagementScreen(
     var data by remember { mutableStateOf<StorageSnapshot?>(null) }
     var scanning by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
-    var category by remember { mutableStateOf<StorageCategory?>(null) }
+    var category by remember(historyOnly) { mutableStateOf(if (historyOnly) StorageCategory.HISTORY else null) }
     var pending by remember { mutableStateOf<StorageAction?>(null) }
     var actionBusy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -116,7 +117,11 @@ fun StorageManagementScreen(
         }
     }
 
-    BackHandler { if (category != null) category = null else onBack() }
+    BackHandler {
+        if (historyOnly) onBack()
+        else if (category != null) category = null
+        else onBack()
+    }
     val downloadBusy = PiperModels.hasActiveDownloads || piperDownloads > 0 ||
         ttsState.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING) ||
         asrState.status in setOf(ModelStatus.DOWNLOADING, ModelStatus.EXTRACTING)
@@ -408,12 +413,18 @@ fun StorageManagementScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { if (category != null) category = null else onBack() }) {
+            IconButton(onClick = { if (!historyOnly && category != null) category = null else onBack() }) {
                 Icon(Icons.Filled.ArrowBack, "返回", tint = OnBg)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(category?.title ?: "存储管理", color = OnBg, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(if (category == null) "本地数据总览 · 不会自动上传" else "分类占用与可执行操作", color = SubText, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (category == null) "本地数据总览 · 不会自动上传"
+                    else if (historyOnly && category == StorageCategory.HISTORY) "查看、续播与清理记录"
+                    else "分类占用与可执行操作",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             IconButton(onClick = { refresh++ }, enabled = !scanning && !actionBusy) {
                 Icon(Icons.Filled.Refresh, "重新统计", tint = BrandBright)

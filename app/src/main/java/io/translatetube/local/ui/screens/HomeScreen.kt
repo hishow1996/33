@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -57,6 +58,7 @@ import kotlinx.coroutines.withContext
 fun HomeScreen(
     onPlay: (PlayRequest) -> Unit,
     onSettings: () -> Unit,
+    onHistory: () -> Unit = {},
     pendingResumeTaskKey: String? = null,
     onResumeTask: (String) -> Unit = {},
 ) {
@@ -119,6 +121,12 @@ fun HomeScreen(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("大象翻译", color = OnBg, style = MaterialTheme.typography.headlineSmall)
+            }
+            IconButton(
+                onClick = onHistory,
+                modifier = Modifier.size(44.dp),
+            ) {
+                Icon(Icons.Filled.History, contentDescription = "历史记录", tint = SubText)
             }
             Box {
                 IconButton(

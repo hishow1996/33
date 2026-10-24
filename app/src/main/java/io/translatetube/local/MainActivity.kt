@@ -216,6 +216,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 var previousScreen by remember { mutableStateOf(Screen.HOME) }
+                var storageHistoryOnly by remember { mutableStateOf(false) }
                 var logsReturnScreen by remember { mutableStateOf(Screen.SETTINGS) }
                 // Preserve the source page independently from the temporary media URL selected
                 // for playback so returning from parsing never launches source detection again.
@@ -399,6 +400,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
+                                onHistory = { storageHistoryOnly = true; screen = Screen.STORAGE },
                                 pendingResumeTaskKey = pendingTask?.sourceKey,
                                 onResumeTask = { taskKey ->
                                     val live = PlaybackService.ui.value
@@ -460,12 +462,20 @@ class MainActivity : ComponentActivity() {
                                     logsReturnScreen = Screen.SETTINGS
                                     screen = Screen.LOGS
                                 },
-                                onStorageManagement = { screen = Screen.STORAGE },
+                                onStorageManagement = { storageHistoryOnly = false; screen = Screen.STORAGE },
                             )
                             Screen.API -> ApiManagerScreen(onBack = { screen = Screen.SETTINGS })
                             Screen.LOGS -> AppLogsScreen(onBack = { screen = logsReturnScreen })
                             Screen.STORAGE -> StorageManagementScreen(
-                                onBack = { screen = Screen.SETTINGS },
+                                onBack = {
+                                    if (storageHistoryOnly) {
+                                        storageHistoryOnly = false
+                                        screen = Screen.HOME
+                                    } else {
+                                        screen = Screen.SETTINGS
+                                    }
+                                },
+                                historyOnly = storageHistoryOnly,
                                 onOpenLogs = {
                                     logsReturnScreen = Screen.STORAGE
                                     screen = Screen.LOGS
