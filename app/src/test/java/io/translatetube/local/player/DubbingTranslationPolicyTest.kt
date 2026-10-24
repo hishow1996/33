@@ -23,9 +23,27 @@ class DubbingTranslationPolicyTest {
     }
 
     @Test
-    fun blankTranslationDoesNotCreateASpeechCue() {
+    fun blankTranslationProvidesSpecificDiagnosticReason() {
         assertNull(DubbingTranslationPolicy.usableText("Hello world", null))
         assertNull(DubbingTranslationPolicy.usableText("Hello world", "   "))
+        assertEquals(
+            "翻译结果为空或只有空白字符",
+            DubbingTranslationPolicy.resolveText("Hello world", null).reason,
+        )
+    }
+
+    @Test
+    fun sourceEchoProvidesSpecificDiagnosticReason() {
+        val result = DubbingTranslationPolicy.resolveText("Hello world.", "Hello world")
+        assertNull(result.text)
+        assertEquals("译文与原文相同，命中原文回显过滤规则", result.reason)
+    }
+
+    @Test
+    fun placeholderTranslationProvidesSpecificDiagnosticReason() {
+        val result = DubbingTranslationPolicy.resolveText("This is a line", "正在翻译")
+        assertNull(result.text)
+        assertEquals("原始译文非空，但清理占位内容/非字幕文本后为空", result.reason)
     }
     @Test
     fun knownJapaneseLanguageKeepsKanjiOnlyCueFromBeingMisclassifiedAsChinese() {
