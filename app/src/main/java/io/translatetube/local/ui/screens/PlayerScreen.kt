@@ -797,7 +797,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             Text("正在恢复历史视频…", color = OnBg, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "正在载入播放资源与已保存的处理结果",
+                                "正在载入视频与字幕配音资源",
                                 color = SubText,
                                 style = MaterialTheme.typography.bodySmall,
                             )
