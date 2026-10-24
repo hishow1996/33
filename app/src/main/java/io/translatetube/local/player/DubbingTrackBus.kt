@@ -59,6 +59,9 @@ class DubbingTrackBus {
     fun streamStart(): Long = streamStartUs
     fun generationToken(): Long = contentGeneration
 
+    /** 配音是否开着：关闭时音频处理器不做人声/音乐拆分，原声原样通过。 */
+    fun isDubbingEnabled(): Boolean = dubbingEnabled
+
     fun feed(
         mediaTimeUs: Long,
         samples: FloatArray,
