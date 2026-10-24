@@ -3,6 +3,8 @@ package io.translatetube.local.tts
 import io.translatetube.local.util.HttpDownloadResponsePolicy
 import io.translatetube.local.util.HttpDownloadSpeedPolicy
 import io.translatetube.local.util.SlowDownloadSourceException
+import io.translatetube.local.data.ResumableModelArchiveDownloader
+import io.translatetube.local.asr.AtomicFileInstaller
 
 import android.content.Context
 import com.k2fsa.sherpa.onnx.OfflineTts
@@ -538,12 +540,20 @@ object PiperModels {
                 runCatching { if (backup.isDirectory) backup.deleteRecursively() else backup.delete() }
             }
             refreshInstalled(ctx)
+            archive.delete()
+            ResumableModelArchiveDownloader.cleanupPartialFiles(archive)
             return@withContext
         }
 
         onStage("正在检查模型下载和安装所需空间…")
+        val estimatedArchiveBytes = def.sizeMB.toLong() * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB
+        val archiveUrls = PiperDownloadSourcePolicy.urls("$BASE/${def.archive}")
+        val alreadyDownloadedBytes = maxOf(
+            archive.length(),
+            archiveUrls.maxOfOrNull { url -> ResumableModelArchiveDownloader.partFileFor(archive, url).length() } ?: 0L,
+        ).coerceAtMost(estimatedArchiveBytes)
         val requiredStorageBytes = io.translatetube.local.data.ModelStoragePreflightPolicy.requiredBytes(
-            archiveBytes = def.sizeMB.toLong() * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB,
+            archiveBytes = (estimatedArchiveBytes - alreadyDownloadedBytes).coerceAtLeast(0L),
             extractedBytes = def.sizeMB.toLong() * 2L * io.translatetube.local.data.ModelStoragePreflightPolicy.MIB,
         )
         val usableSpace = io.translatetube.local.data.ModelStoragePreflightPolicy.minimumKnownUsableSpace(
@@ -594,10 +604,6 @@ object PiperModels {
                     throw java.io.IOException("无法清理不完整的 Piper 模型备份")
                 }
             }
-            if (archive.exists() && !archive.delete()) {
-                throw java.io.IOException("无法清理上次未完成的 Piper 下载文件")
-            }
-
             downloadArchiveWithFallback(
                 archive = archive,
                 definition = def,
@@ -640,12 +646,12 @@ object PiperModels {
             onProgress(100)
             onStage("Piper 模型已就绪")
             refreshInstalled(ctx)
+            archive.delete()
+            ResumableModelArchiveDownloader.cleanupPartialFiles(archive)
         } catch (error: Exception) {
             // Never delete the published model on a failed download or extraction. Only staging is disposable.
             runCatching { staging.deleteRecursively() }
             throw error
-        } finally {
-            runCatching { archive.delete() }
         }
     }
 
@@ -662,83 +668,69 @@ object PiperModels {
     ) = withContext(Dispatchers.IO) {
         val urls = PiperDownloadSourcePolicy.urls("$BASE/${definition.archive}")
         if (urls.isEmpty()) throw java.io.IOException("Piper 模型下载地址为空")
+
+        if (ResumableModelArchiveDownloader.isReusableArchive(
+                archive, MAX_ARCHIVE_BYTES, definition.archiveSha256, checkActive,
+            )
+        ) {
+            onProgress(100)
+            onStage("模型包已下载并校验通过，继续解压安装…")
+            return@withContext
+        }
+        if (archive.exists() && !archive.delete()) {
+            throw java.io.IOException("无法清理校验失败的 Piper 模型压缩包")
+        }
+
         var lastError: Exception? = null
         var primarySourceWasSlow = false
-        for ((sourceIndex, url) in urls.withIndex()) {
+        val orderedSources = ResumableModelArchiveDownloader.orderSourcesByResumeProgress(archive, urls)
+        for ((sourceIndex, url) in orderedSources) {
             checkActive()
-            onProgress(0)
+            val partFile = ResumableModelArchiveDownloader.partFileFor(archive, url)
+            val priorBytes = partFile.length()
+            val attemptLabel = orderedSources.indexOf(sourceIndex to url) + 1
+            onProgress(
+                if (priorBytes > 0L && definition.sizeMB > 0) {
+                    (priorBytes * 100L / (definition.sizeMB.toLong() * 1024L * 1024L)).toInt().coerceIn(0, 99)
+                } else 0
+            )
             onStage(
                 when {
+                    priorBytes > 0L -> "正在续传上次未完成的 Piper 模型包（已下载 " + (priorBytes / (1024L * 1024L)) + " MB）…"
                     sourceIndex == 0 -> "正在连接 Piper 官方模型源…"
-                    primarySourceWasSlow -> "官方源下载速度较慢，正在切换加速源（${sourceIndex + 1}/${urls.size}）…"
-                    else -> "官方源不可用，正在切换下载源（${sourceIndex + 1}/${urls.size}）…"
+                    primarySourceWasSlow -> "官方源下载速度较慢，正在切换加速源（" + attemptLabel + "/" + urls.size + "）…"
+                    else -> "官方源不可用，正在切换下载源（" + attemptLabel + "/" + urls.size + "）…"
                 }
             )
-            runCatching { if (archive.exists()) archive.delete() }
             try {
-                val request = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "Mozilla/5.0")
-                    .build()
-                val ownerJob = currentCoroutineContext()[Job]
-                val digest = definition.archiveSha256?.let {
-                    java.security.MessageDigest.getInstance("SHA-256")
-                }
-                executeCancellableHttpCall(http.newCall(request), ownerJob) { response ->
-                    if (!HttpDownloadResponsePolicy.isCompleteGetResponse(response.code)) {
-                        throw java.io.IOException("Piper 模型下载需要完整 HTTP 200 响应，收到 HTTP ${response.code}")
-                    }
-                    val body = response.body ?: throw java.io.IOException("模型下载失败：空响应")
-                    val sourceStartedAtNanos = System.nanoTime()
-                    val total = body.contentLength()
-                    if (!HttpDownloadResponsePolicy.isValidExpectedLength(total, MAX_ARCHIVE_BYTES)) {
-                        throw java.io.IOException("Piper 模型压缩包响应声明的大小无效或超过 256 MB 安全上限")
-                    }
-                    var done = 0L
-                    var lastProgressBytes = 0L
-                    var lastProgressAtNanos = System.nanoTime()
-                    body.byteStream().use { input ->
-                        FileOutputStream(archive).use { output ->
-                            val buffer = ByteArray(256 * 1024)
-                            while (true) {
-                                checkActive()
-                                ownerJob?.ensureActive()
-                                val count = io.translatetube.local.util.ProgressSafeInput.read(input, buffer)
-                                if (count < 0) break
-                                if (!PiperModelFilePolicy.isWithinLimit(done, count.toLong(), MAX_ARCHIVE_BYTES)) {
-                                    throw java.io.IOException("Piper 模型压缩包超过 256 MB 安全上限")
-                                }
-                                done += count
-                                val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sourceStartedAtNanos)
-                                if (HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, done, elapsedMillis)) {
-                                    throw SlowDownloadSourceException(done, elapsedMillis)
-                                }
-                                output.write(buffer, 0, count)
-                                digest?.update(buffer, 0, count)
-                                val nowNanos = System.nanoTime()
-                                if (total > 0L && (
-                                        done - lastProgressBytes >= 512L * 1024L ||
-                                            nowNanos - lastProgressAtNanos >= 250_000_000L
-                                    )
-                                ) {
-                                    onProgress(((done * 100L) / total).toInt().coerceIn(0, 99))
-                                    lastProgressBytes = done
-                                    lastProgressAtNanos = nowNanos
-                                }
-                            }
-                            output.flush()
-                            output.fd.sync()
+                val result = ResumableModelArchiveDownloader.download(
+                    client = http,
+                    url = url,
+                    partFile = partFile,
+                    maxBytes = MAX_ARCHIVE_BYTES,
+                    expectedSha256 = definition.archiveSha256,
+                    checkActive = checkActive,
+                    shouldFallbackToMirror = { received, elapsed ->
+                        HttpDownloadSpeedPolicy.shouldFallbackFromPrimarySource(sourceIndex, received, elapsed)
+                    },
+                    onProgress = { downloaded, total ->
+                        val percent = if (total > 0L) {
+                            (downloaded.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 99)
+                        } else {
+                            (downloaded.toDouble() * 100.0 /
+                                (definition.sizeMB.toLong() * 1024.0 * 1024.0)).toInt().coerceIn(0, 99)
                         }
-                    }
-                    if (!HttpDownloadResponsePolicy.isCompletePayload(total, done, MAX_ARCHIVE_BYTES)) {
-                        throw java.io.IOException("Piper 模型下载不完整或大小异常：预期 ${total} 字节，实际 ${done} 字节")
-                    }
-                }
-                checkActive()
-                val actualDigest = digest?.digest()?.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-                if (!PiperDownloadSourcePolicy.checksumMatches(definition.archiveSha256, actualDigest)) {
+                        onProgress(percent)
+                    },
+                )
+                if (definition.archiveSha256 != null &&
+                    !result.sha256.equals(definition.archiveSha256, ignoreCase = true)
+                ) {
                     throw java.io.IOException("Piper 模型压缩包 SHA-256 校验失败")
                 }
+                AtomicFileInstaller.install(partFile, archive)
+                ResumableModelArchiveDownloader.clearResumeMetadata(partFile)
+                ResumableModelArchiveDownloader.cleanupPartialFiles(archive)
                 onProgress(100)
                 onStage("模型包下载完成并通过校验，准备解压…")
                 return@withContext
@@ -746,14 +738,16 @@ object PiperModels {
                 throw cancelled
             } catch (error: Exception) {
                 lastError = error
-                if (sourceIndex == 0) {
-                    primarySourceWasSlow = error is SlowDownloadSourceException
-                }
-                runCatching { archive.delete() }
+                if (sourceIndex == 0) primarySourceWasSlow = error is SlowDownloadSourceException
+                android.util.Log.w(
+                    "PiperModels",
+                    "模型源失败（保留可续传断点）：" + (error.message ?: error.javaClass.simpleName),
+                    error,
+                )
             }
         }
         throw java.io.IOException(
-            "Piper 模型全部下载源均失败：${lastError?.message ?: "网络异常"}",
+            "Piper 模型全部下载源均失败：" + (lastError?.message ?: "网络异常"),
             lastError,
         )
     }
