@@ -21,6 +21,8 @@ object AppLogTitleResolver {
         return when {
             normalizedTag.contains("dubbingmixer") ->
                 "配音 / 音频混流"
+            normalizedTag.contains("dubbingfallback") ->
+                "配音 / 译文缺失与原声回退"
             normalizedTag.contains("dubbingtimeline") ||
                 (normalizedTag.contains("dubbing") && hasAny("时间轴", "时间槽", "同步", "超出时间")) ->
                 "配音 / 时间轴同步"
