@@ -2134,6 +2134,7 @@ fun WebVideoScreen(
             )
 
 
+            val density = LocalDensity.current
             val minPanelHeight = 8.dp.coerceAtMost(maxHeight)
             val maxPanelHeight = (maxHeight * 0.92f)
                 .coerceAtLeast(minPanelHeight)
