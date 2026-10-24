@@ -792,6 +792,7 @@ private fun StorageHistoryDetail(
                     selected = video.key in selectedKeys,
                     selectionMode = selectionMode,
                     enabled = !busy && !actionBusy,
+                    favoriteEnabled = !actionBusy,
                     onClick = {
                         if (selectionMode) onToggleSelection(video.key)
                         else onPlay(video.toHistoryPlayRequest())
@@ -811,6 +812,7 @@ private fun StorageHistoryVideoRow(
     selected: Boolean,
     selectionMode: Boolean,
     enabled: Boolean,
+    favoriteEnabled: Boolean,
     onClick: () -> Unit,
     onToggleSelection: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -873,7 +875,7 @@ private fun StorageHistoryVideoRow(
         }
         if (!selectionMode) {
             IconButton(
-                enabled = !actionBusy,
+                enabled = favoriteEnabled,
                 onClick = onToggleFavorite,
                 modifier = Modifier.size(40.dp),
             ) {
