@@ -283,7 +283,7 @@ data class PlayerUiState(
     val dubbingOn: Boolean = true,
     val muteOriginal: Boolean = true,
     /** User-selected source and Chinese dubbing gains, independently adjustable from 0 to 1. */
-    val originalVolume: Float = 0f,
+    val originalVolume: Float = 1f,
     val dubbingVolume: Float = 1f,
     val audioOnly: Boolean = false,
     val error: String? = null,
@@ -924,7 +924,7 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val savedOriginalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 0f).coerceIn(0f, 1f)
+        val savedOriginalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)
         val savedDubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
         ui.update { state ->
             state.copy(
@@ -1780,7 +1780,7 @@ class PlaybackService : MediaSessionService() {
         )
         val configuredTtsName = ttsDisplayName(configuredTts)
         val audioPrefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val originalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 0f).coerceIn(0f, 1f)
+        val originalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)
         val dubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
         ui.value = PlayerUiState(
             phase = if (restoreCompletedSnapshot) Phase.READY else if (effectiveResumeState != null && effectiveResumeState.lines.isNotEmpty()) Phase.TRANSLATING else Phase.PARSING,
