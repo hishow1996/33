@@ -1477,8 +1477,8 @@ fun WebVideoScreen(
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
-                    // 比默认单行输入框略矮，让顶部网址栏更紧凑，同时保留足够的触控高度。
-                    modifier = Modifier.weight(1f).height(48.dp),
+                    // 使用标准单行输入框高度，避免地址文字和提示文字上下被裁切。
+                    modifier = Modifier.weight(1f).height(56.dp),
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     placeholder = { Text("输入网页地址") },
