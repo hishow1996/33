@@ -619,7 +619,7 @@ Section(
                 ttsEngine = e
                 prefs.edit().putString("tts_engine", e).apply()
             }
-            EngineOption("piper", "Piper（需下载）", ttsEngine) { e ->
+            EngineOption("piper", "Piper", ttsEngine) { e ->
                 if (e != ttsEngine) {
                     io.translatetube.local.util.AppLogStore.info(
                         ctx,
