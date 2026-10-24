@@ -54,8 +54,6 @@ name: Build Android APK
 on:
   # Manual-only builds: normal commits do not start APK builds.
   workflow_dispatch:
-    paths:
-      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
