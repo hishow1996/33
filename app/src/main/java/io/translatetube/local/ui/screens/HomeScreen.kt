@@ -48,7 +48,6 @@ import io.translatetube.local.web.SharedLinkTextParser
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -61,16 +60,13 @@ fun HomeScreen(
 ) {
     val playback by PlaybackService.ui.collectAsState()
     val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    var db by remember(ctx) { mutableStateOf<AppDatabase?>(null) }
     var videos by remember { mutableStateOf<List<VideoEntity>>(emptyList()) }
     var historyLoaded by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
 
     // 先完成首帧绘制，再在 IO 线程打开数据库并订阅历史记录；冷启动不被历史库初始化拖住。
     LaunchedEffect(ctx) {
         withFrameNanos { }
         val database = withContext(Dispatchers.IO) { AppDatabase.get(ctx) }
-        db = database
         database.videoDao().all().collect { items ->
             videos = items
             historyLoaded = true
