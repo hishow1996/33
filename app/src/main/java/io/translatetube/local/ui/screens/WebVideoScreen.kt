@@ -1478,20 +1478,20 @@ fun WebVideoScreen(
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
-                    // 不强制压缩输入框高度，让 Material 单行输入框按自身内容完整测量，避免文字上下被裁切。
+                    // 字号略微缩小，并增大行高，避免地址文字的上、下笔画被单行输入框裁切。
                     modifier = Modifier.weight(1f).heightIn(min = 56.dp),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
+                        fontSize = 12.sp,
+                        lineHeight = 20.sp,
                     ),
                     shape = RoundedCornerShape(14.dp),
                     placeholder = {
                         Text(
                             "输入网页地址",
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 13.sp,
-                                lineHeight = 18.sp,
+                                fontSize = 12.sp,
+                                lineHeight = 20.sp,
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
