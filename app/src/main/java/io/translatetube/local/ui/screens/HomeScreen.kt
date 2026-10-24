@@ -334,9 +334,11 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.height(22.dp))
-        Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("观看记录", color = OnBg, style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.weight(1f))
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 10.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             IconButton(
                 onClick = onHistory,
                 modifier = Modifier.size(40.dp),
