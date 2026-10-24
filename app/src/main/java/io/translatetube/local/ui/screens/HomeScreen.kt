@@ -442,7 +442,7 @@ private fun VideoRow(
                                 PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
                             else ->
                                 PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
-                        }
+                        }.copy(preferReadyHistoryResume = true)
                     )
                 },
                 onLongClick = onFav,
