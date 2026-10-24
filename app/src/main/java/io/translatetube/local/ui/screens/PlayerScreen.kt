@@ -572,7 +572,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         Column(Modifier.fillMaxSize().background(Color(0xFFF2F6FC))) {
             // ===== 顶部栏 =====
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 IconButton(
