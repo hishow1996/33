@@ -507,7 +507,8 @@ class PlaybackService : MediaSessionService() {
             state.key != key ||
             state.phase != Phase.READY ||
             state.waitingForTranscriptionEngine ||
-            state.waitingForDubbingEngine
+            state.waitingForDubbingEngine ||
+            state.dubbingHasErrors
         ) return false
 
         val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
@@ -957,6 +958,7 @@ class PlaybackService : MediaSessionService() {
             startForeground(1001, boot)
 
             pm = PlayerManager(this)
+            pm.playbackAllowed = { !isDubbingPlaybackBlocked(ui.value) }
             pm.originalVolume = ui.value.originalVolume
             pm.dubbingVolume = ui.value.dubbingVolume
             // Match the new mix bus to the currently visible mode before any timeline tick runs.
@@ -1222,10 +1224,29 @@ class PlaybackService : MediaSessionService() {
      * @param seekToMs 非空表示需要先跳到该位置（续播）；为空表示从播放器当前位置开始。
      * @param ensureCurrent 每次等待之后检查会话是否仍然有效，失效时抛出取消。
      */
+    private fun isDubbingPlaybackBlocked(state: PlayerUiState): Boolean =
+        state.dubbingOn && (
+            state.waitingForDubbingEngine ||
+                state.dubbingHasErrors ||
+                state.phase == Phase.ERROR
+            )
+
     private suspend fun startPlaybackWithMountedDubbing(
         seekToMs: Long?,
         ensureCurrent: suspend () -> Unit,
     ) {
+        val entryState = ui.value
+        if (isDubbingPlaybackBlocked(entryState)) {
+            cancelPendingSeekResume()
+            pm.pause()
+            safelyControlDubbing("配音引擎未就绪或合成失败，阻止自动播放") { dubbing?.stop() }
+            ui.update { current ->
+                if (current.key == entryState.key) {
+                    current.copy(isPlaying = false, currentLine = -1, activeDubbingLine = -1)
+                } else current
+            }
+            return
+        }
         val startMs = (seekToMs ?: pm.position()).coerceAtLeast(0L)
         val engine = dubbing
         val mountsOnBus = engine != null && ui.value.dubbingOn && !engine.usesImmediateTimelinePlayback
@@ -2715,10 +2736,9 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                     "edge" -> true
                     else -> selectedImportTts == "system"
                 }
-                if (isChineseLanguage(srcLang) && !importEngineReady) {
+                if (!importEngineReady) {
                     // 中文源 + 所选 TTS 引擎未就绪（模型未下载/未知引擎）：直接显示原文并保留原声。
                     // 引擎就绪时（含系统 TTS 与已装模型）仍按时间轴朗读中文字幕。
-                    safelySetOriginalVolume(1f, "source audio restore requested")
                     val translatedCount = translatedLines.count {
                         SubtitleParsers.cleanTranslatedText(it.zh) != null
                     }
@@ -2744,15 +2764,30 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         )
                     }
                     updateUiForSession(sessionKey, pipelineGeneration) {
+                        val unavailableEngineName = ttsDisplayName(selectedImportTts)
+                        val unavailableHint = when (selectedImportTts) {
+                            "kokoro" -> "已选择 Kokoro 配音模型，但模型尚未就绪。请在设置 → 配音设置中下载完整模型后重新打开或处理此视频。"
+                            "piper" -> {
+                                val modelId = getSharedPreferences("settings", MODE_PRIVATE)
+                                    .getString("piper_model", "zh_cn_chaowen_medium") ?: "zh_cn_chaowen_medium"
+                                val definition = io.translatetube.local.tts.PiperModels.byId(modelId)
+                                when {
+                                    definition == null -> "当前 Piper 模型编号无效，请在设置中重新选择中文 Piper 模型。"
+                                    !definition.supportsChineseOutput -> "当前 Piper 模型不支持中文输出，请在设置中选择中文模型。"
+                                    else -> "已选择 Piper 中文配音，但模型尚未下载或文件不完整。请在设置 → 配音设置中下载中文模型。"
+                                }
+                            }
+                            else -> "所选配音引擎「$unavailableEngineName」尚未就绪，请先检查设置和引擎配置。"
+                        }
                         it.copy(
                             phase = Phase.READY,
                             progress = "",
-                            ttsEngineName = "",
-                            dubbingStatus = "中文视频：显示中文字幕，保留原声",
-                            muteOriginal = false,
-                            noModelHint = null,
+                            ttsEngineName = unavailableEngineName,
+                            dubbingStatus = "$unavailableEngineName 尚未就绪，视频已暂停",
+                            muteOriginal = it.originalVolume <= 0f,
+                            noModelHint = unavailableHint,
                             waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = false,
+                            waitingForDubbingEngine = true,
                             lines = translatedLines,
                             totalLines = translatedLines.size,
                             translatedLineCount = translatedCount,
@@ -2762,12 +2797,6 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         )
                     }
                     ensureCurrentSession(sessionKey, pipelineGeneration)
-                    if (resumePlaybackAfterImport) {
-                        withContext(Dispatchers.Main) {
-                            ensureCurrentSession(sessionKey, pipelineGeneration)
-                            pm.play()
-                        }
-                    }
                     return@launch
                 }
                 val tts = makeTtsOffMainThread()
@@ -4344,23 +4373,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 // explicit user preference: when the selected engine is ready, build it and read
                 // the Chinese cues (with the original kept audible by default). Only degrade to
                 // subtitle-over-original when the engine itself is not ready yet.
-                if (isChineseLanguage(srcLang) && !selectedEngineReady) {
-                    // TTS 引擎未就绪（模型未下载/未知引擎）：中文源直接显示原文并保留原声。
-                    // 引擎就绪后（含系统 TTS）按时间轴朗读中文字幕。
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(
-                            ttsEngineName = "",
-                            dubbingStatus = "中文视频：$selectedTtsName 未就绪，先显示中文字幕并保留原声；就绪后即可朗读",
-                            muteOriginal = false,
-                            noModelHint = null,
-                            waitingForTranscriptionEngine = false,
-                            waitingForDubbingEngine = false,
-                        )
-                    }
-                    withContext(Dispatchers.Main) {
-                        if (videoKey == key && ui.value.key == key) safelySetOriginalVolume(1f, "source audio restore requested")
-                    }
-                } else if (selectedEngineReady) {
+                if (selectedEngineReady) {
                     try {
                         // Pass the saved selection explicitly so a settings change during parsing
                         // cannot cause the readiness check and actual engine to disagree.
@@ -6417,6 +6430,42 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
      * Report synthesis failures without silently replacing the engine selected in Settings.
      * In particular, System TTS remains System TTS; source audio is restored for failed cues.
      */
+    private fun pausePlaybackAfterDubbingFailure(
+        engine: DubbingEngine,
+        sessionKey: String,
+        reason: String,
+    ) {
+        scope.launch(Dispatchers.Main.immediate) {
+            if (!::pm.isInitialized || !isCurrentDubbingEngine(engine, sessionKey)) return@launch
+            cancelPendingSeekResume()
+            cancelDubbingDrainAfterVideoEnd()
+            runCatching { pm.pause() }
+            safelyControlDubbing("配音失败后停止语音输出：$reason") { engine.stop() }
+
+            val current = ui.value
+            if (current.key != sessionKey || !isCurrentDubbingEngine(engine, sessionKey)) return@launch
+            safelySetOriginalVolume(
+                if (current.originalVolume <= 0f) 0f else current.originalVolume,
+                "配音失败后保持视频暂停并保留原声音量设置",
+            )
+            ui.update { state ->
+                if (state.key == sessionKey && dubbing === engine) {
+                    state.copy(
+                        isPlaying = false,
+                        currentLine = -1,
+                        activeDubbingLine = -1,
+                        dubbingHasErrors = true,
+                        dubbingStatus = "${state.ttsEngineName.ifBlank { "配音引擎" }}合成失败，视频已暂停",
+                    )
+                } else state
+            }
+            android.util.Log.w(
+                "PlaybackService",
+                "Video paused after dubbing failure: session=$sessionKey reason=${reason.take(180)}",
+            )
+        }
+    }
+
     private fun registerDubbingFailureHandler(
         engine: DubbingEngine,
         tts: TtsEngine,
@@ -6467,11 +6516,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                         activeDubbingLine = -1,
                     )
                 }
-                scope.launch(Dispatchers.Main) {
-                    if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
-                        runCatching { safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback") }
-                    }
-                }
+                pausePlaybackAfterDubbingFailure(engine, sessionKey, "系统 TTS 合成失败：${detail.take(180)}")
                 false
             }
         }
@@ -6499,11 +6544,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     activeDubbingLine = -1,
                 )
             }
-            scope.launch(Dispatchers.Main) {
-                if (::pm.isInitialized && isCurrentDubbingEngine(engine, sessionKey)) {
-                    runCatching { safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback") }
-                }
-            }
+            pausePlaybackAfterDubbingFailure(engine, sessionKey, "$activeName 合成/输出失败：${detail.take(180)}")
             if (detail.contains("设备内存不足")) {
                 // Retire even if attach() reported the OOM just before publishing the engine.
                 // retireDubbing only clears the service field when this exact engine owns it.
@@ -6511,11 +6552,6 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     retireDubbing(engine)
                     runCatching { awaitRetiredDubbingEngines() }
                         .onFailure { android.util.Log.w("PlaybackService", "TTS cleanup after memory failure did not finish cleanly", it) }
-                    withContext(Dispatchers.Main) {
-                        if (::pm.isInitialized && videoKey == sessionKey && ui.value.key == sessionKey) {
-                            runCatching { safelySetOriginalVolume(1f, "source audio restore requested") }
-                        }
-                    }
                 }
             }
         }

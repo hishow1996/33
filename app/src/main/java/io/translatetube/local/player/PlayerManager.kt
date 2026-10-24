@@ -441,7 +441,7 @@ class PlayerManager(private val ctx: Context) {
     /** Restore the position and intent after a successful quality-source replacement. */
     private fun restoreQualitySwitchState(state: PlayerQualityResumeState) {
         player.seekTo(state.positionMs)
-        if (state.wasPlaying) player.play() else player.pause()
+        if (state.wasPlaying && isPlaybackAllowed()) player.play() else player.pause()
     }
 
     private fun isValidHttpMediaUrl(value: String): Boolean =
@@ -565,9 +565,27 @@ class PlayerManager(private val ctx: Context) {
         }
     }
 
+    /**
+     * PlaybackService supplies the live readiness/error gate. If dubbing is waiting for a model,
+     * or the selected TTS has failed, automatic playback must remain paused instead of falling
+     * back to source audio in the background.
+     */
+    @Volatile var playbackAllowed: (() -> Boolean)? = null
+
+    private fun isPlaybackAllowed(): Boolean = try {
+        playbackAllowed?.invoke() ?: true
+    } catch (error: Exception) {
+        android.util.Log.e("PlayerManager", "Playback readiness check failed; keeping playback paused", error)
+        false
+    }
+
     fun play() {
         if (released) return
         try {
+            if (!isPlaybackAllowed()) {
+                player.pause()
+                return
+            }
             player.play()
         } catch (error: Exception) {
             if (!released) android.util.Log.e("PlayerManager", "Unable to start playback", error)
