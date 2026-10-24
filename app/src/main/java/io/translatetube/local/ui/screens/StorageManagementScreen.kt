@@ -106,6 +106,7 @@ fun StorageManagementScreen(
     var historyLoaded by remember { mutableStateOf(false) }
     var selectedHistoryKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var historySelectionMode by remember { mutableStateOf(false) }
+    var historyFavoritesOnly by remember(historyOnly) { mutableStateOf(false) }
     var pendingHistoryDelete by remember { mutableStateOf<HistoryDeleteRequest?>(null) }
 
     LaunchedEffect(db) {
@@ -192,9 +193,26 @@ fun StorageManagementScreen(
     fun toggleHistorySelection(key: String) {
         selectedHistoryKeys = if (key in selectedHistoryKeys) selectedHistoryKeys - key else selectedHistoryKeys + key
     }
-    fun toggleHistorySelectAll() {
-        val allKeys = historyVideos.map { it.key }.toSet()
-        selectedHistoryKeys = if (allKeys.isNotEmpty() && selectedHistoryKeys.containsAll(allKeys)) emptySet() else allKeys
+    fun toggleHistorySelectAll(visibleKeys: List<String>) {
+        val allKeys = visibleKeys.toSet()
+        selectedHistoryKeys = if (allKeys.isNotEmpty() && selectedHistoryKeys.containsAll(allKeys)) {
+            selectedHistoryKeys - allKeys
+        } else {
+            allKeys
+        }
+    }
+    fun toggleHistoryFavorite(key: String) {
+        val video = historyVideos.firstOrNull { it.key == key } ?: return
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    db.videoDao().setFavorite(key, !video.isFavorite)
+                }
+            }.onFailure { error ->
+                message = "更新收藏状态失败：${error.message ?: error.javaClass.simpleName}"
+                messageError = true
+            }
+        }
     }
     fun requestHistoryDelete(keys: List<String>, clearAll: Boolean = false) {
         if (destructiveBusy || actionBusy || scanning) {
@@ -456,7 +474,13 @@ fun StorageManagementScreen(
                             if (!nextMode) selectedHistoryKeys = emptySet()
                         },
                         onToggleSelection = ::toggleHistorySelection,
-                        onToggleSelectAll = ::toggleHistorySelectAll,
+                        onToggleSelectAll = { keys -> toggleHistorySelectAll(keys) },
+                        favoritesOnly = historyFavoritesOnly,
+                        onToggleFavoritesOnly = {
+                            historyFavoritesOnly = !historyFavoritesOnly
+                            selectedHistoryKeys = emptySet()
+                        },
+                        onToggleFavorite = ::toggleHistoryFavorite,
                         onDeleteSingle = { requestHistoryDelete(listOf(it)) },
                         onDeleteSelected = { requestHistoryDelete(selectedHistoryKeys.toList()) },
                         onDeleteAll = { requestHistoryDelete(historyVideos.map { it.key }, clearAll = true) },
@@ -627,13 +651,17 @@ private fun StorageHistoryDetail(
     selectedKeys: Set<String>,
     onToggleSelectionMode: () -> Unit,
     onToggleSelection: (String) -> Unit,
-    onToggleSelectAll: () -> Unit,
+    onToggleSelectAll: (List<String>) -> Unit,
+    favoritesOnly: Boolean,
+    onToggleFavoritesOnly: () -> Unit,
+    onToggleFavorite: (String) -> Unit,
     onDeleteSingle: (String) -> Unit,
     onDeleteSelected: () -> Unit,
     onDeleteAll: () -> Unit,
     onPlay: (PlayRequest) -> Unit,
 ) {
-    val allSelected = videos.isNotEmpty() && videos.all { it.key in selectedKeys }
+    val shownVideos = if (favoritesOnly) videos.filter { it.isFavorite } else videos
+    val allSelected = shownVideos.isNotEmpty() && shownVideos.all { it.key in selectedKeys }
     LazyColumn(
         Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(9.dp),
@@ -663,6 +691,29 @@ private fun StorageHistoryDetail(
                     }
                     Row(
                         Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FilterChip(
+                            selected = !favoritesOnly,
+                            onClick = { if (favoritesOnly) onToggleFavoritesOnly() },
+                            label = { Text("全部记录") },
+                        )
+                        FilterChip(
+                            selected = favoritesOnly,
+                            onClick = { if (!favoritesOnly) onToggleFavoritesOnly() },
+                            label = { Text("收藏 ${videos.count { it.isFavorite }}") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Star,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -670,7 +721,7 @@ private fun StorageHistoryDetail(
                             OutlinedButton(
                                 modifier = Modifier.weight(1f),
                                 enabled = !busy && !actionBusy && videos.isNotEmpty(),
-                                onClick = onToggleSelectAll,
+                                onClick = { onToggleSelectAll(shownVideos.map { it.key }) },
                                 shape = RoundedCornerShape(11.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
                             ) { Text(if (allSelected) "取消全选" else "全选") }
@@ -712,7 +763,7 @@ private fun StorageHistoryDetail(
                     CircularProgressIndicator(color = BrandBright, modifier = Modifier.size(26.dp), strokeWidth = 2.dp)
                 }
             }
-        } else if (videos.isEmpty()) {
+        } else if (shownVideos.isEmpty()) {
             item {
                 Surface(
                     Modifier.fillMaxWidth(),
@@ -726,12 +777,16 @@ private fun StorageHistoryDetail(
                         verticalArrangement = Arrangement.spacedBy(7.dp),
                     ) {
                         Icon(Icons.Filled.History, contentDescription = null, tint = SubText, modifier = Modifier.size(28.dp))
-                        Text("还没有视频历史记录", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (favoritesOnly) "还没有收藏视频" else "还没有视频历史记录",
+                            color = OnBg,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                     }
                 }
             }
         } else {
-            items(videos, key = { it.key }) { video ->
+            items(shownVideos, key = { it.key }) { video ->
                 StorageHistoryVideoRow(
                     video = video,
                     selected = video.key in selectedKeys,
@@ -742,6 +797,7 @@ private fun StorageHistoryDetail(
                         else onPlay(video.toHistoryPlayRequest())
                     },
                     onToggleSelection = { onToggleSelection(video.key) },
+                    onToggleFavorite = { onToggleFavorite(video.key) },
                     onDelete = { onDeleteSingle(video.key) },
                 )
             }
@@ -757,6 +813,7 @@ private fun StorageHistoryVideoRow(
     enabled: Boolean,
     onClick: () -> Unit,
     onToggleSelection: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Row(
@@ -815,7 +872,19 @@ private fun StorageHistoryVideoRow(
             }
         }
         if (!selectionMode) {
-            IconButton(enabled = enabled, onClick = onDelete) {
+            IconButton(
+                enabled = !actionBusy,
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Star,
+                    contentDescription = if (video.isFavorite) "取消收藏" else "添加收藏",
+                    tint = if (video.isFavorite) Color(0xFFE3A008) else SubText,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(enabled = enabled, onClick = onDelete, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Filled.Delete, contentDescription = "删除这条历史和对应缓存", tint = DangerRed)
             }
         }
