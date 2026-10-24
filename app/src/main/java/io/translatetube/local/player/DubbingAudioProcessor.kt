@@ -17,7 +17,7 @@ class DubbingAudioProcessor(
     private val onDiagnostic: ((isWarning: Boolean, message: String, details: Map<String, String>) -> Unit)? = null,
 ) : BaseAudioProcessor() {
 
-    /** 0 = explicit source mute, 1 = source audio allowed with smooth speech ducking. */
+    /** Source channel gain: 0 = mute, 1 = full volume. */
     @Volatile
     var originalGain: Float = 1f
 
@@ -31,13 +31,8 @@ class DubbingAudioProcessor(
     private var activeBufferTimeUs = INVALID_TIME_US
     private var framesConsumedFromBuffer = 0L
     private var consumedFramesTotal = 0L
-    private var duckGain = 1f
     private var appliedOriginalGain = 1f
     private var voiceScratch = FloatArray(0)
-    /** 立体声原声的"人声/音乐"拆分器（只有双声道才有）。 */
-    private var splitter: SpeechCenterSplitter? = null
-    /** 拆分是否允许参与输出的平滑包络：配音关闭时为 0，原声原样通过。 */
-    private var bedAllowed = 0f
     private var firstInputLogged = false
     private var timestampFallbackLogged = false
 
@@ -75,8 +70,6 @@ class DubbingAudioProcessor(
             return AudioProcessor.AudioFormat.NOT_SET
         }
         bus.configure(inputAudioFormat.sampleRate)
-        splitter = if (inputAudioFormat.channelCount == 2) SpeechCenterSplitter(inputAudioFormat.sampleRate) else null
-        bedAllowed = 0f
         runCatching {
             onDiagnostic?.invoke(
                 false,
@@ -99,10 +92,7 @@ class DubbingAudioProcessor(
         activeBufferTimeUs = INVALID_TIME_US
         framesConsumedFromBuffer = 0L
         consumedFramesTotal = 0L
-        duckGain = 1f
         appliedOriginalGain = originalGain.coerceIn(0f, 1f)
-        splitter?.reset()
-        bedAllowed = 0f
         firstInputLogged = false
         timestampFallbackLogged = false
     }
@@ -114,11 +104,8 @@ class DubbingAudioProcessor(
         activeBufferTimeUs = INVALID_TIME_US
         framesConsumedFromBuffer = 0L
         consumedFramesTotal = 0L
-        duckGain = 1f
         appliedOriginalGain = originalGain.coerceIn(0f, 1f)
         voiceScratch = FloatArray(0)
-        splitter = null
-        bedAllowed = 0f
         firstInputLogged = false
         timestampFallbackLogged = false
     }
@@ -215,63 +202,30 @@ class DubbingAudioProcessor(
             java.util.Arrays.fill(voiceScratch, 0, frames, 0f)
         }
 
-        val duckAttack = smoothingFactor(sampleRate, DUCK_ATTACK_MS)
-        val duckRelease = smoothingFactor(sampleRate, DUCK_RELEASE_MS)
         val sourceAttack = smoothingFactor(sampleRate, SOURCE_ATTACK_MS)
         val sourceRelease = smoothingFactor(sampleRate, SOURCE_RELEASE_MS)
-        val bedFade = smoothingFactor(sampleRate, BED_FADE_MS)
         val output = replaceOutputBuffer(remaining)
         val requestedOriginalGain = originalGain.coerceIn(0f, 1f)
         val requestedDubbingGain = dubbingGain.coerceIn(0f, 1f)
-        // 双声道才能把居中的人声和两侧的音乐拆开；配音静音时原声不做拆分/压低。
-        val activeSplitter = if (channels == 2) splitter else null
-        val bedTarget = if (activeSplitter != null && bus.isDubbingEnabled() && requestedDubbingGain > 0f) 1f else 0f
         val isFloat = encoding == C.ENCODING_PCM_FLOAT
 
+        // Do not run source separation or auto-ducking: the source track should retain its
+        // original sound and be affected only by its own gain slider.
         var frame = 0
         while (frame < frames) {
             val voiceSample = voiceScratch[frame] * requestedDubbingGain
-            // Source and dubbing gains are independently controlled by the user. Do not auto-duck
-            // the original channel when Chinese speech is present; both tracks may remain audible.
-            val voiceTarget = 1f
-            duckGain += (voiceTarget - duckGain) * duckRelease
             appliedOriginalGain += (requestedOriginalGain - appliedOriginalGain) *
                 if (requestedOriginalGain < appliedOriginalGain) sourceAttack else sourceRelease
-            // 整体增益：原声被静音或被配音压低时，原声里的人声就按它处理（与拆分前完全一致）。
-            val sourceGain = duckGain * appliedOriginalGain
+            val sourceGain = appliedOriginalGain
 
-            if (activeSplitter != null) {
-                val left = readSample(inputBuffer, isFloat)
-                val right = readSample(inputBuffer, isFloat)
-                activeSplitter.process(left, right)
-                bedAllowed += (bedTarget - bedAllowed) * bedFade
-                // Keep source background/music at the same user-selected gain as source speech.
-                // duckGain remains at 1 because original audio is no longer automatically ducked.
-                val duckDepth = ((1f - duckGain) / (1f - DUCK_LEVEL)).coerceIn(0f, 1f)
-                val bedGain = 1f - (1f - BED_DUCK_LEVEL) * duckDepth
-                val bedWeight = (activeSplitter.usable * bedAllowed).coerceIn(0f, 1f)
-                val speechPart = activeSplitter.center * sourceGain
-                // 原声被关闭（appliedOriginalGain=0）时音乐底也一起关：用户关原声就是要一点原声都听不到，
-                // 立体声拆分不可能把人声分得完全干净，残留会被听成"原声没关"。
-                val bedLevel = bedGain * appliedOriginalGain
-                val separatedLeft = activeSplitter.bedLeft * bedLevel + speechPart
-                val separatedRight = activeSplitter.bedRight * bedLevel + speechPart
-                // 立体声内容不足（双声道一模一样的假立体声）时 bedWeight→0，退回整体压低/静音。
-                val sourceLeft = bedWeight * separatedLeft + (1f - bedWeight) * left * sourceGain
-                val sourceRight = bedWeight * separatedRight + (1f - bedWeight) * right * sourceGain
-                writeSample(output, isFloat, sourceLeft + voiceSample, voiceSample)
-                writeSample(output, isFloat, sourceRight + voiceSample, voiceSample)
-            } else {
-                var channel = 0
-                while (channel < channels) {
-                    val sourceSample = readSample(inputBuffer, isFloat)
-                    writeSample(output, isFloat, sourceSample * sourceGain + voiceSample, voiceSample)
-                    channel++
-                }
+            var channel = 0
+            while (channel < channels) {
+                val sourceSample = readSample(inputBuffer, isFloat)
+                writeSample(output, isFloat, sourceSample * sourceGain + voiceSample, voiceSample)
+                channel++
             }
             frame++
         }
-        activeSplitter?.updateUsability(frames)
 
         framesConsumedFromBuffer += frame.toLong()
         consumedFramesTotal += frame.toLong()
@@ -309,15 +263,8 @@ class DubbingAudioProcessor(
     }
 
     private companion object {
-        const val DUCK_LEVEL = 0.15f
-        /** 配音期间音乐/环境声底的最低音量比例（只轻微让位，原声里的人声部分仍按 DUCK_LEVEL 处理）。 */
-        const val BED_DUCK_LEVEL = 0.75f
-        const val BED_FADE_MS = 60.0
-        const val DUCK_ATTACK_MS = 10.0
-        const val DUCK_RELEASE_MS = 250.0
         const val SOURCE_ATTACK_MS = 8.0
         const val SOURCE_RELEASE_MS = 25.0
-        const val VOICE_ACTIVITY_THRESHOLD = 1e-4f
         const val PCM16_DENOMINATOR = 32768f
         const val PCM16_SCALE = 32767f
         const val LIMIT_THRESHOLD = 0.92f
