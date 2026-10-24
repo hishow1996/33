@@ -110,6 +110,7 @@ fun PlayerScreen(
     mediaCookie: String? = null,
     mediaUserAgent: String? = null,
     requestToken: Long = 0L,
+    showPlayerWhileRestoringHistory: Boolean = false,
 ) {
     val ctx = LocalContext.current
     val settingsPrefs = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
@@ -773,9 +774,36 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         onExitFloat = { exitFloating() },
                     )
                 }
-                // 阶段进度覆盖层
+                // A compatible history item opens this player immediately. While its media session
+                // is being restored, show a compact loading veil instead of the five-stage pipeline
+                // card. Once its own state is published, the player and subtitles become interactive.
                 val phase = state.phase
-                if (phase != Phase.READY && phase != Phase.SYNTHESIZING) {
+                val restoringHistorySession = showPlayerWhileRestoringHistory && (
+                    state.key != requestKey ||
+                        (phase != Phase.READY && phase != Phase.SYNTHESIZING && phase != Phase.ERROR)
+                    )
+                if (restoringHistorySession) {
+                    Box(
+                        Modifier.fillMaxSize().background(Color(0xD9F4F8FF)),
+                        contentAlignment = androidx.compose.ui.Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(28.dp),
+                                color = BrandBright,
+                                strokeWidth = 2.5.dp,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text("正在恢复历史视频…", color = OnBg, style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "正在载入播放资源与已保存的处理结果",
+                                color = SubText,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                } else if (phase != Phase.READY && phase != Phase.SYNTHESIZING) {
                     Box(Modifier.fillMaxSize().background(Color(0xD9F4F8FF)), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                             if (phase == Phase.ERROR) {
@@ -797,7 +825,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             Spacer(Modifier.height(6.dp))
 
             // 模型尚未就绪时保留可操作的错误提示；正常播放时字幕条只显示当前字幕文本。
-            state.noModelHint?.let { hint ->
+            (state.noModelHint.takeIf { state.key == requestKey })?.let { hint ->
                 Surface(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onGoSettings() },
                     color = Color(0xFFFFF8E1),
@@ -812,28 +840,47 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 Spacer(Modifier.height(5.dp))
             }
 
-            CurrentSubtitleStrip(state = state)
+            if (state.key == requestKey) {
+                CurrentSubtitleStrip(state = state)
+            } else {
+                Box(
+                    Modifier.fillMaxWidth().heightIn(min = 28.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text("正在载入历史视频字幕…", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             Spacer(Modifier.height(5.dp))
 
-            PlaybackModeSelector(
-                state = state,
-                subtitlesVisible = subtitlesVisible,
-                onOriginal = { PlaybackService.instance?.toggleMute() },
-                onDub = { PlaybackService.instance?.toggleDub() },
-                onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
-            )
+            if (state.key == requestKey) {
+                PlaybackModeSelector(
+                    state = state,
+                    subtitlesVisible = subtitlesVisible,
+                    onOriginal = { PlaybackService.instance?.toggleMute() },
+                    onDub = { PlaybackService.instance?.toggleDub() },
+                    onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
+                )
+            } else if (showPlayerWhileRestoringHistory) {
+                Text("正在恢复播放设置…", color = SubText, style = MaterialTheme.typography.bodySmall)
+            }
 
             // 配音/字幕轨的状态提示不再挤占播放控制栏与完整字幕列表之间的空间。
             Spacer(Modifier.height(6.dp))
 
             if (subtitlesVisible) {
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    SubtitleList(
-                        state = state,
-                        svc = PlaybackService.instance,
-                        listState = listState,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+                    if (state.key == requestKey) {
+                        SubtitleList(
+                            state = state,
+                            svc = PlaybackService.instance,
+                            listState = listState,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("正在载入字幕…", color = SubText, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             } else {
                 Surface(
