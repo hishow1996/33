@@ -2388,7 +2388,8 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                 importedCacheKey,
                                 srcLang,
                                 arr.toString(),
-                                System.currentTimeMillis(),                                videoKey = sessionKey,
+                                System.currentTimeMillis(),
+                                videoKey = sessionKey,
                             )
                         )
                     }
@@ -2490,7 +2491,8 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                             importedCacheKey,
                             srcLang,
                             arr.toString(),
-                            System.currentTimeMillis(),                            videoKey = sessionKey,
+                            System.currentTimeMillis(),
+                            videoKey = sessionKey,
                         )
                     )
                 }
@@ -2949,7 +2951,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 ensureCurrentSession(key, pipelineGeneration)
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
-                        sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()                        videoKey = key,
+                        sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis(),
+                        videoKey = key,
                     )
                 )
                 // A valid caption track supersedes any interrupted ASR transcript for this video.
@@ -3562,7 +3565,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                         partialAsrCacheKey,
                                         language,
                                         checkpointJson.toString(),
-                                        System.currentTimeMillis(),                                        videoKey = key,
+                                        System.currentTimeMillis(),
+                                        videoKey = key,
                                     )
                                 )
                             }
@@ -3750,7 +3754,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             sourceSubtitleCacheKey,
                             srcLang,
                             sourceArr.toString(),
-                            System.currentTimeMillis(),                            videoKey = key,
+                            System.currentTimeMillis(),
+                            videoKey = key,
                         )
                     )
                     db.subtitleCacheDao().delete(partialAsrCacheKey)
@@ -4760,7 +4765,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             ensureCurrentSession(key, pipelineGeneration)
             db.subtitleCacheDao().put(
                 io.translatetube.local.data.SubtitleCacheEntity(
-                    translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis()                    videoKey = key,
+                    translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis(),
+                    videoKey = key,
                 )
             )
         }
@@ -7029,7 +7035,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             translationCacheKey,
-                            sessionSourceLang, arr.toString(), System.currentTimeMillis()                            videoKey = sessionKey,
+                            sessionSourceLang, arr.toString(), System.currentTimeMillis(),
+                            videoKey = sessionKey,
                         )
                     )
                 }
@@ -7263,7 +7270,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             translationCacheKey,
                             sourceLang,
                             cacheRows.toString(),
-                            System.currentTimeMillis(),                            videoKey = sessionKey,
+                            System.currentTimeMillis(),
+                            videoKey = sessionKey,
                         )
                     )
                 }

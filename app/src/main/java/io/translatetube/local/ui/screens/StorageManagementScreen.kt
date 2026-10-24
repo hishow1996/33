@@ -262,7 +262,7 @@ fun StorageManagementScreen(
                 selectedHistoryKeys = emptySet()
                 historySelectionMode = false
             }
-            message = result.fold(
+            val summary = result.fold(
                 onSuccess = { completed ->
                     when {
                         completed.failedItems.isNotEmpty() ->
@@ -278,8 +278,8 @@ fun StorageManagementScreen(
                     "清理失败：${failure.message ?: failure.javaClass.simpleName}"
                 },
             )
+            message = summary
             withContext(Dispatchers.IO) {
-                val summary = message.orEmpty()
                 if (hasFailure) {
                     AppLogStore.warning(ctx, "StorageHistory", "视频历史缓存清理未完全成功", diagnosticContext = mapOf("操作结果" to summary.take(1_000)))
                 } else {
