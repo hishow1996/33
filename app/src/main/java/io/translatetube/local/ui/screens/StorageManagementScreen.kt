@@ -16,10 +16,12 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.WarningAmber
@@ -106,6 +108,7 @@ fun StorageManagementScreen(
     var historyLoaded by remember { mutableStateOf(false) }
     var selectedHistoryKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var historySelectionMode by remember { mutableStateOf(false) }
+    var historyMenuExpanded by remember { mutableStateOf(false) }
     var historyFavoritesOnly by remember(historyOnly) { mutableStateOf(false) }
     var pendingHistoryDelete by remember { mutableStateOf<HistoryDeleteRequest?>(null) }
 
@@ -119,7 +122,10 @@ fun StorageManagementScreen(
     }
 
     BackHandler {
-        if (historyOnly) onBack()
+        if (historySelectionMode) {
+            historySelectionMode = false
+            selectedHistoryKeys = emptySet()
+        } else if (historyOnly) onBack()
         else if (category != null) category = null
         else onBack()
     }
@@ -130,6 +136,10 @@ fun StorageManagementScreen(
         player.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING, Phase.SYNTHESIZING) ||
         (player.phase == Phase.READY && player.totalLines > 0 && player.preparedCount < player.totalLines)
     val destructiveBusy = playbackBusy || downloadBusy
+    val visibleHistoryVideos = if (historyFavoritesOnly) historyVideos.filter { it.isFavorite } else historyVideos
+    val visibleHistoryKeys = visibleHistoryVideos.map { it.key }
+    val allVisibleHistorySelected = visibleHistoryKeys.isNotEmpty() &&
+        selectedHistoryKeys.containsAll(visibleHistoryKeys)
 
     LaunchedEffect(refresh) {
         scanning = true
@@ -430,23 +440,78 @@ fun StorageManagementScreen(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        val isHistoryPage = category == StorageCategory.HISTORY
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { if (!historyOnly && category != null) category = null else onBack() }) {
-                Icon(Icons.Filled.ArrowBack, "返回", tint = OnBg)
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(category?.title ?: "存储管理", color = OnBg, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                if (!(historyOnly && category == StorageCategory.HISTORY)) {
-                    Text(
-                        if (category == null) "本地数据总览 · 不会自动上传"
-                        else "分类占用与可执行操作",
-                        color = SubText,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+            if (isHistoryPage && historySelectionMode) {
+                IconButton(
+                    onClick = {
+                        historySelectionMode = false
+                        selectedHistoryKeys = emptySet()
+                    },
+                ) {
+                    Icon(Icons.Filled.Close, "退出选择", tint = OnBg)
                 }
-            }
-            IconButton(onClick = { refresh++ }, enabled = !scanning && !actionBusy) {
-                Icon(Icons.Filled.Refresh, "重新统计", tint = BrandBright)
+                Text(
+                    "已选 ${selectedHistoryKeys.count { it in visibleHistoryKeys }} 项",
+                    modifier = Modifier.weight(1f),
+                    color = OnBg,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                TextButton(
+                    enabled = !destructiveBusy && !actionBusy && visibleHistoryKeys.isNotEmpty(),
+                    onClick = { toggleHistorySelectAll(visibleHistoryKeys) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                ) { Text(if (allVisibleHistorySelected) "取消全选" else "全选") }
+            } else {
+                IconButton(onClick = { if (!historyOnly && category != null) category = null else onBack() }) {
+                    Icon(Icons.Filled.ArrowBack, "返回", tint = OnBg)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(category?.title ?: "存储管理", color = OnBg, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    if (category != StorageCategory.HISTORY) {
+                        Text(
+                            if (category == null) "本地数据总览 · 不会自动上传"
+                            else "分类占用与可执行操作",
+                            color = SubText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                IconButton(onClick = { refresh++ }, enabled = !scanning && !actionBusy) {
+                    Icon(Icons.Filled.Refresh, "重新统计", tint = BrandBright)
+                }
+                if (isHistoryPage) {
+                    Box {
+                        IconButton(onClick = { historyMenuExpanded = true }) {
+                            Icon(Icons.Filled.MoreVert, "更多操作", tint = BrandBright)
+                        }
+                        DropdownMenu(
+                            expanded = historyMenuExpanded,
+                            onDismissRequest = { historyMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("选择记录") },
+                                leadingIcon = { Icon(Icons.Filled.CheckBox, null, tint = BrandBright) },
+                                enabled = !destructiveBusy && !actionBusy && historyVideos.isNotEmpty(),
+                                onClick = {
+                                    historyMenuExpanded = false
+                                    historySelectionMode = true
+                                    selectedHistoryKeys = emptySet()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("全部清除", color = DangerRed) },
+                                leadingIcon = { Icon(Icons.Filled.Delete, null, tint = DangerRed) },
+                                enabled = !destructiveBusy && !actionBusy && !scanning && historyVideos.isNotEmpty(),
+                                onClick = {
+                                    historyMenuExpanded = false
+                                    requestHistoryDelete(historyVideos.map { it.key }, clearAll = true)
+                                },
+                            )
+                        }
+                    }
+                }
             }
         }
         if (scanning) LinearProgressIndicator(Modifier.fillMaxWidth(), color = BrandBright, trackColor = OutlineSoft)
@@ -468,13 +533,7 @@ fun StorageManagementScreen(
                         actionBusy = actionBusy,
                         selectionMode = historySelectionMode,
                         selectedKeys = selectedHistoryKeys,
-                        onToggleSelectionMode = {
-                            val nextMode = !historySelectionMode
-                            historySelectionMode = nextMode
-                            if (!nextMode) selectedHistoryKeys = emptySet()
-                        },
                         onToggleSelection = ::toggleHistorySelection,
-                        onToggleSelectAll = { keys -> toggleHistorySelectAll(keys) },
                         favoritesOnly = historyFavoritesOnly,
                         onToggleFavoritesOnly = {
                             historyFavoritesOnly = !historyFavoritesOnly
@@ -483,7 +542,6 @@ fun StorageManagementScreen(
                         onToggleFavorite = ::toggleHistoryFavorite,
                         onDeleteSingle = { requestHistoryDelete(listOf(it)) },
                         onDeleteSelected = { requestHistoryDelete(selectedHistoryKeys.toList()) },
-                        onDeleteAll = { requestHistoryDelete(historyVideos.map { it.key }, clearAll = true) },
                         onPlay = onPlay,
                     )
                 } else {
@@ -648,34 +706,30 @@ private fun StorageHistoryDetail(
     actionBusy: Boolean,
     selectionMode: Boolean,
     selectedKeys: Set<String>,
-    onToggleSelectionMode: () -> Unit,
     onToggleSelection: (String) -> Unit,
-    onToggleSelectAll: (List<String>) -> Unit,
     favoritesOnly: Boolean,
     onToggleFavoritesOnly: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDeleteSingle: (String) -> Unit,
     onDeleteSelected: () -> Unit,
-    onDeleteAll: () -> Unit,
     onPlay: (PlayRequest) -> Unit,
 ) {
     val shownVideos = if (favoritesOnly) videos.filter { it.isFavorite } else videos
-    val allSelected = shownVideos.isNotEmpty() && shownVideos.all { it.key in selectedKeys }
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
-        contentPadding = PaddingValues(bottom = 14.dp),
-    ) {
-        item {
-            Surface(
-                Modifier.fillMaxWidth(),
-                color = Color.White,
-                shape = RoundedCornerShape(18.dp),
-                border = BorderStroke(1.dp, OutlineSoft),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+            contentPadding = PaddingValues(bottom = if (selectionMode) 88.dp else 14.dp),
+        ) {
+            item {
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    color = Color.White,
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, OutlineSoft),
+                ) {
                     Row(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -689,98 +743,77 @@ private fun StorageHistoryDetail(
                             onClick = { if (!favoritesOnly) onToggleFavoritesOnly() },
                             label = { Text("收藏") },
                             leadingIcon = {
-                                Icon(
-                                    Icons.Filled.Star,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
+                                Icon(Icons.Filled.Star, contentDescription = null, modifier = Modifier.size(16.dp))
                             },
                         )
-                        Spacer(Modifier.weight(1f))
-                        TextButton(
-                            enabled = !busy && !actionBusy && videos.isNotEmpty(),
-                            onClick = onToggleSelectionMode,
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                        ) { Text(if (selectionMode) "取消多选" else "多选") }
                     }
-                    Row(
+                }
+            }
+            if (shownVideos.isEmpty()) {
+                item {
+                    Surface(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                        color = Color.White,
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, OutlineSoft),
                     ) {
-                        if (selectionMode) {
-                            OutlinedButton(
-                                modifier = Modifier.weight(1f),
-                                enabled = !busy && !actionBusy && shownVideos.isNotEmpty(),
-                                onClick = { onToggleSelectAll(shownVideos.map { it.key }) },
-                                shape = RoundedCornerShape(11.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
-                            ) { Text(if (allSelected) "取消全选" else "全选") }
-                            OutlinedButton(
-                                modifier = Modifier.weight(1f),
-                                enabled = !busy && !actionBusy && selectedKeys.isNotEmpty(),
-                                onClick = onDeleteSelected,
-                                shape = RoundedCornerShape(11.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed),
-                            ) { Text("删除所选（${selectedKeys.size}）") }
-                        } else {
-                            Spacer(Modifier.weight(1f))
+                        Column(
+                            Modifier.fillMaxWidth().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            Icon(Icons.Filled.History, contentDescription = null, tint = SubText, modifier = Modifier.size(28.dp))
+                            Text(
+                                if (favoritesOnly) "还没有收藏视频" else "还没有视频历史记录",
+                                color = OnBg,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
                         }
-                        Button(
-                            enabled = !busy && !actionBusy && videos.isNotEmpty(),
-                            onClick = onDeleteAll,
-                            shape = RoundedCornerShape(11.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        ) { Text("全部清除") }
                     }
+                }
+            } else {
+                items(shownVideos, key = { it.key }) { video ->
+                    StorageHistoryVideoRow(
+                        video = video,
+                        selected = video.key in selectedKeys,
+                        selectionMode = selectionMode,
+                        enabled = !busy && !actionBusy,
+                        favoriteEnabled = !actionBusy,
+                        onClick = {
+                            if (selectionMode) onToggleSelection(video.key)
+                            else onPlay(video.toHistoryPlayRequest())
+                        },
+                        onToggleSelection = { onToggleSelection(video.key) },
+                        onToggleFavorite = { onToggleFavorite(video.key) },
+                        onDelete = { onDeleteSingle(video.key) },
+                    )
                 }
             }
         }
-        if (!loaded) {
-            item {
-                Box(Modifier.fillMaxWidth().padding(vertical = 28.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = BrandBright, modifier = Modifier.size(26.dp), strokeWidth = 2.dp)
-                }
-            }
-        } else if (shownVideos.isEmpty()) {
-            item {
-                Surface(
-                    Modifier.fillMaxWidth(),
-                    color = Color.White,
-                    shape = RoundedCornerShape(16.dp),
-                    border = BorderStroke(1.dp, OutlineSoft),
+        if (selectionMode) {
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 2.dp),
+                color = Color.White,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, OutlineSoft),
+                shadowElevation = 4.dp,
+            ) {
+                Button(
+                    onClick = onDeleteSelected,
+                    enabled = !busy && !actionBusy && selectedKeys.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().padding(8.dp).height(48.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DangerRed,
+                        contentColor = Color.White,
+                        disabledContainerColor = Color(0xFFE5E8EE),
+                        disabledContentColor = SubText,
+                    ),
                 ) {
-                    Column(
-                        Modifier.fillMaxWidth().padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(7.dp),
-                    ) {
-                        Icon(Icons.Filled.History, contentDescription = null, tint = SubText, modifier = Modifier.size(28.dp))
-                        Text(
-                            if (favoritesOnly) "还没有收藏视频" else "还没有视频历史记录",
-                            color = OnBg,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                    }
+                    Icon(Icons.Filled.Delete, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("删除所选（${selectedKeys.size}）")
                 }
-            }
-        } else {
-            items(shownVideos, key = { it.key }) { video ->
-                StorageHistoryVideoRow(
-                    video = video,
-                    selected = video.key in selectedKeys,
-                    selectionMode = selectionMode,
-                    enabled = !busy && !actionBusy,
-                    favoriteEnabled = !actionBusy,
-                    onClick = {
-                        if (selectionMode) onToggleSelection(video.key)
-                        else onPlay(video.toHistoryPlayRequest())
-                    },
-                    onToggleSelection = { onToggleSelection(video.key) },
-                    onToggleFavorite = { onToggleFavorite(video.key) },
-                    onDelete = { onDeleteSingle(video.key) },
-                )
             }
         }
     }
@@ -802,7 +835,7 @@ private fun StorageHistoryVideoRow(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(Color.White)
+            .background(if (selected && selectionMode) Color(0xFFEAF2FF) else Color.White)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(9.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -845,11 +878,13 @@ private fun StorageHistoryVideoRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (selectionMode) "选择记录" else "继续观看", color = BrandBright, style = MaterialTheme.typography.labelLarge)
-                if (video.isFavorite) {
-                    Spacer(Modifier.width(6.dp))
-                    Icon(Icons.Filled.Star, contentDescription = "已收藏", tint = Color(0xFFE3A008), modifier = Modifier.size(14.dp))
+            if (!selectionMode) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("继续观看", color = BrandBright, style = MaterialTheme.typography.labelLarge)
+                    if (video.isFavorite) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(Icons.Filled.Star, contentDescription = "已收藏", tint = Color(0xFFE3A008), modifier = Modifier.size(14.dp))
+                    }
                 }
             }
         }
