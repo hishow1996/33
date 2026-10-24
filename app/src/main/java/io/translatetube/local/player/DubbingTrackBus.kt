@@ -40,6 +40,8 @@ class DubbingTrackBus {
     /** Fallback clock only; normal synchronization uses each AudioSink buffer PTS. */
     @Volatile private var streamStartUs = -1L
     @Volatile private var latestReadUs = Long.MIN_VALUE
+    /** 开播前挂载首批句子期间冻结渲染头：预读的音频不能把刚归零的读头又推回去。 */
+    @Volatile private var readHeadFrozenUntilNanos = 0L
 
     fun configure(sampleRate: Int) {
         if (sampleRate <= 0) return
@@ -335,10 +337,20 @@ class DubbingTrackBus {
      * 播放器在点播放之前就会预读并混好开头一小段音频（读头因此停在开头之后）。开播前
      * 先调用它，再挂载起播位置附近的句子：这些句子会按各自的期望时间开口，而不是被预读
      * 留下的旧读头顶到后面；随后播放器 flush 音频管线重新读一遍，开头一样能混进配音。
+     *
+     * [freezeMs] > 0 时，这段时间内渲染头不再被音频管线的读取推进——挂载是异步的（要读盘、
+     * 重采样），期间播放器的预读还在继续，不冻结的话读头会在挂载前又往前走一段，首句照样被
+     * 排到读头后面开口。冻结有时限，不会因为后续流程出错而一直卡住；不带时限的调用（flush 后）
+     * 同时解除冻结。
      */
-    fun rewindReadHead() {
+    fun rewindReadHead(freezeMs: Long = 0L) {
         synchronized(stateLock) {
             latestReadUs = Long.MIN_VALUE
+            readHeadFrozenUntilNanos = if (freezeMs > 0L) {
+                System.nanoTime() + freezeMs * 1_000_000L
+            } else {
+                0L
+            }
         }
     }
 
@@ -349,6 +361,7 @@ class DubbingTrackBus {
             installed = emptyArray()
             streamStartUs = -1L
             latestReadUs = Long.MIN_VALUE
+            readHeadFrozenUntilNanos = 0L
         }
     }
 
@@ -419,7 +432,9 @@ class DubbingTrackBus {
 
         val windowEndUs = mediaTimeUs + count.toLong() * 1_000_000L / rate
         synchronized(stateLock) {
-            if (dubbingEnabled && contentGeneration == readGeneration) {
+            if (dubbingEnabled && contentGeneration == readGeneration &&
+                System.nanoTime() >= readHeadFrozenUntilNanos
+            ) {
                 latestReadUs = maxOf(latestReadUs, windowEndUs)
             }
         }

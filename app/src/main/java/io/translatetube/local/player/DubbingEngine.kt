@@ -2879,7 +2879,7 @@ class DubbingEngine(
             isStillCurrent = isStillCurrent,
         )
         val queuedDelayUs = startedAtUs - desiredUs
-        if (startedAtUs >= 0L && queuedDelayUs > 300_000L &&
+        if (startedAtUs >= 0L && queuedDelayUs > 150_000L &&
             firstQueuedDelayReported.compareAndSet(false, true)
         ) {
             logDubbingInfo(
@@ -2911,6 +2911,18 @@ class DubbingEngine(
             prefedCueKeys.clear()
             prefeedCompletions.clear()
         }
+    }
+
+    /**
+     * 开播前调用：撤掉总线上已有的句子，让起播位置附近的句子从头按期望时间重新挂载。
+     * 之前（例如播放器暂停预读期间）挂上去的句子，是按当时被预读推远的读头排的版，
+     * 位置已经偏后，而挂载去重（hasCue/prefed）会让它们永远不再重排。
+     */
+    fun remountForPlaybackStart(timelinePositionMs: Long) {
+        if (released || usesImmediateTimelinePlayback) return
+        purgeMountedCues()
+        // 挂载时的"不早于播放头"以这个游标为准；起播前游标可能还停在上一次播放的位置。
+        updateTimelinePosition(lineAt(timelinePositionMs), timelinePositionMs)
     }
 
     /**

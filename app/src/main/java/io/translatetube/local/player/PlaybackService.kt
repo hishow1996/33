@@ -325,6 +325,9 @@ private data class YouTubeStreamChoices(
 /** 开播前等待第一句配音挂上混流总线的最长时间（视频还没开始播，不影响观看）。 */
 private const val STARTUP_MOUNT_WAIT_MS = 800L
 
+/** 开播前挂载首批句子期间冻结渲染头的最长时间（覆盖挂载等待 + 音频管线 flush）。 */
+private const val STARTUP_READ_HEAD_FREEZE_MS = 2_000L
+
 /** 开播前 flush 之后，位置不连续回调保留总线的有效期。 */
 private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
 
@@ -1153,7 +1156,8 @@ class PlaybackService : MediaSessionService() {
         val mountsOnBus = engine != null && ui.value.dubbingOn && !engine.usesImmediateTimelinePlayback
         if (engine != null && mountsOnBus) {
             // 预读已经把读头推到开头之后：归零，让第一批句子按各自的期望时间挂载。
-            pm.dubbingBus.rewindReadHead()
+            pm.dubbingBus.rewindReadHead(freezeMs = STARTUP_READ_HEAD_FREEZE_MS)
+            engine.remountForPlaybackStart(startMs + subtitleTimingOffsetMs())
             engine.primeUpcomingCuesAndWait(
                 startMs + subtitleTimingOffsetMs(),
                 lookAheadMs = 2_500L,

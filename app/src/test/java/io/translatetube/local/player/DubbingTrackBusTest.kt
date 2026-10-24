@@ -125,6 +125,32 @@ class DubbingTrackBusTest {
     }
 
     @Test
+    fun frozenReadHeadIgnoresPrerollReadsWhileStartupCuesAreMounting() {
+        val bus = newBus()
+        val generation = bus.generationToken()
+        bus.readMixWindow(0L, 700)
+        bus.rewindReadHead(freezeMs = 5_000L)
+        // 挂载期间播放器的预读还在继续：读头不能被推回去
+        bus.readMixWindow(700_000L, 300)
+        assertEquals(ms(200), bus.feedSequenced("first", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+
+        // 不带冻结的 rewind（flush 之后）立即解除冻结，读头重新跟随音频读取
+        bus.rewindReadHead()
+        bus.readMixWindow(0L, 700)
+        assertEquals(ms(800), bus.feedSequenced("late", ms(300), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+    }
+
+    @Test
+    fun expiredFreezeLetsTheReadHeadAdvanceAgain() {
+        val bus = newBus()
+        val generation = bus.generationToken()
+        bus.rewindReadHead(freezeMs = 1L)
+        Thread.sleep(20)
+        bus.readMixWindow(0L, 700)
+        assertEquals(ms(800), bus.feedSequenced("late", ms(200), 0L, FloatArray(100) { 0.5f }, 1000, generation))
+    }
+
+    @Test
     fun cueCallerKnowsIsNotYetDueIsNotMovedEarlier() {
         val bus = newBus()
         val generation = bus.generationToken()
