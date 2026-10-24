@@ -7886,14 +7886,41 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     /** Slider updates stay live while dragging; persist once when the gesture ends. */
     fun setDubbingVolume(volume: Float, persist: Boolean = true) {
+        val previousVolume = ui.value.dubbingVolume
         val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
         if (persist) persistDubbingVolume(normalized)
         ui.update { state -> state.copy(dubbingVolume = normalized) }
         if (::pm.isInitialized) pm.dubbingVolume = normalized
-        dubbing?.updateVolume(normalized)
-        // At zero volume the synthesis timeline remains available in the background. Re-enable
-        // audible scheduling only when the user raises the gain above zero.
-        if (normalized > 0f && !ui.value.dubbingOn) toggleDub()
+        val engine = dubbing
+        engine?.updateVolume(normalized)
+
+        // Android's immediate System TTS receives volume per utterance, so changing its gain to
+        // zero cannot mute a sentence already speaking. Stop only that live utterance at 0%;
+        // the background synthesis request remains enabled and can prepare later cues.
+        if (
+            normalized <= 0f &&
+            previousVolume > 0f &&
+            engine?.usesImmediateTimelinePlayback == true &&
+            engine.currentLineIdx() >= 0
+        ) {
+            safelyControlDubbing("中文配音音量归零，停止当前即时 TTS") { engine.stop() }
+            ui.update { state -> state.copy(activeDubbingLine = -1) }
+            val position = if (::pm.isInitialized) pm.position() else -1L
+            if (position >= 0L) engine.prepareForBackgroundPlayback(engine.lineAt(position))
+        }
+
+        // At zero volume the synthesis timeline remains available in the background. When sound
+        // is restored, resume selection at the current video position without forcing original off.
+        if (normalized > 0f && !ui.value.dubbingOn) {
+            toggleDub()
+        } else if (
+            normalized > 0f &&
+            previousVolume <= 0f &&
+            ui.value.dubbingOn &&
+            ::pm.isInitialized
+        ) {
+            tickFromPlayerCallback(pm.position(), "dubbing volume restored")
+        }
     }
 
     fun finishDubbingVolumeAdjustment() {
