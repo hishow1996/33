@@ -1,3 +1,4 @@
+# Explicit one-time APK build for latest main source after 2026-10-24 changes.
 # Explicit user-requested APK build trigger after fixing DubbingEngine prefeed compile errors (2026-10-22).
 # Explicit user-requested APK build trigger for latest main source after Bilibili duplicate-detection guard fix (2026-10-22).
 # Explicit one-time APK build for the panel drag position-change fix (2026-10-22).
