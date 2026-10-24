@@ -72,6 +72,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1478,20 +1479,22 @@ fun WebVideoScreen(
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
-                    // 字号略微缩小，并增大行高，避免地址文字的上、下笔画被单行输入框裁切。
-                    modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                    // 保持原字号，并让网址在标准高度的地址栏中水平居中显示。
+                    modifier = Modifier.weight(1f).height(56.dp),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 12.sp,
-                        lineHeight = 20.sp,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        textAlign = TextAlign.Center,
                     ),
                     shape = RoundedCornerShape(14.dp),
                     placeholder = {
                         Text(
                             "输入网页地址",
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                fontSize = 12.sp,
-                                lineHeight = 20.sp,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                                textAlign = TextAlign.Center,
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
