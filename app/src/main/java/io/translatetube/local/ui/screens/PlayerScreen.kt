@@ -40,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Face
@@ -156,6 +157,7 @@ fun PlayerScreen(
         !mediaUrl.isNullOrBlank() -> "remote:$mediaUrl"
         else -> "local:${localUri ?: ""}"
     }
+    var dismissedNoModelHint by remember(requestKey) { mutableStateOf<String?>(null) }
 
     // Keep this sticky for the current video. A subtitle seek can briefly set isPlaying=false
     // while the stream buffers; that is not a reason to return to the parsing page.
@@ -567,7 +569,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onGoSettings = onGoSettings,
             )
         } else {
-        Column(Modifier.fillMaxSize().padding(horizontal = 10.dp).clip(RoundedCornerShape(26.dp)).background(Color(0xFFF2F6FC)).padding(horizontal = 8.dp)) {
+        Column(Modifier.fillMaxSize().background(Color(0xFFF2F6FC))) {
             // ===== 顶部栏 =====
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -752,7 +754,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 Modifier
                     .fillMaxWidth()
                     .aspectRatio(state.videoAspect)
-                    .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFF172033))
             ) {
                 AndroidView(
@@ -824,17 +825,43 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
             Spacer(Modifier.height(6.dp))
 
-            // 模型尚未就绪时保留可操作的错误提示；正常播放时字幕条只显示当前字幕文本。
-            (state.noModelHint.takeIf { state.key == requestKey })?.let { hint ->
+            // 模型/配音问题提示可以单独关闭；关闭只隐藏提示，不会改变播放状态。
+            (state.noModelHint?.takeIf { state.key == requestKey && it != dismissedNoModelHint })?.let { hint ->
                 Surface(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onGoSettings() },
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(0.dp)),
                     color = Color(0xFFFFF8E1),
                 ) {
-                    Row(Modifier.padding(10.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Text("⚠️", color = WarnYellow)
-                        Spacer(Modifier.width(8.dp))
-                        Text(hint, color = Color(0xFF5D4037), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        Text("去设置 →", color = AccentBlue, style = MaterialTheme.typography.labelLarge)
+                    Box(Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 10.dp, end = 42.dp, top = 10.dp, bottom = 10.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        ) {
+                            Text("⚠️", color = WarnYellow)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                hint,
+                                color = Color(0xFF5D4037),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "去设置 →",
+                                color = AccentBlue,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.clickable(onClick = onGoSettings),
+                            )
+                        }
+                        IconButton(
+                            onClick = { dismissedNoModelHint = hint },
+                            modifier = Modifier.align(Alignment.TopEnd).size(34.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "关闭问题提示",
+                                tint = Color(0xFF7A6A45),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(5.dp))
@@ -885,7 +912,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             } else {
                 Surface(
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    shape = RoundedCornerShape(24.dp),
+                    shape = RoundedCornerShape(0.dp),
                     color = Color.White,
                 ) {
                     Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -2142,7 +2169,6 @@ private fun CurrentSubtitleStrip(state: PlayerUiState) {
         modifier = Modifier
             .fillMaxWidth()
             .height(46.dp)
-            .clip(RoundedCornerShape(9.dp))
             .background(Color(0xFFE8EFFF))
             .padding(horizontal = 8.dp),
         contentAlignment = androidx.compose.ui.Alignment.Center,
@@ -2688,7 +2714,6 @@ private fun SubtitleList(
 
     Column(
         modifier.fillMaxSize()
-            .clip(RoundedCornerShape(24.dp))
             .background(Color.White)
             .padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
