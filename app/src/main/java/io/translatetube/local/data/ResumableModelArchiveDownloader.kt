@@ -362,6 +362,7 @@ internal object ResumableModelArchiveDownloader {
                 cancellationHandle?.dispose()
             }
         }
+        throw IllegalStateException("模型下载循环意外结束")
     }
 
     fun sha256File(file: File, checkActive: () -> Unit = {}): String {
