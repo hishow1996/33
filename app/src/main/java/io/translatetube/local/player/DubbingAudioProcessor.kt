@@ -21,6 +21,10 @@ class DubbingAudioProcessor(
     @Volatile
     var originalGain: Float = 1f
 
+    /** 0 = silent Chinese dubbing; 1 = full output, independent of the original track. */
+    @Volatile
+    var dubbingGain: Float = 1f
+
     @Volatile private var requestedBufferTimeUs = INVALID_TIME_US
     @Volatile private var requestedBufferSerial = 0L
     private var activeBufferSerial = Long.MIN_VALUE
@@ -218,14 +222,15 @@ class DubbingAudioProcessor(
         val bedFade = smoothingFactor(sampleRate, BED_FADE_MS)
         val output = replaceOutputBuffer(remaining)
         val requestedOriginalGain = originalGain.coerceIn(0f, 1f)
-        // 双声道才能把居中的人声和两侧的音乐拆开；配音关闭时不拆，原声原样通过。
+        val requestedDubbingGain = dubbingGain.coerceIn(0f, 1f)
+        // 双声道才能把居中的人声和两侧的音乐拆开；配音静音时原声不做拆分/压低。
         val activeSplitter = if (channels == 2) splitter else null
-        val bedTarget = if (activeSplitter != null && bus.isDubbingEnabled()) 1f else 0f
+        val bedTarget = if (activeSplitter != null && bus.isDubbingEnabled() && requestedDubbingGain > 0f) 1f else 0f
         val isFloat = encoding == C.ENCODING_PCM_FLOAT
 
         var frame = 0
         while (frame < frames) {
-            val voiceSample = voiceScratch[frame]
+            val voiceSample = voiceScratch[frame] * requestedDubbingGain
             val voiceTarget = if (abs(voiceSample) > VOICE_ACTIVITY_THRESHOLD) DUCK_LEVEL else 1f
             // Envelope follower: a zero crossing cannot instantly restore the source audio.
             duckGain += (voiceTarget - duckGain) *

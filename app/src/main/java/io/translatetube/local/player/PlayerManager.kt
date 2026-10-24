@@ -601,6 +601,10 @@ class PlayerManager(private val ctx: Context) {
     var originalVolume: Float
         get() = dubbingProcessor.originalGain
         set(v) { dubbingProcessor.originalGain = v.coerceIn(0f, 1f) }
+    /** 中文配音增益：与原声独立，不能使用 player.volume，因为两路会在同一 sink 混合。 */
+    var dubbingVolume: Float
+        get() = dubbingProcessor.dubbingGain
+        set(v) { dubbingProcessor.dubbingGain = v.coerceIn(0f, 1f) }
     fun duration(): Long = if (released) 0L else
         runCatching { player.duration.coerceAtLeast(0) }
             .onFailure { if (!released) android.util.Log.w("PlayerManager", "Unable to read duration", it) }

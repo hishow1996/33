@@ -96,6 +96,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlin.math.roundToInt
 
 private enum class SubtitleExportFormat { CHINESE_SRT, BILINGUAL_SRT, BILINGUAL_VTT }
 
@@ -640,6 +641,60 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             color = OutlineSoft,
                             thickness = 1.dp,
                         )
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "原声音量",
+                                    color = OnBg,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    if (state.originalVolume <= 0f) "关闭" else "${(state.originalVolume * 100f).roundToInt()}%",
+                                    color = if (state.originalVolume <= 0f) SubText else BrandBright,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                            Slider(
+                                value = state.originalVolume.coerceIn(0f, 1f),
+                                onValueChange = { PlaybackService.instance?.setOriginalVolume(it) },
+                                valueRange = 0f..1f,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "中文配音音量",
+                                    color = OnBg,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    if (state.dubbingVolume <= 0f) "关闭" else "${(state.dubbingVolume * 100f).roundToInt()}%",
+                                    color = if (state.dubbingVolume <= 0f) SubText else BrandBright,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                            Slider(
+                                value = state.dubbingVolume.coerceIn(0f, 1f),
+                                onValueChange = { PlaybackService.instance?.setDubbingVolume(it) },
+                                valueRange = 0f..1f,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Divider(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            color = OutlineSoft,
+                            thickness = 1.dp,
+                        )
                         PlaybackMenuItem(
                             icon = Icons.Filled.Headphones,
                             title = if (state.audioOnly) "恢复视频画面" else "仅听模式",
@@ -892,8 +947,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 PlaybackModeSelector(
                     state = state,
                     subtitlesVisible = subtitlesVisible,
-                    onOriginal = { PlaybackService.instance?.toggleMute() },
-                    onDub = { PlaybackService.instance?.toggleDub() },
+                    onOriginal = { PlaybackService.instance?.toggleOriginalVolume() },
+                    onDub = { PlaybackService.instance?.toggleDubbingVolume() },
                     onToggleSubtitles = { subtitlesVisible = !subtitlesVisible },
                 )
             } else if (showPlayerWhileRestoringHistory) {
@@ -2259,14 +2314,14 @@ private fun PlaybackModeSelector(
             modifier = Modifier.weight(1f),
             title = "原声",
             glyph = "◖))",
-            selected = !state.muteOriginal,
+            selected = state.originalVolume > 0f,
             onClick = onOriginal,
         )
         ModeButton(
             modifier = Modifier.weight(1f),
             title = "中文配音",
             glyph = "≋",
-            selected = state.dubbingOn,
+            selected = state.dubbingVolume > 0f,
             onClick = onDub,
         )
         ModeButton(
@@ -2608,20 +2663,20 @@ private fun ControlBar(
         ) {
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
-                icon = if (state.dubbingOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                icon = if (state.dubbingVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
                 label = "配音",
-                selected = state.dubbingOn && state.lines.isNotEmpty() &&
+                selected = state.dubbingVolume > 0f && state.lines.isNotEmpty() &&
                     state.noModelHint?.contains("配音模型") != true,
                 enabled = state.lines.isNotEmpty() &&
                     state.noModelHint?.contains("配音模型") != true,
-                onClick = { svc?.toggleDub() },
+                onClick = { svc?.toggleDubbingVolume() },
             )
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
-                icon = if (state.dubbingOn) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                icon = if (state.originalVolume > 0f) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
                 label = "原声",
-                selected = !state.dubbingOn,
-                onClick = { svc?.selectOriginalPlayback() },
+                selected = state.originalVolume > 0f,
+                onClick = { svc?.toggleOriginalVolume() },
             )
             PlayerToolTile(
                 modifier = Modifier.weight(1f),
