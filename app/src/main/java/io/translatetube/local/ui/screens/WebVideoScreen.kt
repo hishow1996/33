@@ -254,6 +254,8 @@ fun WebVideoScreen(
     var status by remember { mutableStateOf("正在打开网页并检测 HTML5 视频…") }
     var pageLoading by remember(initialUrl) { mutableStateOf(WebMediaUrlPolicy.normalizePageUrl(initialUrl) != null) }
     val webViewState = remember { mutableStateOf<WebView?>(null) }
+    // Track WebView history so the address-row back button reflects whether a previous page exists.
+    var canGoBack by remember(initialUrl) { mutableStateOf(false) }
     // Preserve the device WebView's real Chromium version; only remove the WebView marker for PikPak.
     var defaultWebViewUserAgent by remember(initialUrl) { mutableStateOf<String?>(null) }
     // One recovery reload per page URL prevents blank-page retries from looping indefinitely.
@@ -1457,6 +1459,22 @@ fun WebVideoScreen(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IconButton(
+                    enabled = webViewState.value != null && canGoBack,
+                    onClick = {
+                        val view = webViewState.value
+                        if (view != null && view.canGoBack()) {
+                            view.goBack()
+                        } else {
+                            canGoBack = false
+                        }
+                    },
+                ) {
+                    Icon(
+                        Icons.Filled.ArrowBack,
+                        contentDescription = "返回网页上一页",
+                    )
+                }
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
@@ -1700,6 +1718,7 @@ fun WebVideoScreen(
 
                             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                                 super.onPageStarted(view, url, favicon)
+                                canGoBack = view.canGoBack()
                                 val duplicateCompletedBilibiliPage =
                                     lastCompletedNavigationGeneration.get() == pageGeneration.get() &&
                                         WebVideoProbePolicy.isDuplicateCompletedNavigation(
@@ -1760,6 +1779,7 @@ fun WebVideoScreen(
                                 }
                                 pageLoading = false
                                 navigationInProgress.set(false)
+                                canGoBack = view.canGoBack()
                                 lastCompletedNavigationUrl.set(url)
                                 lastCompletedNavigationGeneration.set(completedGeneration)
                                 address = url
