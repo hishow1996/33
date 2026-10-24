@@ -53,6 +53,8 @@ data class PlayRequest(
     val webPageUrl: String? = null,
     /** Set only by Home history rows; the activity may reuse a compatible READY session. */
     val preferReadyHistoryResume: Boolean = false,
+    /** If the prior result used the same engines, open the player UI while restoring that history item. */
+    val showPlayerWhileRestoringHistory: Boolean = false,
     val ts: Long = System.currentTimeMillis(), // 保证同视频重复点击也能触发
 ) {
     val key: String get() = when {
@@ -378,9 +380,22 @@ class MainActivity : ComponentActivity() {
                                         false
                                     }
                                     if (!reusedReadySession) {
-                                        // A changed engine configuration, missing READY session, or
-                                        // failed compatibility check retains the existing full pipeline.
-                                        rememberPlayRequest(cleanRequest)
+                                        // If this history item was previously completed with matching
+                                        // settings, show the playback page while the service restores it.
+                                        // The service still runs its existing safety/caching checks; a changed
+                                        // engine configuration uses the normal five-stage processing page.
+                                        val showPlayerWhileRestoringHistory =
+                                            request.preferReadyHistoryResume &&
+                                                PlaybackService.hasCompatibleHistorySnapshot(
+                                                    this@MainActivity,
+                                                    cleanRequest.key,
+                                                    isYouTube = cleanRequest.videoId != null,
+                                                )
+                                        rememberPlayRequest(
+                                            cleanRequest.copy(
+                                                showPlayerWhileRestoringHistory = showPlayerWhileRestoringHistory,
+                                            ),
+                                        )
                                     }
                                 },
                                 onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
@@ -427,6 +442,7 @@ class MainActivity : ComponentActivity() {
                                 mediaCookie = req?.mediaCookie,
                                 mediaUserAgent = req?.mediaUserAgent,
                                 requestToken = req?.ts ?: 0L,
+                                showPlayerWhileRestoringHistory = req?.showPlayerWhileRestoringHistory == true,
                                 onBack = {
                                     screen = if (returnToWebAfterPlayer && !webDetectionUrl.isNullOrBlank()) {
                                         Screen.WEB
