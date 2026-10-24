@@ -220,6 +220,11 @@ class PlaybackService : MediaSessionService() {
     private var dubbingMutationGenerationCounter = 0L
     @Volatile private var activeDubbingMutationGeneration = 0L
     @Volatile private var processingEngineConfigFingerprint = ""
+    // Snapshot the configuration that produced the currently completed session. Unlike the
+    // preference-listener baseline above, this value must not change just because settings are
+    // edited while the READY player is idle on the Home screen.
+    @Volatile private var completedReadySessionKey = ""
+    @Volatile private var completedReadySessionEngineFingerprint = ""
     private var enginePreferencesListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Volatile private var enginePreferenceRestartJob: Job? = null
     // Serialize every flow that creates/replaces a DubbingEngine. YouTube, remote web media,
@@ -269,6 +274,60 @@ class PlaybackService : MediaSessionService() {
             videoKey == key &&
             ui.value.key == key
 
+    /**
+     * Reuse an already prepared video when it is opened again from Home history. This deliberately
+     * does not call open(): open() invalidates the playback pipeline, retires the dubbing engine,
+     * and returns the UI to PARSING. YouTube does not depend on the selected ASR engine once its
+     * translated subtitle timeline has already been prepared.
+     */
+    fun resumeReadySessionIfCompatible(
+        key: String,
+        requestToken: Long,
+        isYouTube: Boolean,
+    ): Boolean {
+        if (!playerReady || !::pm.isInitialized || requestToken <= 0L) return false
+        val state = ui.value
+        if (
+            key.isBlank() ||
+            key != videoKey ||
+            key != completedReadySessionKey ||
+            state.key != key ||
+            state.phase != Phase.READY ||
+            state.waitingForTranscriptionEngine ||
+            state.waitingForDubbingEngine
+        ) {
+            return false
+        }
+
+        val currentFingerprint = processingEnginePreferenceFingerprint(ignoreTranscription = isYouTube)
+        if (completedReadySessionEngineFingerprint.isBlank() ||
+            currentFingerprint != completedReadySessionEngineFingerprint
+        ) {
+            return false
+        }
+
+        return try {
+            if (!state.isPlaying) pm.play()
+            activeOpenRequestToken = requestToken
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "首页历史记录复用已就绪的视频会话，跳过五阶段处理页",
+                diagnosticContext = mapOf(
+                    "视频来源" to if (isYouTube) "YouTube" else if (key.startsWith("remote:")) "网页视频" else "本地视频",
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "播放请求标记" to requestToken.toString(),
+                    "引擎配置是否匹配" to "是",
+                    "YouTube 是否忽略转写引擎配置" to isYouTube.toString(),
+                ),
+            )
+            true
+        } catch (error: Exception) {
+            android.util.Log.w("PlaybackService", "Unable to resume completed history session", error)
+            false
+        }
+    }
+
     private fun beginPipelineGeneration(): Long = synchronized(pipelineGenerationLock) {
         (++pipelineGenerationCounter).also { activePipelineGeneration = it }
     }
@@ -317,9 +376,12 @@ class PlaybackService : MediaSessionService() {
      * Hash only the settings that influence transcription, translation or synthesis.
      * The fingerprint is diagnostic-safe: API keys and other preference values are never logged.
      */
-    private fun processingEnginePreferenceFingerprint(): String {
+    private fun processingEnginePreferenceFingerprint(ignoreTranscription: Boolean = false): String {
         val relevant = getSharedPreferences("settings", MODE_PRIVATE).all.entries
-            .filter { entry -> isProcessingEnginePreferenceKey(entry.key) }
+            .filter { entry ->
+                isProcessingEnginePreferenceKey(entry.key) &&
+                    !(ignoreTranscription && entry.key.startsWith("asr_", ignoreCase = true))
+            }
             .sortedBy { entry -> entry.key }
             .joinToString("\n") { entry ->
                 val value = when (val raw = entry.value) {
@@ -1286,6 +1348,9 @@ class PlaybackService : MediaSessionService() {
             }
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        val runEngineFingerprint = processingEnginePreferenceFingerprint(
+            ignoreTranscription = key.startsWith("youtube:", ignoreCase = true),
+        )
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
@@ -1395,6 +1460,17 @@ class PlaybackService : MediaSessionService() {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
                 runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie)
+                ensureCurrentSession(key, pipelineGeneration)
+                val finishedState = ui.value
+                if (
+                    finishedState.key == key &&
+                    finishedState.phase == Phase.READY &&
+                    !finishedState.waitingForTranscriptionEngine &&
+                    !finishedState.waitingForDubbingEngine
+                ) {
+                    completedReadySessionKey = key
+                    completedReadySessionEngineFingerprint = runEngineFingerprint
+                }
             }
         }
     }
