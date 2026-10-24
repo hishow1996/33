@@ -7,11 +7,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -26,7 +24,6 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -81,7 +78,6 @@ fun HomeScreen(
     }
     var link by remember { mutableStateOf("") }
     var linkError by remember { mutableStateOf(false) }
-    var favoritesOnly by remember { mutableStateOf(false) }
 
     val localPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
@@ -121,12 +117,6 @@ fun HomeScreen(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("大象翻译", color = OnBg, style = MaterialTheme.typography.headlineSmall)
-            }
-            IconButton(
-                onClick = onHistory,
-                modifier = Modifier.size(44.dp),
-            ) {
-                Icon(Icons.Filled.History, contentDescription = "历史记录", tint = SubText)
             }
             Box {
                 IconButton(
@@ -344,17 +334,14 @@ fun HomeScreen(
         Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("观看记录", color = OnBg, style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.weight(1f))
-            Text(
-                if (favoritesOnly) "全部记录" else "收藏",
-                color = BrandBright,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
-                    favoritesOnly = !favoritesOnly
-                }.padding(horizontal = 4.dp, vertical = 5.dp),
-            )
+            IconButton(
+                onClick = onHistory,
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(Icons.Filled.History, contentDescription = "历史记录", tint = SubText)
+            }
         }
 
-        val shownVideos = if (favoritesOnly) videos.filter { it.isFavorite } else videos
         if (!historyLoaded) {
             Box(
                 Modifier.fillMaxWidth().weight(1f),
@@ -370,7 +357,7 @@ fun HomeScreen(
                     Text("正在加载观看记录", color = SubText, style = MaterialTheme.typography.bodySmall)
                 }
             }
-        } else if (shownVideos.isEmpty()) {
+        } else if (videos.isEmpty()) {
             Box(
                 Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
@@ -381,7 +368,7 @@ fun HomeScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            if (favoritesOnly) Icons.Filled.Star else Icons.Filled.PlayArrow,
+                            Icons.Filled.PlayArrow,
                             contentDescription = null,
                             tint = BrandBright,
                             modifier = Modifier.size(28.dp),
@@ -389,13 +376,13 @@ fun HomeScreen(
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        if (favoritesOnly) "还没有收藏视频" else "还没有观看记录",
+                        "还没有观看记录",
                         color = OnBg,
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        if (favoritesOnly) "长按视频记录即可收藏" else "从上方粘贴链接，开始第一段视频",
+                        "从上方粘贴链接，开始第一段视频",
                         color = SubText,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -407,15 +394,10 @@ fun HomeScreen(
                 contentPadding = PaddingValues(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                itemsIndexed(shownVideos, key = { _, video -> video.key }) { _, video ->
+                itemsIndexed(videos, key = { _, video -> video.key }) { _, video ->
                     VideoRow(
                         video = video,
                         onPlay = onPlay,
-                        onFav = {
-                            scope.launch(Dispatchers.IO) {
-                                db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
-                            }
-                        },
                         modifier = Modifier.animateItem(
                             fadeInSpec = tween(durationMillis = 170),
                             placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -428,32 +410,27 @@ fun HomeScreen(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VideoRow(
     video: VideoEntity,
     onPlay: (PlayRequest) -> Unit,
-    onFav: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier.fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(Color.White)
-            .combinedClickable(
-                onClick = {
-                    val historyRequest = when {
-                        video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
-                            PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
-                        video.key.startsWith("remote:") ->
-                            PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
-                        else ->
-                            PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
-                    }
-                    onPlay(historyRequest.copy(preferReadyHistoryResume = true))
-                },
-                onLongClick = onFav,
-            )
+            .clickable {
+                val historyRequest = when {
+                    video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
+                        PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
+                    video.key.startsWith("remote:") ->
+                        PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
+                    else ->
+                        PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
+                }
+                onPlay(historyRequest.copy(preferReadyHistoryResume = true))
+            }
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -488,10 +465,6 @@ private fun VideoRow(
                 Text("继续观看", color = BrandBright, style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.width(6.dp))
                 Text("›", color = BrandBright, style = MaterialTheme.typography.titleMedium)
-                if (video.isFavorite) {
-                    Spacer(Modifier.width(8.dp))
-                    Icon(Icons.Filled.Star, contentDescription = "已收藏", tint = Color(0xFFE3A008), modifier = Modifier.size(14.dp))
-                }
             }
         }
     }
