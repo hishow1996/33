@@ -7,9 +7,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -48,6 +51,7 @@ import io.translatetube.local.web.SharedLinkTextParser
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -60,13 +64,16 @@ fun HomeScreen(
 ) {
     val playback by PlaybackService.ui.collectAsState()
     val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    var db by remember(ctx) { mutableStateOf<AppDatabase?>(null) }
     var videos by remember { mutableStateOf<List<VideoEntity>>(emptyList()) }
     var historyLoaded by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     // 先完成首帧绘制，再在 IO 线程打开数据库并订阅历史记录；冷启动不被历史库初始化拖住。
     LaunchedEffect(ctx) {
         withFrameNanos { }
         val database = withContext(Dispatchers.IO) { AppDatabase.get(ctx) }
+        db = database
         database.videoDao().all().collect { items ->
             videos = items
             historyLoaded = true
@@ -394,6 +401,11 @@ fun HomeScreen(
                     VideoRow(
                         video = video,
                         onPlay = onPlay,
+                        onFav = {
+                            scope.launch(Dispatchers.IO) {
+                                db?.videoDao()?.setFavorite(video.key, !video.isFavorite)
+                            }
+                        },
                         modifier = Modifier.animateItem(
                             fadeInSpec = tween(durationMillis = 170),
                             placementSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -406,27 +418,32 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VideoRow(
     video: VideoEntity,
     onPlay: (PlayRequest) -> Unit,
+    onFav: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
         modifier.fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(Color.White)
-            .clickable {
-                val historyRequest = when {
-                    video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
-                        PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
-                    video.key.startsWith("remote:") ->
-                        PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
-                    else ->
-                        PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
-                }
-                onPlay(historyRequest.copy(preferReadyHistoryResume = true))
-            }
+            .combinedClickable(
+                onClick = {
+                    val historyRequest = when {
+                        video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
+                            PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
+                        video.key.startsWith("remote:") ->
+                            PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
+                        else ->
+                            PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
+                    }
+                    onPlay(historyRequest.copy(preferReadyHistoryResume = true))
+                },
+                onLongClick = onFav,
+            )
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -461,6 +478,15 @@ private fun VideoRow(
                 Text("继续观看", color = BrandBright, style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.width(6.dp))
                 Text("›", color = BrandBright, style = MaterialTheme.typography.titleMedium)
+                if (video.isFavorite) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = "已收藏",
+                        tint = Color(0xFFE3A008),
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
         }
     }
