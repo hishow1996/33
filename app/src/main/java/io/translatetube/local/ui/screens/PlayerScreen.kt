@@ -663,7 +663,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             }
                             Slider(
                                 value = state.originalVolume.coerceIn(0f, 1f),
-                                onValueChange = { PlaybackService.instance?.setOriginalVolume(it) },
+                                onValueChange = { PlaybackService.instance?.setOriginalVolume(it, persist = false) },
+                                onValueChangeFinished = { PlaybackService.instance?.finishOriginalVolumeAdjustment() },
                                 valueRange = 0f..1f,
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -685,7 +686,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             }
                             Slider(
                                 value = state.dubbingVolume.coerceIn(0f, 1f),
-                                onValueChange = { PlaybackService.instance?.setDubbingVolume(it) },
+                                onValueChange = { PlaybackService.instance?.setDubbingVolume(it, persist = false) },
+                                onValueChangeFinished = { PlaybackService.instance?.finishDubbingVolumeAdjustment() },
                                 valueRange = 0f..1f,
                                 modifier = Modifier.fillMaxWidth(),
                             )

@@ -7848,13 +7848,26 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
     }
 
-    /** Slider and button share the same persisted source-audio gain. */
-    fun setOriginalVolume(volume: Float) {
-        val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val editor = prefs.edit().putFloat(PREF_PLAYER_ORIGINAL_VOLUME, normalized)
+    private fun persistOriginalVolume(value: Float) {
+        val normalized = value.coerceIn(0f, 1f)
+        val editor = getSharedPreferences("settings", MODE_PRIVATE).edit()
+            .putFloat(PREF_PLAYER_ORIGINAL_VOLUME, normalized)
         if (normalized > 0f) editor.putFloat(PREF_PLAYER_ORIGINAL_VOLUME_LAST, normalized)
         editor.apply()
+    }
+
+    private fun persistDubbingVolume(value: Float) {
+        val normalized = value.coerceIn(0f, 1f)
+        val editor = getSharedPreferences("settings", MODE_PRIVATE).edit()
+            .putFloat(PREF_PLAYER_DUBBING_VOLUME, normalized)
+        if (normalized > 0f) editor.putFloat(PREF_PLAYER_DUBBING_VOLUME_LAST, normalized)
+        editor.apply()
+    }
+
+    /** Slider updates stay live while dragging; persist once when the gesture ends. */
+    fun setOriginalVolume(volume: Float, persist: Boolean = true) {
+        val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+        if (persist) persistOriginalVolume(normalized)
         ui.update { state ->
             state.copy(
                 originalVolume = normalized,
@@ -7864,19 +7877,24 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (::pm.isInitialized) safelySetOriginalVolume(1f, "original volume slider")
     }
 
-    /** Slider and button share the same persisted Chinese-dubbing gain. */
-    fun setDubbingVolume(volume: Float) {
+    fun finishOriginalVolumeAdjustment() {
+        persistOriginalVolume(ui.value.originalVolume)
+    }
+
+    /** Slider updates stay live while dragging; persist once when the gesture ends. */
+    fun setDubbingVolume(volume: Float, persist: Boolean = true) {
         val normalized = volume.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val editor = prefs.edit().putFloat(PREF_PLAYER_DUBBING_VOLUME, normalized)
-        if (normalized > 0f) editor.putFloat(PREF_PLAYER_DUBBING_VOLUME_LAST, normalized)
-        editor.apply()
+        if (persist) persistDubbingVolume(normalized)
         ui.update { state -> state.copy(dubbingVolume = normalized) }
         if (::pm.isInitialized) pm.dubbingVolume = normalized
         dubbing?.updateVolume(normalized)
         // At zero volume the synthesis timeline remains available in the background. Re-enable
         // audible scheduling only when the user raises the gain above zero.
         if (normalized > 0f && !ui.value.dubbingOn) toggleDub()
+    }
+
+    fun finishDubbingVolumeAdjustment() {
+        persistDubbingVolume(ui.value.dubbingVolume)
     }
 
     fun toggleOriginalVolume() {
