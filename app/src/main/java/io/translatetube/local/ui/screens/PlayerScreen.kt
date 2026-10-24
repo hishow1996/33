@@ -113,7 +113,7 @@ fun PlayerScreen(
 ) {
     val ctx = LocalContext.current
     val settingsPrefs = ctx.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
-    val selectedTtsEngine = settingsPrefs.getString("tts_engine", "kokoro") ?: "kokoro"
+    val selectedTtsEngine = settingsPrefs.getString("tts_engine", "edge") ?: "edge"
     val systemVoiceCatalog = io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.decodeVoiceCatalog(
         settingsPrefs.getString(io.translatetube.local.tts.SystemTtsSpeakerVoicePolicy.CATALOG_PREF_KEY, null),
     )

@@ -1327,7 +1327,7 @@ class PlaybackService : MediaSessionService() {
         qualitySources = emptyList()
         qualityAudioUrl = ""
         lastLineIdx = Int.MIN_VALUE
-        val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
+        val configuredTts = getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge") ?: "edge"
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
         // Match the session isolation used by the downloaded-audio cache. A signed URL can
         // serve different private media to different cookie sessions or page origins.
@@ -2196,7 +2196,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 awaitRetiredDubbingEngines()
                 ensureCurrentSession(sessionKey, pipelineGeneration)
                 val selectedImportTts = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("tts_engine", "kokoro") ?: "kokoro"
+                    .getString("tts_engine", "edge") ?: "edge"
                 val importEngineReady = when (selectedImportTts) {
                     "kokoro" -> kokoroRuntimeReady()
                     "piper" -> piperModelReadyForChinese()
@@ -3798,7 +3798,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
             if (finalLines.isNotEmpty()) {
                 val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-                    .getString("tts_engine", "kokoro") ?: "kokoro"
+                    .getString("tts_engine", "edge") ?: "edge"
                 val selectedTtsName = ttsDisplayName(selectedTts)
                 updateUiForSession(key, pipelineGeneration) { it.copy(ttsEngineName = selectedTtsName) }
 
@@ -3928,7 +3928,9 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                                 noModelHint = when (selectedTts) {
                                     "system" -> "系统 TTS 初始化失败：$reason。当前严格使用手机系统 TTS，未切换本地模型。请检查手机的文字转语音服务、中文语音数据和可用音色，然后重试。"
                                     "piper" -> "已选择 Piper 中文配音，但初始化失败：$reason。不会自动切换到其他引擎。请检查是否选择并下载了中文 Piper 模型。"
-                                    else -> "已选择 Kokoro 模型，但初始化失败：$reason。不会自动切换到系统 TTS。请检查配音模型文件。"
+                                    "edge" -> "微软 Edge TTS 初始化失败：$reason。请检查网络连接后重试。"
+                                    "web" -> "在线语音引擎初始化失败：$reason。请检查网络连接后重试。"
+                                    else -> "所选配音引擎「$selectedTtsName」初始化失败：$reason。请检查对应引擎配置后重试。"
                                 },
                                 waitingForTranscriptionEngine = false,
                                 waitingForDubbingEngine = true,
@@ -5816,7 +5818,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
 
     private fun makeTts(engineId: String? = null): TtsEngine {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val selected = engineId ?: (prefs.getString("tts_engine", "kokoro") ?: "kokoro")
+        val selected = engineId ?: (prefs.getString("tts_engine", "edge") ?: "edge")
         return when (selected) {
             "system" -> io.translatetube.local.tts.SystemTts(
                 this,
@@ -6593,7 +6595,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     fun autoAssignSpeakers() {
         if (speakerJob?.isActive == true) return
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("tts_engine", "kokoro") ?: "kokoro"
+            .getString("tts_engine", "edge") ?: "edge"
         val originalLines = ui.value.lines
         if (originalLines.isEmpty()) {
             ui.update { it.copy(error = "当前没有字幕，先生成或导入字幕再区分人物") }
@@ -6926,7 +6928,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (oldLines[index].speakerId == selectedVoice && !applyToPerson) return
 
         val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("tts_engine", "kokoro") ?: "kokoro"
+            .getString("tts_engine", "edge") ?: "edge"
         if (selectedTts == "kokoro" && !kokoroRuntimeReady()) {
             updateUiForSession(sessionKey) {
                 it.copy(error = "Kokoro 配音模型尚未就绪，当前人物音色未更改。")
@@ -7154,7 +7156,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     }
 
     private fun currentTtsEngineId(): String =
-        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "kokoro") ?: "kokoro"
+        getSharedPreferences("settings", MODE_PRIVATE).getString("tts_engine", "edge") ?: "edge"
 
     private fun assignmentStorageKey(identity: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")

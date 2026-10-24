@@ -59,7 +59,7 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
-    var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "kokoro") ?: "kokoro") }
+    var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "edge") ?: "edge") }
     var systemTtsMode by remember { mutableStateOf(prefs.getString("system_tts_mode", "generated") ?: "generated") }
     var systemTtsVoiceName by remember { mutableStateOf(prefs.getString("system_tts_voice_name", "").orEmpty()) }
     var systemTtsVoiceCatalog by remember {

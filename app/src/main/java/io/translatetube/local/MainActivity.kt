@@ -147,6 +147,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Initialize defaults only when a preference has never been saved. Explicit user choices
+        // are preserved across upgrades: Google Translate + Microsoft Edge TTS are the defaults.
+        val enginePrefs = getSharedPreferences("settings", MODE_PRIVATE)
+        enginePrefs.edit().also { editor ->
+            if (!enginePrefs.contains("active_api_id")) {
+                editor.putLong("active_api_id", io.translatetube.local.translate.EngineFactory.ID_GOOGLE)
+            }
+            if (!enginePrefs.contains("tts_engine")) {
+                editor.putString("tts_engine", "edge")
+            }
+        }.apply()
         handleIntent(intent)
         if (pendingResumeTaskState.value == null) {
             pendingResumeTaskState.value = loadPendingResumeTask()
