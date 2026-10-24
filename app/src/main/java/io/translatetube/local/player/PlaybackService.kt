@@ -1694,7 +1694,7 @@ class PlaybackService : MediaSessionService() {
         )
         val configuredTtsName = ttsDisplayName(configuredTts)
         ui.value = PlayerUiState(
-            phase = if (resumeState != null) Phase.TRANSLATING else Phase.PARSING,
+            phase = if (resumeState != null && resumeState.lines.isNotEmpty()) Phase.TRANSLATING else Phase.PARSING,
             processingFlow = when {
                 !importedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
                 videoId != null -> ProcessingFlow.AUTO
@@ -1704,7 +1704,11 @@ class PlaybackService : MediaSessionService() {
             },
             isProcessingPaused = false,
             key = key,
-            progress = if (resumeState != null) "恢复已获取的字幕，继续未完成的翻译…" else "解析中…",
+            progress = when {
+                resumeState == null -> "解析中…"
+                resumeState.lines.isNotEmpty() -> "恢复已获取的字幕，继续处理未完成的阶段…"
+                else -> "复用现有视频资源，准备重新转写…"
+            },
             title = resumeState?.title.orEmpty(),
             channel = resumeState?.channel.orEmpty(),
             thumbUrl = resumeState?.thumbUrl,
@@ -2909,12 +2913,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // ---- 1. 元信息 ----
             var srcLang = resumeState?.sourceLang.orEmpty()
             if (resumeState != null) {
-                // Video metadata and original subtitle rows already exist in memory; do not resolve
-                // the YouTube page or fetch subtitles again for a translation-only retry.
+                // Keep current metadata for selective restarts. An empty snapshot means the ASR
+                // stage is rerunning; populated captions resume at translation or dubbing.
+                val restartingTranscription = resumeState.lines.isEmpty()
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
-                        phase = Phase.TRANSLATING,
-                        progress = "继续翻译尚未完成的字幕…",
+                        phase = if (restartingTranscription) Phase.PARSING else Phase.TRANSLATING,
+                        progress = if (restartingTranscription) "复用已有视频信息，准备重新转写…" else "继续处理已获取的字幕…",
                         sourceLang = srcLang,
                         error = null,
                     )
