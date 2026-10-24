@@ -231,10 +231,10 @@ class DubbingAudioProcessor(
         var frame = 0
         while (frame < frames) {
             val voiceSample = voiceScratch[frame] * requestedDubbingGain
-            val voiceTarget = if (abs(voiceSample) > VOICE_ACTIVITY_THRESHOLD) DUCK_LEVEL else 1f
-            // Envelope follower: a zero crossing cannot instantly restore the source audio.
-            duckGain += (voiceTarget - duckGain) *
-                if (voiceTarget < duckGain) duckAttack else duckRelease
+            // Source and dubbing gains are independently controlled by the user. Do not auto-duck
+            // the original channel when Chinese speech is present; both tracks may remain audible.
+            val voiceTarget = 1f
+            duckGain += (voiceTarget - duckGain) * duckRelease
             appliedOriginalGain += (requestedOriginalGain - appliedOriginalGain) *
                 if (requestedOriginalGain < appliedOriginalGain) sourceAttack else sourceRelease
             // 整体增益：原声被静音或被配音压低时，原声里的人声就按它处理（与拆分前完全一致）。
@@ -245,7 +245,8 @@ class DubbingAudioProcessor(
                 val right = readSample(inputBuffer, isFloat)
                 activeSplitter.process(left, right)
                 bedAllowed += (bedTarget - bedAllowed) * bedFade
-                // 原声开着时，音乐/环境声底不跟着人声一起压到 15%：配音期间只轻微让位，保证配音清晰。
+                // Keep source background/music at the same user-selected gain as source speech.
+                // duckGain remains at 1 because original audio is no longer automatically ducked.
                 val duckDepth = ((1f - duckGain) / (1f - DUCK_LEVEL)).coerceIn(0f, 1f)
                 val bedGain = 1f - (1f - BED_DUCK_LEVEL) * duckDepth
                 val bedWeight = (activeSplitter.usable * bedAllowed).coerceIn(0f, 1f)
