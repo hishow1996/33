@@ -518,7 +518,9 @@ class PlaybackService : MediaSessionService() {
             currentConfigSnapshot.fingerprint != completedReadySessionEngineFingerprint
         ) {
             val restoredState = currentConfigSnapshot.state.copy(
-                dubbingOn = state.dubbingOn,
+                // Playback volume controls audibility; keep timeline preparation independent so
+                // muting dubbing does not discard the background synthesis queue.
+                dubbingOn = true,
                 muteOriginal = state.originalVolume <= 0f,
                 originalVolume = state.originalVolume,
                 dubbingVolume = state.dubbingVolume,
@@ -1803,7 +1805,8 @@ class PlaybackService : MediaSessionService() {
             durationMs = effectiveResumeState?.durationMs ?: 0L,
             lines = effectiveResumeState?.lines ?: emptyList(),
             totalLines = effectiveResumeState?.totalLines ?: 0,
-            dubbingOn = effectiveResumeState?.dubbingOn ?: true,
+            // The dubbing timeline remains active for background preparation even at 0% output.
+            dubbingOn = true,
             muteOriginal = originalVolume <= 0f,
             originalVolume = originalVolume,
             dubbingVolume = dubbingVolume,
