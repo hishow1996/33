@@ -133,6 +133,23 @@ private object ReadyHistorySessionConfigStore {
         dubbing = domainFingerprint(context, EngineConfigDomain.DUBBING),
     )
 
+    fun savedProcessingFlow(context: Context, videoKey: String): ProcessingFlow? {
+        if (videoKey.isBlank()) return null
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        val saved = prefs.getString(key + "-processing-flow", null)
+        if (!saved.isNullOrBlank()) {
+            return runCatching { ProcessingFlow.valueOf(saved) }.getOrNull()
+        }
+        // Older versions kept the same distinction as a boolean: only true means YouTube captions were used.
+        if (!videoKey.startsWith("youtube:", ignoreCase = true)) return null
+        return if (prefs.getBoolean("$key-ignore-transcription", false)) {
+            ProcessingFlow.YOUTUBE_SUBTITLES
+        } else {
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+        }
+    }
+
     fun savedFingerprints(context: Context, videoKey: String): EngineConfigFingerprints? {
         if (videoKey.isBlank()) return null
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -181,6 +198,7 @@ private object ReadyHistorySessionConfigStore {
         fingerprint: String,
         ignoreTranscription: Boolean,
         fingerprints: EngineConfigFingerprints,
+        processingFlow: ProcessingFlow,
     ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
@@ -190,6 +208,7 @@ private object ReadyHistorySessionConfigStore {
             .putString(key + "-transcription-fingerprint", fingerprints.transcription)
             .putString(key + "-translation-fingerprint", fingerprints.translation)
             .putString(key + "-dubbing-fingerprint", fingerprints.dubbing)
+            .putString(key + "-processing-flow", processingFlow.name)
             .apply()
     }
 
@@ -214,6 +233,7 @@ private object ReadyHistorySessionConfigStore {
             .remove(key + "-transcription-fingerprint")
             .remove(key + "-translation-fingerprint")
             .remove(key + "-dubbing-fingerprint")
+            .remove(key + "-processing-flow")
             .apply()
     }
 
@@ -1760,6 +1780,7 @@ class PlaybackService : MediaSessionService() {
                         completedFingerprint,
                         ignoreTranscription,
                         completedDomainFingerprints,
+                        finishedState.processingFlow,
                     )
                 }
             }
@@ -3278,8 +3299,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val resolvedProcessingFlow = when {
                 resumeState != null -> resumeState.processingFlow
                 !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
-                videoId != null && resumeState == null && lines == null && cached == null &&
-                    sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                videoId != null && restoredSourceLines != null ->
+                    ReadyHistorySessionConfigStore.savedProcessingFlow(this@PlaybackService, key)
+                        ?.takeIf { it == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION || it == ProcessingFlow.YOUTUBE_SUBTITLES }
+                        ?: ProcessingFlow.YOUTUBE_SUBTITLES
+                videoId != null && lines == null && cached == null -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 videoId != null -> ProcessingFlow.YOUTUBE_SUBTITLES
                 remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
                 localUri != null -> ProcessingFlow.LOCAL_SPEECH_RECOGNITION
