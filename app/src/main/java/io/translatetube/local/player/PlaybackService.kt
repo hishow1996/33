@@ -214,6 +214,10 @@ private object ReadyHistorySessionConfigStore {
 
     fun matches(context: Context, videoKey: String, isYouTube: Boolean): Boolean {
         if (videoKey.isBlank()) return false
+        if (ReadySessionSnapshotStore.findForCurrentConfig(context, videoKey) { ignoreTranscription ->
+                fingerprint(context, ignoreTranscription = ignoreTranscription)
+            } != null
+        ) return true
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
         val saved = prefs.getString(key, null) ?: return false
@@ -235,10 +239,12 @@ private object ReadyHistorySessionConfigStore {
             .remove(key + "-dubbing-fingerprint")
             .remove(key + "-processing-flow")
             .apply()
+        ReadySessionSnapshotStore.remove(context, videoKey)
     }
 
     fun clearAll(context: Context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
+        ReadySessionSnapshotStore.clearAll(context)
     }
 
     private fun storageKey(videoKey: String): String {
@@ -495,6 +501,51 @@ class PlaybackService : MediaSessionService() {
             state.waitingForTranscriptionEngine ||
             state.waitingForDubbingEngine
         ) return false
+
+        val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
+            ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
+        }
+        if (
+            currentConfigSnapshot != null &&
+            currentConfigSnapshot.fingerprint != completedReadySessionEngineFingerprint
+        ) {
+            val restoredState = currentConfigSnapshot.state.copy(
+                dubbingOn = state.dubbingOn,
+                muteOriginal = state.muteOriginal,
+                audioOnly = state.audioOnly,
+                videoAspect = state.videoAspect,
+            )
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "PlaybackFlow",
+                "命中该视频此前成功的引擎配置组合，恢复已完成结果并复用配音缓存",
+                diagnosticContext = mapOf(
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "处理流程" to restoredState.processingFlow.name,
+                    "恢复的配置指纹" to currentConfigSnapshot.fingerprint.take(16),
+                    "原文字幕行数" to restoredState.lines.size.toString(),
+                    "是否重新转写" to "否",
+                    "是否重新翻译" to "否",
+                    "配音缓存策略" to "复用该引擎配置对应的已有配音缓存",
+                ),
+            )
+            open(
+                key = key,
+                videoId = videoId,
+                localUri = localUri,
+                importedLines = null,
+                resumeState = restoredState,
+                remoteMediaUrl = remoteMediaUrl,
+                remoteMediaTitle = remoteMediaTitle,
+                remoteMediaReferrer = remoteMediaReferrer,
+                remoteMediaCookie = remoteMediaCookie,
+                remoteMediaUserAgent = remoteMediaUserAgent,
+                requestToken = requestToken,
+                reuseMountedMediaForRestart = true,
+                restoreReadySnapshot = true,
+            )
+            return true
+        }
 
         val ignoreTranscription = completedReadySessionIgnoresTranscription
         if (ignoreTranscription && !isYouTube) return false
@@ -1616,10 +1667,18 @@ class PlaybackService : MediaSessionService() {
         remoteMediaUserAgent: String? = null,
         requestToken: Long = 0L,
         reuseMountedMediaForRestart: Boolean = false,
+        restoreReadySnapshot: Boolean = false,
     ) {
+        val reusableSnapshot = if (resumeState == null && importedLines == null) {
+            ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
+                ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
+            }
+        } else null
+        val effectiveResumeState = resumeState ?: reusableSnapshot?.state
+        val restoreCompletedSnapshot = restoreReadySnapshot || reusableSnapshot != null
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
-        val reuseMountedMedia = (resumeState != null || reuseMountedMediaForRestart) &&
+        val reuseMountedMedia = (effectiveResumeState != null || reuseMountedMediaForRestart) &&
             key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
@@ -1675,7 +1734,7 @@ class PlaybackService : MediaSessionService() {
         val importedLinesSnapshot = importedLines?.toList()
         this.importedLines = importedLinesSnapshot
         // Preserve parsed metadata/subtitles when resuming a translation failure.
-        if (videoId != null && resumeState == null) NewPipeRepo.invalidate(videoId)
+        if (videoId != null && effectiveResumeState == null) NewPipeRepo.invalidate(videoId)
         qualityJob?.cancel()
         if (!reuseMountedMedia) {
             qualitySources = emptyList()
@@ -1693,12 +1752,12 @@ class PlaybackService : MediaSessionService() {
             baseKey = cacheKeyBase,
             activeId = activeTranslationId,
             importedLines = importedLines,
-            previousKey = resumeState?.translationCacheKey,
+            previousKey = effectiveResumeState?.translationCacheKey,
         )
         val configuredTtsName = ttsDisplayName(configuredTts)
         ui.value = PlayerUiState(
-            phase = if (resumeState != null && resumeState.lines.isNotEmpty()) Phase.TRANSLATING else Phase.PARSING,
-            processingFlow = when {
+            phase = if (restoreCompletedSnapshot) Phase.READY else if (effectiveResumeState != null && effectiveResumeState.lines.isNotEmpty()) Phase.TRANSLATING else Phase.PARSING,
+            processingFlow = effectiveResumeState?.processingFlow ?: when {
                 !importedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
                 videoId != null -> ProcessingFlow.AUTO
                 remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
@@ -1708,24 +1767,27 @@ class PlaybackService : MediaSessionService() {
             isProcessingPaused = false,
             key = key,
             progress = when {
-                resumeState == null -> "解析中…"
-                resumeState.lines.isNotEmpty() -> "恢复已获取的字幕，继续处理未完成的阶段…"
+                restoreCompletedSnapshot -> ""
+                effectiveResumeState == null -> "解析中…"
+                effectiveResumeState.lines.isNotEmpty() -> "恢复已获取的字幕，继续处理未完成的阶段…"
                 else -> "复用现有视频资源，准备重新转写…"
             },
-            title = resumeState?.title.orEmpty(),
-            channel = resumeState?.channel.orEmpty(),
-            thumbUrl = resumeState?.thumbUrl,
-            durationMs = resumeState?.durationMs ?: 0L,
-            lines = resumeState?.lines ?: emptyList(),
-            totalLines = resumeState?.totalLines ?: 0,
-            dubbingOn = resumeState?.dubbingOn ?: true,
-            muteOriginal = resumeState?.muteOriginal ?: true,
-            audioOnly = resumeState?.audioOnly ?: false,
-            videoAspect = resumeState?.videoAspect ?: (16f / 9f),
-            qualityOptions = resumeState?.qualityOptions ?: emptyList(),
-            selectedQuality = resumeState?.selectedQuality.orEmpty(),
-            sourceLang = resumeState?.sourceLang.orEmpty(),
-            engineName = resumeState?.engineName.orEmpty(),
+            title = effectiveResumeState?.title.orEmpty(),
+            channel = effectiveResumeState?.channel.orEmpty(),
+            thumbUrl = effectiveResumeState?.thumbUrl,
+            durationMs = effectiveResumeState?.durationMs ?: 0L,
+            lines = effectiveResumeState?.lines ?: emptyList(),
+            totalLines = effectiveResumeState?.totalLines ?: 0,
+            dubbingOn = effectiveResumeState?.dubbingOn ?: true,
+            muteOriginal = effectiveResumeState?.muteOriginal ?: true,
+            audioOnly = effectiveResumeState?.audioOnly ?: false,
+            videoAspect = effectiveResumeState?.videoAspect ?: (16f / 9f),
+            qualityOptions = effectiveResumeState?.qualityOptions ?: emptyList(),
+            selectedQuality = effectiveResumeState?.selectedQuality.orEmpty(),
+            availableSubtitleTracks = effectiveResumeState?.availableSubtitleTracks ?: emptyList(),
+            subtitleTrackStatus = effectiveResumeState?.subtitleTrackStatus.orEmpty(),
+            sourceLang = effectiveResumeState?.sourceLang.orEmpty(),
+            engineName = effectiveResumeState?.engineName.orEmpty(),
             translationCacheKey = effectiveTranslationCacheKey,
             ttsEngineName = configuredTtsName,
             manualTranslationModeEnabled = manualTranslationRequestedKeys.contains(key),
@@ -1734,7 +1796,7 @@ class PlaybackService : MediaSessionService() {
         io.translatetube.local.util.AppLogStore.info(
             this@PlaybackService,
             "PlaybackFlow",
-            if (resumeState != null) "恢复历史任务并重新进入处理管线" else "开始新的视频处理任务",
+            if (restoreCompletedSnapshot) "恢复该视频已成功的配置结果" else if (effectiveResumeState != null) "恢复历史任务并重新进入处理管线" else "开始新的视频处理任务",
             diagnosticContext = mapOf(
                 "视频来源" to when {
                     !importedLinesSnapshot.isNullOrEmpty() -> "导入字幕"
@@ -1743,14 +1805,15 @@ class PlaybackService : MediaSessionService() {
                     localUri != null -> "本地视频"
                     else -> "未知来源"
                 },
-                "初始阶段" to if (resumeState != null) Phase.TRANSLATING.name else Phase.PARSING.name,
+                "初始阶段" to if (restoreCompletedSnapshot) Phase.READY.name else if (effectiveResumeState != null) Phase.TRANSLATING.name else Phase.PARSING.name,
                 "处理流程" to ui.value.processingFlow.name,
                 "本次处理代数" to pipelineGeneration.toString(),
                 "播放请求标记" to requestToken.toString(),
-                "是否使用历史结果恢复" to (resumeState != null).toString(),
-                "恢复前字幕行数" to (resumeState?.lines?.size ?: 0).toString(),
+                "是否使用历史结果恢复" to (effectiveResumeState != null).toString(),
+                "是否直接恢复完整成功会话" to restoreCompletedSnapshot.toString(),
+                "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString(),
                 "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
-                "恢复的源语言" to resumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
+                "恢复的源语言" to effectiveResumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
                 "本次选择的配音引擎" to configuredTtsName,
                 "翻译服务配置编号" to activeTranslationId.toString(),
             ),
@@ -1759,7 +1822,7 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
-                runPipeline(key, pipelineGeneration, videoId, localUri, resumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie, reuseMountedMedia)
+                runPipeline(key, pipelineGeneration, videoId, localUri, effectiveResumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie, reuseMountedMedia, restoreCompletedSnapshot)
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
                 if (
@@ -1778,6 +1841,24 @@ class PlaybackService : MediaSessionService() {
                         ignoreTranscription = ignoreTranscription,
                     )
                     val completedDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    val translationsComplete = isChineseLanguage(finishedState.sourceLang) ||
+                        finishedState.lines.none { needsSubtitleTranslation(it, finishedState.sourceLang) }
+                    if (
+                        finishedState.lines.isNotEmpty() &&
+                        finishedState.dubbingOn &&
+                        !finishedState.dubbingHasErrors &&
+                        !finishedState.waitingForTranscriptionEngine &&
+                        !finishedState.waitingForDubbingEngine &&
+                        translationsComplete
+                    ) {
+                        ReadySessionSnapshotStore.save(
+                            context = this@PlaybackService,
+                            videoKey = key,
+                            fingerprint = completedFingerprint,
+                            ignoreTranscription = ignoreTranscription,
+                            state = finishedState,
+                        )
+                    }
                     completedReadySessionKey = key
                     completedReadySessionIgnoresTranscription = ignoreTranscription
                     completedReadySessionEngineFingerprint = completedFingerprint
@@ -2887,6 +2968,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         requestedRemoteMediaReferrer: String = "",
         requestedRemoteMediaCookie: String? = null,
         reuseMountedMedia: Boolean = false,
+        restoreCompletedSnapshot: Boolean = false,
     ) {
         // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
         // switch this session to the existing yt-dlp media URL pipeline and continue with audio ASR.
@@ -3136,8 +3218,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     "$key|source|local-asr-$localAsrModelId-timed-v3"
                 else -> "$key|source|local-asr-$asrCacheIdentity-timed-v4"
             }
-            // 首次处理明确显示字幕读取阶段；恢复翻译时保留翻译阶段，不伪装成重新解析。
-            if (resumeState == null) {
+            // 首次处理显示字幕读取阶段；完整成功快照恢复时不再展示解析、转写和翻译阶段。
+            if (restoreCompletedSnapshot) {
+                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.READY, progress = "") }
+            } else if (resumeState == null) {
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
             } else {
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "继续翻译尚未完成的字幕…") }
@@ -4137,7 +4221,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
-                    progress = "", phase = Phase.SYNTHESIZING,
+                    progress = "", phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
                 )
             }
 
