@@ -2,6 +2,7 @@ package io.translatetube.local.player
 
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.subs.SubLine
+import io.translatetube.local.translate.SubtitleTranslationQualityPolicy
 
 /** Structural guards for persisted subtitle timelines before binary-search playback uses them. */
 internal object SubtitleCacheValidationPolicy {
@@ -14,6 +15,15 @@ internal object SubtitleCacheValidationPolicy {
         val sourceText: String,
         val translatedText: String?,
     )
+
+    /**
+     * A cached translation made only of punctuation (for example "。") for a cue that contains
+     * real words is a failed translation. Treat it as missing so only that row is retried.
+     */
+    private fun usableCachedTranslation(sourceText: String, cached: String?): String? =
+        SubtitleParsers.cleanTranslatedText(cached)?.takeUnless {
+            SubtitleTranslationQualityPolicy.isPunctuationOnlyTranslation(sourceText, it)
+        }
 
     /**
      * Restore an imported translation cache only when every cached cue still maps to the exact
@@ -50,7 +60,7 @@ internal object SubtitleCacheValidationPolicy {
                 source.text != cached.sourceText
             ) return null
             previousStart = cached.startMs
-            if (!SubtitleParsers.cleanTranslatedText(cached.translatedText).isNullOrBlank()) {
+            if (usableCachedTranslation(source.text, cached.translatedText) != null) {
                 hasRecoverableTranslation = true
             }
         }
@@ -61,7 +71,7 @@ internal object SubtitleCacheValidationPolicy {
             if ((index and 0xff) == 0) checkActive()
             val source = sourceLines[index]
             restored += source.copy(
-                zh = SubtitleParsers.cleanTranslatedText(cachedRows[index].translatedText)
+                zh = usableCachedTranslation(source.text, cachedRows[index].translatedText)
             )
         }
         checkActive()
