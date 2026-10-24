@@ -51,6 +51,8 @@ data class PlayRequest(
     val mediaCookie: String? = null,
     val mediaUserAgent: String? = null,
     val webPageUrl: String? = null,
+    /** Set only by Home history rows; the activity may reuse a compatible READY session. */
+    val preferReadyHistoryResume: Boolean = false,
     val ts: Long = System.currentTimeMillis(), // 保证同视频重复点击也能触发
 ) {
     val key: String get() = when {
@@ -353,7 +355,33 @@ class MainActivity : ComponentActivity() {
                                 onPlay = { request ->
                                     returnToWebAfterPlayer = false
                                     webDetectionUrl = request.webPageUrl
-                                    rememberPlayRequest(request)
+                                    val cleanRequest = request.copy(preferReadyHistoryResume = false)
+                                    val reuseRequest = if (request.preferReadyHistoryResume) {
+                                        withFreshRequestToken(cleanRequest)
+                                    } else {
+                                        null
+                                    }
+                                    val reusedReadySession = if (reuseRequest != null) {
+                                        val reused = PlaybackService.instance?.resumeReadySessionIfCompatible(
+                                            key = reuseRequest.key,
+                                            requestToken = reuseRequest.ts,
+                                            isYouTube = reuseRequest.videoId != null,
+                                        ) == true
+                                        if (reused) {
+                                            // Publish only a new screen request token; do not create a
+                                            // pending parse task or call PlaybackService.open() again.
+                                            playReq.value = reuseRequest
+                                            screen = Screen.PLAYER
+                                        }
+                                        reused
+                                    } else {
+                                        false
+                                    }
+                                    if (!reusedReadySession) {
+                                        // A changed engine configuration, missing READY session, or
+                                        // failed compatibility check retains the existing full pipeline.
+                                        rememberPlayRequest(cleanRequest)
+                                    }
                                 },
                                 onSettings = { previousScreen = Screen.HOME; screen = Screen.SETTINGS },
                                 pendingResumeTaskKey = pendingTask?.sourceKey,
