@@ -1479,8 +1479,8 @@ fun WebVideoScreen(
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
-                    // 保持原字号，并让网址在标准高度的地址栏中水平居中显示。
-                    modifier = Modifier.weight(1f).height(56.dp),
+                    // 略微压缩地址栏的垂直高度，同时保留网址和提示文字的居中显示。
+                    modifier = Modifier.weight(1f).height(52.dp),
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 13.sp,
