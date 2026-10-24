@@ -73,12 +73,25 @@ class PiperTts(context: Context, private val modelId: String) : TtsEngine {
         val tokens = File(dir, "tokens.txt")
         val dataDir = File(dir, "espeak-ng-data")
         require(model.isFile) { "Piper 模型文件缺失：${model.absolutePath}" }
-        require(tokens.isFile) { "Piper 词表缺失：${tokens.absolutePath}" }
+        require(model.length() >= PiperModelFilePolicy.MIN_ONNX_BYTES) {
+            "Piper 模型文件可能未下载完整：路径=${model.absolutePath}，文件大小=${model.length()} 字节，最低要求=${PiperModelFilePolicy.MIN_ONNX_BYTES} 字节"
+        }
+        require(tokens.isFile && tokens.length() > 0L) {
+            "Piper 词表文件缺失或为空：${tokens.absolutePath}，文件大小=${tokens.length()} 字节"
+        }
         val lexicon = File(dir, "lexicon.txt")
         val ruleFsts = PiperModelFilePolicy.CHINESE_RULE_FST_NAMES.map { File(dir, it) }
         if (definition.supportsChineseOutput) {
-            require(lexicon.isFile && ruleFsts.all { it.isFile }) {
-                "中文 Piper 模型资源不完整：需要 lexicon.txt、phone.fst、date.fst 和 number.fst"
+            val missingOrEmptyResources = buildList {
+                if (!lexicon.isFile || lexicon.length() <= 0L) {
+                    add("中文词典 lexicon.txt 缺失或为空：${lexicon.absolutePath}（${lexicon.length()} 字节）")
+                }
+                ruleFsts.filter { !it.isFile || it.length() <= 0L }.forEach { file ->
+                    add("中文发音规则文件 ${file.name} 缺失或为空：${file.absolutePath}（${file.length()} 字节）")
+                }
+            }
+            require(missingOrEmptyResources.isEmpty()) {
+                "中文 Piper 模型资源不完整（模型 ID=$modelId）：${missingOrEmptyResources.joinToString("；")}"
             }
         } else {
             require(dataDir.isDirectory) { "Piper 语音数据目录缺失：${dataDir.absolutePath}" }
