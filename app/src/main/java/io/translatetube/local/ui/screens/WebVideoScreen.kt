@@ -1453,7 +1453,8 @@ fun WebVideoScreen(
     ) { padding ->
         Column(
             Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            // 缩小网址栏与网页窗口之间的留白，把更多垂直空间留给网页。
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
