@@ -434,16 +434,15 @@ private fun VideoRow(
             .background(Color.White)
             .combinedClickable(
                 onClick = {
-                    onPlay(
-                        when {
-                            video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
-                                PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
-                            video.key.startsWith("remote:") ->
-                                PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
-                            else ->
-                                PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
-                        }.copy(preferReadyHistoryResume = true)
-                    )
+                    val historyRequest = when {
+                        video.sourceType == io.translatetube.local.data.SourceType.YOUTUBE ->
+                            PlayRequest(videoId = video.videoId ?: video.key.removePrefix("youtube:"))
+                        video.key.startsWith("remote:") ->
+                            PlayRequest(mediaUrl = video.localUri ?: video.key.removePrefix("remote:"))
+                        else ->
+                            PlayRequest(localUri = video.localUri ?: video.key.removePrefix("local:"))
+                    }
+                    onPlay(historyRequest.copy(preferReadyHistoryResume = true))
                 },
                 onLongClick = onFav,
             )
