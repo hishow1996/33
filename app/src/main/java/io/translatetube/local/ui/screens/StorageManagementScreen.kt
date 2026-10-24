@@ -464,7 +464,6 @@ fun StorageManagementScreen(
                 if (category == StorageCategory.HISTORY) {
                     StorageHistoryDetail(
                         videos = historyVideos,
-                        loaded = historyLoaded,
                         busy = destructiveBusy || scanning,
                         actionBusy = actionBusy,
                         selectionMode = historySelectionMode,
@@ -645,7 +644,6 @@ private fun StorageDetail(
 @Composable
 private fun StorageHistoryDetail(
     videos: List<VideoEntity>,
-    loaded: Boolean,
     busy: Boolean,
     actionBusy: Boolean,
     selectionMode: Boolean,
