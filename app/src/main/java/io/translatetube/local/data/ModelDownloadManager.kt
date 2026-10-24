@@ -977,6 +977,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                     }
                     if (!ModelFiles.isValidVadModel(vad)) {
                         pkg.delete()
+                        ResumableModelArchiveDownloader.cleanupPartialFiles(pkg)
                         state.value = ModelState(
                             status = ModelStatus.FAILED,
                             error = "本地转写主模型已安装，但语音检测模型完整性校验失败；点击重试只会补下载小型 VAD 模型。",
@@ -1009,7 +1010,7 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         "目标目录" to destDir.name,
                         "目标目录顶层项目数" to destDir.listFiles().orEmpty().size.toString(),
                         "总耗时 ms" to (System.currentTimeMillis() - downloadStartedAtMs).coerceAtLeast(0L).toString(),
-                        "最终下载源主机" to (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
+                        "最终下载源主机" to if (reuseExistingPackage) "本地缓存" else (runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: "未知"),
                         "最终校验状态" to "模型文件完整性检查通过",
                         "压缩包已清理" to (!pkg.exists()).toString(),
                     ),

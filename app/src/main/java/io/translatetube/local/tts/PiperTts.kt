@@ -656,8 +656,8 @@ object PiperModels {
     }
 
     /**
-     * Try the official release first, then mirrors. Each source uses a disposable archive file;
-     * HTTP, length, or checksum failures remove partial bytes before the next attempt.
+     * Try the official release first, then mirrors. Each source has a separate resumable part file;
+     * transient failures preserve the partial download, while failed integrity checks discard it.
      */
     private suspend fun downloadArchiveWithFallback(
         archive: File,
