@@ -112,7 +112,7 @@ private object ReadyHistorySessionConfigStore {
         val relevant = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
             .filter { entry ->
                 isRelevantPreferenceKey(entry.key) &&
-                    !(ignoreTranscription && entry.key.startsWith("asr_", ignoreCase = true))
+                    !(ignoreTranscription && belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION))
             }
             .sortedBy { it.key }
             .joinToString("\n") { entry ->
@@ -208,7 +208,13 @@ private object ReadyHistorySessionConfigStore {
     fun remove(context: Context, videoKey: String) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
-        prefs.edit().remove(key).remove("$key-ignore-transcription").apply()
+        prefs.edit()
+            .remove(key)
+            .remove("$key-ignore-transcription")
+            .remove(key + "-transcription-fingerprint")
+            .remove(key + "-translation-fingerprint")
+            .remove(key + "-dubbing-fingerprint")
+            .apply()
     }
 
     fun clearAll(context: Context) {
@@ -571,7 +577,20 @@ class PlaybackService : MediaSessionService() {
         state: PlayerUiState,
         stage: EngineRestartStage,
     ): PlayerUiState? = when (stage) {
-        EngineRestartStage.TRANSCRIPTION -> null
+        EngineRestartStage.TRANSCRIPTION -> state.copy(
+            lines = emptyList(),
+            translatedLineCount = 0,
+            totalLines = 0,
+            preparedUntil = 0,
+            preparedCount = 0,
+            sourceLang = "",
+            waitingForTranscriptionEngine = false,
+            waitingForDubbingEngine = false,
+            dubbingHasErrors = false,
+            error = null,
+            failedPhase = null,
+            failedProgress = "",
+        )
         EngineRestartStage.TRANSLATION -> state.copy(
             lines = state.lines.mapIndexed { index, line -> line.copy(index = index, zh = null) },
             translatedLineCount = 0,
@@ -1596,6 +1615,7 @@ class PlaybackService : MediaSessionService() {
             }
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        processingEngineConfigFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
@@ -3256,6 +3276,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             }
 
             val resolvedProcessingFlow = when {
+                resumeState != null -> resumeState.processingFlow
                 !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
                 videoId != null && resumeState == null && lines == null && cached == null &&
                     sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
