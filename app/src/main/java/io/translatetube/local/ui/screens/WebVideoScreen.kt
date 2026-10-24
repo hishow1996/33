@@ -1477,11 +1477,11 @@ fun WebVideoScreen(
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
-                    // 使用标准单行输入框高度，避免地址文字和提示文字上下被裁切。
-                    modifier = Modifier.weight(1f).height(56.dp),
+                    // 不强制压缩输入框高度，让 Material 单行输入框按自身内容完整测量，避免文字上下被裁切。
+                    modifier = Modifier.weight(1f),
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
-                    placeholder = { Text("输入网页地址") },
+                    placeholder = { Text("输入网页地址", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 )
                 IconButton(onClick = {
                     val rawAddress = address.trim()
