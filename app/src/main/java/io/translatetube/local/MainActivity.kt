@@ -470,6 +470,35 @@ class MainActivity : ComponentActivity() {
                                     logsReturnScreen = Screen.STORAGE
                                     screen = Screen.LOGS
                                 },
+                                onPlay = { request ->
+                                    returnToWebAfterPlayer = false
+                                    webDetectionUrl = request.webPageUrl
+                                    val cleanRequest = request.copy(preferReadyHistoryResume = false)
+                                    val reuseRequest = if (request.preferReadyHistoryResume) withFreshRequestToken(cleanRequest) else null
+                                    val reusedReadySession = if (reuseRequest != null) {
+                                        val reused = PlaybackService.instance?.resumeReadySessionIfCompatible(
+                                            key = reuseRequest.key,
+                                            requestToken = reuseRequest.ts,
+                                            isYouTube = reuseRequest.videoId != null,
+                                        ) == true
+                                        if (reused) {
+                                            playReq.value = reuseRequest
+                                            screen = Screen.PLAYER
+                                        }
+                                        reused
+                                    } else false
+                                    if (!reusedReadySession) {
+                                        val showPlayerWhileRestoringHistory = request.preferReadyHistoryResume &&
+                                            PlaybackService.hasCompatibleHistorySnapshot(
+                                                this@MainActivity,
+                                                cleanRequest.key,
+                                                isYouTube = cleanRequest.videoId != null,
+                                            )
+                                        rememberPlayRequest(
+                                            cleanRequest.copy(showPlayerWhileRestoringHistory = showPlayerWhileRestoringHistory),
+                                        )
+                                    }
+                                },
                             )
                         }
                     }

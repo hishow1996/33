@@ -27,6 +27,7 @@ import io.translatetube.local.asr.vadSegmentsFromFile
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.SourceType
 import io.translatetube.local.data.VideoEntity
+import io.translatetube.local.data.VideoHistoryCacheIndex
 import io.translatetube.local.subs.SubLine
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.subs.SubtitleFileDecoder
@@ -127,6 +128,16 @@ private object ReadyHistorySessionConfigStore {
         val ignoreTranscription = prefs.getBoolean("$key-ignore-transcription", false)
         if (ignoreTranscription && !isYouTube) return false
         return saved.isNotBlank() && saved == fingerprint(context, ignoreTranscription)
+    }
+
+    fun remove(context: Context, videoKey: String) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val key = storageKey(videoKey)
+        prefs.edit().remove(key).remove("$key-ignore-transcription").apply()
+    }
+
+    fun clearAll(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
     private fun storageKey(videoKey: String): String {
@@ -335,7 +346,13 @@ class PlaybackService : MediaSessionService() {
 
         /** True only when this history item was previously completed with the currently selected engines. */
         fun hasCompatibleHistorySnapshot(context: Context, key: String, isYouTube: Boolean): Boolean =
-            ReadyHistorySessionConfigStore.matches(context, key, ignoreTranscription = isYouTube)
+            ReadyHistorySessionConfigStore.matches(context, key, isYouTube = isYouTube)
+
+        fun clearHistorySessionConfig(context: Context, key: String) =
+            ReadyHistorySessionConfigStore.remove(context, key)
+
+        fun clearAllHistorySessionConfig(context: Context) =
+            ReadyHistorySessionConfigStore.clearAll(context)
     }
 
     /** 服务初始化状态，供播放页在初始化失败后安全重试。 */
@@ -2371,7 +2388,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                                 importedCacheKey,
                                 srcLang,
                                 arr.toString(),
-                                System.currentTimeMillis(),
+                                System.currentTimeMillis(),                                videoKey = sessionKey,
                             )
                         )
                     }
@@ -2473,7 +2490,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                             importedCacheKey,
                             srcLang,
                             arr.toString(),
-                            System.currentTimeMillis(),
+                            System.currentTimeMillis(),                            videoKey = sessionKey,
                         )
                     )
                 }
@@ -2932,7 +2949,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 ensureCurrentSession(key, pipelineGeneration)
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
-                        sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()
+                        sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis()                        videoKey = key,
                     )
                 )
                 // A valid caption track supersedes any interrupted ASR transcript for this video.
@@ -3545,7 +3562,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                         partialAsrCacheKey,
                                         language,
                                         checkpointJson.toString(),
-                                        System.currentTimeMillis(),
+                                        System.currentTimeMillis(),                                        videoKey = key,
                                     )
                                 )
                             }
@@ -3733,7 +3750,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             sourceSubtitleCacheKey,
                             srcLang,
                             sourceArr.toString(),
-                            System.currentTimeMillis(),
+                            System.currentTimeMillis(),                            videoKey = key,
                         )
                     )
                     db.subtitleCacheDao().delete(partialAsrCacheKey)
@@ -3862,7 +3879,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     ensureCurrentSession(key, pipelineGeneration)
                     db.subtitleCacheDao().put(
-                        io.translatetube.local.data.SubtitleCacheEntity(translationCacheKey, srcLang, arr.toString(), System.currentTimeMillis())
+                        io.translatetube.local.data.SubtitleCacheEntity(translationCacheKey, srcLang, arr.toString(), System.currentTimeMillis(), videoKey = key)
                     )
                 }
             }
@@ -4743,7 +4760,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             ensureCurrentSession(key, pipelineGeneration)
             db.subtitleCacheDao().put(
                 io.translatetube.local.data.SubtitleCacheEntity(
-                    translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis()
+                    translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis()                    videoKey = key,
                 )
             )
         }
@@ -4984,6 +5001,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             awaitProcessingResumed(sessionKey)
             val destination = asrAudioCacheFile(videoId)
+            VideoHistoryCacheIndex.rememberAudioCacheFile(this@PlaybackService, sessionKey, destination.name)
             suspend fun downloadStream(url: String): File = try {
                 downloadAudio(url, destination, sessionKey, progressLabel = "YouTube · 独立音轨")
             } catch (manifest: HlsManifestPayloadException) {
@@ -5447,6 +5465,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 cookie?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
             }
             val destination = asrAudioCacheFile(identity)
+            VideoHistoryCacheIndex.rememberAudioCacheFile(this@PlaybackService, sessionKey, destination.name)
             activeAsrAudioPaths.acquire(destination.absolutePath)
             var leaseTransferred = false
             var extractionStage = "网页媒体音轨获取"
@@ -7010,7 +7029,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     AppDatabase.get(this@PlaybackService).subtitleCacheDao().put(
                         io.translatetube.local.data.SubtitleCacheEntity(
                             translationCacheKey,
-                            sessionSourceLang, arr.toString(), System.currentTimeMillis()
+                            sessionSourceLang, arr.toString(), System.currentTimeMillis()                            videoKey = sessionKey,
                         )
                     )
                 }
@@ -7244,7 +7263,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                             translationCacheKey,
                             sourceLang,
                             cacheRows.toString(),
-                            System.currentTimeMillis(),
+                            System.currentTimeMillis(),                            videoKey = sessionKey,
                         )
                     )
                 }

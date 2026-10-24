@@ -14,6 +14,9 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Memory
@@ -27,21 +30,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import io.translatetube.local.PlayRequest
 import io.translatetube.local.TranslateTubeApp
 import io.translatetube.local.data.AppCacheStoragePolicy
 import io.translatetube.local.data.AppDatabase
+import io.translatetube.local.data.SourceType
+import io.translatetube.local.data.VideoEntity
+import io.translatetube.local.data.VideoHistoryCacheCleaner
 import io.translatetube.local.data.ModelFiles
 import io.translatetube.local.data.ModelStatus
 import io.translatetube.local.player.Phase
 import io.translatetube.local.player.PlaybackService
+import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.tts.PiperModels
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -55,9 +66,11 @@ private enum class StorageCategory(val title: String, val hint: String) {
     LOGS("应用日志", "运行记录、异常详情与故障轨迹"),
 }
 private enum class StorageAction(val title: String) {
-    CACHE("清理临时缓存"), SUBTITLES("清理字幕与翻译缓存"),
-    HISTORY("清理非收藏历史记录"), LOGS("清理应用日志"),
+    CACHE("清理临时缓存"), SUBTITLES("清理字幕与翻译缓存"), LOGS("清理应用日志"),
 }
+
+private data class HistoryDeleteRequest(val keys: List<String>, val clearAll: Boolean = false)
+private data class HistoryDeletionOutcome(val removedCount: Int, val failedItems: List<String> = emptyList())
 private data class StorageSnapshot(
     val total: Long, val cache: Long, val subtitleCount: Int, val subtitleBytes: Long,
     val historyCount: Int, val favorites: Int, val models: Long, val tts: Long, val whisper: Long,
@@ -67,7 +80,11 @@ private data class StorageSnapshot(
 )
 
 @Composable
-fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
+fun StorageManagementScreen(
+    onBack: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onPlay: (PlayRequest) -> Unit = {},
+) {
     val ctx = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
     val db = remember { AppDatabase.get(ctx) }
@@ -84,6 +101,20 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
     var actionBusy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var messageError by remember { mutableStateOf(false) }
+    var historyVideos by remember { mutableStateOf<List<VideoEntity>>(emptyList()) }
+    var historyLoaded by remember { mutableStateOf(false) }
+    var selectedHistoryKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var historySelectionMode by remember { mutableStateOf(false) }
+    var pendingHistoryDelete by remember { mutableStateOf<HistoryDeleteRequest?>(null) }
+
+    LaunchedEffect(db) {
+        db.videoDao().all().collect { items ->
+            historyVideos = items
+            historyLoaded = true
+            val existingKeys = items.map { it.key }.toSet()
+            selectedHistoryKeys = selectedHistoryKeys.intersect(existingKeys)
+        }
+    }
 
     BackHandler { if (category != null) category = null else onBack() }
     val downloadBusy = PiperModels.hasActiveDownloads || piperDownloads > 0 ||
@@ -153,6 +184,113 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
         }
     }
 
+    fun toggleHistorySelection(key: String) {
+        selectedHistoryKeys = if (key in selectedHistoryKeys) selectedHistoryKeys - key else selectedHistoryKeys + key
+    }
+    fun toggleHistorySelectAll() {
+        val allKeys = historyVideos.map { it.key }.toSet()
+        selectedHistoryKeys = if (allKeys.isNotEmpty() && selectedHistoryKeys.containsAll(allKeys)) emptySet() else allKeys
+    }
+    fun requestHistoryDelete(keys: List<String>, clearAll: Boolean = false) {
+        if (destructiveBusy || actionBusy || scanning) {
+            message = "当前有播放、处理或模型下载任务，暂不能清理历史记录及其缓存。"
+            messageError = true
+            return
+        }
+        val uniqueKeys = keys.distinct()
+        if (!clearAll && uniqueKeys.isEmpty()) return
+        pendingHistoryDelete = HistoryDeleteRequest(uniqueKeys, clearAll)
+        message = null
+        messageError = false
+    }
+    fun executeHistoryDelete(request: HistoryDeleteRequest) {
+        if (destructiveBusy || actionBusy) {
+            pendingHistoryDelete = null
+            message = "当前有播放、处理或模型下载任务，暂不能清理历史记录及其缓存。"
+            messageError = true
+            return
+        }
+        pendingHistoryDelete = null
+        actionBusy = true
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    AppLogStore.info(
+                        ctx,
+                        "StorageHistory",
+                        if (request.clearAll) "开始清除全部视频历史与关联缓存" else "开始清除所选视频历史与关联缓存",
+                        diagnosticContext = mapOf(
+                            "删除模式" to if (request.clearAll) "全部历史" else "指定历史条目",
+                            "请求删除条数" to request.keys.size.toString(),
+                            "是否播放或处理" to playbackBusy.toString(),
+                            "是否模型下载中" to downloadBusy.toString(),
+                        ),
+                    )
+                    if (request.clearAll) {
+                        HistoryDeletionOutcome(VideoHistoryCacheCleaner.deleteAll(ctx, db))
+                    } else {
+                        var removed = 0
+                        val failures = mutableListOf<String>()
+                        for (key in request.keys) {
+                            val video = db.videoDao().byKey(key) ?: continue
+                            try {
+                                VideoHistoryCacheCleaner.deleteVideo(ctx, db, video)
+                                removed++
+                            } catch (failure: Exception) {
+                                failures += "${video.title.ifBlank { key }}：${failure.message ?: failure.javaClass.simpleName}"
+                                AppLogStore.error(
+                                    ctx,
+                                    "StorageHistory",
+                                    "清除单条视频历史或关联缓存失败",
+                                    failure,
+                                    diagnosticContext = mapOf(
+                                        "视频标题" to video.title.take(120),
+                                        "来源类型" to if (video.sourceType == SourceType.YOUTUBE) "YouTube" else if (video.key.startsWith("remote:")) "网页视频" else "本地视频",
+                                        "失败文件或缓存键摘要" to "已由缓存清理器保护，不记录原始 URL 或 Cookie",
+                                    ),
+                                )
+                            }
+                        }
+                        HistoryDeletionOutcome(removed, failures)
+                    }
+                }
+            }
+            val outcome = result.getOrNull()
+            val hasFailure = result.isFailure || outcome?.failedItems?.isNotEmpty() == true
+            messageError = hasFailure
+            if (outcome != null) {
+                selectedHistoryKeys = emptySet()
+                historySelectionMode = false
+            }
+            message = result.fold(
+                onSuccess = { completed ->
+                    when {
+                        completed.failedItems.isNotEmpty() ->
+                            "已清除 ${completed.removedCount} 条历史记录及对应缓存；${completed.failedItems.size} 条清理失败，保留原记录以便重试。\n" +
+                                completed.failedItems.take(3).joinToString("\n")
+                        request.clearAll ->
+                            "已清除全部 ${completed.removedCount} 条视频历史及其缓存；原始视频文件和已下载模型已保留。"
+                        else ->
+                            "已清除 ${completed.removedCount} 条视频历史及对应缓存；原始视频文件和已下载模型未删除。"
+                    }
+                },
+                onFailure = { failure ->
+                    "清理失败：${failure.message ?: failure.javaClass.simpleName}"
+                },
+            )
+            withContext(Dispatchers.IO) {
+                val summary = message.orEmpty()
+                if (hasFailure) {
+                    AppLogStore.warning(ctx, "StorageHistory", "视频历史缓存清理未完全成功", diagnosticContext = mapOf("操作结果" to summary.take(1_000)))
+                } else {
+                    AppLogStore.info(ctx, "StorageHistory", "视频历史缓存清理成功", diagnosticContext = mapOf("操作结果" to summary.take(500)))
+                }
+            }
+            actionBusy = false
+            refresh++
+        }
+    }
+
     fun requestClear(action: StorageAction) {
         pending = action
         message = null
@@ -212,10 +350,6 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
                             val count = db.subtitleCacheDao().countEntries()
                             db.subtitleCacheDao().clear()
                             "已清理 $count 条字幕与翻译缓存。历史记录和源视频不受影响；以后可能需要重新获取或翻译字幕。"
-                        }
-                        StorageAction.HISTORY -> {
-                            val count = db.videoDao().deleteNonFavorites()
-                            "已删除 $count 条非收藏历史记录。收藏与手机中的源视频文件均已保留。"
                         }
                         StorageAction.LOGS ->
                             if (AppLogStore.clear(ctx)) "应用日志已清理，之后的新日志仍会继续保存。"
@@ -297,9 +431,52 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
             }
         } else {
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                StorageDetail(category!!, data, scanning, destructiveBusy, actionBusy, ::requestClear, onOpenLogs)
+                if (category == StorageCategory.HISTORY) {
+                    StorageHistoryDetail(
+                        videos = historyVideos,
+                        loaded = historyLoaded,
+                        busy = destructiveBusy || scanning,
+                        actionBusy = actionBusy,
+                        selectionMode = historySelectionMode,
+                        selectedKeys = selectedHistoryKeys,
+                        onToggleSelectionMode = {
+                            val nextMode = !historySelectionMode
+                            historySelectionMode = nextMode
+                            if (!nextMode) selectedHistoryKeys = emptySet()
+                        },
+                        onToggleSelection = ::toggleHistorySelection,
+                        onToggleSelectAll = ::toggleHistorySelectAll,
+                        onDeleteSingle = { requestHistoryDelete(listOf(it)) },
+                        onDeleteSelected = { requestHistoryDelete(selectedHistoryKeys.toList()) },
+                        onDeleteAll = { requestHistoryDelete(historyVideos.map { it.key }, clearAll = true) },
+                        onPlay = onPlay,
+                    )
+                } else {
+                    StorageDetail(category!!, data, scanning, destructiveBusy, actionBusy, ::requestClear, onOpenLogs)
+                }
             }
         }
+    }
+
+    pendingHistoryDelete?.let { request ->
+        val description = when {
+            request.clearAll -> "将删除全部视频历史（包括收藏），并清理应用管理的字幕/翻译、配音 PCM、转写音轨和 HLS 分段缓存。手机原始视频和已下载模型不会删除。"
+            request.keys.size == 1 -> "将删除这条视频历史及其字幕/翻译、配音 PCM、转写音轨和 HLS 分段缓存。手机原始视频与已下载模型会保留。"
+            else -> "将删除所选的 ${request.keys.size} 条视频历史及各自关联缓存。手机原始视频与已下载模型会保留。"
+        }
+        AlertDialog(
+            onDismissRequest = { if (!actionBusy) pendingHistoryDelete = null },
+            title = { Text(if (request.clearAll) "清除全部视频历史？" else if (request.keys.size == 1) "删除这条视频历史？" else "删除所选历史？", color = OnBg) },
+            text = { Text(description, color = SubText) },
+            confirmButton = {
+                TextButton(
+                    enabled = !actionBusy && !destructiveBusy,
+                    onClick = { executeHistoryDelete(request) },
+                ) { Text(if (actionBusy) "处理中…" else "确认删除", color = DangerRed) }
+            },
+            dismissButton = { TextButton(onClick = { if (!actionBusy) pendingHistoryDelete = null }) { Text("取消", color = SubText) } },
+            containerColor = SurfaceDark,
+        )
     }
 
     pending?.let { action ->
@@ -310,7 +487,6 @@ fun StorageManagementScreen(onBack: () -> Unit, onOpenLogs: () -> Unit) {
                 Text(when (action) {
                     StorageAction.CACHE -> "只删除应用标记为可清理的配音 PCM、转写临时音频和 HLS 分段缓存，不会删除数据库、字幕缓存或已下载模型。"
                     StorageAction.SUBTITLES -> "将清空字幕与翻译缓存。视频历史、收藏和原始视频不会删除；以后可能需要重新获取或翻译字幕。"
-                    StorageAction.HISTORY -> "只删除非收藏的视频历史条目，收藏与手机中的原始视频文件都会保留。"
                     StorageAction.LOGS -> "将删除保存的日志文件和上次异常详情。建议先到日志页面导出需要保留的记录。"
                 }, color = SubText)
             },
@@ -406,10 +582,8 @@ private fun StorageDetail(
                         }
                         StorageCategory.HISTORY -> {
                             MetricLine("历史记录总数", data?.historyCount?.toString() ?: "—")
-                            MetricLine("收藏记录（清理时保留）", data?.favorites?.toString() ?: "—")
-                            Text("清理只删除非收藏历史条目，不会删除手机中的源视频文件。", color = SubText, style = MaterialTheme.typography.bodySmall)
-                            if (busy) NoticeBox("播放或处理任务期间不能清理历史记录。", true)
-                            ActionButton(if (actionBusy) "清理中…" else "清理非收藏历史记录", !busy && !actionBusy && !scanning) { onAction(StorageAction.HISTORY) }
+                            MetricLine("收藏记录", data?.favorites?.toString() ?: "—")
+                            NoticeBox("请在视频历史列表中选择要清除的单条记录、多条记录或全部历史。", false)
                         }
                         StorageCategory.DATABASE -> {
                             MetricLine("数据库及附属文件", data?.let { bytesLabel(it.database) } ?: "—")
@@ -429,6 +603,224 @@ private fun StorageDetail(
             }
         }
     }
+}
+
+
+@Composable
+private fun StorageHistoryDetail(
+    videos: List<VideoEntity>,
+    loaded: Boolean,
+    busy: Boolean,
+    actionBusy: Boolean,
+    selectionMode: Boolean,
+    selectedKeys: Set<String>,
+    onToggleSelectionMode: () -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onToggleSelectAll: () -> Unit,
+    onDeleteSingle: (String) -> Unit,
+    onDeleteSelected: () -> Unit,
+    onDeleteAll: () -> Unit,
+    onPlay: (PlayRequest) -> Unit,
+) {
+    val allSelected = videos.isNotEmpty() && videos.all { it.key in selectedKeys }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+        contentPadding = PaddingValues(bottom = 14.dp),
+    ) {
+        item {
+            Surface(
+                Modifier.fillMaxWidth(),
+                color = Color.White,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, OutlineSoft),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("视频历史记录", color = OnBg, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (loaded) "${videos.size} 条记录 · 收藏 ${videos.count { it.isFavorite }} 条" else "正在加载记录…",
+                                color = SubText,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        TextButton(
+                            enabled = !busy && !actionBusy && videos.isNotEmpty(),
+                            onClick = onToggleSelectionMode,
+                        ) { Text(if (selectionMode) "取消多选" else "多选") }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (selectionMode) {
+                            OutlinedButton(
+                                modifier = Modifier.weight(1f),
+                                enabled = !busy && !actionBusy && videos.isNotEmpty(),
+                                onClick = onToggleSelectAll,
+                                shape = RoundedCornerShape(11.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
+                            ) { Text(if (allSelected) "取消全选" else "全选") }
+                            OutlinedButton(
+                                modifier = Modifier.weight(1f),
+                                enabled = !busy && !actionBusy && selectedKeys.isNotEmpty(),
+                                onClick = onDeleteSelected,
+                                shape = RoundedCornerShape(11.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = DangerRed),
+                            ) { Text("删除所选（${selectedKeys.size}）") }
+                        } else {
+                            Text(
+                                "可单条删除，也可多选或一次清空全部记录",
+                                modifier = Modifier.weight(1f),
+                                color = SubText,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Button(
+                            enabled = !busy && !actionBusy && videos.isNotEmpty(),
+                            onClick = onDeleteAll,
+                            shape = RoundedCornerShape(11.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) { Text("全部清除") }
+                    }
+                    Text(
+                        "清除历史时会同步删除对应的字幕/翻译、配音及转写音轨缓存；手机原始视频和已下载模型会保留。",
+                        color = SubText,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (busy) Text("播放、处理或模型下载期间暂不能清理。", color = DangerRed, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        if (!loaded) {
+            item {
+                Box(Modifier.fillMaxWidth().padding(vertical = 28.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = BrandBright, modifier = Modifier.size(26.dp), strokeWidth = 2.dp)
+                }
+            }
+        } else if (videos.isEmpty()) {
+            item {
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    color = Color.White,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, OutlineSoft),
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Icon(Icons.Filled.History, contentDescription = null, tint = SubText, modifier = Modifier.size(28.dp))
+                        Text("还没有视频历史记录", color = OnBg, style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+            }
+        } else {
+            items(videos, key = { it.key }) { video ->
+                StorageHistoryVideoRow(
+                    video = video,
+                    selected = video.key in selectedKeys,
+                    selectionMode = selectionMode,
+                    enabled = !busy && !actionBusy,
+                    onClick = {
+                        if (selectionMode) onToggleSelection(video.key)
+                        else onPlay(video.toHistoryPlayRequest())
+                    },
+                    onToggleSelection = { onToggleSelection(video.key) },
+                    onDelete = { onDeleteSingle(video.key) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorageHistoryVideoRow(
+    video: VideoEntity,
+    selected: Boolean,
+    selectionMode: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    onToggleSelection: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.White)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selectionMode) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = { if (enabled) onToggleSelection() },
+                enabled = enabled,
+                colors = CheckboxDefaults.colors(checkedColor = BrandBright),
+            )
+            Spacer(Modifier.width(3.dp))
+        }
+        AsyncImage(
+            model = video.thumbUrl?.takeIf { it.isNotBlank() } ?: video.localUri,
+            contentDescription = null,
+            modifier = Modifier.size(78.dp).clip(RoundedCornerShape(13.dp)).background(Color(0xFFDCE8F9)),
+            contentScale = ContentScale.Crop,
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                video.title.ifEmpty { video.key },
+                color = OnBg,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                (video.channel.ifEmpty {
+                    when {
+                        video.sourceType == SourceType.YOUTUBE -> "YouTube"
+                        video.key.startsWith("remote:") -> "网页视频"
+                        else -> "本地视频"
+                    }
+                }) + " · 中文配音" +
+                    if (video.durationSec > 0) " · " + SubtitleParsers.fmtTime(video.durationSec * 1000) else "",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (selectionMode) "选择记录" else "继续观看", color = BrandBright, style = MaterialTheme.typography.labelLarge)
+                if (video.isFavorite) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Filled.Star, contentDescription = "已收藏", tint = Color(0xFFE3A008), modifier = Modifier.size(14.dp))
+                }
+            }
+        }
+        if (!selectionMode) {
+            IconButton(enabled = enabled, onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "删除这条历史和对应缓存", tint = DangerRed)
+            }
+        }
+    }
+}
+
+private fun VideoEntity.toHistoryPlayRequest(): PlayRequest {
+    val request = when {
+        sourceType == SourceType.YOUTUBE ->
+            PlayRequest(videoId = videoId ?: key.removePrefix("youtube:"))
+        key.startsWith("remote:") ->
+            PlayRequest(mediaUrl = localUri ?: key.removePrefix("remote:"))
+        else ->
+            PlayRequest(localUri = localUri ?: key.removePrefix("local:"))
+    }
+    return request.copy(preferReadyHistoryResume = true)
 }
 
 @Composable

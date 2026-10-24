@@ -1,6 +1,7 @@
 package io.translatetube.local.data
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -51,6 +52,9 @@ interface VideoDao {
     @Query("DELETE FROM videos WHERE isFavorite = 0")
     suspend fun deleteNonFavorites(): Int
 
+    @Query("DELETE FROM videos")
+    suspend fun deleteAll(): Int
+
     @Query("SELECT * FROM videos WHERE `key` = :key")
     suspend fun byKey(key: String): VideoEntity?
 
@@ -77,6 +81,7 @@ data class SubtitleCacheEntity(
     val srcLang: String,
     val linesJson: String,
     val updatedAt: Long,
+    @ColumnInfo(defaultValue = "''") val videoKey: String = "",
 )
 
 @Dao
@@ -89,6 +94,9 @@ interface SubtitleCacheDao {
 
     @Query("DELETE FROM subtitle_cache WHERE cacheKey = :k")
     suspend fun delete(k: String)
+
+    @Query("DELETE FROM subtitle_cache WHERE videoKey = :videoKey OR substr(cacheKey, 1, length(:keyPrefix)) = :keyPrefix")
+    suspend fun deleteForVideo(videoKey: String, keyPrefix: String): Int
 
     @Query("DELETE FROM subtitle_cache")
     suspend fun clear()
@@ -135,7 +143,7 @@ interface ApiProfileDao {
 
 @Database(
     entities = [VideoEntity::class, SubtitleCacheEntity::class, ApiProfile::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -167,9 +175,15 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE subtitle_cache ADD COLUMN videoKey TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun get(ctx: Context): AppDatabase = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(ctx, AppDatabase::class.java, "translatetube.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .fallbackToDestructiveMigration()
                 .build().also { inst = it }
         }
