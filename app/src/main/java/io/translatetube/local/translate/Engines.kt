@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import io.translatetube.local.subs.MlKitSourceLanguageIdentifier
 
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
@@ -465,8 +466,18 @@ class MlKitEngine : TranslationEngine {
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (lines.isEmpty()) return emptyList()
-        // 源语言未知时按英语兜底（最常见外文视频）
-        val s = LangMap.mlkitSource(srcLang)
+        val resolvedSource = if (SourceLanguagePolicy.isUndetermined(srcLang)) {
+            MlKitSourceLanguageIdentifier.detect(lines)
+        } else {
+            srcLang
+        }
+        if (SourceLanguagePolicy.isUndetermined(resolvedSource)) {
+            throw IllegalStateException("无法可靠识别字幕源语言。请在“本地翻译”中手动指定源语言后重试，避免把法语、德语等误当成英语。")
+        }
+        if (!LangMap.isMlkitSupported(resolvedSource)) {
+            throw IllegalStateException("ML Kit 本地翻译暂不支持源语言“$resolvedSource”。请下载支持的语言包，或切换其他翻译引擎。")
+        }
+        val s = LangMap.mlkitSource(resolvedSource)
         val t = LangMap.mlkit(tgtLang)
         ensureModel(s)
         ensureModel(t)

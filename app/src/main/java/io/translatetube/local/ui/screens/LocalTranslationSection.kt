@@ -8,6 +8,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -40,6 +42,11 @@ internal fun LocalTranslationSection(
 ) {
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
+    val sourceLanguagePrefs = remember(context) { context.getSharedPreferences("settings", 0) }
+    var sourceLanguageSelection by remember {
+        mutableStateOf(sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" })
+    }
+    var sourceLanguageMenuExpanded by remember { mutableStateOf(false) }
     var detail by rememberSaveable { mutableStateOf("") }
     var mlkitStatuses by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var mlkitBusy by remember { mutableStateOf<String?>(null) }
@@ -135,6 +142,53 @@ internal fun LocalTranslationSection(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (detail.isBlank()) {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White)
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("源语言", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                Box {
+                    OutlinedButton(onClick = { sourceLanguageMenuExpanded = true }) {
+                        Text(
+                            if (sourceLanguageSelection == "auto") "自动识别"
+                            else pairs.firstOrNull { it.source == sourceLanguageSelection }?.name?.substringBefore(" →")
+                                ?: "自动识别",
+                        )
+                        Icon(Icons.Filled.ExpandMore, contentDescription = "选择源语言")
+                    }
+                    DropdownMenu(
+                        expanded = sourceLanguageMenuExpanded,
+                        onDismissRequest = { sourceLanguageMenuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("自动识别") },
+                            onClick = {
+                                sourceLanguageSelection = "auto"
+                                sourceLanguagePrefs.edit().putString("translation_source_language", "auto").apply()
+                                sourceLanguageMenuExpanded = false
+                            },
+                        )
+                        pairs.forEach { pair ->
+                            DropdownMenuItem(
+                                text = { Text(pair.name.substringBefore(" →")) },
+                                onClick = {
+                                    sourceLanguageSelection = pair.source
+                                    sourceLanguagePrefs.edit().putString("translation_source_language", pair.source).apply()
+                                    sourceLanguageMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "默认自动识别；识别不准时可手动指定。目标语言固定为中文，手动选择会用于后续翻译。",
+                    color = Color(0xFF64748B),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             val mlKitReady = mlkitStatuses.values.any { it == "ready" } && mlkitBusy == null
             val opusReady = opusState.status == OpusMtStatus.READY && opusJob?.isActive != true
             LocalEngineCard(

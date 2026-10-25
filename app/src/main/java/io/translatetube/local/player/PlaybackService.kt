@@ -3078,7 +3078,11 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         progress = "翻译导入的字幕（${parsedLines.size} 行）…",
                     )
                 }
-                val srcLang = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(parsedLines.asSequence().map { it.text }.asIterable())
+                val importedCueTexts = parsedLines.map { it.text }
+                val srcLang = resolveSourceLanguageForCues(
+                    importedCueTexts,
+                    io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(importedCueTexts),
+                )
                 val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE)
                     .getLong("active_api_id", -1L)
                 val providerFingerprint = translationProviderFingerprint(activeTranslationId)
@@ -3379,9 +3383,18 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             EngineFactory.ID_LOCAL_OPUS -> "opus-mt-en-zh-4dc37af-onnx-quantized-v2"
             else -> if (active != null) "api-profile" else "local-fallback"
         }
+        val sourceLanguageMode = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("translation_source_language", "auto")
+            .orEmpty()
+            .ifBlank { "auto" }
+        val cacheScopedProviderKind = if (SourceLanguagePolicy.isUndetermined(sourceLanguageMode)) {
+            providerKind
+        } else {
+            "$providerKind|source=$sourceLanguageMode"
+        }
         return TranslationCacheIdentity.providerFingerprint(
             activeId = activeId,
-            providerKind = providerKind,
+            providerKind = cacheScopedProviderKind,
             type = active?.type.orEmpty(),
             baseUrl = active?.baseUrl.orEmpty(),
             apiKey = active?.apiKey.orEmpty(),
@@ -3392,6 +3405,36 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
     }
 
     /** Imported subtitles get their own source fingerprint and active-provider identity. */
+    private suspend fun resolveSourceLanguageForCues(
+        cues: Iterable<String>,
+        detectedLanguage: String,
+    ): String {
+        val preferred = getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("translation_source_language", "auto")
+            .orEmpty()
+            .ifBlank { "auto" }
+        if (!SourceLanguagePolicy.isUndetermined(preferred)) {
+            return preferred
+        }
+
+        // Strong script detection first (Japanese, Korean, Chinese, etc.).
+        val scriptDetected = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(cues)
+        if (!SourceLanguagePolicy.isUndetermined(scriptDetected)) {
+            return scriptDetected
+        }
+
+        // Run bundled on-device language identification for ambiguous Latin-script subtitles,
+        // including cases where an ASR provider's language hint may be wrong.
+        val identified = io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(cues)
+        if (!SourceLanguagePolicy.isUndetermined(identified)) {
+            return identified
+        }
+
+        // If the model cannot confidently identify the text, preserve the provider's hint.
+        return io.translatetube.local.subs.SubtitleLanguageDetector
+            .resolveTranscriptionLanguageFromCues(detectedLanguage, cues)
+    }
+
     private fun importedTranslationCacheKey(
         key: String,
         activeId: Long,
@@ -4640,11 +4683,14 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(restored.asSequence().map { it.text }.asIterable())
                 // Re-check cached language against the original transcript too. Older releases
                 // may have persisted a provider's incorrect "zh" hint for non-Chinese speech.
-                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
-                    .resolveTranscriptionLanguageFromCues(
-                        srcLang,
-                        restored.asSequence().map { it.text }.asIterable(),
-                    )
+                srcLang = resolveSourceLanguageForCues(
+                    restored.map { it.text },
+                    io.translatetube.local.subs.SubtitleLanguageDetector
+                        .resolveTranscriptionLanguageFromCues(
+                            srcLang,
+                            restored.asSequence().map { it.text }.asIterable(),
+                        ),
+                )
                 lines = if (isChineseLanguage(srcLang)) {
                     SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(restored)
                 } else {
@@ -4672,11 +4718,14 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 var translatedLines = lines!!
                 // Validate the selected/source-cache language against the actual transcript before
                 // deciding that translation can be skipped.
-                srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
-                    .resolveTranscriptionLanguageFromCues(
-                        srcLang,
-                        translatedLines.asSequence().map { it.text }.asIterable(),
-                    )
+                srcLang = resolveSourceLanguageForCues(
+                    translatedLines.map { it.text },
+                    io.translatetube.local.subs.SubtitleLanguageDetector
+                        .resolveTranscriptionLanguageFromCues(
+                            srcLang,
+                            translatedLines.asSequence().map { it.text }.asIterable(),
+                        ),
+                )
                 val externalTranslatedLines = awaitManualSubtitleTranslation(
                     key, translatedLines, srcLang, pipelineGeneration,
                 )
