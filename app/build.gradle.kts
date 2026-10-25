@@ -88,6 +88,10 @@ android {
     }
     packaging {
         resources.excludes += "META-INF/*"
+        // Prefer one copy when native/runtime dependencies package the same ONNX Runtime library.
+        jniLibs.pickFirsts += "**/libonnxruntime.so"
+        // Protocol Buffers may also ship duplicate .proto resource files from generated runtimes.
+        resources.pickFirsts += "google/protobuf/**"
         // youtubedl-android 从 nativeLibraryDir 直接运行 libpython.so，必须解压原生库
         jniLibs.useLegacyPackaging = true
     }
@@ -336,7 +340,17 @@ val patchNewPipeAndroid9Api = tasks.register("patchNewPipeAndroid9Api") {
 }
 
 
+// ML Kit brings protobuf-javalite, while SentencePiece4J requires protobuf-java.
+// Both artifacts define overlapping com.google.protobuf classes. Keep one full runtime,
+// which also contains the lite-runtime classes used by ML Kit generated messages.
+configurations.configureEach {
+    exclude(group = "com.google.protobuf", module = "protobuf-javalite")
+}
+
 dependencies {
+    // Pin a single protobuf runtime compatible with SentencePiece4J and ML Kit.
+    implementation("com.google.protobuf:protobuf-java:4.35.1")
+
     // Backport newer Java library APIs used by NewPipeExtractor to Android 7–12.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
