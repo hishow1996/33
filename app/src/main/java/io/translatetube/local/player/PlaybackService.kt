@@ -21,6 +21,7 @@ import io.translatetube.local.asr.LocalAsrEngine
 import io.translatetube.local.asr.LocalAsrPerformancePolicy
 import io.translatetube.local.asr.SenseVoiceEngine
 import io.translatetube.local.asr.SpeakerDiarizer
+import io.translatetube.local.asr.SpeechOnsetDetector
 import io.translatetube.local.asr.WhisperEngine
 import io.translatetube.local.asr.vadSegments
 import io.translatetube.local.asr.vadSegmentsFromFile
@@ -52,6 +53,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -4533,35 +4535,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         cloudWav.delete()
                     }
                 }
-                // 原声音频还在：直接量出第一句真正开口的时刻，字幕和配音都对齐到它，
-                // 不再只靠 ASR/VAD 给的起点（普遍偏晚）。量不出来就保持原起点。
-                val onsetRefinement = withContext(Dispatchers.IO) {
-                    try {
-                        io.translatetube.local.asr.SpeechOnsetDetector.refineFirstCue(
-                            decodedAsrLines,
-                            pcmFile,
-                            checkActive = { pcmOwnerJob?.ensureActive() },
-                        )?.also { refinement ->
-                            io.translatetube.local.util.AppLogStore.info(
-                                this@PlaybackService,
-                                "Transcription",
-                                "已按原声实测校正第一句开口时间",
-                                diagnosticContext = mapOf(
-                                    "原字幕起点 ms" to refinement.previousStartMs.toString(),
-                                    "实测开口时间 ms" to (refinement.measuredOnsetMs?.toString() ?: "未量出"),
-                                    "校正后字幕起点 ms" to refinement.newStartMs.toString(),
-                                    "说明" to "字幕起点 = 实测开口 + 统一提前量 + 首句额外提前量；字幕亮起和配音开口落在实测开口时刻",
-                                ),
-                            )
-                        }
-                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        android.util.Log.w("PlaybackService", "First-cue onset measurement failed", error)
-                        null
-                    }
-                }
-                asrLines = onsetRefinement?.lines ?: decodedAsrLines
+                asrLines = decodedAsrLines
                 detectedAsrLang = decodedAsrLang
                 ensureCurrentSession(key, pipelineGeneration)
                 transientPcmFile?.file?.delete()
@@ -4810,7 +4784,11 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             }
 
             ensureCurrentSession(key, pipelineGeneration)
-            val finalLines = applySavedLineOverrides(lines ?: emptyList(), key)
+            // 仅 YouTube：把第一句起点校准到人声真正开口的时间（网页/本地不走这里）。
+            val baseLines = lines ?: emptyList()
+            val calibratedLines = if (videoId != null) calibrateYouTubeFirstCue(videoId, baseLines) else baseLines
+            ensureCurrentSession(key, pipelineGeneration)
+            val finalLines = applySavedLineOverrides(calibratedLines, key)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
                     lines = finalLines, totalLines = finalLines.size, sourceLang = srcLang,
@@ -7232,14 +7210,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (activeLine in lines.indices) return activeLine
 
         // 首句宽限期：ASR 给第一句的起点普遍偏晚（视频已开口、时间戳还没到）。
-        // 第一句字幕与第一句配音共用同一个开口时间（字幕/配音统一提前量 + 首句额外提前量，
-        // 见 SubtitleTimingOffset），人一开口字幕就亮、配音就开口；不再在片头空白里提前几秒显示。
-        // positionMs 已经包含统一提前量，所以这里只需再补首句额外提前量。
+        // 播放头处于片头空白且第一句在 2.5s 内开始时，直接提前显示第一句。
         val firstSpoken = lines.indexOfFirst { it.text.isNotBlank() }
         if (firstSpoken >= 0) {
             val first = lines[firstSpoken]
             val lead = first.startMs - positionMs
-            if (lead in 0L..SubtitleTimingOffset.FIRST_CUE_EXTRA_LEAD_MS) return firstSpoken
+            if (lead in 0L..2_500L) return firstSpoken
         }
 
         // 短间隙预告：下一句即将开始（≤600ms 且行间隙紧凑）时提前切入，
@@ -8480,6 +8456,96 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             .edit()
             .putString(assignmentPrefsKey(key, engineId), SpeakerAssignmentCodec.encode(snapshot))
             .apply()
+    }
+
+    /**
+     * 只给 YouTube 用：YouTube 自带字幕的起点不是按人声开口量的，第一句配音会比原声慢一点。
+     * 这里解码音轨开头几秒，量出人真正开口的时间，把第一句的起点提前到
+     * "实测开口 + 统一提前量"（字幕与配音共用同一个起点，所以两者一起准）。
+     * 只往前挪；量不出来、超时、出错都保持原样，不影响正常流程。
+     * 结果按 视频ID+原起点 缓存，同一个视频只会量一次。
+     */
+    private suspend fun calibrateYouTubeFirstCue(videoId: String, lines: List<SubLine>): List<SubLine> {
+        var firstPos = -1
+        for (index in lines.indices) {
+            if (lines[index].text.isBlank()) continue
+            if (firstPos < 0 || lines[index].startMs < lines[firstPos].startMs) firstPos = index
+        }
+        if (firstPos < 0) return lines
+        val first = lines[firstPos]
+        // 片头太久才开口，或一开始就在 0 附近：没什么可校准的。
+        if (first.startMs !in 200L..60_000L) return lines
+        var nextStartMs: Long? = null
+        for (index in lines.indices) {
+            if (index == firstPos) continue
+            val start = lines[index].startMs
+            if (nextStartMs == null || start < nextStartMs) nextStartMs = start
+        }
+
+        val prefs = getSharedPreferences("yt_first_onset_v1", MODE_PRIVATE)
+        val cacheKey = "$videoId@${first.startMs}"
+        val onsetMs: Long? = if (prefs.contains(cacheKey)) {
+            prefs.getLong(cacheKey, -1L)
+        } else {
+            val measured = measureYouTubeFirstOnset(videoId, first.startMs)
+            // 只缓存"确实量过了"的结果（含"没量出来"=-1）；超时/出错下次再试。
+            if (measured != null) prefs.edit().putLong(cacheKey, measured).apply()
+            measured
+        }
+        if (onsetMs == null || onsetMs < 0L) return lines
+
+        val newStart = SpeechOnsetDetector.calibratedStartMs(onsetMs, first.startMs, first.endMs, nextStartMs)
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "PlaybackFlow",
+            if (newStart != null) "YouTube 第一句起点已按实测开口校准" else "YouTube 第一句起点无需校准",
+            diagnosticContext = mapOf(
+                "字幕原起点ms" to first.startMs.toString(),
+                "实测开口ms" to onsetMs.toString(),
+                "校准后起点ms" to (newStart ?: first.startMs).toString(),
+            ),
+        )
+        if (newStart == null) return lines
+        return lines.toMutableList().also { it[firstPos] = first.copy(startMs = newStart) }
+    }
+
+    /** @return 实测开口毫秒；-1 = 量过但没把握；null = 失败/超时（不缓存）。 */
+    private suspend fun measureYouTubeFirstOnset(videoId: String, captionStartMs: Long): Long? {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val job = scope.async<Long?> {
+            val self = kotlin.coroutines.coroutineContext[Job]
+            val stream = NewPipeRepo.audioForAsr(videoId) ?: return@async null
+            val (fromMs, toMs) = SpeechOnsetDetector.readRangeMs(captionStartMs, Long.MAX_VALUE)
+            val pcm = AudioExtract.decodeTo16kMonoFile(
+                this@PlaybackService,
+                Uri.parse(stream.content),
+                null,
+                maxDurationMs = toMs + 200L,
+                checkActive = { self?.ensureActive() },
+            )
+            try {
+                val rate = pcm.sampleRate
+                val startSample = fromMs * rate / 1000L
+                if (startSample >= pcm.sampleCount) return@async -1L
+                val wanted = (toMs - fromMs) * rate / 1000L
+                val count = minOf(pcm.sampleCount - startSample, wanted).toInt()
+                val samples = pcm.readFloatSamples(startSample, count, checkActive = { self?.ensureActive() })
+                SpeechOnsetDetector.findOnsetMs(samples, rate, fromMs, captionStartMs) ?: -1L
+            } finally {
+                pcm.file.delete()
+            }
+        }
+        return try {
+            // 网络读取可能卡住：用独立协程 + 超时，卡住就放弃，字幕/配音照常用原起点。
+            kotlinx.coroutines.withTimeoutOrNull(10_000L) { job.await() }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } finally {
+            if (!job.isCompleted) job.cancel()
+            scope.cancel()
+        }
     }
 
     private fun applySavedLineOverrides(

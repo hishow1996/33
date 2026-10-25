@@ -140,8 +140,6 @@ class DubbingEngine(
     @Volatile private var synthesisTimelineLagSampleCountValue: Int = 0
     val synthesisTimelineLagSampleCount: Int get() = synthesisTimelineLagSampleCountValue
     @Volatile private var nextSpeechStartMsByLine: LongArray = LongArray(0)
-    /** 第一条有译文、可配音的字幕行下标；-1 表示没有。第一句配音按加大的提前量挂载。 */
-    @Volatile private var firstSpokenCueIndex: Int = -1
     /** Diagnostic callback: the first successful PCM result for this session. */
     @Volatile var onFirstSynthesisReady: ((index: Int, sampleCount: Int, sampleRate: Int) -> Unit)? = null
     /** Diagnostic callback after AudioTrack.play() succeeds, not merely when synthesis is ready. */
@@ -440,9 +438,6 @@ class DubbingEngine(
                     }
                 }
                 nextSpeechStartMsByLine = nextSpeechStarts
-                firstSpokenCueIndex = preparedLines.indexOfFirst {
-                    DubbingTimeline.isPlayableCue(it) && !it.zh.isNullOrBlank()
-                }
             synthesisErrorReported.set(false)
             firstSynthesisReported.set(false)
             firstPlaybackReported.set(false)
@@ -2962,9 +2957,7 @@ class DubbingEngine(
         val playIndex = resolveChunkIndex(index)
         val cue = lines.getOrNull(playIndex) ?: return -1L
         val leadMs = SubtitleTimingOffset.LEAD_MS
-        // 第一句的字幕起点偏晚得更多，开口时间多提前一点；播放头换算和窗口末尾仍用统一的 leadMs。
-        val dubLeadMs = SubtitleTimingOffset.dubbingLeadMs(isFirstSpokenCue = playIndex == firstSpokenCueIndex)
-        val desiredUs = (cue.startMs - dubLeadMs).coerceAtLeast(0L) * 1_000L
+        val desiredUs = (cue.startMs - leadMs).coerceAtLeast(0L) * 1_000L
         // latestTimelineCursor 是 tick 的时间轴位置（已包含提前量），还原成真实播放头。
         val playheadUs = (latestTimelineCursor.positionMs - leadMs).coerceAtLeast(0L) * 1_000L
         val key = mixCueKey(index)
