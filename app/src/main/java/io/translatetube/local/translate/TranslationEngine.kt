@@ -37,12 +37,20 @@ interface TranslationEngine {
 }
 
 object LocalTranslationEnginePolicy {
-    /** OPUS-MT has Chinese-target models for English (ONNX), German, Finnish and Swedish (CTranslate2). */
+    /** OPUS-MT supports direct Chinese output and Japanese/Korean/Russian via an English pivot. */
     fun supportsOpusSource(languageTag: String): Boolean {
         val primary = SourceLanguagePolicy.normalizeTag(languageTag)
             .substringBefore('-')
             .lowercase(java.util.Locale.ROOT)
-        return primary in setOf("en", "eng", "de", "fi", "sv")
+        return primary in setOf("en", "eng", "de", "fi", "sv", "ja", "ko", "ru")
+    }
+
+    /** These small CTranslate2 models translate into English before the existing ONNX model outputs Chinese. */
+    fun usesEnglishPivot(languageTag: String): Boolean {
+        val primary = SourceLanguagePolicy.normalizeTag(languageTag)
+            .substringBefore('-')
+            .lowercase(java.util.Locale.ROOT)
+        return primary in setOf("ja", "ko", "ru")
     }
 }
 

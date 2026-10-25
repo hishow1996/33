@@ -48,8 +48,8 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
         if (!LocalTranslationEnginePolicy.supportsOpusSource(source)) {
             val sourceLabel = source.ifBlank { "未知" }
             throw IllegalStateException(
-                "当前 OPUS-MT 支持英语、德语、芬兰语、瑞典语 → 简体中文；当前源语言为“" + sourceLabel +
-                    "”。请下载相应语言模型，或改用 ML Kit/SMaLL-100。"
+                "当前 OPUS-MT 支持英语、德语、芬兰语、瑞典语直接 → 简体中文，以及日语、韩语、俄语经英语中转 → 简体中文；当前源语言为“" +
+                    sourceLabel + "”。请下载相应语言模型，或改用 ML Kit/SMaLL-100。"
             )
         }
         if (target !in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn")) {
@@ -62,7 +62,12 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
         } else if (!OpusMtAdditionalModelManager.isReady(context, source)) {
             throw IllegalStateException(
                 "OPUS-MT " + OpusMtAdditionalModelManager.label(source) +
-                    " → 中文模型尚未下载或验证，请到 API 管理 → 本地翻译中下载并完成试译。"
+                    " 模型尚未下载或验证，请到 API 管理 → 本地翻译中下载并完成试译。"
+            )
+        }
+        if (LocalTranslationEnginePolicy.usesEnglishPivot(source) && !OpusMtModelManager.isReady(context)) {
+            throw IllegalStateException(
+                "日语、韩语、俄语 OPUS-MT 会先翻译成英语，再转简体中文。请先在 API 管理 → 本地翻译中下载并验证英语 → 中文 ONNX 模型。"
             )
         }
         return source
@@ -85,21 +90,34 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
             ),
         )
         if (source != "en") {
+            val usesPivot = LocalTranslationEnginePolicy.usesEnglishPivot(source)
             return try {
-                val translated = OpusMtCt2Runtime.translate(context.applicationContext, source, lines)
+                val firstStage = OpusMtCt2Runtime.translate(context.applicationContext, source, lines)
+                val translated = if (usesPivot) {
+                    withContext(Dispatchers.Default) {
+                        val output = ArrayList<String>(firstStage.size)
+                        for (englishLine in firstStage) {
+                            currentCoroutineContext().ensureActive()
+                            output += if (englishLine.isBlank()) "" else OpusMtRuntime.translateOne(context, englishLine)
+                        }
+                        output
+                    }
+                } else firstStage
                 if (translated.size != lines.size) {
-                    throw IllegalStateException("CTranslate2 返回的译文条数与原字幕不一致")
+                    throw IllegalStateException("CTranslate2/ONNX 返回的译文条数与原字幕不一致")
                 }
                 AppLogStore.info(
                     context.applicationContext,
                     "Translation",
-                    "OPUS-MT CTranslate2 本地翻译完成",
+                    if (usesPivot) "OPUS-MT 英语中转本地翻译完成" else "OPUS-MT CTranslate2 本地翻译完成",
                     diagnosticContext = mapOf(
                         "引擎" to id,
                         "源语言" to source,
                         "目标语言" to "zh-CN",
+                        "翻译方式" to if (usesPivot) "OPUS-MT → 英语 → OPUS-MT ONNX → 中文" else "OPUS-MT CTranslate2 直译",
                         "字幕条数" to lines.size.toString(),
                         "模型" to OpusMtAdditionalModelManager.officialModelId(source),
+                        "英语→中文模型已验证" to if (usesPivot) OpusMtModelManager.isReady(context).toString() else "不需要",
                         "未记录字幕原文" to "true",
                     ),
                 )
@@ -110,16 +128,18 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
                 AppLogStore.error(
                     context.applicationContext,
                     "Translation",
-                    "OPUS-MT CTranslate2 本地推理失败",
+                    if (usesPivot) "OPUS-MT 英语中转本地翻译失败" else "OPUS-MT CTranslate2 本地推理失败",
                     error,
                     diagnosticContext = mapOf(
                         "源语言" to source,
                         "目标语言" to "zh-CN",
-                        "模型已验证" to OpusMtAdditionalModelManager.isReady(context, source).toString(),
+                        "翻译方式" to if (usesPivot) "源语言→英语→中文" else "CTranslate2 直译",
+                        "源语言模型已验证" to OpusMtAdditionalModelManager.isReady(context, source).toString(),
+                        "英语→中文模型已验证" to if (usesPivot) OpusMtModelManager.isReady(context).toString() else "不需要",
                         "未记录字幕原文" to "true",
                     ),
                 )
-                throw IllegalStateException("OPUS-MT " + OpusMtAdditionalModelManager.label(source) + " → 中文翻译失败：" +
+                throw IllegalStateException("OPUS-MT " + OpusMtAdditionalModelManager.label(source) + " 翻译失败：" +
                     (error.message ?: error.javaClass.simpleName), error)
             }
         }

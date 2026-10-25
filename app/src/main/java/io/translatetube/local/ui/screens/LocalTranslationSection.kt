@@ -284,7 +284,7 @@ internal fun LocalTranslationSection(
             sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_OPUS &&
                 !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection) ->
-                "OPUS-MT 当前支持英语、德语、芬兰语、瑞典语 → 简体中文；请选择受支持的源语言或改用其他模型。"
+                "OPUS-MT 支持英语、德语、芬兰语、瑞典语直接翻译，以及日语、韩语、俄语经英语中转；请选择受支持的源语言或其他模型。"
             sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_MLKIT &&
                 pairs.none { it.source == sourceLanguageSelection } ->
@@ -532,7 +532,7 @@ internal fun LocalTranslationSection(
                     Text("源语言（目标固定为简体中文）", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
                     SourceLanguageMenu(
                         selected = sourceLanguageSelection,
-                        languages = pairs.filter { it.source in setOf("en", "de", "fi", "sv") },
+                        languages = pairs.filter { it.source in setOf("en", "de", "fi", "sv", "ja", "ko", "ru") },
                         expanded = sourceLanguageMenuExpanded,
                         onExpandedChange = { sourceLanguageMenuExpanded = it },
                         onSelected = { setSourceLanguage(it) },
@@ -540,6 +540,15 @@ internal fun LocalTranslationSection(
                     if (!opusSourceCompatible) {
                         Text(
                             "当前手动选择的源语言不受 OPUS-MT 支持。",
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (LocalTranslationEnginePolicy.usesEnglishPivot(sourceLanguageSelection) &&
+                        !OpusMtModelManager.isReady(context)
+                    ) {
+                        Text(
+                            "日语、韩语、俄语会先翻译成英语再转中文；还需下载上方英语 → 中文 ONNX 模型。",
                             color = Color(0xFFB42318),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -648,12 +657,12 @@ internal fun LocalTranslationSection(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        "德语、芬兰语、瑞典语 → 简体中文",
+                        "小型 OPUS-MT 模型 · 简体中文输出",
                         color = Color(0xFF172033),
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        "每个量化模型约 80 MB，按需下载。下载后会校验文件并执行中文试译，验证通过后才能用于字幕翻译和配音工作台。",
+                        "德语、芬兰语、瑞典语直接翻译为中文。日语、韩语、俄语使用小型 INT8 英语中转模型，再由英语 → 中文 ONNX 模型完成第二步；这三种语言需同时下载两个模型。",
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -661,6 +670,9 @@ internal fun LocalTranslationSection(
                         Triple("德语 → 简体中文", "de", "Helsinki-NLP/opus-mt-de-ZH"),
                         Triple("芬兰语 → 简体中文", "fi", "Helsinki-NLP/opus-mt-fi-ZH"),
                         Triple("瑞典语 → 简体中文", "sv", "Helsinki-NLP/opus-mt-sv-ZH"),
+                        Triple("日语 → 英语 → 简体中文", "ja", "Helsinki-NLP/opus-mt-ja-en"),
+                        Triple("韩语 → 英语 → 简体中文", "ko", "Helsinki-NLP/opus-mt-ko-en"),
+                        Triple("俄语 → 英语 → 简体中文", "ru", "Helsinki-NLP/opus-mt-ru-en"),
                     ).forEach { (language, source, officialModelId) ->
                         val state = opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
                         val job = opusExtraJobs[source]
@@ -681,6 +693,13 @@ internal fun LocalTranslationSection(
                                     Text(officialModelId, color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
                                     Text("Android 量化包：" + OpusMtAdditionalModelManager.runtimeRepository(source),
                                         color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
+                                    val expectedBytes = OpusMtAdditionalModelManager.downloadSizeBytes(source)
+                                    Text(
+                                        "下载总大小：" + formatLocalModelBytes(expectedBytes) + " · " +
+                                            String.format(Locale.ROOT, "%,d 字节", expectedBytes),
+                                        color = Color(0xFF64748B),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
                                 }
                                 Text(
                                     when (state.status) {
@@ -744,6 +763,8 @@ internal fun LocalTranslationSection(
                                         },
                                     ) { Text("删除模型") }
                                     Button(
+                                        enabled = !LocalTranslationEnginePolicy.usesEnglishPivot(source) ||
+                                            OpusMtModelManager.isReady(context),
                                         modifier = Modifier.weight(1f),
                                         onClick = {
                                             setSourceLanguage(source)
