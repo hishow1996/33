@@ -5428,78 +5428,61 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 pendingIndices += index
             }
         }
-        withContext(Dispatchers.IO) {
-            io.translatetube.local.util.AppLogStore.info(
-                this@PlaybackService,
-                "Translation",
-                "中文字幕翻译任务已开始",
-                diagnosticContext = mapOf(
-                    "视频来源" to when {
-                        key.startsWith("youtube:") -> "YouTube"
-                        key.startsWith("remote:") -> "网页视频/远程媒体"
-                        key.startsWith("local:") -> "本地视频"
-                        else -> "导入字幕/其他"
-                    },
-                    "翻译引擎名称" to engineName,
-                    "翻译引擎 ID" to (engine?.id ?: "未知"),
-                    "翻译配置编号" to activeId.toString(),
-                    "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
-                    "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
-                    "源语言代码" to srcLang,
-                    "目标语言代码" to tgt,
-                    "输入字幕行数" to lines.size.toString(),
-                    "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
-                    "无需翻译/已具备有效译文行数" to completed.toString(),
-                    "翻译批次总数" to ((pendingIndices.size + 9) / 10).toString(),
-                    "单批字幕行数" to "10",
-                    "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
-                    "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
-                ),
-            )
-        }
-        updateUiForSession(key, pipelineGeneration) {
-            it.copy(
-                engineName = engineName,
-                sourceLang = srcLang,
-                lines = updatedLines,
-                totalLines = updatedLines.size,
-                translatedLineCount = completed.coerceAtMost(updatedLines.size),
-                progress = "翻译成中文 ${completed}/${updatedLines.size} 行",
-            )
-        }
 
         try {
-            if (
-                pendingIndices.isNotEmpty() &&
-                activeId == EngineFactory.ID_LOCAL_OPUS &&
-                !io.translatetube.local.translate.LocalTranslationEnginePolicy.supportsOpusSource(srcLang)
-            ) {
-                val message = if (SourceLanguagePolicy.isUndetermined(srcLang)) {
-                    "OPUS-MT 仅支持英语 → 简体中文，当前字幕源语言无法确认。请在 API 管理 → 本地翻译将源语言手动设为英语，或改用 ML Kit 并下载对应语言包。"
-                } else {
-                    "OPUS-MT 仅支持英语 → 简体中文，当前字幕源语言为 ${LangMap.display(srcLang)}（${srcLang}）。请切换 ML Kit 并下载对应语言包，或确认字幕确实是英语后再手动指定英语。"
-                }
-                throw TranslationFailureException(
-                    message,
-                    IllegalArgumentException("OPUS-MT supports English only; source=$srcLang"),
-                )
-            }
-
+            // Run local-engine preflight before announcing translation progress or entering retries.
+            // The selected engine resolves an "auto" source using the full subtitle list.
             var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
             val selectedMlKit = engine as? MlKitEngine
             val selectedOpus = engine as? OpusMtEngine
-            if (pendingIndices.isNotEmpty() && (selectedMlKit != null || selectedOpus != null)) {
-                // Validate the selected local engine once using the full subtitle sample before
-                // publishing progress or entering the 10-cue retry loop. This makes unsupported
-                // languages and missing/corrupt models fail immediately with a useful message.
-                src = when {
-                    selectedMlKit != null -> selectedMlKit.validateConfiguration(srcLang, tgt, plain)
-                    selectedOpus != null -> selectedOpus.validateConfiguration(srcLang, tgt, plain)
-                    else -> src
+            if (pendingIndices.isNotEmpty()) {
+                when {
+                    selectedMlKit != null -> src = selectedMlKit.validateConfiguration(srcLang, tgt, plain)
+                    selectedOpus != null -> src = selectedOpus.validateConfiguration(srcLang, tgt, plain)
                 }
-                updateUiForSession(key, pipelineGeneration) {
-                    it.copy(sourceLang = src)
+                if (src.isNotBlank()) {
+                    updateUiForSession(key, pipelineGeneration) { it.copy(sourceLang = src) }
                 }
+            }
+            val sourceLanguageForUi = src.ifBlank { srcLang }
+            withContext(Dispatchers.IO) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "Translation",
+                    "中文字幕翻译任务已开始",
+                    diagnosticContext = mapOf(
+                        "视频来源" to when {
+                            key.startsWith("youtube:") -> "YouTube"
+                            key.startsWith("remote:") -> "网页视频/远程媒体"
+                            key.startsWith("local:") -> "本地视频"
+                            else -> "导入字幕/其他"
+                        },
+                        "翻译引擎名称" to engineName,
+                        "翻译引擎 ID" to (engine?.id ?: "未知"),
+                        "翻译配置编号" to activeId.toString(),
+                        "服务商名称" to active?.name.orEmpty().ifBlank { "内置/本地" },
+                        "模型名称" to active?.model.orEmpty().ifBlank { "不适用或未提供" },
+                        "源语言代码" to sourceLanguageForUi,
+                        "目标语言代码" to tgt,
+                        "输入字幕行数" to lines.size.toString(),
+                        "本次需要翻译的字幕行数" to pendingIndices.size.toString(),
+                        "无需翻译/已具备有效译文行数" to completed.toString(),
+                        "翻译批次总数" to ((pendingIndices.size + 9) / 10).toString(),
+                        "单批字幕行数" to "10",
+                        "是否有待翻译内容" to pendingIndices.isNotEmpty().toString(),
+                        "是否处于外部译文等待模式" to ui.value.manualTranslationWaiting.toString(),
+                    ),
+                )
+            }
+            updateUiForSession(key, pipelineGeneration) {
+                it.copy(
+                    engineName = engineName,
+                    sourceLang = sourceLanguageForUi,
+                    lines = updatedLines,
+                    totalLines = updatedLines.size,
+                    translatedLineCount = completed.coerceAtMost(updatedLines.size),
+                    progress = "翻译成中文 ${completed}/${updatedLines.size} 行",
+                )
             }
             val batchSize = 10
             val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
@@ -5508,7 +5491,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             // subtitle timeline to Room after every 10 translated cues.
             val translationBatches = pendingIndices.chunked(batchSize)
             for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
-                awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
+                awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)?.let { return it }
                 awaitProcessingResumed(key, pipelineGeneration)
                 val batchStartedAtNanos = System.nanoTime()
                 // The playback layer calls the engine once per small batch, so carry the previous
@@ -5740,7 +5723,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 )
             }
-            val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
+            val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)
             if (externallyTranslatedFinal != null) {
                 withContext(Dispatchers.IO) {
                     io.translatetube.local.util.AppLogStore.info(
