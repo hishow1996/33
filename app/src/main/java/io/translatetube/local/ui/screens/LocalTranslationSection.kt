@@ -424,12 +424,9 @@ internal fun LocalTranslationSection(
                                                     listOf(pair.source, pair.target).distinct()
                                                         .filterNot { MlKitModelCoordinator.isDownloaded(it) }
                                                 }
-                                                if (missingLanguages.isEmpty()) {
-                                                } else {
-                                                    missingLanguages.forEach { languageTag ->
-                                                        withContext(Dispatchers.IO) {
-                                                            MlKitModelCoordinator.downloadLanguage(languageTag)
-                                                        }
+                                                missingLanguages.forEach { languageTag ->
+                                                    withContext(Dispatchers.IO) {
+                                                        MlKitModelCoordinator.downloadLanguage(languageTag)
                                                     }
                                                 }
                                                 withContext(Dispatchers.IO) {
