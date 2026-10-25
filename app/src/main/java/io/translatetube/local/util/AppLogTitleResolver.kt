@@ -19,6 +19,11 @@ object AppLogTitleResolver {
             terms.any { combined.contains(it.lowercase(Locale.ROOT)) }
 
         return when {
+            normalizedTag.contains("notificationdiagnostics") ->
+                "应用运行 / 通知发布与布局"
+            normalizedTag.contains("uncaughtexception") &&
+                hasAny("remoteserviceexception", "bad notification", "contentviews") ->
+                "应用运行 / 通知膨胀崩溃诊断"
             normalizedTag.contains("dubbingmixer") ->
                 "配音 / 音频混流"
             normalizedTag.contains("dubbingfallback") ->
