@@ -209,3 +209,5 @@ jobs:
 # Explicit one-time APK build requested by user on 2026-10-25 for latest main source (translation API cards/logos and Baidu WebView translation engine).
 
 # Explicit one-time APK rebuild requested on 2026-10-25 after fixing ApiManagerScreen.kt when-expression syntax (commit 534b3940).
+
+# Explicit one-time APK rebuild requested on 2026-10-25 after adding DeepL OkHttp Cookie and CookieJar imports (commit 84605f51).
