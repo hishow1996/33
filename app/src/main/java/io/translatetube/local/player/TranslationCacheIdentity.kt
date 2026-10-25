@@ -17,16 +17,20 @@ internal object TranslationCacheIdentity {
         apiKey: String = "",
         model: String = "",
         region: String = "",
+        credentialsJson: String = "",
     ): String {
-        // API keys may be encrypted in Room with a randomized IV. Hash the stored value before
-        // folding it into this fingerprint so credential text is never persisted in a cache key.
+        // Credential values may be encrypted in Room with a randomized IV. Hash them before
+        // folding them into this fingerprint so neither primary nor secondary credential material
+        // is persisted in a cache key.
         val credentialDigest = sha256(apiKey)
+        val extraCredentialDigest = sha256(credentialsJson)
         val canonical = listOf(
             activeId.toString(),
             providerKind.trim().lowercase(Locale.ROOT),
             type.trim().uppercase(Locale.ROOT),
             baseUrl.trim().trimEnd('/'),
             credentialDigest,
+            extraCredentialDigest,
             model.trim(),
             region.trim().lowercase(Locale.ROOT),
         ).joinToString("\n")

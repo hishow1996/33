@@ -3379,6 +3379,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             apiKey = active?.apiKey.orEmpty(),
             model = active?.model.orEmpty(),
             region = active?.region.orEmpty(),
+            credentialsJson = active?.credentialsJson.orEmpty(),
         )
     }
 

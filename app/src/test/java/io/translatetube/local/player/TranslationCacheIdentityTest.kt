@@ -85,6 +85,7 @@ class TranslationCacheIdentityTest {
             model: String = "model-a",
             baseUrl: String = "https://api.example/v1",
             apiKey: String = "secret-a",
+            credentialsJson: String = "",
         ) = TranslationCacheIdentity.providerFingerprint(
             activeId = 42L,
             providerKind = "api-profile",
@@ -93,6 +94,7 @@ class TranslationCacheIdentityTest {
             apiKey = apiKey,
             model = model,
             region = "jp-east",
+            credentialsJson = credentialsJson,
         )
 
         val original = fingerprint()
@@ -100,6 +102,8 @@ class TranslationCacheIdentityTest {
         assertNotEquals(original, fingerprint(model = "model-b"))
         assertNotEquals(original, fingerprint(baseUrl = "https://other.example/v1"))
         assertNotEquals(original, fingerprint(apiKey = "secret-b"))
+        assertNotEquals(original, fingerprint(credentialsJson = "encrypted-secondary-id-a"))
+        assertNotEquals(original, fingerprint(credentialsJson = "encrypted-secondary-id-b"))
     }
 
     @Test
