@@ -359,6 +359,8 @@ private object BaiduWebViewHost {
 
     @Volatile private var webView: WebView? = null
     @Volatile private var pageReady = false
+    @Volatile private var lastLoadError: String? = null
+    @Volatile private var lastPageTitle: String = ""
 
     /** 带 HTTP 响应体内容的异常：1022=风控会话需刷新，1000/999=接口参数或格式变化。 */
     class BaiduWebException(message: String) : IllegalStateException(message)
@@ -378,8 +380,7 @@ private object BaiduWebViewHost {
         }
     }
 
-    private fun ensureWebView(context: android.content.Context): WebView {
-        webView?.let { return it }
+    private fun createWebView(context: android.content.Context): WebView {
         val view = WebView(context.applicationContext)
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
@@ -392,10 +393,58 @@ private object BaiduWebViewHost {
         view.settings.userAgentString = DESKTOP_UA
         CookieManager.getInstance().setAcceptCookie(true)
         view.addJavascriptInterface(Bridge(), "AndroidBaiduBridge")
-        // 离屏 WebView：不 attach 到窗口，GONE 即可，纯后台执行 JS。
-        view.visibility = View.GONE
+        // 记录页面加载状态：DNS/SSL/HTTP 失败在这里暴露，probe 才能快速失败而不是空转 30 秒。
+        view.webViewClient = object : android.webkit.WebViewClient() {
+            override fun onReceivedError(
+                view: WebView,
+                errorCode: Int,
+                description: String?,
+                failingUrl: String?,
+            ) {
+                if (failingUrl != null && failingUrl.startsWith("https://fanyi.baidu.com")) {
+                    lastLoadError = "HTTP $errorCode $description"
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: android.webkit.WebResourceRequest,
+                errorResponse: android.webkit.WebResourceResponse,
+            ) {
+                if (request.isForMainFrame) {
+                    lastLoadError = "HTTP ${errorResponse.statusCode} 主页请求失败"
+                }
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                lastPageTitle = view.title.orEmpty()
+            }
+        }
         webView = view
         return view
+    }
+
+    /**
+     * 把 WebView 挂到当前前台 Activity 的窗口上（1x1、不可见）。
+     * 部分 ROM（华为等）对完全不 attach 的 WebView 会停掉渲染管线导致 JS 不执行，
+     * 因此只要存在前台 Activity 就真实 attach；拿不到 Activity 才退回纯离屏。
+     */
+    private fun attachToHostWindow(view: WebView) {
+        val activity = TranslateTubeApp.currentActivity
+        if (activity != null && !activity.isDestroyed && !activity.isFinishing) {
+            if (view.parent == null) {
+                runCatching {
+                    activity.window.decorView.addView(
+                        view,
+                        android.widget.FrameLayout.LayoutParams(1, 1),
+                    )
+                }
+            }
+            view.visibility = View.INVISIBLE
+        } else {
+            // 纯后台（无 Activity）：退回离屏模式。
+            if (view.parent == null) view.visibility = View.GONE
+        }
     }
 
     /** 风控会话失效（1022）后重载页面，重新初始化 Acs-Token。 */
@@ -410,13 +459,21 @@ private object BaiduWebViewHost {
         mutex.withLock {
             if (pageReady) return
             val appCtx = TranslateTubeApp.instance
+            lastLoadError = null
             withContext(Dispatchers.Main) {
-                ensureWebView(appCtx).loadUrl(PAGE_URL)
+                val view = webView ?: createWebView(appCtx)
+                // 先真实附着到前台 Activity 的窗口（华为等 ROM 对未附着 WebView 可能不执行 JS），再加载。
+                attachToHostWindow(view)
+                view.loadUrl(PAGE_URL)
             }
             // 轮询页面 bundle 加载完成（v2FetchJSON 由页面脚本定义）。
             val deadline = System.currentTimeMillis() + BAIDU_PAGE_READY_TIMEOUT_MS
             while (System.currentTimeMillis() < deadline) {
                 currentCoroutineContext().ensureActive()
+                // 主帧加载失败（DNS/SSL/HTTP 错误）直接快速失败，不空转 30 秒。
+                lastLoadError?.let { error ->
+                    throw IllegalStateException("百度翻译页面加载失败：$error。请检查网络后重试")
+                }
                 val probe = eval("(typeof window.v2FetchJSON === 'function') ? 'ready' : 'no'")
                 if (probe.contains("ready")) {
                     pageReady = true
@@ -429,21 +486,26 @@ private object BaiduWebViewHost {
                 "(function(){return (document.title||'').slice(0,24)+' | v2='+typeof window.v2FetchJSON+"
                     + "' | ua='+navigator.userAgent.slice(0,48);})()",
             )
+            val loadHint = lastLoadError?.let { " | load=$it" }.orEmpty()
             throw IllegalStateException(
-                "百度翻译页面加载超时（页面状态: ${diag.trim('"')}）。请检查网络后重试；若持续失败可换用微软/DeepL 翻译",
+                "百度翻译页面加载超时（页面状态: ${diag.trim('"')}$loadHint）。请检查网络后重试；若持续失败可换用微软/DeepL 翻译",
             )
         }
     }
 
-    /** 主线程 evaluateJavascript 并等待同步返回值（用于页面状态探测）。 */
+    /** 主线程 evaluateJavascript 并等待同步返回值（用于页面状态探测）。回调丢失时防挂死。 */
     private suspend fun eval(script: String): String = withContext(Dispatchers.Main) {
-        suspendCancellableCoroutine { cont ->
-            val view = webView
-            if (view == null) {
-                cont.resume("")
-                return@suspendCancellableCoroutine
+        withTimeout(8_000L) {
+            suspendCancellableCoroutine { cont ->
+                val view = webView
+                if (view == null) {
+                    cont.resume("")
+                    return@suspendCancellableCoroutine
+                }
+                view.evaluateJavascript(script) { result ->
+                    if (cont.isActive) cont.resume(result.orEmpty())
+                }
             }
-            view.evaluateJavascript(script) { result -> cont.resume(result.orEmpty()) }
         }
     }
 

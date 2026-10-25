@@ -15,10 +15,32 @@ class TranslateTubeApp : Application() {
             private set
     }
 
+    /** 当前（或最近一个存活）的 Activity：给 WebView 这类必须有渲染表面的组件当宿主。 */
+    @Volatile
+    var currentActivity: android.app.Activity? = null
+        private set
+
+    private val lifecycleTracker = object : android.app.Application.ActivityLifecycleCallbacks {
+        override fun onActivityResumed(activity: android.app.Activity) {
+            currentActivity = activity
+        }
+
+        override fun onActivityDestroyed(activity: android.app.Activity) {
+            if (currentActivity === activity) currentActivity = null
+        }
+
+        override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
+        override fun onActivityStarted(activity: android.app.Activity) {}
+        override fun onActivityPaused(activity: android.app.Activity) {}
+        override fun onActivityStopped(activity: android.app.Activity) {}
+        override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+    }
+
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         instance = this
+        registerActivityLifecycleCallbacks(lifecycleTracker)
         CrashGuard.install(this)
         super.onCreate()
         // Image loading is initialized lazily by the screens that need it.
