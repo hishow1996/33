@@ -26,7 +26,7 @@ class AppLogDiagnosticsTest {
                 "UncaughtException",
                 "android.app.RemoteServiceException: Bad notification(tag=null, id=1001) posted from package io.translatetube.local: Couldn't inflate contentViewsjava.util.ConcurrentModificationException",
                 "异常根因链：\\n#0 android.app.RemoteServiceException: Bad notification(tag=null, id=1001): Couldn't inflate contentViewsjava.util.ConcurrentModificationException\\n" +
-                    "完整调用堆栈：\\nandroid.app.RemoteServiceException\\n\\tat android.app.ActivityThread$H.handleMessage(ActivityThread.java:2153)",
+                    "完整调用堆栈：\\nandroid.app.RemoteServiceException\\n\\tat android.app.ActivityThread\$H.handleMessage(ActivityThread.java:2153)",
                 level = "FATAL",
             ),
         )
