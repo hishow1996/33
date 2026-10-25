@@ -270,6 +270,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
                 io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek"
                 io.translatetube.local.translate.EngineFactory.ID_LOCAL_MLKIT -> "ML Kit 本地翻译"
                 io.translatetube.local.translate.EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT 本地翻译"
+                io.translatetube.local.translate.EngineFactory.ID_LOCAL_SMALL100 -> "SMaLL-100 本地翻译"
                 else -> "Google 翻译"
             }
 

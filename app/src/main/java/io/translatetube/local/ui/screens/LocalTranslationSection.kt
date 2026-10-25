@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import android.widget.Toast
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
@@ -127,9 +128,6 @@ internal fun LocalTranslationSection(
     val smallPairs = remember {
         Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
     }
-    val allSourcePairs = remember { (pairs + smallPairs).distinctBy { it.source } }
-    val visibleSourcePairs = if (activeId == EngineFactory.ID_LOCAL_SMALL100 || detail == "small100") smallPairs else pairs
-
     suspend fun refreshMlKit() {
         val snapshot = withContext(Dispatchers.IO) {
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
@@ -196,147 +194,59 @@ internal fun LocalTranslationSection(
     val opusSourceCompatible = sourceLanguageSelection == "auto" ||
         LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection)
 
+    fun setSourceLanguage(language: String) {
+        sourceLanguageSelection = language
+        sourceLanguagePrefs.edit().putString("translation_source_language", language).apply()
+        sourceLanguageMenuExpanded = false
+    }
+
+    fun selectLocalEngine(id: Long, name: String) {
+        onSelectEngine(id)
+        val warning = when {
+            sourceLanguageSelection != "auto" &&
+                id == EngineFactory.ID_LOCAL_OPUS &&
+                !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection) ->
+                "OPUS-MT 仅支持英语 → 简体中文；当前手动选择的源语言不受支持。请改为自动识别或英语。"
+            sourceLanguageSelection != "auto" &&
+                id == EngineFactory.ID_LOCAL_MLKIT &&
+                pairs.none { it.source == sourceLanguageSelection } ->
+                "ML Kit 不支持当前手动选择的源语言。请进入管理页选择受支持的语言，或改用其他本地模型。"
+            sourceLanguageSelection != "auto" &&
+                id == EngineFactory.ID_LOCAL_SMALL100 &&
+                !Small100LanguagePolicy.supportsSource(sourceLanguageSelection) ->
+                "SMaLL-100 不支持当前手动选择的源语言。请进入管理页选择受支持的语言，或改用其他本地模型。"
+            else -> null
+        }
+        if (!warning.isNullOrBlank()) {
+            Toast.makeText(context, name + "：" + warning, Toast.LENGTH_LONG).show()
+        }
+    }
+
     Column(
         modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (detail.isBlank()) {
-            Column(
-                modifier = Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White)
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text("源语言", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
-                Box {
-                    OutlinedButton(onClick = { sourceLanguageMenuExpanded = true }) {
-                        Text(
-                            if (sourceLanguageSelection == "auto") "自动识别"
-                            else allSourcePairs.firstOrNull { it.source == sourceLanguageSelection }?.name?.substringBefore(" →")
-                                ?: "自动识别",
-                        )
-                        Icon(Icons.Filled.ExpandMore, contentDescription = "选择源语言")
-                    }
-                    DropdownMenu(
-                        expanded = sourceLanguageMenuExpanded,
-                        onDismissRequest = { sourceLanguageMenuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("自动识别") },
-                            onClick = {
-                                sourceLanguageSelection = "auto"
-                                sourceLanguagePrefs.edit().putString("translation_source_language", "auto").apply()
-                                sourceLanguageMenuExpanded = false
-                            },
-                        )
-                        visibleSourcePairs.forEach { pair ->
-                            DropdownMenuItem(
-                                text = { Text(pair.name.substringBefore(" →")) },
-                                onClick = {
-                                    sourceLanguageSelection = pair.source
-                                    sourceLanguagePrefs.edit().putString("translation_source_language", pair.source).apply()
-                                    sourceLanguageMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-                Text(
-                    "默认自动识别；识别不准可手动指定。目标固定为中文。ML Kit 只使用已下载的语言包，不会自动切换在线翻译。",
-                    color = Color(0xFF64748B),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                val manualMlKitReady = sourceLanguageSelection != "auto" &&
-                    mlkitStatuses[sourceLanguageSelection] == "ready"
-                if (activeId == EngineFactory.ID_LOCAL_OPUS &&
-                    sourceLanguageSelection != "auto" &&
-                    !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection)
-                ) {
-                    Text(
-                        "当前源语言与 OPUS-MT 不兼容。OPUS-MT 只支持英语 → 简体中文，请切换 ML Kit 或把源语言改为英语。",
-                        color = Color(0xFFB42318),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else if (activeId == EngineFactory.ID_LOCAL_MLKIT &&
-                    sourceLanguageSelection != "auto" &&
-                    mlkitStatuses.isNotEmpty() &&
-                    !manualMlKitReady
-                ) {
-                    Text(
-                        "尚未下载所选源语言的离线模型，请先下载对应语言包。",
-                        color = Color(0xFFB45309),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-            val manualMlKitReady = sourceLanguageSelection != "auto" &&
-                mlkitStatuses[sourceLanguageSelection] == "ready"
-            val mlKitHasReadyLanguage = mlkitStatuses.values.any { it == "ready" }
-            val mlKitReady = (if (sourceLanguageSelection == "auto") mlKitHasReadyLanguage else manualMlKitReady) &&
-                mlkitBusy == null
-            val opusReady = opusState.status == OpusMtStatus.READY &&
-                opusJob?.isActive != true &&
-                opusSourceCompatible
             LocalEngineCard(
                 logo = R.drawable.mlkit_logo,
                 name = "ML Kit",
                 selected = activeId == EngineFactory.ID_LOCAL_MLKIT,
-                actionLabel = if (mlKitReady) "设为当前" else "下载",
-                onClick = { detail = "mlkit" },
-                onAction = {
-                    if (mlKitReady) {
-                        onSelectEngine(EngineFactory.ID_LOCAL_MLKIT)
-                        AppLogStore.info(
-                            context, "LocalTranslationModel", "ML Kit 已从本地翻译首页设为当前引擎",
-                            diagnosticContext = mapOf("已下载语言对数" to mlkitStatuses.values.count { it == "ready" }.toString()),
-                        )
-                    } else detail = "mlkit"
-                },
+                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_MLKIT, "ML Kit") },
+                onManage = { detail = "mlkit" },
             )
             LocalEngineCard(
                 logo = R.drawable.opus_mt_logo,
                 name = "OPUS-MT",
                 selected = activeId == EngineFactory.ID_LOCAL_OPUS,
-                actionLabel = when {
-                    !opusSourceCompatible -> "仅英语"
-                    opusReady -> "设为当前"
-                    else -> "下载"
-                },
-                onClick = { detail = "opus" },
-                onAction = {
-                    if (opusReady) {
-                        onSelectEngine(EngineFactory.ID_LOCAL_OPUS)
-                        AppLogStore.info(
-                            context, "LocalTranslationModel", "OPUS-MT 已从本地翻译首页设为当前引擎",
-                            diagnosticContext = mapOf("模型" to "opus-mt-en-zh"),
-                        )
-                    } else detail = "opus"
-                },
-                actionEnabled = opusSourceCompatible,
-                disabledActionLabel = "仅英语",
+                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT") },
+                onManage = { detail = "opus" },
             )
-            val small100Compatible = sourceLanguageSelection == "auto" ||
-                Small100LanguagePolicy.supportsSource(sourceLanguageSelection)
-            val small100Ready = small100State.status == Small100Status.READY &&
-                small100Job?.isActive != true &&
-                small100Compatible
             LocalEngineCard(
                 logo = R.drawable.small100_logo,
                 name = "SMaLL-100",
                 selected = activeId == EngineFactory.ID_LOCAL_SMALL100,
-                actionLabel = when {
-                    !small100Compatible -> "选择语言"
-                    small100Ready -> "设为当前"
-                    else -> "下载"
-                },
-                onClick = { detail = "small100" },
-                onAction = {
-                    if (small100Ready) onSelectEngine(EngineFactory.ID_LOCAL_SMALL100)
-                    else detail = "small100"
-                },
-                actionEnabled = small100Compatible,
-                disabledActionLabel = "选择语言",
+                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_SMALL100, "SMaLL-100") },
+                onManage = { detail = "small100" },
             )
         } else {
             Row(
@@ -362,8 +272,15 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    SourceLanguageMenu(
+                        selected = sourceLanguageSelection,
+                        languages = pairs,
+                        expanded = sourceLanguageMenuExpanded,
+                        onExpandedChange = { sourceLanguageMenuExpanded = it },
+                        onSelected = { setSourceLanguage(it) },
+                    )
                     Text(
-                        "每个语言包约 30 MB。中文模型只需下载一次，后续语言共用；下载时会显示当前正在下载的语言包和阶段。ML Kit 暂不提供实时字节数或百分比。",
+                        "下载所需的源语言包和中文语言包。",
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -550,7 +467,7 @@ internal fun LocalTranslationSection(
                         enabled = selectedMlKitPairReady && mlkitBusy == null,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
-                            onSelectEngine(EngineFactory.ID_LOCAL_MLKIT)
+                            selectLocalEngine(EngineFactory.ID_LOCAL_MLKIT, "ML Kit")
                             AppLogStore.info(
                                 context,
                                 "LocalTranslationModel",
@@ -571,18 +488,17 @@ internal fun LocalTranslationSection(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text("英语 → 简体中文", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    SourceLanguageMenu(
+                        selected = sourceLanguageSelection,
+                        languages = pairs.filter { it.source == "en" },
+                        expanded = sourceLanguageMenuExpanded,
+                        onExpandedChange = { sourceLanguageMenuExpanded = it },
+                        onSelected = { setSourceLanguage(it) },
+                    )
                     if (!opusSourceCompatible) {
-                        val selectedLanguageName = pairs.firstOrNull { it.source == sourceLanguageSelection }
-                            ?.name?.substringBefore(" →") ?: sourceLanguageSelection
                         Text(
-                            "当前源语言为 $selectedLanguageName，OPUS-MT 不支持该语言。返回后将源语言改为英语，或改用 ML Kit。",
+                            "当前手动选择的源语言不受 OPUS-MT 支持。",
                             color = Color(0xFFB42318),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    } else {
-                        Text(
-                            "仅支持英语字幕；其他语言请使用 ML Kit 对应语言包。",
-                            color = Color(0xFF64748B),
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -665,10 +581,10 @@ internal fun LocalTranslationSection(
                             ) { Text("删除模型") }
                         }
                         Button(
-                            enabled = opusSourceCompatible,
+                            enabled = true,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
-                                onSelectEngine(EngineFactory.ID_LOCAL_OPUS)
+                                selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
                                 AppLogStore.info(
                                     context,
                                     "LocalTranslationModel",
@@ -678,11 +594,6 @@ internal fun LocalTranslationSection(
                             },
                         ) { Text(if (activeId == EngineFactory.ID_LOCAL_OPUS) "正在使用 OPUS-MT" else "设为当前翻译引擎") }
                     }
-                    Text(
-                        "Helsinki-NLP / ONNX Community · CC BY 4.0",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
                 }
             } else {
                 Column(
@@ -692,43 +603,12 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("源语言（100 种）", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
-                    Box {
-                        OutlinedButton(onClick = { sourceLanguageMenuExpanded = true }) {
-                            Text(
-                                if (sourceLanguageSelection == "auto") "自动识别"
-                                else Small100LanguagePolicy.display(sourceLanguageSelection),
-                            )
-                            Icon(Icons.Filled.ExpandMore, contentDescription = "选择 SMaLL-100 源语言")
-                        }
-                        DropdownMenu(
-                            expanded = sourceLanguageMenuExpanded,
-                            onDismissRequest = { sourceLanguageMenuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("自动识别") },
-                                onClick = {
-                                    sourceLanguageSelection = "auto"
-                                    sourceLanguagePrefs.edit().putString("translation_source_language", "auto").apply()
-                                    sourceLanguageMenuExpanded = false
-                                },
-                            )
-                            smallPairs.forEach { pair ->
-                                DropdownMenuItem(
-                                    text = { Text(pair.name.substringBefore(" →")) },
-                                    onClick = {
-                                        sourceLanguageSelection = pair.source
-                                        sourceLanguagePrefs.edit().putString("translation_source_language", pair.source).apply()
-                                        sourceLanguageMenuExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Text(
-                        "100 种语言 → 简体中文。模型总下载量约 615 MB；下载中断后可续传。首次加载建议至少有 1 GB 可用运行内存。全部文件通过校验并完成实际试译后才会启用。",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.bodySmall,
+                    SourceLanguageMenu(
+                        selected = sourceLanguageSelection,
+                        languages = smallPairs,
+                        expanded = sourceLanguageMenuExpanded,
+                        onExpandedChange = { sourceLanguageMenuExpanded = it },
+                        onSelected = { setSourceLanguage(it) },
                     )
                     when (small100State.status) {
                         Small100Status.READY -> Text("模型已下载并通过试译验证", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
@@ -769,6 +649,13 @@ internal fun LocalTranslationSection(
                     }
                     val smallSourceCompatible = sourceLanguageSelection == "auto" ||
                         Small100LanguagePolicy.supportsSource(sourceLanguageSelection)
+                    if (!smallSourceCompatible) {
+                        Text(
+                            "当前选择的源语言不受 SMaLL-100 支持。",
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     if (small100Job?.isActive == true ||
                         small100State.status == Small100Status.DOWNLOADING ||
                         small100State.status == Small100Status.VERIFYING
@@ -817,10 +704,10 @@ internal fun LocalTranslationSection(
                             ) { Text("删除模型") }
                         }
                         Button(
-                            enabled = smallSourceCompatible,
+                            enabled = true,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
-                                onSelectEngine(EngineFactory.ID_LOCAL_SMALL100)
+                                selectLocalEngine(EngineFactory.ID_LOCAL_SMALL100, "SMaLL-100")
                                 AppLogStore.info(
                                     context,
                                     "LocalTranslationModel",
@@ -835,10 +722,41 @@ internal fun LocalTranslationSection(
                             Text(if (activeId == EngineFactory.ID_LOCAL_SMALL100) "正在使用 SMaLL-100" else "设为当前翻译引擎")
                         }
                     }
-                    Text(
-                        "casawolice/small100-onnx · MIT",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.labelSmall,
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun SourceLanguageMenu(
+    selected: String,
+    languages: List<LocalTranslationPair>,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onSelected: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text("源语言", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+        Box {
+            OutlinedButton(onClick = { onExpandedChange(true) }) {
+                Text(
+                    if (selected == "auto") "自动识别"
+                    else languages.firstOrNull { it.source == selected }?.name?.substringBefore(" →") ?: selected,
+                )
+                Icon(Icons.Filled.ExpandMore, contentDescription = "选择源语言")
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+                DropdownMenuItem(text = { Text("自动识别") }, onClick = { onSelected("auto") })
+                languages.forEach { language ->
+                    DropdownMenuItem(
+                        text = { Text(language.name.substringBefore(" →")) },
+                        onClick = { onSelected(language.source) },
                     )
                 }
             }
@@ -851,11 +769,8 @@ private fun LocalEngineCard(
     logo: Int,
     name: String,
     selected: Boolean,
-    actionLabel: String,
-    onClick: () -> Unit,
-    onAction: () -> Unit,
-    actionEnabled: Boolean = true,
-    disabledActionLabel: String? = null,
+    onSelect: () -> Unit,
+    onManage: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth()
@@ -866,44 +781,25 @@ private fun LocalEngineCard(
                 color = if (selected) Color(0xFF3569D4) else Color(0xFFE3E9F3),
                 shape = RoundedCornerShape(16.dp),
             )
+            .clickable(onClick = onSelect)
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick),
-            verticalAlignment = Alignment.CenterVertically,
+        AsyncImage(
+            model = logo,
+            contentDescription = "$name 官方项目标识",
+            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(9.dp)),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            AsyncImage(
-                model = logo,
-                contentDescription = "$name 官方项目标识",
-                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(9.dp)),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f).padding(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Text(name, style = MaterialTheme.typography.titleMedium, color = Color(0xFF172033))
-                if (selected) {
-                    Text("当前翻译引擎", style = MaterialTheme.typography.labelSmall, color = Color(0xFF3569D4))
-                }
-            }
-            Spacer(Modifier.width(4.dp))
-            Text("管理", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.width(6.dp))
+            Text(name, style = MaterialTheme.typography.titleMedium, color = Color(0xFF172033))
+            if (selected) Text("当前翻译引擎", style = MaterialTheme.typography.labelSmall, color = Color(0xFF3569D4))
         }
-        if (selected) {
-            Text("使用中", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-        } else if (!actionEnabled) {
-            Text(
-                disabledActionLabel ?: actionLabel,
-                color = Color(0xFF94A3B8),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        } else {
-            TextButton(onClick = onAction, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
-                Text(actionLabel, maxLines = 1)
-            }
+        TextButton(onClick = onManage, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
+            Text("管理", maxLines = 1)
         }
     }
 }
