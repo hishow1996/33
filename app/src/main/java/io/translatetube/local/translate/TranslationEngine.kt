@@ -24,6 +24,9 @@ interface TranslationEngine {
     /** 批量翻译；失败抛异常（上层重试/降级） */
     suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String>
 
+    /** Release engine-owned native/model resources when a translation task finishes. */
+    fun close() = Unit
+
     /** Optional continuity context from already-translated cues immediately before this batch. */
     suspend fun translateWithContext(
         lines: List<String>,
@@ -31,6 +34,16 @@ interface TranslationEngine {
         tgtLang: String,
         context: Pair<List<String>, List<String>>?,
     ): List<String> = translate(lines, srcLang, tgtLang)
+}
+
+object LocalTranslationEnginePolicy {
+    /** The available OPUS-MT model translates English to Simplified Chinese only. */
+    fun supportsOpusSource(languageTag: String): Boolean {
+        val primary = SourceLanguagePolicy.normalizeTag(languageTag)
+            .substringBefore('-')
+            .lowercase(java.util.Locale.ROOT)
+        return primary == "en" || primary == "eng"
+    }
 }
 
 object LangMap {

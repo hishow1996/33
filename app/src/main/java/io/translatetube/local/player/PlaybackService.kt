@@ -5467,8 +5467,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             )
         }
 
-        val src = SourceLanguagePolicy.sourceForTranslation(srcLang)
-        val batchSize = 10
+        try {
+            if (
+                pendingIndices.isNotEmpty() &&
+                activeId == EngineFactory.ID_LOCAL_OPUS &&
+                !io.translatetube.local.translate.LocalTranslationEnginePolicy.supportsOpusSource(srcLang)
+            ) {
+                val message = if (SourceLanguagePolicy.isUndetermined(srcLang)) {
+                    "OPUS-MT 仅支持英语 → 简体中文，当前字幕源语言无法确认。请在 API 管理 → 本地翻译将源语言手动设为英语，或改用 ML Kit 并下载对应语言包。"
+                } else {
+                    "OPUS-MT 仅支持英语 → 简体中文，当前字幕源语言为 ${LangMap.display(srcLang)}（${srcLang}）。请切换 ML Kit 并下载对应语言包，或确认字幕确实是英语后再手动指定英语。"
+                }
+                throw TranslationFailureException(
+                    message,
+                    IllegalArgumentException("OPUS-MT supports English only; source=$srcLang"),
+                )
+            }
+
+            val src = SourceLanguagePolicy.sourceForTranslation(srcLang)
+            val batchSize = 10
         val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
         // Checkpoint the first batch immediately, then every few successful batches and
         // always at the end. This bounds crash recovery loss while avoiding serializing the full
@@ -5746,7 +5763,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ),
             )
         }
-        return updatedLines
+            return updatedLines
+        } finally {
+            // Release native resources on success, failure, or cancellation, keeping memory bounded.
+            runCatching { engine?.close() }
+        }
     }
 
     private fun buildYouTubeStreamChoices(

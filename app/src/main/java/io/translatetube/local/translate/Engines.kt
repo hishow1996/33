@@ -14,6 +14,7 @@ import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.sync.withLock
@@ -460,8 +461,44 @@ class MlKitEngine : TranslationEngine {
     override val id = "local"
     override val displayName = "ML Kit 本地翻译"
 
+    private var activePair: String? = null
+    private var activeTranslator: Translator? = null
+
     private suspend fun ensureModel(lang: String) {
         MlKitModelCoordinator.ensureDownloaded(lang)
+    }
+
+    /** Reuse one translator over the playback service's 10-cue batches. */
+    private suspend fun translatorFor(source: String, target: String): Translator {
+        val pair = "$source->$target"
+        synchronized(this) {
+            if (activePair == pair) activeTranslator?.let { return it }
+        }
+        ensureModel(source)
+        ensureModel(target)
+        val created = Translation.getClient(
+            TranslatorOptions.Builder().setSourceLanguage(source).setTargetLanguage(target).build(),
+        )
+        return synchronized(this) {
+            val current = if (activePair == pair) activeTranslator else null
+            if (current != null) {
+                created.close()
+                current
+            } else {
+                activeTranslator?.close()
+                activeTranslator = created
+                activePair = pair
+                created
+            }
+        }
+    }
+
+    override fun close() {
+        synchronized(this) {
+            activeTranslator?.close()
+            activeTranslator = null
+            activePair = null
+        }
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
@@ -472,22 +509,19 @@ class MlKitEngine : TranslationEngine {
             srcLang
         }
         if (SourceLanguagePolicy.isUndetermined(resolvedSource)) {
-            throw IllegalStateException("无法可靠识别字幕源语言。请在“本地翻译”中手动指定源语言后重试，避免把法语、德语等误当成英语。")
+            throw IllegalStateException(
+                "无法可靠识别字幕源语言。请在“API 管理 → 本地翻译”中手动指定源语言后重试。",
+            )
         }
         if (!LangMap.isMlkitSupported(resolvedSource)) {
-            throw IllegalStateException("ML Kit 本地翻译暂不支持源语言“$resolvedSource”。请下载支持的语言包，或切换其他翻译引擎。")
+            throw IllegalStateException(
+                "ML Kit 本地翻译暂不支持源语言“$resolvedSource”。请下载支持的语言包，或切换其他翻译引擎。",
+            )
         }
-        val s = LangMap.mlkitSource(resolvedSource)
-        val t = LangMap.mlkit(tgtLang)
-        ensureModel(s)
-        ensureModel(t)
-        val opts = TranslatorOptions.Builder().setSourceLanguage(s).setTargetLanguage(t).build()
-        val translator = Translation.getClient(opts)
-        try {
-            return lines.map { if (it.isBlank()) "" else translator.translate(it).await() }
-        } finally {
-            translator.close()
-        }
+        val source = LangMap.mlkitSource(resolvedSource)
+        val target = LangMap.mlkit(tgtLang)
+        val translator = translatorFor(source, target)
+        return lines.map { if (it.isBlank()) "" else translator.translate(it).await() }
     }
 }
 

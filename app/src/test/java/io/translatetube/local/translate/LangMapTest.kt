@@ -13,6 +13,16 @@ class LangMapTest {
     }
 
     @Test
+    fun opusModelAcceptsOnlyEnglishSourceLanguage() {
+        assertEquals(true, LocalTranslationEnginePolicy.supportsOpusSource("en"))
+        assertEquals(true, LocalTranslationEnginePolicy.supportsOpusSource("en-US"))
+        assertEquals(true, LocalTranslationEnginePolicy.supportsOpusSource("eng"))
+        assertEquals(false, LocalTranslationEnginePolicy.supportsOpusSource("fr"))
+        assertEquals(false, LocalTranslationEnginePolicy.supportsOpusSource("auto"))
+        assertEquals(false, LocalTranslationEnginePolicy.supportsOpusSource("und-Latn"))
+    }
+
+    @Test
     fun googleLanguageTreatsTaggedSentinelsAsAutomaticDetection() {
         assertEquals("auto", LangMap.google("und-Latn"))
         assertEquals("auto", LangMap.google("auto-US"))

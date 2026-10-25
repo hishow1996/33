@@ -22,6 +22,7 @@ import coil.compose.AsyncImage
 import io.translatetube.local.R
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.MlKitModelCoordinator
+import io.translatetube.local.translate.LocalTranslationEnginePolicy
 import io.translatetube.local.translate.OpusMtModelManager
 import io.translatetube.local.translate.OpusMtStatus
 import io.translatetube.local.util.AppLogStore
@@ -188,9 +189,39 @@ internal fun LocalTranslationSection(
                     color = Color(0xFF64748B),
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val manualMlKitReady = sourceLanguageSelection != "auto" &&
+                    mlkitStatuses[sourceLanguageSelection] == "ready"
+                if (activeId == EngineFactory.ID_LOCAL_OPUS &&
+                    sourceLanguageSelection != "auto" &&
+                    !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection)
+                ) {
+                    Text(
+                        "当前源语言与 OPUS-MT 不兼容。OPUS-MT 只支持英语 → 简体中文，请切换 ML Kit 或把源语言改为英语。",
+                        color = Color(0xFFB42318),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else if (activeId == EngineFactory.ID_LOCAL_MLKIT &&
+                    sourceLanguageSelection != "auto" &&
+                    mlkitStatuses.isNotEmpty() &&
+                    !manualMlKitReady
+                ) {
+                    Text(
+                        "尚未下载所选源语言的离线模型，请先下载对应语言包。",
+                        color = Color(0xFFB45309),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
-            val mlKitReady = mlkitStatuses.values.any { it == "ready" } && mlkitBusy == null
-            val opusReady = opusState.status == OpusMtStatus.READY && opusJob?.isActive != true
+            val manualMlKitReady = sourceLanguageSelection != "auto" &&
+                mlkitStatuses[sourceLanguageSelection] == "ready"
+            val mlKitHasReadyLanguage = mlkitStatuses.values.any { it == "ready" }
+            val mlKitReady = (if (sourceLanguageSelection == "auto") mlKitHasReadyLanguage else manualMlKitReady) &&
+                mlkitBusy == null
+            val opusSourceCompatible = sourceLanguageSelection == "auto" ||
+                LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection)
+            val opusReady = opusState.status == OpusMtStatus.READY &&
+                opusJob?.isActive != true &&
+                opusSourceCompatible
             LocalEngineCard(
                 logo = R.drawable.mlkit_logo,
                 name = "ML Kit",
@@ -211,7 +242,11 @@ internal fun LocalTranslationSection(
                 logo = R.drawable.opus_mt_logo,
                 name = "OPUS-MT",
                 selected = activeId == EngineFactory.ID_LOCAL_OPUS,
-                actionLabel = if (opusReady) "设为当前" else "下载",
+                actionLabel = when {
+                    !opusSourceCompatible -> "仅英语"
+                    opusReady -> "设为当前"
+                    else -> "下载"
+                },
                 onClick = { detail = "opus" },
                 onAction = {
                     if (opusReady) {
@@ -222,6 +257,8 @@ internal fun LocalTranslationSection(
                         )
                     } else detail = "opus"
                 },
+                actionEnabled = opusSourceCompatible,
+                disabledActionLabel = "仅英语",
             )
         } else {
             Row(
@@ -426,8 +463,13 @@ internal fun LocalTranslationSection(
                     if (mlkitError.isNotBlank()) {
                         Text(mlkitError, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
                     }
+                    val selectedMlKitPairReady = if (sourceLanguageSelection == "auto") {
+                        pairs.any { mlkitStatuses[it.source] == "ready" }
+                    } else {
+                        mlkitStatuses[sourceLanguageSelection] == "ready"
+                    }
                     Button(
-                        enabled = pairs.any { mlkitStatuses[it.source] == "ready" } && mlkitBusy == null,
+                        enabled = selectedMlKitPairReady && mlkitBusy == null,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
                             onSelectEngine(EngineFactory.ID_LOCAL_MLKIT)
@@ -451,6 +493,21 @@ internal fun LocalTranslationSection(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text("英语 → 简体中文", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    if (!opusSourceCompatible) {
+                        val selectedLanguageName = pairs.firstOrNull { it.source == sourceLanguageSelection }
+                            ?.name?.substringBefore(" →") ?: sourceLanguageSelection
+                        Text(
+                            "当前源语言为 $selectedLanguageName，OPUS-MT 不支持该语言。返回后将源语言改为英语，或改用 ML Kit。",
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        Text(
+                            "仅支持英语字幕；其他语言请使用 ML Kit 对应语言包。",
+                            color = Color(0xFF64748B),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     when (opusState.status) {
                         OpusMtStatus.READY -> Text("已下载", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
                         OpusMtStatus.DOWNLOADING -> Text("正在下载 ${opusState.currentFile}", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
@@ -530,6 +587,7 @@ internal fun LocalTranslationSection(
                             ) { Text("删除模型") }
                         }
                         Button(
+                            enabled = opusSourceCompatible,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
                                 onSelectEngine(EngineFactory.ID_LOCAL_OPUS)
@@ -561,6 +619,8 @@ private fun LocalEngineCard(
     actionLabel: String,
     onClick: () -> Unit,
     onAction: () -> Unit,
+    actionEnabled: Boolean = true,
+    disabledActionLabel: String? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth()
@@ -599,6 +659,12 @@ private fun LocalEngineCard(
         }
         if (selected) {
             Text("使用中", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
+        } else if (!actionEnabled) {
+            Text(
+                disabledActionLabel ?: actionLabel,
+                color = Color(0xFF94A3B8),
+                style = MaterialTheme.typography.labelMedium,
+            )
         } else {
             TextButton(onClick = onAction, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
                 Text(actionLabel, maxLines = 1)
