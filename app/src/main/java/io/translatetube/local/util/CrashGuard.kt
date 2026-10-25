@@ -152,6 +152,11 @@ internal object CrashGuard {
             "异常对象类型" to failure.javaClass.name,
             "应用自己的调用栈中是否包含 io.translatetube.local 帧" to
                 failure.stackTrace.any { it.className.startsWith("io.translatetube.local.") }.toString(),
+            "首个应用代码栈帧" to (failure.stackTrace.firstOrNull {
+                it.className.startsWith("io.translatetube.local.")
+            }?.let {
+                it.className + "." + it.methodName + "(" + (it.fileName ?: "未知文件") + ":" + it.lineNumber + ")"
+            } ?: "Throwable 栈中未提供应用自身帧；请结合触发事件审计定位系统回调入口"),
         )
         // This is best-effort evidence only. Never let a diagnostic snapshot mask the original crash.
         runCatching { io.translatetube.local.player.PlaybackService.diagnosticSnapshot() }
