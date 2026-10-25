@@ -96,6 +96,8 @@ import io.translatetube.local.subs.SubLine
 import io.translatetube.local.web.WebMediaUrlPolicy
 import io.translatetube.local.subs.SubtitleParsers
 import io.translatetube.local.yt.SubtitleTrackOption
+import io.translatetube.local.translate.EngineFactory
+import io.translatetube.local.translate.LangMap
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -1257,6 +1259,34 @@ private fun VideoParsingPage(
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    val context = LocalContext.current
+    val translationPrefs = remember(context) {
+        context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    }
+    val selectedTranslationId = translationPrefs.getLong("active_api_id", EngineFactory.ID_GOOGLE)
+    val isLocalTranslation = EngineFactory.isLocalTranslationEngine(selectedTranslationId)
+    val localTranslationName = EngineFactory.localTranslationEngineName(selectedTranslationId).orEmpty()
+    val configuredSourceLanguage = translationPrefs.getString("translation_source_language", "auto")
+        .orEmpty().ifBlank { "auto" }
+    val detectedSourceLanguage = state.sourceLang.trim().takeIf { code ->
+        val normalized = code.lowercase(java.util.Locale.ROOT).replace('_', '-')
+        normalized.isNotBlank() &&
+            normalized.substringBefore('-') !in setOf("auto", "und", "unknown", "undefined")
+    }
+    val sourceLanguageForDisplay = detectedSourceLanguage ?: configuredSourceLanguage
+    val normalizedSourceLanguageForDisplay = sourceLanguageForDisplay
+        .trim().lowercase(java.util.Locale.ROOT).replace('_', '-')
+    val sourceLanguageDisplay = when {
+        normalizedSourceLanguageForDisplay.isBlank() ||
+            normalizedSourceLanguageForDisplay.substringBefore('-') in
+                setOf("auto", "und", "unknown", "undefined") ->
+            if (selectedTranslationId == EngineFactory.ID_LOCAL_OPUS) {
+                "自动识别（OPUS-MT 仅支持英语）"
+            } else {
+                "自动识别"
+            }
+        else -> LangMap.display(sourceLanguageForDisplay)
+    }
     val screenConfig = androidx.compose.ui.platform.LocalConfiguration.current
     // Keep the full card design on larger screens; use a slightly denser rhythm on short phones.
     val compactLayout = screenConfig.screenHeightDp < 740 || screenConfig.screenWidthDp < 360
@@ -1765,6 +1795,45 @@ private fun VideoParsingPage(
                                     fontWeight = FontWeight.Bold,
                                 ),
                                 maxLines = 1,
+                            )
+                        }
+                    }
+                }
+                if (isLocalTranslation) {
+                    Spacer(Modifier.height(7.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFFF0F5FF))
+                            .border(1.dp, Color(0xFFE0E9FF), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Subtitles,
+                            contentDescription = null,
+                            tint = Color(0xFF3268F5),
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                "本地翻译 · $localTranslationName",
+                                color = Color(0xFF244A9B),
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "语言方向：$sourceLanguageDisplay → 简体中文",
+                                color = Color(0xFF617394),
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
