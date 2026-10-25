@@ -51,12 +51,22 @@ internal fun LocalTranslationSection(
     var sourceLanguageSelection by remember {
         mutableStateOf(sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" })
     }
+    var mlkitManualSourceLanguage by remember {
+        mutableStateOf(
+            sourceLanguagePrefs.getString("mlkit_manual_source_language", null)
+                ?.takeIf { it.isNotBlank() && it != "auto" }
+                ?: sourceLanguagePrefs.getString("translation_source_language", "en")
+                    ?.takeIf { it.isNotBlank() && it != "auto" }
+                ?: "en"
+        )
+    }
+    var isMlKitManualSelection by remember {
+        mutableStateOf(sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" } != "auto")
+    }
     var sourceLanguageMenuExpanded by remember { mutableStateOf(false) }
     var detail by rememberSaveable { mutableStateOf("") }
     var mlkitStatuses by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var mlkitBusy by remember { mutableStateOf<String?>(null) }
-    var mlkitChineseReady by remember { mutableStateOf(false) }
-    var mlkitProgressLabel by remember { mutableStateOf("") }
     var mlkitError by remember { mutableStateOf("") }
     var opusJob by remember { mutableStateOf<Job?>(null) }
     val opusState by OpusMtModelManager.state.collectAsState()
@@ -129,20 +139,24 @@ internal fun LocalTranslationSection(
         Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
     }
     suspend fun refreshMlKit() {
-        val snapshot = withContext(Dispatchers.IO) {
+        mlkitStatuses = withContext(Dispatchers.IO) {
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
-            val statuses = pairs.associate { pair ->
+            pairs.associate { pair ->
                 pair.source to if (
                     MlKitModelCoordinator.isDownloaded(pair.source) && chineseReady
                 ) "ready" else "missing"
             }
-            chineseReady to statuses
         }
-        mlkitChineseReady = snapshot.first
-        mlkitStatuses = snapshot.second
     }
 
     LaunchedEffect(detail) {
+        if (detail == "mlkit") {
+            isMlKitManualSelection = sourceLanguageSelection != "auto"
+            if (sourceLanguageSelection != "auto" && pairs.any { it.source == sourceLanguageSelection }) {
+                mlkitManualSourceLanguage = sourceLanguageSelection
+                sourceLanguagePrefs.edit().putString("mlkit_manual_source_language", sourceLanguageSelection).apply()
+            }
+        }
         if (detail == "mlkit" || detail.isBlank()) {
             try {
                 refreshMlKit()
@@ -197,7 +211,42 @@ internal fun LocalTranslationSection(
     fun setSourceLanguage(language: String) {
         sourceLanguageSelection = language
         sourceLanguagePrefs.edit().putString("translation_source_language", language).apply()
+        if (detail == "mlkit" && language != "auto" && pairs.any { it.source == language }) {
+            mlkitManualSourceLanguage = language
+            sourceLanguagePrefs.edit().putString("mlkit_manual_source_language", language).apply()
+        }
         sourceLanguageMenuExpanded = false
+    }
+
+    fun setMlKitSelectionMode(manual: Boolean) {
+        isMlKitManualSelection = manual
+        sourceLanguageMenuExpanded = false
+        if (manual) {
+            val language = mlkitManualSourceLanguage.takeIf { saved -> pairs.any { it.source == saved } } ?: "en"
+            mlkitManualSourceLanguage = language
+            sourceLanguageSelection = language
+            sourceLanguagePrefs.edit()
+                .putString("translation_source_language", language)
+                .putString("mlkit_manual_source_language", language)
+                .apply()
+        } else {
+            if (pairs.any { it.source == sourceLanguageSelection }) {
+                mlkitManualSourceLanguage = sourceLanguageSelection
+                sourceLanguagePrefs.edit().putString("mlkit_manual_source_language", sourceLanguageSelection).apply()
+            }
+            sourceLanguageSelection = "auto"
+            sourceLanguagePrefs.edit().putString("translation_source_language", "auto").apply()
+        }
+    }
+
+    fun selectMlKitLanguage(language: String) {
+        if (!isMlKitManualSelection || pairs.none { it.source == language }) return
+        sourceLanguageSelection = language
+        mlkitManualSourceLanguage = language
+        sourceLanguagePrefs.edit()
+            .putString("translation_source_language", language)
+            .putString("mlkit_manual_source_language", language)
+            .apply()
     }
 
     fun selectLocalEngine(id: Long, name: String) {
@@ -273,40 +322,39 @@ internal fun LocalTranslationSection(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     MlKitSourceLanguageControl(
-                        selected = sourceLanguageSelection,
-                        languages = pairs,
-                        expanded = sourceLanguageMenuExpanded,
-                        onExpandedChange = { sourceLanguageMenuExpanded = it },
-                        onSelected = { setSourceLanguage(it) },
+                        manualSelected = isMlKitManualSelection,
+                        onModeSelected = { manual -> setMlKitSelectionMode(manual) },
                     )
                     pairs.forEachIndexed { index, pair ->
                         val state = mlkitStatuses[pair.source] ?: "checking"
+                        val selectedLanguage = isMlKitManualSelection && mlkitManualSourceLanguage == pair.source
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (selectedLanguage) Color(0xFFF0F5FF) else Color.Transparent)
+                                .padding(start = 4.dp, end = 2.dp, top = 1.dp, bottom = 1.dp),
                         ) {
-                            Column(
-                                Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            Box(
+                                modifier = Modifier.weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = isMlKitManualSelection) { selectMlKitLanguage(pair.source) }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.CenterStart,
                             ) {
                                 Text(
                                     pair.name,
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = Color(0xFF172033),
+                                    color = if (selectedLanguage) Color(0xFF2858B8) else Color(0xFF172033),
+                                    maxLines = 1,
                                 )
-                                Text(
-                                    "本语言包约 30 MB · 中文包 " +
-                                        if (mlkitChineseReady) "已下载（共用）" else "首次另需约 30 MB",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF64748B),
-                                )
-                                when (state) {
-                                    "ready" -> Text("已下载", style = MaterialTheme.typography.labelSmall, color = Color(0xFF25804A))
-                                    "downloading" -> Text("正在下载", style = MaterialTheme.typography.labelSmall, color = Color(0xFF3569D4))
-                                    "failed" -> Text("下载失败", style = MaterialTheme.typography.labelSmall, color = Color(0xFFB42318))
-                                    "checking" -> Text("检查中…", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
-                                }
                             }
+                            RadioButton(
+                                selected = selectedLanguage,
+                                onClick = { selectMlKitLanguage(pair.source) },
+                                enabled = isMlKitManualSelection,
+                                modifier = Modifier.size(44.dp),
+                            )
                             when (state) {
                                 "downloading", "checking" -> CircularProgressIndicator(
                                     modifier = Modifier.size(22.dp),
@@ -358,7 +406,6 @@ internal fun LocalTranslationSection(
                                     enabled = mlkitBusy == null,
                                     onClick = {
                                         mlkitBusy = pair.source
-                                        mlkitProgressLabel = "正在检查已下载语言包…"
                                         mlkitStatuses = mlkitStatuses + (pair.source to "downloading")
                                         mlkitError = ""
                                         AppLogStore.info(
@@ -378,16 +425,8 @@ internal fun LocalTranslationSection(
                                                         .filterNot { MlKitModelCoordinator.isDownloaded(it) }
                                                 }
                                                 if (missingLanguages.isEmpty()) {
-                                                    mlkitProgressLabel = "模型已存在，正在复核安装状态…"
                                                 } else {
-                                                    missingLanguages.forEachIndexed { stageIndex, languageTag ->
-                                                        val languageName = if (languageTag == pair.source) {
-                                                            pair.name.substringBefore(" →")
-                                                        } else {
-                                                            "中文"
-                                                        }
-                                                        mlkitProgressLabel =
-                                                            "正在下载${languageName}模型包（第 ${stageIndex + 1}/${missingLanguages.size} 个）"
+                                                    missingLanguages.forEach { languageTag ->
                                                         withContext(Dispatchers.IO) {
                                                             MlKitModelCoordinator.downloadLanguage(languageTag)
                                                         }
@@ -400,7 +439,6 @@ internal fun LocalTranslationSection(
                                                         throw IllegalStateException("下载后未检测到完整语言模型")
                                                     }
                                                 }
-                                                mlkitProgressLabel = "语言包下载完成，正在刷新状态…"
                                                 AppLogStore.info(
                                                     context,
                                                     "LocalTranslationModel",
@@ -425,27 +463,10 @@ internal fun LocalTranslationSection(
                                                 )
                                             } finally {
                                                 mlkitBusy = null
-                                                mlkitProgressLabel = ""
                                             }
                                         }
                                     },
                                 ) { Text(if (state == "failed") "重试" else "下载") }
-                            }
-                        }
-                        if (mlkitBusy == pair.source) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                LinearProgressIndicator(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    color = Color(0xFF3569D4),
-                                )
-                                Text(
-                                    mlkitProgressLabel.ifBlank { "正在通过 ML Kit 下载语言模型…" },
-                                    color = Color(0xFF3569D4),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
                             }
                         }
                         if (index < pairs.lastIndex) HorizontalDivider(color = Color(0xFFE8ECF3))
@@ -726,16 +747,9 @@ internal fun LocalTranslationSection(
 
 @Composable
 private fun MlKitSourceLanguageControl(
-    selected: String,
-    languages: List<LocalTranslationPair>,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    onSelected: (String) -> Unit,
+    manualSelected: Boolean,
+    onModeSelected: (Boolean) -> Unit,
 ) {
-    val autoSelected = selected == "auto"
-    val selectedLanguage = languages.firstOrNull { it.source == selected }
-        ?.name?.substringBefore(" →") ?: selected
-
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             "源语言",
@@ -750,55 +764,22 @@ private fun MlKitSourceLanguageControl(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.weight(0.9f)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(if (autoSelected) Color(0xFF3569D4) else Color.Transparent)
-                    .clickable { onSelected("auto") }
-                    .padding(horizontal = 8.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    "自动识别",
-                    color = if (autoSelected) Color.White else Color(0xFF526176),
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                )
-            }
-            Box(modifier = Modifier.weight(1.15f)) {
+            listOf(false to "自动识别", true to "手动选择").forEach { (manual, label) ->
                 Row(
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.weight(1f)
                         .clip(RoundedCornerShape(9.dp))
-                        .background(if (autoSelected) Color.Transparent else Color.White)
-                        .clickable { onExpandedChange(true) }
+                        .background(if (manualSelected == manual) Color(0xFF3569D4) else Color.Transparent)
+                        .clickable { onModeSelected(manual) }
                         .padding(horizontal = 8.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
                     Text(
-                        if (autoSelected) "手动选择" else selectedLanguage,
-                        color = if (autoSelected) Color(0xFF526176) else Color(0xFF2858B8),
+                        label,
+                        color = if (manualSelected == manual) Color.White else Color(0xFF526176),
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                     )
-                    Spacer(Modifier.width(3.dp))
-                    Icon(
-                        Icons.Filled.ExpandMore,
-                        contentDescription = "选择源语言",
-                        tint = if (autoSelected) Color(0xFF526176) else Color(0xFF2858B8),
-                    )
-                }
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { onExpandedChange(false) },
-                ) {
-                    languages.forEach { language ->
-                        DropdownMenuItem(
-                            text = { Text(language.name.substringBefore(" →")) },
-                            onClick = { onSelected(language.source) },
-                        )
-                    }
                 }
             }
         }
