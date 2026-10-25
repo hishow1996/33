@@ -36,6 +36,7 @@ import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.LangMap
 import io.translatetube.local.translate.SourceLanguagePolicy
 import io.translatetube.local.translate.MlKitEngine
+import io.translatetube.local.translate.OpusMtEngine
 import io.translatetube.local.translate.GoogleHybridEngine
 import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
@@ -5486,10 +5487,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
             var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
             val selectedMlKit = engine as? MlKitEngine
-            if (pendingIndices.isNotEmpty() && selectedMlKit != null) {
-                // Check support and both source/Chinese packs once against the full subtitle list,
-                // rather than discovering a missing pack after a batch has already started.
-                src = selectedMlKit.validateConfiguration(srcLang, tgt, plain)
+            val selectedOpus = engine as? OpusMtEngine
+            if (pendingIndices.isNotEmpty() && (selectedMlKit != null || selectedOpus != null)) {
+                // Validate the selected local engine once using the full subtitle sample before
+                // publishing progress or entering the 10-cue retry loop. This makes unsupported
+                // languages and missing/corrupt models fail immediately with a useful message.
+                src = when {
+                    selectedMlKit != null -> selectedMlKit.validateConfiguration(srcLang, tgt, plain)
+                    selectedOpus != null -> selectedOpus.validateConfiguration(srcLang, tgt, plain)
+                    else -> src
+                }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(sourceLang = src)
                 }

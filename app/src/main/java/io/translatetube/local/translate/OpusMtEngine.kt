@@ -31,19 +31,36 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
     override val id: String = "opus-mt"
     override val displayName: String = "OPUS-MT 本地翻译"
 
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        if (lines.isEmpty()) return emptyList()
-        val source = SourceLanguagePolicy.normalizeTag(srcLang).substringBefore('-').lowercase(Locale.ROOT)
+    /** Validate language compatibility and model readiness before the playback batch loop begins. */
+    suspend fun validateConfiguration(
+        srcLang: String,
+        tgtLang: String,
+        sampleLines: List<String> = emptyList(),
+    ): String {
+        val normalizedSource = SourceLanguagePolicy.sourceForTranslation(srcLang)
+        val source = if (SourceLanguagePolicy.isUndetermined(normalizedSource)) {
+            io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(sampleLines)
+        } else normalizedSource
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
-        if (source !in setOf("en", "eng")) {
-            throw IllegalStateException("当前 OPUS-MT 模型只支持英语 → 简体中文，请选择已下载对应语言包的 ML Kit。")
+        if (!LocalTranslationEnginePolicy.supportsOpusSource(source)) {
+            val sourceLabel = source.ifBlank { "未知" }
+            throw IllegalStateException(
+                "当前 OPUS-MT 模型仅支持英语 → 简体中文，当前源语言为“$sourceLabel”。请在 API 管理 → 本地翻译中将源语言设为英语，或改用 ML Kit。"
+            )
         }
         if (target !in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn")) {
             throw IllegalStateException("当前 OPUS-MT 模型的目标语言是简体中文。")
         }
         if (!OpusMtModelManager.isReady(context)) {
-            throw IllegalStateException("OPUS-MT 英语 → 中文模型尚未下载或验证，请到本地翻译中继续下载。")
+            throw IllegalStateException("OPUS-MT 英语 → 中文模型尚未下载或验证，请到 API 管理 → 本地翻译中继续下载。")
         }
+        return "en"
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (lines.isEmpty()) return emptyList()
+        val source = validateConfiguration(srcLang, tgtLang, lines)
+        val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
 
         AppLogStore.info(
             context.applicationContext,
