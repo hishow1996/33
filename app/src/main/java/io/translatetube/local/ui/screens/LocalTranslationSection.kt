@@ -65,6 +65,21 @@ internal fun LocalTranslationSection(
     var isMlKitManualSelection by remember {
         mutableStateOf(sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" } != "auto")
     }
+    val opusSupportedSources = setOf("en", "de", "fi", "sv", "ja", "ko", "ru")
+    var opusManualSourceLanguage by remember {
+        mutableStateOf(
+            sourceLanguagePrefs.getString("opus_manual_source_language", null)
+                ?.takeIf { it in opusSupportedSources }
+                ?: sourceLanguagePrefs.getString("translation_source_language", null)
+                    ?.takeIf { it in opusSupportedSources }
+                ?: "en"
+        )
+    }
+    var isOpusManualSelection by remember {
+        mutableStateOf(
+            sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" } != "auto"
+        )
+    }
     var sourceLanguageMenuExpanded by remember { mutableStateOf(false) }
     var detail by rememberSaveable { mutableStateOf("") }
 
@@ -149,6 +164,9 @@ internal fun LocalTranslationSection(
         )
     }
 
+    val opusPairs = remember(pairs) {
+        pairs.filter { it.source in opusSupportedSources }
+    }
     val smallPairs = remember {
         Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
     }
@@ -185,6 +203,15 @@ internal fun LocalTranslationSection(
                     error,
                     diagnosticContext = mapOf("操作" to "查询已下载模型"),
                 )
+            }
+        }
+        if (detail == "opus") {
+            isOpusManualSelection = sourceLanguageSelection != "auto"
+            if (sourceLanguageSelection in opusSupportedSources) {
+                opusManualSourceLanguage = sourceLanguageSelection
+                sourceLanguagePrefs.edit()
+                    .putString("opus_manual_source_language", sourceLanguageSelection)
+                    .apply()
             }
         }
         if (detail == "opus" || detail.isBlank()) {
@@ -244,6 +271,10 @@ internal fun LocalTranslationSection(
             mlkitManualSourceLanguage = language
             sourceLanguagePrefs.edit().putString("mlkit_manual_source_language", language).apply()
         }
+        if (detail == "opus" && language in opusSupportedSources) {
+            opusManualSourceLanguage = language
+            sourceLanguagePrefs.edit().putString("opus_manual_source_language", language).apply()
+        }
         sourceLanguageMenuExpanded = false
     }
 
@@ -275,6 +306,39 @@ internal fun LocalTranslationSection(
         sourceLanguagePrefs.edit()
             .putString("translation_source_language", language)
             .putString("mlkit_manual_source_language", language)
+            .apply()
+    }
+
+    fun setOpusSelectionMode(manual: Boolean) {
+        isOpusManualSelection = manual
+        sourceLanguageMenuExpanded = false
+        if (manual) {
+            val language = opusManualSourceLanguage.takeIf { it in opusSupportedSources }
+                ?: sourceLanguageSelection.takeIf { it in opusSupportedSources }
+                ?: "en"
+            opusManualSourceLanguage = language
+            sourceLanguageSelection = language
+            sourceLanguagePrefs.edit()
+                .putString("translation_source_language", language)
+                .putString("opus_manual_source_language", language)
+                .apply()
+        } else {
+            if (sourceLanguageSelection in opusSupportedSources) {
+                opusManualSourceLanguage = sourceLanguageSelection
+                sourceLanguagePrefs.edit().putString("opus_manual_source_language", sourceLanguageSelection).apply()
+            }
+            sourceLanguageSelection = "auto"
+            sourceLanguagePrefs.edit().putString("translation_source_language", "auto").apply()
+        }
+    }
+
+    fun selectOpusLanguage(language: String) {
+        if (!isOpusManualSelection || language !in opusSupportedSources) return
+        sourceLanguageSelection = language
+        opusManualSourceLanguage = language
+        sourceLanguagePrefs.edit()
+            .putString("translation_source_language", language)
+            .putString("opus_manual_source_language", language)
             .apply()
     }
 
@@ -529,17 +593,19 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("源语言（目标固定为简体中文）", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
-                    SourceLanguageMenu(
-                        selected = sourceLanguageSelection,
-                        languages = pairs.filter { it.source in setOf("en", "de", "fi", "sv", "ja", "ko", "ru") },
-                        expanded = sourceLanguageMenuExpanded,
-                        onExpandedChange = { sourceLanguageMenuExpanded = it },
-                        onSelected = { setSourceLanguage(it) },
+                    MlKitSourceLanguageControl(
+                        manualSelected = isOpusManualSelection,
+                        onModeSelected = { manual -> setOpusSelectionMode(manual) },
                     )
-                    if (!opusSourceCompatible) {
+                    if (sourceLanguageSelection == "auto") {
                         Text(
-                            "当前手动选择的源语言不受 OPUS-MT 支持。",
+                            "自动识别字幕源语言，并匹配已下载的 OPUS-MT 模型；不会自动下载缺失模型。",
+                            color = Color(0xFF64748B),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else if (!opusSourceCompatible) {
+                        Text(
+                            "当前源语言不受 OPUS-MT 支持。请在手动选择中改为英语、德语、芬兰语、瑞典语、日语、韩语或俄语。",
                             color = Color(0xFFB42318),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -554,7 +620,26 @@ internal fun LocalTranslationSection(
                         )
                     }
                     Divider(color = Color(0xFFE7EBF2))
-                    Text("英语 → 简体中文 · 原有 ONNX 模型", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(enabled = isOpusManualSelection) { selectOpusLanguage("en") }
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "英语 → 简体中文 · 原有 ONNX 模型",
+                            modifier = Modifier.weight(1f),
+                            color = if (isOpusManualSelection && sourceLanguageSelection == "en") Color(0xFF2858B8) else Color(0xFF172033),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        RadioButton(
+                            selected = isOpusManualSelection && sourceLanguageSelection == "en",
+                            onClick = { selectOpusLanguage("en") },
+                            enabled = isOpusManualSelection,
+                            modifier = Modifier.size(44.dp),
+                        )
+                    }
                     when (opusState.status) {
                         OpusMtStatus.READY -> Text("已下载", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
                         OpusMtStatus.DOWNLOADING -> Text("正在下载 ${opusState.currentFile}", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
@@ -633,20 +718,6 @@ internal fun LocalTranslationSection(
                                 },
                             ) { Text("删除模型") }
                         }
-                        Button(
-                            enabled = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                setSourceLanguage("en")
-                                selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
-                                AppLogStore.info(
-                                    context,
-                                    "LocalTranslationModel",
-                                    "OPUS-MT 英语 → 中文模型已设为当前翻译引擎",
-                                    diagnosticContext = mapOf("模型" to "opus-mt-en-zh"),
-                                )
-                            },
-                        ) { Text(if (activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == "en") "正在使用英语模型" else "使用英语模型") }
                     }
                 }
                 Column(
@@ -688,8 +759,18 @@ internal fun LocalTranslationSection(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text(language, color = Color(0xFF172033), style = MaterialTheme.typography.titleSmall)
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable(enabled = isOpusManualSelection) { selectOpusLanguage(source) }
+                                        .padding(vertical = 2.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
+                                    Text(
+                                        language,
+                                        color = if (isOpusManualSelection && sourceLanguageSelection == source) Color(0xFF2858B8) else Color(0xFF172033),
+                                        style = MaterialTheme.typography.titleSmall,
+                                    )
                                     Text(officialModelId, color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
                                     Text("Android 量化包：" + OpusMtAdditionalModelManager.runtimeRepository(source),
                                         color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
@@ -701,6 +782,12 @@ internal fun LocalTranslationSection(
                                         style = MaterialTheme.typography.labelSmall,
                                     )
                                 }
+                                RadioButton(
+                                    selected = isOpusManualSelection && sourceLanguageSelection == source,
+                                    onClick = { selectOpusLanguage(source) },
+                                    enabled = isOpusManualSelection,
+                                    modifier = Modifier.size(44.dp),
+                                )
                                 Text(
                                     when (state.status) {
                                         OpusMtStatus.READY -> "已验证"
@@ -747,10 +834,9 @@ internal fun LocalTranslationSection(
                                     },
                                 ) { Text(if (state.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
                             } else if (state.status == OpusMtStatus.READY) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                if (!(activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == source)) {
                                     OutlinedButton(
-                                        enabled = !(activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == source),
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier.fillMaxWidth(),
                                         onClick = {
                                             scope.launch {
                                                 try {
@@ -762,20 +848,6 @@ internal fun LocalTranslationSection(
                                             }
                                         },
                                     ) { Text("删除模型") }
-                                    Button(
-                                        enabled = !LocalTranslationEnginePolicy.usesEnglishPivot(source) ||
-                                            OpusMtModelManager.isReady(context),
-                                        modifier = Modifier.weight(1f),
-                                        onClick = {
-                                            setSourceLanguage(source)
-                                            selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
-                                            AppLogStore.info(context, "LocalTranslationModel", "已切换 OPUS-MT 中文翻译模型",
-                                                diagnosticContext = mapOf("源语言" to source, "官方模型" to officialModelId))
-                                        },
-                                    ) {
-                                        Text(if (activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == source)
-                                            "正在使用" else "使用此模型")
-                                    }
                                 }
                             } else {
                                 Button(
@@ -801,6 +873,38 @@ internal fun LocalTranslationSection(
                                 }
                             }
                         }
+                    }
+                    val selectedOpusReady = when {
+                        sourceLanguageSelection == "auto" -> {
+                            opusState.status == OpusMtStatus.READY ||
+                                listOf("de", "fi", "sv").any { opusExtraStates[it]?.status == OpusMtStatus.READY } ||
+                                (OpusMtModelManager.isReady(context) &&
+                                    listOf("ja", "ko", "ru").any { opusExtraStates[it]?.status == OpusMtStatus.READY })
+                        }
+                        !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection) -> false
+                        sourceLanguageSelection == "en" -> opusState.status == OpusMtStatus.READY
+                        else -> opusExtraStates[sourceLanguageSelection]?.status == OpusMtStatus.READY &&
+                            (!LocalTranslationEnginePolicy.usesEnglishPivot(sourceLanguageSelection) ||
+                                opusState.status == OpusMtStatus.READY)
+                    }
+                    Button(
+                        enabled = selectedOpusReady,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
+                            AppLogStore.info(
+                                context,
+                                "LocalTranslationModel",
+                                "OPUS-MT 已设为当前翻译引擎",
+                                diagnosticContext = mapOf(
+                                    "源语言模式" to if (sourceLanguageSelection == "auto") "自动识别" else "手动选择",
+                                    "源语言" to sourceLanguageSelection,
+                                    "目标语言" to "zh-CN",
+                                ),
+                            )
+                        },
+                    ) {
+                        Text(if (activeId == EngineFactory.ID_LOCAL_OPUS) "正在使用 OPUS-MT" else "设为当前翻译引擎")
                     }
                 }
             } else {
