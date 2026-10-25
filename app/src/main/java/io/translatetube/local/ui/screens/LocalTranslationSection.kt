@@ -272,17 +272,12 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    SourceLanguageMenu(
+                    MlKitSourceLanguageControl(
                         selected = sourceLanguageSelection,
                         languages = pairs,
                         expanded = sourceLanguageMenuExpanded,
                         onExpandedChange = { sourceLanguageMenuExpanded = it },
                         onSelected = { setSourceLanguage(it) },
-                    )
-                    Text(
-                        "下载所需的源语言包和中文语言包。",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.bodySmall,
                     )
                     pairs.forEachIndexed { index, pair ->
                         val state = mlkitStatuses[pair.source] ?: "checking"
@@ -728,6 +723,87 @@ internal fun LocalTranslationSection(
     }
 }
 
+
+@Composable
+private fun MlKitSourceLanguageControl(
+    selected: String,
+    languages: List<LocalTranslationPair>,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onSelected: (String) -> Unit,
+) {
+    val autoSelected = selected == "auto"
+    val selectedLanguage = languages.firstOrNull { it.source == selected }
+        ?.name?.substringBefore(" →") ?: selected
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "源语言",
+            color = Color(0xFF172033),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFFF3F6FC))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = Modifier.weight(0.9f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (autoSelected) Color(0xFF3569D4) else Color.Transparent)
+                    .clickable { onSelected("auto") }
+                    .padding(horizontal = 8.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    "自动识别",
+                    color = if (autoSelected) Color.White else Color(0xFF526176),
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                )
+            }
+            Box(modifier = Modifier.weight(1.15f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (autoSelected) Color.Transparent else Color.White)
+                        .clickable { onExpandedChange(true) }
+                        .padding(horizontal = 8.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        if (autoSelected) "手动选择" else selectedLanguage,
+                        color = if (autoSelected) Color(0xFF526176) else Color(0xFF2858B8),
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Icon(
+                        Icons.Filled.ExpandMore,
+                        contentDescription = "选择源语言",
+                        tint = if (autoSelected) Color(0xFF526176) else Color(0xFF2858B8),
+                    )
+                }
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { onExpandedChange(false) },
+                ) {
+                    languages.forEach { language ->
+                        DropdownMenuItem(
+                            text = { Text(language.name.substringBefore(" →")) },
+                            onClick = { onSelected(language.source) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SourceLanguageMenu(
