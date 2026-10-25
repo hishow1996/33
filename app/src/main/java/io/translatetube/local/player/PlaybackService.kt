@@ -591,7 +591,7 @@ class PlaybackService : MediaSessionService() {
             io.translatetube.local.util.AppLogStore.info(
                 this,
                 "PlaybackFlow",
-                "命中该视频此前成功的引擎配置组合，恢复已完成结果并复用配音缓存",
+                "命中该视频此前成功的引擎配置组合，复用字幕结果并重新合成当前配音",
                 diagnosticContext = mapOf(
                     "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
                     "处理流程" to restoredState.processingFlow.name,
@@ -599,7 +599,7 @@ class PlaybackService : MediaSessionService() {
                     "原文字幕行数" to restoredState.lines.size.toString(),
                     "是否重新转写" to "否",
                     "是否重新翻译" to "否",
-                    "配音缓存策略" to "复用该引擎配置对应的已有配音缓存",
+                    "配音缓存策略" to "强制重新合成当前所选引擎，不复用旧 PCM",
                 ),
             )
             open(
@@ -615,7 +615,9 @@ class PlaybackService : MediaSessionService() {
                 remoteMediaUserAgent = remoteMediaUserAgent,
                 requestToken = requestToken,
                 reuseMountedMediaForRestart = true,
-                restoreReadySnapshot = true,
+                // Reuse this configuration’s subtitle snapshot, but do not mark the run as
+                // already completed: stage 5 must visibly synthesize the currently selected TTS.
+                restoreReadySnapshot = false,
                 forceRegenerateDubbing = true,
             )
             return true
