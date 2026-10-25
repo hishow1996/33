@@ -164,9 +164,6 @@ internal fun LocalTranslationSection(
         )
     }
 
-    val opusPairs = remember(pairs) {
-        pairs.filter { it.source in opusSupportedSources }
-    }
     val smallPairs = remember {
         Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
     }
@@ -564,26 +561,6 @@ internal fun LocalTranslationSection(
                     if (mlkitError.isNotBlank()) {
                         Text(mlkitError, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
                     }
-                    val selectedMlKitPairReady = if (sourceLanguageSelection == "auto") {
-                        pairs.any { mlkitStatuses[it.source] == "ready" }
-                    } else {
-                        mlkitStatuses[sourceLanguageSelection] == "ready"
-                    }
-                    Button(
-                        enabled = selectedMlKitPairReady && mlkitBusy == null,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            selectLocalEngine(EngineFactory.ID_LOCAL_MLKIT, "ML Kit")
-                            AppLogStore.info(
-                                context,
-                                "LocalTranslationModel",
-                                "ML Kit 已设为当前翻译引擎",
-                                diagnosticContext = mapOf("已下载语言对数" to pairs.count { mlkitStatuses[it.source] == "ready" }.toString()),
-                            )
-                        },
-                    ) {
-                        Text(if (activeId == EngineFactory.ID_LOCAL_MLKIT) "正在使用 ML Kit" else "设为当前翻译引擎")
-                    }
                 }
             } else if (detail == "opus") {
                 Column(
@@ -873,38 +850,6 @@ internal fun LocalTranslationSection(
                                 }
                             }
                         }
-                    }
-                    val selectedOpusReady = when {
-                        sourceLanguageSelection == "auto" -> {
-                            opusState.status == OpusMtStatus.READY ||
-                                listOf("de", "fi", "sv").any { opusExtraStates[it]?.status == OpusMtStatus.READY } ||
-                                (OpusMtModelManager.isReady(context) &&
-                                    listOf("ja", "ko", "ru").any { opusExtraStates[it]?.status == OpusMtStatus.READY })
-                        }
-                        !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection) -> false
-                        sourceLanguageSelection == "en" -> opusState.status == OpusMtStatus.READY
-                        else -> opusExtraStates[sourceLanguageSelection]?.status == OpusMtStatus.READY &&
-                            (!LocalTranslationEnginePolicy.usesEnglishPivot(sourceLanguageSelection) ||
-                                opusState.status == OpusMtStatus.READY)
-                    }
-                    Button(
-                        enabled = selectedOpusReady,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
-                            AppLogStore.info(
-                                context,
-                                "LocalTranslationModel",
-                                "OPUS-MT 已设为当前翻译引擎",
-                                diagnosticContext = mapOf(
-                                    "源语言模式" to if (sourceLanguageSelection == "auto") "自动识别" else "手动选择",
-                                    "源语言" to sourceLanguageSelection,
-                                    "目标语言" to "zh-CN",
-                                ),
-                            )
-                        },
-                    ) {
-                        Text(if (activeId == EngineFactory.ID_LOCAL_OPUS) "正在使用 OPUS-MT" else "设为当前翻译引擎")
                     }
                 }
             } else {
