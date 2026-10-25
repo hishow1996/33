@@ -795,19 +795,88 @@ private data class ApiLogoSpec(
     val useGoogleTranslate: Boolean = false,
 )
 
+/**
+ * Map a recognized API endpoint host to its actual service provider.
+ * For OpenAI-compatible protocols, the endpoint host is more reliable than the generic
+ * profile title (which may say "OpenAI compatible" even for a different vendor).
+ */
+private fun providerBrandFromApiHost(host: String): String? {
+    val normalized = host.trim().lowercase(Locale.ROOT).trimEnd('.')
+    if (normalized.isBlank()) return null
+    fun isDomain(domain: String) = normalized == domain || normalized.endsWith(".$domain")
+    return when {
+        normalized == "generativelanguage.googleapis.com" -> "gemini"
+        isDomain("deepl.com") -> "deepl"
+        isDomain("fanyi.baidu.com") || isDomain("baidu.com") -> "baidu"
+        isDomain("microsofttranslator.com") || isDomain("translator.microsoft.com") -> "microsoft translator"
+        isDomain("tencentcloudapi.com") || isDomain("cloud.tencent.com") -> "tencent"
+        isDomain("aliyuncs.com") || isDomain("alibabacloud.com") -> "aliyun"
+        isDomain("libretranslate.com") -> "libretranslate"
+        isDomain("cloud.google.com") -> "google cloud"
+        isDomain("googleapis.com") -> "google cloud"
+        isDomain("deepseek.com") -> "deepseek"
+        isDomain("openai.com") -> "openai"
+        isDomain("anthropic.com") -> "anthropic"
+        isDomain("moonshot.cn") -> "moonshot"
+        isDomain("qwenlm.ai") -> "qwen"
+        isDomain("siliconflow.cn") -> "siliconflow"
+        isDomain("z.ai") || isDomain("bigmodel.cn") -> "zhipu"
+        isDomain("minimaxi.com") || isDomain("minimax.chat") -> "minimax"
+        isDomain("baichuan-ai.com") -> "baichuan"
+        isDomain("volcengine.com") -> "volcengine"
+        isDomain("stepfun.com") -> "stepfun"
+        isDomain("lingyiwanwu.com") || isDomain("01.ai") -> "yi"
+        isDomain("openrouter.ai") -> "openrouter"
+        isDomain("groq.com") -> "groq"
+        isDomain("mistral.ai") -> "mistral"
+        isDomain("cohere.com") -> "cohere"
+        isDomain("together.xyz") -> "together"
+        isDomain("fireworks.ai") -> "fireworks"
+        isDomain("novita.ai") -> "novita"
+        isDomain("nvidia.com") -> "nvidia"
+        isDomain("huggingface.co") -> "huggingface"
+        isDomain("cloudflare.com") -> "cloudflare"
+        isDomain("ollama.com") -> "ollama"
+        else -> null
+    }
+}
+
+private fun isGenericOpenAiCompatibleName(value: String): Boolean {
+    val normalized = value.lowercase(Locale.ROOT)
+    val hasGenericLabel = listOf(
+        "openai compatible", "openai-compatible", "openai 兼容", "openai兼容",
+        "兼容大模型", "通用大模型", "大模型接口",
+    ).any(normalized::contains)
+    if (!hasGenericLabel) return false
+    // Keep explicit vendor names usable even when the user also writes "OpenAI compatible".
+    val specificVendors = listOf(
+        "deepseek", "深度求索", "qwen", "通义", "kimi", "moonshot", "月之暗面",
+        "claude", "anthropic", "siliconflow", "硅基", "zhipu", "智谱", "glm",
+        "minimax", "海螺", "baichuan", "百川", "volcengine", "火山", "豆包",
+        "stepfun", "阶跃", "hunyuan", "混元", "yi", "零一", "openrouter", "groq",
+        "mistral", "cohere", "together", "fireworks", "novita", "nvidia",
+        "huggingface", "cloudflare", "ollama", "gemini", "deepl", "百度翻译",
+        "腾讯云", "阿里云", "microsoft translator", "微软翻译",
+    )
+    return specificVendors.none(normalized::contains)
+}
+
 private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
-    val providerName = profile.name.lowercase(Locale.ROOT)
-    // Inspect only the hostname, not URL paths such as /openai/v1 used by compatible gateways.
+    val rawProviderName = profile.name.lowercase(Locale.ROOT)
+    // A recognized API host wins over generic card text such as "OpenAI-compatible".
     val providerHost = runCatching {
         Uri.parse(profile.baseUrl.trim()).host?.lowercase(Locale.ROOT).orEmpty()
     }.getOrDefault("")
-    val genericCompatibleName = listOf(
-        "openai compatible", "openai-compatible", "openai 兼容", "openai兼容",
-        "兼容大模型", "通用大模型", "大模型接口"
-    ).any { providerName.contains(it) }
-    fun matches(vararg words: String) = words.any { word ->
-        val key = word.lowercase(Locale.ROOT)
-        providerHost.contains(key) || (!genericCompatibleName && providerName.contains(key))
+    val hostProviderBrand = providerBrandFromApiHost(providerHost)
+    val providerName = (hostProviderBrand ?: rawProviderName).lowercase(Locale.ROOT)
+    val genericCompatibleName = isGenericOpenAiCompatibleName(rawProviderName)
+    fun matches(vararg words: String) = if (hostProviderBrand != null) {
+        words.any { providerName.contains(it.lowercase(Locale.ROOT)) }
+    } else {
+        words.any { word ->
+            val key = word.lowercase(Locale.ROOT)
+            providerHost.contains(key) || (!genericCompatibleName && rawProviderName.contains(key))
+        }
     }
     val openAi = ApiLogoLayer(
         """M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z""",
@@ -869,9 +938,44 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
         matches("kimi", "moonshot", "月之暗面") -> ApiLogoSpec(listOf(moonshot))
         matches("claude", "anthropic", "克劳德") -> ApiLogoSpec(listOf(claude))
         matches("google", "谷歌") -> ApiLogoSpec(google)
-        matches("openai", "chatgpt", "gpt-") -> ApiLogoSpec(listOf(openAi))
+        matches("openai", "chatgpt") -> ApiLogoSpec(listOf(openAi))
         else -> ApiLogoSpec()
     }
+}
+
+private fun officialLogoDomainForBrand(brand: String): String? = when (brand.lowercase(Locale.ROOT)) {
+    "gemini" -> "gemini.google.com"
+    "deepl" -> "deepl.com"
+    "baidu" -> "fanyi.baidu.com"
+    "microsoft translator" -> "translator.microsoft.com"
+    "tencent" -> "cloud.tencent.com"
+    "aliyun" -> "alibabacloud.com"
+    "libretranslate" -> "libretranslate.com"
+    "google cloud" -> "cloud.google.com"
+    "deepseek" -> "deepseek.com"
+    "openai" -> "openai.com"
+    "anthropic" -> "anthropic.com"
+    "moonshot" -> "moonshot.cn"
+    "qwen" -> "qwenlm.ai"
+    "siliconflow" -> "siliconflow.cn"
+    "zhipu" -> "z.ai"
+    "minimax" -> "minimaxi.com"
+    "baichuan" -> "baichuan-ai.com"
+    "volcengine" -> "volcengine.com"
+    "stepfun" -> "stepfun.com"
+    "yi" -> "01.ai"
+    "openrouter" -> "openrouter.ai"
+    "groq" -> "groq.com"
+    "mistral" -> "mistral.ai"
+    "cohere" -> "cohere.com"
+    "together" -> "together.xyz"
+    "fireworks" -> "fireworks.ai"
+    "novita" -> "novita.ai"
+    "nvidia" -> "nvidia.com"
+    "huggingface" -> "huggingface.co"
+    "cloudflare" -> "cloudflare.com"
+    "ollama" -> "ollama.com"
+    else -> null
 }
 
 /**
@@ -880,33 +984,68 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
  */
 private fun preferredApiLogoHost(profile: ApiProfile): String? {
     val name = profile.name.lowercase(Locale.ROOT)
-    val officialHost = when {
-        profile.type == "DEEPL" || name.contains("deepl") -> "deepl.com"
-        profile.type == "BAIDU_API" || name.contains("百度翻译") -> "fanyi.baidu.com"
-        profile.type == "AZURE" || name.contains("microsoft translator") || name.contains("微软翻译") -> "translator.microsoft.com"
-        profile.type == "TENCENT" || name.contains("腾讯云") -> "cloud.tencent.com"
-        profile.type == "ALIYUN" || name.contains("阿里云机器翻译") -> "alibabacloud.com"
-        profile.type == "LIBRETRANSLATE" || name.contains("libretranslate") -> "libretranslate.com"
-        profile.type == "GEMINI" || name.contains("gemini") -> "gemini.google.com"
-        profile.type == "GCLOUD" || name.contains("google cloud") || name.contains("谷歌云") -> "cloud.google.com"
+    val configuredHost = runCatching {
+        Uri.parse(profile.baseUrl.trim()).host?.lowercase(Locale.ROOT)?.trimEnd('.')
+    }.getOrNull()
+
+    // These profile types explicitly represent a particular translation/API vendor.
+    val fixedTypeOfficialHost = when (profile.type) {
+        "DEEPL" -> "deepl.com"
+        "BAIDU_API" -> "fanyi.baidu.com"
+        "AZURE" -> "translator.microsoft.com"
+        "TENCENT" -> "cloud.tencent.com"
+        "ALIYUN" -> "alibabacloud.com"
+        "LIBRETRANSLATE" -> "libretranslate.com"
+        "GEMINI" -> "gemini.google.com"
+        "GCLOUD" -> "cloud.google.com"
+        else -> null
+    }
+
+    // For generic OpenAI-compatible connections, identify the real provider from the endpoint
+    // before looking at a generic/custom card title.
+    val hostOfficialHost = configuredHost
+        ?.let(::providerBrandFromApiHost)
+        ?.let(::officialLogoDomainForBrand)
+
+    val nameOfficialHost = when {
+        name.contains("deepl") -> "deepl.com"
+        name.contains("百度翻译") || name.contains("baidu") -> "fanyi.baidu.com"
+        name.contains("microsoft translator") || name.contains("微软翻译") -> "translator.microsoft.com"
+        name.contains("腾讯云") || name.contains("tencent") -> "cloud.tencent.com"
+        name.contains("阿里云") || name.contains("aliyun") || name.contains("dashscope") -> "alibabacloud.com"
+        name.contains("libretranslate") -> "libretranslate.com"
+        name.contains("gemini") -> "gemini.google.com"
+        name.contains("google cloud") || name.contains("谷歌云") -> "cloud.google.com"
+        name.contains("google translate") || name.contains("google 翻译") || name.contains("谷歌翻译") -> "translate.google.com"
         name.contains("deepseek") || name.contains("深度求索") -> "deepseek.com"
-        name.contains("openai") || name.contains("chatgpt") -> "openai.com"
+        !isGenericOpenAiCompatibleName(name) && (name.contains("openai") || name.contains("chatgpt")) -> "openai.com"
         name.contains("anthropic") || name.contains("claude") -> "anthropic.com"
         name.contains("moonshot") || name.contains("kimi") || name.contains("月之暗面") -> "moonshot.cn"
-        name.contains("qwen") || name.contains("通义千问") || name.contains("dashscope") || name.contains("百炼") -> "qwenlm.ai"
+        name.contains("qwen") || name.contains("通义千问") || name.contains("百炼") -> "qwenlm.ai"
         name.contains("siliconflow") || name.contains("硅基流动") -> "siliconflow.cn"
         name.contains("zhipu") || name.contains("智谱") || name.contains("glm") -> "z.ai"
         name.contains("minimax") || name.contains("海螺") -> "minimaxi.com"
         name.contains("baichuan") || name.contains("百川") -> "baichuan-ai.com"
         name.contains("volcengine") || name.contains("火山引擎") || name.contains("豆包") -> "volcengine.com"
+        name.contains("stepfun") || name.contains("阶跃") -> "stepfun.com"
+        name.contains("hunyuan") || name.contains("混元") -> "cloud.tencent.com"
+        name.contains("openrouter") -> "openrouter.ai"
+        name.contains("groq") -> "groq.com"
+        name.contains("mistral") -> "mistral.ai"
+        name.contains("cohere") -> "cohere.com"
+        name.contains("together") -> "together.xyz"
+        name.contains("fireworks") -> "fireworks.ai"
+        name.contains("novita") -> "novita.ai"
+        name.contains("nvidia") -> "nvidia.com"
+        name.contains("huggingface") -> "huggingface.co"
+        name.contains("cloudflare") -> "cloudflare.com"
+        name.contains("ollama") -> "ollama.com"
+        name.contains("yi") || name.contains("01.ai") || name.contains("零一") -> "01.ai"
         else -> null
     }
-    val fromConfiguredUrl = runCatching {
-        Uri.parse(profile.baseUrl.trim()).host?.lowercase(Locale.ROOT)?.trimEnd('.')
-    }.getOrNull()
-    // If a known provider is identified by name, prefer its first-party domain over the
-    // third-party API gateway. Otherwise inspect the API endpoint host and use its own branding.
-    return (officialHost ?: fromConfiguredUrl)?.takeIf(::isPublicLogoLookupHost)
+    // Vendor-specific profiles win; otherwise the actual endpoint wins over a generic label.
+    return (fixedTypeOfficialHost ?: hostOfficialHost ?: nameOfficialHost ?: configuredHost)
+        ?.takeIf(::isPublicLogoLookupHost)
 }
 
 @Composable
