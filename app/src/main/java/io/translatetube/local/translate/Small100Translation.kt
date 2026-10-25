@@ -638,7 +638,9 @@ private object Small100Runtime {
             encoder = encoderSession
             val decoderSession = environment.createSession(decoderFile.absolutePath, options)
             decoder = decoderSession
-            val hfTokenizer = HuggingFaceTokenizer.newInstance(tokenizerFile.inputStream(), null)
+            val hfTokenizer = tokenizerFile.inputStream().use { input ->
+                HuggingFaceTokenizer.newInstance(input, null)
+            }
             tokenizer = hfTokenizer
             val languageJson = JSONObject(languageFile.readText(Charsets.UTF_8)).getJSONObject("lang_to_id")
             val parsedTokens = linkedMapOf<String, Long>()
