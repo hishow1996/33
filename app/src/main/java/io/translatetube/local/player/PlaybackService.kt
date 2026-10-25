@@ -1726,7 +1726,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun notificationAuditTrailSnapshot(): String = synchronized(notificationAuditLock) {
-        recentNotificationAuditTrail.joinToString(separator = "\\n")
+        recentNotificationAuditTrail.joinToString(separator = " || ")
     }
 
     /**
