@@ -25,6 +25,9 @@ import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.translate.LocalTranslationEnginePolicy
 import io.translatetube.local.translate.OpusMtModelManager
 import io.translatetube.local.translate.OpusMtStatus
+import io.translatetube.local.translate.Small100LanguagePolicy
+import io.translatetube.local.translate.Small100ModelManager
+import io.translatetube.local.translate.Small100Status
 import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +59,8 @@ internal fun LocalTranslationSection(
     var mlkitError by remember { mutableStateOf("") }
     var opusJob by remember { mutableStateOf<Job?>(null) }
     val opusState by OpusMtModelManager.state.collectAsState()
+    var small100Job by remember { mutableStateOf<Job?>(null) }
+    val small100State by Small100ModelManager.state.collectAsState()
     val pairs = remember {
         listOf(
             LocalTranslationPair("南非荷兰语 → 中文", "af"),
@@ -119,6 +124,12 @@ internal fun LocalTranslationSection(
         )
     }
 
+    val smallPairs = remember {
+        Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
+    }
+    val allSourcePairs = remember { (pairs + smallPairs).distinctBy { it.source } }
+    val visibleSourcePairs = if (activeId == EngineFactory.ID_LOCAL_SMALL100 || detail == "small100") smallPairs else pairs
+
     suspend fun refreshMlKit() {
         val snapshot = withContext(Dispatchers.IO) {
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
@@ -165,6 +176,21 @@ internal fun LocalTranslationSection(
                 )
             }
         }
+        if (detail == "small100" || detail.isBlank()) {
+            try {
+                Small100ModelManager.refresh(context)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppLogStore.error(
+                    context,
+                    "LocalTranslationModel",
+                    "读取 SMaLL-100 模型状态失败",
+                    error,
+                    diagnosticContext = mapOf("操作" to "读取模型文件和验证状态"),
+                )
+            }
+        }
     }
 
     Column(
@@ -184,7 +210,7 @@ internal fun LocalTranslationSection(
                     OutlinedButton(onClick = { sourceLanguageMenuExpanded = true }) {
                         Text(
                             if (sourceLanguageSelection == "auto") "自动识别"
-                            else pairs.firstOrNull { it.source == sourceLanguageSelection }?.name?.substringBefore(" →")
+                            else allSourcePairs.firstOrNull { it.source == sourceLanguageSelection }?.name?.substringBefore(" →")
                                 ?: "自动识别",
                         )
                         Icon(Icons.Filled.ExpandMore, contentDescription = "选择源语言")
@@ -201,7 +227,7 @@ internal fun LocalTranslationSection(
                                 sourceLanguageMenuExpanded = false
                             },
                         )
-                        pairs.forEach { pair ->
+                        visibleSourcePairs.forEach { pair ->
                             DropdownMenuItem(
                                 text = { Text(pair.name.substringBefore(" →")) },
                                 onClick = {
@@ -289,6 +315,28 @@ internal fun LocalTranslationSection(
                 actionEnabled = opusSourceCompatible,
                 disabledActionLabel = "仅英语",
             )
+            val small100Compatible = sourceLanguageSelection == "auto" ||
+                Small100LanguagePolicy.supportsSource(sourceLanguageSelection)
+            val small100Ready = small100State.status == Small100Status.READY &&
+                small100Job?.isActive != true &&
+                small100Compatible
+            LocalEngineCard(
+                logo = R.drawable.small100_logo,
+                name = "SMaLL-100",
+                selected = activeId == EngineFactory.ID_LOCAL_SMALL100,
+                actionLabel = when {
+                    !small100Compatible -> "选择语言"
+                    small100Ready -> "设为当前"
+                    else -> "下载"
+                },
+                onClick = { detail = "small100" },
+                onAction = {
+                    if (small100Ready) onSelectEngine(EngineFactory.ID_LOCAL_SMALL100)
+                    else detail = "small100"
+                },
+                actionEnabled = small100Compatible,
+                disabledActionLabel = "选择语言",
+            )
         } else {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
@@ -300,7 +348,7 @@ internal fun LocalTranslationSection(
                 ) { Text("‹ 返回") }
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    if (detail == "mlkit") "ML Kit" else "OPUS-MT",
+                    when (detail) { "mlkit" -> "ML Kit"; "opus" -> "OPUS-MT"; else -> "SMaLL-100" },
                     style = MaterialTheme.typography.titleLarge,
                     color = Color(0xFF172033),
                 )
@@ -513,7 +561,7 @@ internal fun LocalTranslationSection(
                         Text(if (activeId == EngineFactory.ID_LOCAL_MLKIT) "正在使用 ML Kit" else "设为当前翻译引擎")
                     }
                 }
-            } else {
+            } else if (detail == "opus") {
                 Column(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
@@ -631,6 +679,163 @@ internal fun LocalTranslationSection(
                     }
                     Text(
                         "Helsinki-NLP / ONNX Community · CC BY 4.0",
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.White)
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("源语言（100 种）", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    Box {
+                        OutlinedButton(onClick = { sourceLanguageMenuExpanded = true }) {
+                            Text(
+                                if (sourceLanguageSelection == "auto") "自动识别"
+                                else Small100LanguagePolicy.display(sourceLanguageSelection),
+                            )
+                            Icon(Icons.Filled.ExpandMore, contentDescription = "选择 SMaLL-100 源语言")
+                        }
+                        DropdownMenu(
+                            expanded = sourceLanguageMenuExpanded,
+                            onDismissRequest = { sourceLanguageMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("自动识别") },
+                                onClick = {
+                                    sourceLanguageSelection = "auto"
+                                    sourceLanguagePrefs.edit().putString("translation_source_language", "auto").apply()
+                                    sourceLanguageMenuExpanded = false
+                                },
+                            )
+                            smallPairs.forEach { pair ->
+                                DropdownMenuItem(
+                                    text = { Text(pair.name.substringBefore(" →")) },
+                                    onClick = {
+                                        sourceLanguageSelection = pair.source
+                                        sourceLanguagePrefs.edit().putString("translation_source_language", pair.source).apply()
+                                        sourceLanguageMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "100 种语言 → 简体中文。模型总下载量约 615 MB；下载中断后可续传。首次加载建议至少有 1 GB 可用运行内存。全部文件通过校验并完成实际试译后才会启用。",
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    when (small100State.status) {
+                        Small100Status.READY -> Text("模型已下载并通过试译验证", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
+                        Small100Status.DOWNLOADING -> Text(
+                            "正在下载 " + small100State.currentFile,
+                            color = Color(0xFF3569D4),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Small100Status.VERIFYING -> Text("正在加载模型并验证中文翻译", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
+                        Small100Status.PAUSED -> Text(
+                            if (small100State.error.isNotBlank()) small100State.error + " · 可继续" else "下载已暂停，可继续",
+                            color = if (small100State.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Small100Status.FAILED -> Text(
+                            small100State.error.ifBlank { "下载或验证失败，可重试" },
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        else -> Text("约 615 MB", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
+                    }
+                    if (small100State.status == Small100Status.DOWNLOADING ||
+                        small100State.status == Small100Status.VERIFYING
+                    ) {
+                        LinearProgressIndicator(
+                            progress = (small100State.progress / 100f).coerceIn(0f, 1f),
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF3569D4),
+                        )
+                        Text(
+                            small100State.progress.toString() + "% · " +
+                                formatLocalModelBytes(small100State.downloadedBytes) + " / " +
+                                formatLocalModelBytes(small100State.totalBytes) + " · " +
+                                small100State.fileIndex + "/" + small100State.fileCount,
+                            color = Color(0xFF64748B),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    val smallSourceCompatible = sourceLanguageSelection == "auto" ||
+                        Small100LanguagePolicy.supportsSource(sourceLanguageSelection)
+                    if (small100Job?.isActive == true ||
+                        small100State.status == Small100Status.DOWNLOADING ||
+                        small100State.status == Small100Status.VERIFYING
+                    ) {
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                small100Job?.cancel()
+                                small100Job = null
+                            },
+                        ) { Text(if (small100State.status == Small100Status.VERIFYING) "取消验证" else "暂停下载") }
+                    } else if (small100State.status != Small100Status.READY) {
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                small100Job = scope.launch(Dispatchers.IO) {
+                                    try {
+                                        Small100ModelManager.download(context)
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (_: Exception) {
+                                        // Detailed failure is retained in the model state and app log.
+                                    }
+                                }
+                            },
+                        ) {
+                            Text(
+                                if (small100State.status == Small100Status.PAUSED ||
+                                    Small100ModelManager.hasPartialDownload(context)
+                                ) "继续下载" else "下载模型"
+                            )
+                        }
+                    } else {
+                        if (activeId != EngineFactory.ID_LOCAL_SMALL100) {
+                            OutlinedButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) { Small100ModelManager.delete(context) }
+                                        } catch (error: Exception) {
+                                            AppLogStore.error(context, "LocalTranslationModel", "删除 SMaLL-100 模型失败", error)
+                                        }
+                                    }
+                                },
+                            ) { Text("删除模型") }
+                        }
+                        Button(
+                            enabled = smallSourceCompatible,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                onSelectEngine(EngineFactory.ID_LOCAL_SMALL100)
+                                AppLogStore.info(
+                                    context,
+                                    "LocalTranslationModel",
+                                    "SMaLL-100 已设为当前翻译引擎",
+                                    diagnosticContext = mapOf(
+                                        "支持语言数" to Small100LanguagePolicy.languages.size.toString(),
+                                        "模型" to "SMaLL-100 ONNX int8",
+                                    ),
+                                )
+                            },
+                        ) {
+                            Text(if (activeId == EngineFactory.ID_LOCAL_SMALL100) "正在使用 SMaLL-100" else "设为当前翻译引擎")
+                        }
+                    }
+                    Text(
+                        "casawolice/small100-onnx · MIT",
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.labelSmall,
                     )
