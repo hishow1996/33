@@ -92,7 +92,7 @@ internal fun LocalTranslationSection(
     }
 
     LaunchedEffect(detail) {
-        if (detail == "mlkit") {
+        if (detail == "mlkit" || detail.isBlank()) {
             try {
                 refreshMlKit()
             } catch (cancelled: CancellationException) {
@@ -107,8 +107,21 @@ internal fun LocalTranslationSection(
                     diagnosticContext = mapOf("操作" to "查询已下载模型"),
                 )
             }
-        } else if (detail == "opus") {
-            OpusMtModelManager.refresh(context)
+        }
+        if (detail == "opus" || detail.isBlank()) {
+            try {
+                OpusMtModelManager.refresh(context)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppLogStore.error(
+                    context,
+                    "LocalTranslationModel",
+                    "读取 OPUS-MT 模型状态失败",
+                    error,
+                    diagnosticContext = mapOf("操作" to "读取模型状态"),
+                )
+            }
         }
     }
 
@@ -117,17 +130,39 @@ internal fun LocalTranslationSection(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (detail.isBlank()) {
+            val mlKitReady = mlkitStatuses.values.any { it == "ready" } && mlkitBusy == null
+            val opusReady = opusState.status == OpusMtStatus.READY && opusJob?.isActive != true
             LocalEngineCard(
                 logo = R.drawable.mlkit_logo,
                 name = "ML Kit",
                 selected = activeId == EngineFactory.ID_LOCAL_MLKIT,
+                actionLabel = if (mlKitReady) "设为当前" else "下载",
                 onClick = { detail = "mlkit" },
+                onAction = {
+                    if (mlKitReady) {
+                        onSelectEngine(EngineFactory.ID_LOCAL_MLKIT)
+                        AppLogStore.info(
+                            context, "LocalTranslationModel", "ML Kit 已从本地翻译首页设为当前引擎",
+                            diagnosticContext = mapOf("已下载语言对数" to mlkitStatuses.values.count { it == "ready" }.toString()),
+                        )
+                    } else detail = "mlkit"
+                },
             )
             LocalEngineCard(
                 logo = R.drawable.opus_mt_logo,
                 name = "OPUS-MT",
                 selected = activeId == EngineFactory.ID_LOCAL_OPUS,
+                actionLabel = if (opusReady) "设为当前" else "下载",
                 onClick = { detail = "opus" },
+                onAction = {
+                    if (opusReady) {
+                        onSelectEngine(EngineFactory.ID_LOCAL_OPUS)
+                        AppLogStore.info(
+                            context, "LocalTranslationModel", "OPUS-MT 已从本地翻译首页设为当前引擎",
+                            diagnosticContext = mapOf("模型" to "opus-mt-en-zh"),
+                        )
+                    } else detail = "opus"
+                },
             )
         } else {
             Row(
@@ -419,7 +454,9 @@ private fun LocalEngineCard(
     logo: Int,
     name: String,
     selected: Boolean,
+    actionLabel: String,
     onClick: () -> Unit,
+    onAction: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth()
@@ -430,27 +467,39 @@ private fun LocalEngineCard(
                 color = if (selected) Color(0xFF3569D4) else Color(0xFFE3E9F3),
                 shape = RoundedCornerShape(16.dp),
             )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 13.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AsyncImage(
-            model = logo,
-            contentDescription = "$name 官方项目标识",
-            modifier = Modifier.size(52.dp).clip(RoundedCornerShape(10.dp)),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            name,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.titleMedium,
-            color = Color(0xFF172033),
-        )
-        if (selected) {
-            Text("正在使用", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.width(8.dp))
+        Row(
+            modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsyncImage(
+                model = logo,
+                contentDescription = "$name 官方项目标识",
+                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(9.dp)),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(name, style = MaterialTheme.typography.titleMedium, color = Color(0xFF172033))
+                if (selected) {
+                    Text("当前翻译引擎", style = MaterialTheme.typography.labelSmall, color = Color(0xFF3569D4))
+                }
+            }
+            Spacer(Modifier.width(4.dp))
+            Text("管理", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(6.dp))
         }
-        Text("管理", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
+        if (selected) {
+            Text("使用中", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
+        } else {
+            TextButton(onClick = onAction, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
+                Text(actionLabel, maxLines = 1)
+            }
+        }
     }
 }
 

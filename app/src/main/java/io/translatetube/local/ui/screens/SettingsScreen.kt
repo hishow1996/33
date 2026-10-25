@@ -59,6 +59,14 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
     androidx.activity.compose.BackHandler { onBack() }
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
+    var activeApiId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "active_api_id") activeApiId = prefs.getLong("active_api_id", -1L)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "edge") ?: "edge") }
     var systemTtsMode by remember { mutableStateOf(prefs.getString("system_tts_mode", "generated") ?: "generated") }
     var systemTtsVoiceName by remember { mutableStateOf(prefs.getString("system_tts_voice_name", "").orEmpty()) }
@@ -244,7 +252,6 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         }
         val apiProfiles by AppDatabase.get(ctx).apiProfileDao().all()
             .collectAsState(initial = emptyList())
-        val activeApiId = prefs.getLong("active_api_id", -1L)
         val translationLabel = apiProfiles
             .firstOrNull { it.id == activeApiId && it.enabled }
             ?.let { profile ->
@@ -254,9 +261,15 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             }
             ?.takeIf { it.isNotBlank() }
             ?: when (activeApiId) {
+                io.translatetube.local.translate.EngineFactory.ID_GOOGLE -> "Google 翻译"
+                io.translatetube.local.translate.EngineFactory.ID_GOOGLE_ALT -> "本地/混合翻译"
                 io.translatetube.local.translate.EngineFactory.ID_MICROSOFT -> "微软翻译"
                 io.translatetube.local.translate.EngineFactory.ID_BAIDU -> "百度翻译"
                 io.translatetube.local.translate.EngineFactory.ID_DEEPL -> "DeepL 翻译"
+                io.translatetube.local.translate.EngineFactory.ID_FREE_GEMINI -> "Google Gemini"
+                io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek"
+                io.translatetube.local.translate.EngineFactory.ID_LOCAL_MLKIT -> "ML Kit 本地翻译"
+                io.translatetube.local.translate.EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT 本地翻译"
                 else -> "Google 翻译"
             }
 
