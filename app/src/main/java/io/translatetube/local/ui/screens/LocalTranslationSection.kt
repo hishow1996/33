@@ -193,6 +193,9 @@ internal fun LocalTranslationSection(
         }
     }
 
+    val opusSourceCompatible = sourceLanguageSelection == "auto" ||
+        LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection)
+
     Column(
         modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -272,8 +275,6 @@ internal fun LocalTranslationSection(
             val mlKitHasReadyLanguage = mlkitStatuses.values.any { it == "ready" }
             val mlKitReady = (if (sourceLanguageSelection == "auto") mlKitHasReadyLanguage else manualMlKitReady) &&
                 mlkitBusy == null
-            val opusSourceCompatible = sourceLanguageSelection == "auto" ||
-                LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection)
             val opusReady = opusState.status == OpusMtStatus.READY &&
                 opusJob?.isActive != true &&
                 opusSourceCompatible
