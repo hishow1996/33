@@ -54,12 +54,6 @@ name: Build Android APK
 on:
   # Manual-only builds: normal commits do not start APK builds.
   workflow_dispatch:
-  # Temporary path-scoped trigger used only for this explicit user-requested build.
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/build-apk.yml
 
 permissions:
   contents: read
