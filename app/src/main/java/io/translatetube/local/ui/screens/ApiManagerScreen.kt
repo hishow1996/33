@@ -470,6 +470,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                     onTest = { testFreeModel(EngineFactory.ID_BAIDU, "百度翻译") },
                 )
             }
+            item(key = "builtin_deepl") {
+                BuiltinWebEngineCard(
+                    title = "DeepL 翻译",
+                    logoResId = io.translatetube.local.R.raw.deepl_logo,
+                    initial = "D",
+                    imageLoader = providerLogoImageLoader,
+                    selected = activeId == EngineFactory.ID_DEEPL,
+                    testing = testingFreeModel == "DeepL 翻译",
+                    onSelect = { setActive(EngineFactory.ID_DEEPL) },
+                    onTest = { testFreeModel(EngineFactory.ID_DEEPL, "DeepL 翻译") },
+                )
+            }
 
             // 2. 用户自定义添加的 API 列表
             items(profiles, key = { it.id }) { p ->

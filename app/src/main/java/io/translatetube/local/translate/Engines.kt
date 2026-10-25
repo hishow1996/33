@@ -875,9 +875,10 @@ object FreeModelDefaults {
 object EngineFactory {
     const val ID_GOOGLE = -1L
     const val ID_GOOGLE_ALT = -2L
-    /** 免密钥在线引擎：微软翻译（Edge 接口）、百度翻译（网页接口）。 */
+    /** 免密钥在线引擎：微软翻译（Edge 接口）、百度翻译（网页接口）、DeepL（iOS 客户端接口）。 */
     const val ID_MICROSOFT = -3L
     const val ID_BAIDU = -4L
+    const val ID_DEEPL = -5L
     const val ID_FREE_GEMINI = -10L
     const val ID_FREE_DEEPSEEK = -11L
 
@@ -887,6 +888,7 @@ object EngineFactory {
             ID_GOOGLE, ID_GOOGLE_ALT -> GoogleHybridEngine(context)
             ID_MICROSOFT -> MicrosoftWebEngine()
             ID_BAIDU -> BaiduWebEngine()
+            ID_DEEPL -> DeepLWebEngine()
             ID_FREE_GEMINI -> {
                 val encKey = prefs.getString("free_gemini_key", "").orEmpty()
                 val key = if (encKey.isNotBlank()) Crypto.decrypt(encKey) else FreeModelDefaults.DEFAULT_GEMINI_KEY

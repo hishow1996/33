@@ -85,6 +85,36 @@ internal object WebLangCodes {
         if (target) throw IllegalStateException("百度翻译不支持目标语言：$code")
         return "auto"
     }
+
+    /** DeepL oneshot 接口的小写 BCP-47 形式；EN/PT 目标已弃用，须用区域变体。 */
+    private val deeplTargetCodes = setOf(
+        "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "he", "hu", "id",
+        "it", "ja", "ko", "lt", "lv", "nb", "nl", "pl", "ro", "ru", "sk", "sl", "sv",
+        "tr", "uk", "vi",
+    )
+
+    /**
+     * DeepL：目标语言映射到 oneshot 接受的小写形式（zh-Hans/zh-Hant/en-US…），
+     * 源语言不支持时交给 auto 由服务端识别，不硬报错。
+     */
+    fun deepl(code: String, target: Boolean): String {
+        if (SourceLanguagePolicy.isUndetermined(code)) return if (target) "zh-Hans" else "auto"
+        val primary = primary(code)
+        if (primary == "zh" || primary == "cmn") {
+            if (!target) return "zh"
+            // 繁体中文目标用 zh-Hant（oneshot 支持），简体默认 zh-Hans。
+            return if (isTraditionalChinese(code)) "zh-Hant" else "zh-Hans"
+        }
+        when (primary) {
+            "en" -> return if (target) "en-US" else "en"
+            "pt" -> return if (target) "pt-BR" else "pt"
+            // DeepL 只认挪威语的 nb 形式。
+            "no", "nn" -> return "nb"
+        }
+        if (primary in deeplTargetCodes) return primary
+        if (target) throw IllegalStateException("DeepL 翻译不支持目标语言：$code")
+        return "auto"
+    }
 }
 
 /** 按条数和总字符数把待翻译行切成多次请求，保持原有顺序。 */
@@ -387,5 +417,180 @@ class BaiduWebEngine : TranslationEngine {
             throw e
         }
         return parseBaiduTranslation(body, to)
+    }
+}
+
+/*
+ * DeepL（免费在线）：伪装 DeepL iOS 客户端的 OneShot 接口（oneshot-free.www.deepl.com），
+ * 不需要 API Key。请求形状照抄社区逆向实现（DeepLX）：
+ *   - Authorization 头是字面量 "None"（匿名流量），不是 Bearer。
+ *   - x-app-instance-id / x-app-session-id 是进程内稳定的 UUID，逐请求轮换反而是更强的机器特征。
+ *   - User-Agent 是 DeepL/<version> CFNetwork/... Darwin/... 形式，且与请求体 app_information
+ *     里的版本号保持一致（不一致会被服务端判定为异常流量）。
+ *   - 匿名流量单次请求的 text 总长上限约 1500 个 UTF-16 码元，超过会失败，所以按字符切批。
+ * 已知限制：真实 iOS 客户端的 TLS 指纹与 OkHttp 不同，服务端若严格校验 TLS+UA 一致性会限流
+ * （HTTP 429）。对此如实报错，不做绕过；用户网络环境不同，成功率也不同。
+ */
+private object DeepLSession {
+    /** 与 iOS 客户端一致的稳定身份标识；整个进程复用同一组 UUID。 */
+    val instanceId: String = java.util.UUID.randomUUID().toString()
+    val sessionId: String = java.util.UUID.randomUUID().toString()
+
+    /** 伪装的客户端版本，请求体与 User-Agent 同源，改动时两处一起改。 */
+    const val APP_VERSION = "26.52"
+    const val APP_BUILD = "5443737"
+    const val OS_VERSION = "26.0"
+    const val CFNETWORK_VERSION = "3826.600.41"
+    const val DARWIN_VERSION = "25.0.0"
+
+    val userAgent: String = "DeepL/$APP_VERSION CFNetwork/$CFNETWORK_VERSION Darwin/$DARWIN_VERSION"
+
+    /** OneShot 接口要求 .deepl.com 域的 Cookie（冷启动访问主页会种下 userCountry 等）。 */
+    private val cookies = CopyOnWriteArrayList<Cookie>()
+
+    @Volatile var warmedUp = false
+
+    val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .cookieJar(object : CookieJar {
+            override fun saveFromResponse(url: HttpUrl, incoming: List<Cookie>) {
+                // 直接平铺保存，取用时用 Cookie.matches 做域匹配：
+                // 主页种在 www.deepl.com / .deepl.com 的 Cookie 要能匹配 oneshot-free.www.deepl.com。
+                incoming.forEach { cookie ->
+                    DeepLSession.cookies.removeIf { it.name == cookie.name && it.domain == cookie.domain }
+                    DeepLSession.cookies.add(cookie)
+                }
+            }
+            override fun loadForRequest(url: HttpUrl): List<Cookie> =
+                DeepLSession.cookies.filter { it.matches(url) }
+        })
+        .build()
+
+    /** 尽力而为的主页预热：拿一次 Cookie；失败不阻塞翻译请求。 */
+    fun warmUp() {
+        if (warmedUp) return
+        warmedUp = true
+        runCatching {
+            client.newCall(
+                Request.Builder()
+                    .url("https://www.deepl.com/translator")
+                    .header("User-Agent", userAgent)
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .build()
+            ).execute().use { it.body?.close() }
+        }
+    }
+}
+
+private const val DEEPL_MAX_ITEMS = 32
+private const val DEEPL_MAX_CHARS = 1500
+private const val DEEPL_REQUEST_GAP_MS = 250L
+private const val DEEPL_ENDPOINT = "https://oneshot-free.www.deepl.com/v1/translate"
+
+/** DeepL 翻译（免费在线）：iOS 客户端 OneShot 接口，不需要 API Key。 */
+class DeepLWebEngine : TranslationEngine {
+    override val id = "deepl-web"
+    override val displayName = "DeepL（免费在线）"
+
+    override suspend fun testConnection() {
+        val result = translate(listOf("Hello"), "en", "zh")
+        if (result.size != 1 || result.first().isBlank()) {
+            throw IllegalStateException("DeepL 已响应，但没有返回有效译文")
+        }
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (lines.isEmpty()) return emptyList()
+        val from = WebLangCodes.deepl(srcLang, target = false)
+        val to = WebLangCodes.deepl(tgtLang, target = true)
+        val output = MutableList(lines.size) { "" }
+        val pending = lines.withIndex().filter { it.value.isNotBlank() }
+        // oneshot 限制的是 text 数组的 UTF-16 总长，所以 sizeOf 用 Kotlin 的 length（就是 UTF-16 码元数）。
+        val chunks = chunkForRequest(pending, DEEPL_MAX_ITEMS, DEEPL_MAX_CHARS) { it.value.length }
+        for (chunk in chunks) {
+            currentCoroutineContext().ensureActive()
+            if (chunk !== chunks.first()) delay(DEEPL_REQUEST_GAP_MS)
+            val translated = translateChunk(chunk.map { it.value }, from, to)
+            chunk.forEachIndexed { position, item -> output[item.index] = translated[position] }
+        }
+        return output
+    }
+
+    private suspend fun translateChunk(texts: List<String>, from: String, to: String): List<String> {
+        DeepLSession.warmUp()
+        // 手工按 iOS 客户端的字段顺序拼 JSON（org.json 的字段序不保证）；
+        // text 数组仍用 JSONArray 序列化，保证转义正确。
+        val textArray = JSONArray().apply { texts.forEach { put(it) } }
+        val appInformation = JSONObject().apply {
+            put("os", "iOS")
+            put("os_version", DeepLSession.OS_VERSION)
+            put("app_version", DeepLSession.APP_VERSION)
+            put("app_build", DeepLSession.APP_BUILD)
+            put("instance_id", DeepLSession.instanceId)
+        }.toString()
+        val payload = buildString {
+            append("{\"text\":").append(textArray)
+            append(",\"target_lang\":\"").append(to).append('"')
+            if (from != "auto") append(",\"source_lang\":\"").append(from).append('"')
+            append(",\"usage_type\":\"translate\"")
+            append(",\"app_information\":").append(appInformation)
+            append('}')
+        }
+        val request = Request.Builder()
+            .url(DEEPL_ENDPOINT)
+            .post(payload.toRequestBody(WEB_JSON_MEDIA))
+            .header("Content-Type", "application/json")
+            .header("Authorization", "None")
+            .header("User-Agent", DeepLSession.userAgent)
+            .header("x-app-os-version", DeepLSession.OS_VERSION)
+            .header("x-app-instance-id", DeepLSession.instanceId)
+            .header("x-app-session-id", DeepLSession.sessionId)
+            .header("Accept", "application/json")
+            .build()
+        val body = try {
+            executeWebRequest(DeepLSession.client, request)
+        } catch (e: IllegalStateException) {
+            throw translateDeepLHttpError(e)
+        }
+        return parseDeepLTranslations(body, texts.size)
+    }
+}
+
+/** 把 oneshot 的 HTTP 状态码翻成用户能看懂的原因，不改写其他异常。 */
+private fun translateDeepLHttpError(error: IllegalStateException): IllegalStateException {
+    val message = error.message.orEmpty()
+    return when {
+        message.contains("HTTP 429") -> IllegalStateException(
+            "DeepL 拒绝了请求（限流）。匿名流量有频率限制，请稍后重试或降低字幕长度；" +
+                "持续失败时可换用微软/百度翻译",
+            error,
+        )
+        message.contains("HTTP 403") || message.contains("HTTP 401") ->
+            IllegalStateException("DeepL 拒绝了请求（访问被拒）。可能是网络环境或客户端特征被风控，请稍后重试", error)
+        message.contains("HTTP 5") -> IllegalStateException("DeepL 服务暂时不可用，请稍后重试", error)
+        else -> error
+    }
+}
+
+/** 解析 DeepL oneshot 响应：translations 数组必须与请求条数一致，否则拒绝，避免字幕错位。 */
+internal fun parseDeepLTranslations(body: String, expected: Int): List<String> {
+    val root = try {
+        JSONObject(body.trim())
+    } catch (e: Exception) {
+        throw IllegalStateException("DeepL 返回了非预期内容（可能被限流或接口已调整），请换用其他翻译引擎", e)
+    }
+    if (root.has("error") || (root.has("message") && !root.has("translations"))) {
+        val message = root.optJSONObject("error")?.optString("message")
+            ?: root.optString("message")
+        throw IllegalStateException("DeepL 返回错误：" + message.ifBlank { "未知错误" })
+    }
+    val translations = root.optJSONArray("translations")
+        ?: throw IllegalStateException("DeepL 响应缺少 translations 字段")
+    if (translations.length() != expected) {
+        throw IllegalStateException("DeepL 返回数量不匹配：请求 $expected 条，返回 ${translations.length()} 条")
+    }
+    return List(expected) { index ->
+        translations.optJSONObject(index)?.optString("text").orEmpty()
     }
 }

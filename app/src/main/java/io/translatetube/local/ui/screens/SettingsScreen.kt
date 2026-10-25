@@ -256,6 +256,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             ?: when (activeApiId) {
                 io.translatetube.local.translate.EngineFactory.ID_MICROSOFT -> "微软翻译"
                 io.translatetube.local.translate.EngineFactory.ID_BAIDU -> "百度翻译"
+                io.translatetube.local.translate.EngineFactory.ID_DEEPL -> "DeepL 翻译"
                 else -> "Google 翻译"
             }
 
