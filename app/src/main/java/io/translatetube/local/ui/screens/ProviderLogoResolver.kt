@@ -155,11 +155,19 @@ internal object ProviderLogoResolver {
             "LIBRETRANSLATE" -> ids.add("libretranslate")
             "GEMINI" -> ids.add("gemini")
         }
+        // Host matches identify the real API service first. Do not let a generic
+        // "OpenAI compatible" card title inject OpenAI as a fallback logo candidate.
         for ((keywords, brandIds) in brandTable) {
             if (keywords.any { host.contains(it) }) ids.addAll(brandIds)
         }
+        val genericCompatibleName = listOf(
+            "openai compatible", "openai-compatible", "openai 兼容", "openai兼容",
+            "兼容大模型", "通用大模型", "大模型接口",
+        ).any(label::contains)
         for ((keywords, brandIds) in brandTable) {
-            if (keywords.any { label.contains(it) }) ids.addAll(brandIds)
+            if (!keywords.any { label.contains(it) }) continue
+            if (genericCompatibleName && brandIds.any { it == "openai" || it == "chatgpt" }) continue
+            ids.addAll(brandIds)
         }
         return ids.toList()
     }
