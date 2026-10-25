@@ -433,11 +433,14 @@ private object BaiduWebViewHost {
         val activity = TranslateTubeApp.instance.currentActivity
         if (activity != null && !activity.isDestroyed && !activity.isFinishing) {
             if (view.parent == null) {
-                runCatching {
-                    activity.window.decorView.addView(
-                        view,
-                        android.widget.FrameLayout.LayoutParams(1, 1),
-                    )
+                val host = activity.window.decorView as? android.view.ViewGroup
+                if (host != null) {
+                    runCatching {
+                        host.addView(
+                            view,
+                            android.widget.FrameLayout.LayoutParams(1, 1),
+                        )
+                    }
                 }
             }
             view.visibility = View.INVISIBLE
