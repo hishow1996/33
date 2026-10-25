@@ -66,6 +66,8 @@ import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.FreeModelDefaults
 import io.translatetube.local.translate.GeminiEngine
 import io.translatetube.local.translate.OpenAiCompatEngine
+import io.translatetube.local.translate.encodeApiProfileExtraCredential
+import io.translatetube.local.translate.readApiProfileCredential
 import android.view.WindowManager
 import android.widget.Toast
 import io.translatetube.local.ui.theme.*
@@ -1278,7 +1280,18 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val ctx = LocalContext.current.applicationContext
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var type by remember { mutableStateOf(initial?.type ?: "OPENAI") }
-    var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: "https://api.openai.com") }
+    var baseUrl by remember {
+        mutableStateOf(
+            initial?.baseUrl?.ifBlank {
+                when (initial?.type) {
+                    "DEEPL" -> "https://api-free.deepl.com"
+                    "AZURE" -> "https://api.cognitive.microsofttranslator.com"
+                    "LIBRETRANSLATE" -> "https://libretranslate.com"
+                    else -> "https://api.openai.com"
+                }
+            } ?: "https://api.openai.com",
+        )
+    }
     var apiKey by remember {
         mutableStateOf(initial?.let { Crypto.decrypt(it.apiKey) } ?: "")
     }
@@ -1469,7 +1482,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     withContext(Dispatchers.Main) {
                         // Ignore results from a test whose model has since been changed.
                         if (connectionTestGeneration == testGeneration) {
-                            connectionMessage = "模型连接成功 · ${elapsedMs} ms" +
+                            connectionMessage = (if (fixedEngine) "连接成功" else "模型连接成功") + " · ${elapsedMs} ms" +
                                 if (profile.model.isNotBlank()) " · ${profile.model}" else ""
                             testingConnection = false
                             connectionTestJob = null
@@ -1495,7 +1508,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     )
                     withContext(Dispatchers.Main) {
                         if (connectionTestGeneration == testGeneration) {
-                            connectionMessage = "模型连接失败 · ${elapsedMs} ms · " +
+                            connectionMessage = (if (fixedEngine) "连接失败" else "模型连接失败") + " · ${elapsedMs} ms · " +
                                 apiConnectionFailureMessage(profile, e)
                             testingConnection = false
                             connectionTestJob = null
@@ -1795,7 +1808,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     connectionMessage?.let { message ->
                         Text(
                             message,
-                            color = if (message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
+                            color = if (message.startsWith("连接成功")) Color(0xFF21945A) else DangerRed,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }

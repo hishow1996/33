@@ -114,7 +114,7 @@ interface SubtitleCacheDao {
 data class ApiProfile(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val type: String,                       // OPENAI / GEMINI / GCLOUD / AZURE
+    val type: String,                       // OPENAI / GEMINI / GCLOUD / DEEPL / BAIDU_API / AZURE / TENCENT / ALIYUN / LIBRETRANSLATE
     val baseUrl: String,                    // OPENAI: https://api.xx.com/v1 类
     val apiKey: String,                     // AES 加密存储
     val model: String,                      // 选定的翻译模型（传统引擎为空）

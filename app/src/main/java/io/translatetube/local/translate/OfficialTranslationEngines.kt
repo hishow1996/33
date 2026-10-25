@@ -8,6 +8,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -94,7 +95,7 @@ private fun deeplLanguage(code: String): String {
 private fun sha256Hex(value: String): String =
     MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(StandardCharsets.UTF_8))
-        .joinToString("") { "%02x".format(Locale.ROOT, it) }
+        .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
 
 private fun hmacSha256(key: ByteArray, value: String): ByteArray {
     val mac = Mac.getInstance("HmacSHA256")
@@ -111,7 +112,7 @@ private fun hmacSha1(key: ByteArray, value: String): ByteArray {
 private fun md5Hex(value: String): String =
     MessageDigest.getInstance("MD5")
         .digest(value.toByteArray(StandardCharsets.UTF_8))
-        .joinToString("") { "%02x".format(Locale.ROOT, it) }
+        .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
 
 /** DeepL REST API. API Free/Pro endpoint is configured by the saved Base URL. */
 class DeepLTranslationEngine(
@@ -403,7 +404,7 @@ class TencentCloudTranslationEngine(
         val secretService = hmacSha256(secretDate, "tmt")
         val secretSigning = hmacSha256(secretService, "tc3_request")
         val signature = hmacSha256(secretSigning, stringToSign)
-            .joinToString("") { "%02x".format(Locale.ROOT, it) }
+            .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
         val authorization = "TC3-HMAC-SHA256 Credential=$secretId/$credentialScope, SignedHeaders=$signedHeaders, Signature=$signature"
         val response = postProviderJson(
             "https://$host/",
