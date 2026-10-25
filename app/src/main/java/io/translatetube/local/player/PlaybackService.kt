@@ -290,6 +290,11 @@ data class PlayerUiState(
     /** Subtitle index whose AudioTrack has actually started; separate from the video playhead highlight. */
     val activeDubbingLine: Int = -1,
     val currentLine: Int = -1,
+    /**
+     * 当前配音实际念的整块文本（相邻两句合并成一块一口气合成时，念的是两句）。非空时字幕条显示它，
+     * 保证"听到的"和"看到的"是同一段文字；为空时显示 [currentLine] 那一行自己的译文。
+     */
+    val captionOverride: String? = null,
     val preparedUntil: Int = 0,
     val preparedCount: Int = 0,
     val totalLines: Int = 0,
@@ -7457,9 +7462,18 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         // index uses the same overlap/time-window rules as dubbing, without depending on an engine
         // that may be between old and replacement subtitle sessions.
         val highlightLine = subtitleHighlightLineAt(st.lines, ms)
-        if (highlightLine != lastLineIdx) {
+        // 同时对照界面状态本身：别处（播放结束、暂停恢复、换字幕快照）把 currentLine 改掉但没有重置
+        // lastLineIdx 时，只比较 lastLineIdx 会让字幕条一直停在错误的行，直到下一句才恢复。
+        if (highlightLine != lastLineIdx || st.currentLine != highlightLine) {
             lastLineIdx = highlightLine
             ui.update { it.copy(currentLine = highlightLine) }
+        }
+        // 相邻两句合并配音时，配音念的是整块文本：字幕条跟着显示整块，听到的和看到的一致。
+        val spokenCaption = if (d != null && st.dubbingOn && highlightLine in st.lines.indices) {
+            runCatching { d.spokenCaptionFor(highlightLine) }.getOrNull()
+        } else null
+        if (spokenCaption != st.captionOverride) {
+            ui.update { it.copy(captionOverride = spokenCaption) }
         }
 
         if (d != null && st.dubbingOn) {

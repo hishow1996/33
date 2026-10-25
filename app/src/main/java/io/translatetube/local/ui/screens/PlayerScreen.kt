@@ -2280,10 +2280,12 @@ private fun CurrentSubtitleStrip(state: PlayerUiState) {
     // and must not delay the first subtitle strip or make captions drift behind the video.
     val index = state.currentLine.takeIf { it in state.lines.indices } ?: -1
     val currentLine = state.lines.getOrNull(index)
-    val currentText = remember(currentLine?.text, currentLine?.zh) {
+    val captionOverride = state.captionOverride
+    val currentText = remember(currentLine?.text, currentLine?.zh, captionOverride) {
         currentLine?.let { line ->
-            (SubtitleParsers.preferredTranslationText(line)
-                ?.takeIf { it.isNotBlank() }
+            (captionOverride?.takeIf { it.isNotBlank() }
+                ?: SubtitleParsers.preferredTranslationText(line)
+                    ?.takeIf { it.isNotBlank() }
                 ?: line.text)
                 .replace(Regex("\\s+"), " ")
                 .trim()

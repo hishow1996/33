@@ -3564,6 +3564,22 @@ class DubbingEngine(
         // 混流架构：不清理总线——换行/间隙时旧块的媒体时间窗已过，读取侧自然无声。
     }
 
+    /**
+     * 这一行如果属于"相邻两句合并成一块配音"的块，并且整块配音已经就绪，返回整块实际念的文本；
+     * 否则返回 null（这一行念的就是它自己的译文）。供字幕条与配音保持一致。
+     */
+    fun spokenCaptionFor(lineIdx: Int): String? {
+        if (released || usesImmediateTimelinePlayback) return null
+        val first = resolveChunkIndex(lineIdx)
+        val merged = chunkTextByFirst[first]?.takeIf { it.isNotBlank() } ?: return null
+        val isMergedChunk = chunkRedirect.containsValue(first)
+        if (!isMergedChunk || !isPrepared(first) || isSilent(first)) return null
+        // 合并文本里空译文行会退回原文，只有两行都有可用译文时才让字幕条跟随。
+        val partners = chunkRedirect.filterValues { it == first }.keys
+        if (lines.getOrNull(first)?.zh.isNullOrBlank() || partners.any { lines.getOrNull(it)?.zh.isNullOrBlank() }) return null
+        return merged
+    }
+
     /** 当前时间对应行下标（二分索引支持重叠字幕）；-1=间隙 */
     fun lineAt(ms: Long): Int = timeline.lineAt(ms)
 
