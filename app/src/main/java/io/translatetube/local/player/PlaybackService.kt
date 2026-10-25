@@ -344,7 +344,7 @@ private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
 // Processing progress must use a distinct ID so BigTextStyle updates cannot replace MediaStyle.
 private const val PROCESSING_NOTIFICATION_ID = 1004
 private const val PROCESSING_NOTIFICATION_MIN_INTERVAL_MS = 750L
-private const val MAX_NOTIFICATION_AUDIT_EVENTS = 24
+private const val MAX_NOTIFICATION_AUDIT_EVENTS = 12
 
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -1716,7 +1716,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun rememberNotificationAudit(event: String) {
         val elapsed = android.os.SystemClock.elapsedRealtime()
-        val line = ("uptimeMs=" + elapsed + " " + event).take(600)
+        val line = ("uptimeMs=" + elapsed + " " + event).take(320)
         synchronized(notificationAuditLock) {
             recentNotificationAuditTrail.addLast(line)
             while (recentNotificationAuditTrail.size > MAX_NOTIFICATION_AUDIT_EVENTS) {
