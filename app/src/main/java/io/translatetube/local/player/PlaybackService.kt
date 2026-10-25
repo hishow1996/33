@@ -344,6 +344,7 @@ private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
 // Processing progress must use a distinct ID so BigTextStyle updates cannot replace MediaStyle.
 private const val PROCESSING_NOTIFICATION_ID = 1004
 private const val PROCESSING_NOTIFICATION_MIN_INTERVAL_MS = 750L
+private const val MAX_NOTIFICATION_AUDIT_EVENTS = 24
 
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -358,6 +359,11 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var processingNotificationPostCount = 0L
     private var lastProcessingNotificationFingerprint: String? = null
     @Volatile private var lastProcessingNotificationAuditSignature: String? = null
+    private val notificationAuditLock = Any()
+    private val recentNotificationAuditTrail = java.util.ArrayDeque<String>()
+    @Volatile private var mediaNotificationUpdateCount = 0L
+    @Volatile private var lastMediaNotificationUpdatedAtMs = 0L
+    @Volatile private var lastMediaNotificationAuditSignature: String? = null
     private val processingNotificationUpdateRunnable = Runnable { drainProcessingNotificationUpdate() }
     private lateinit var pm: PlayerManager
     // A seek can trigger transient buffering/state callbacks after the immediate play() call.
@@ -996,6 +1002,7 @@ class PlaybackService : MediaSessionService() {
                     )
                 )
                 .build()
+            rememberNotificationAudit("BEFORE startForeground id=1001 purpose=service-start-placeholder")
             io.translatetube.local.util.AppLogStore.info(
                 this,
                 "NotificationDiagnostics",
@@ -1009,6 +1016,7 @@ class PlaybackService : MediaSessionService() {
                 ),
             )
             startForeground(1001, boot)
+            rememberNotificationAudit("AFTER startForeground id=1001 returned")
             io.translatetube.local.util.AppLogStore.info(
                 this,
                 "NotificationDiagnostics",
@@ -1380,11 +1388,16 @@ class PlaybackService : MediaSessionService() {
         return linkedMapOf(
             "进度通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
             "前台启动占位通知 ID" to "1001",
+            "媒体控制通知默认 ID" to "1001",
             "媒体通知与进度通知是否使用独立 ID" to (PROCESSING_NOTIFICATION_ID != 1001).toString(),
             "进度通知使用的样式" to "NotificationCompat.BigTextStyle",
             "进度通知成功提交次数" to processingNotificationPostCount.toString(),
             "距最近一次进度通知成功提交的毫秒数" to if (lastPostedAt > 0L) (now - lastPostedAt).coerceAtLeast(0L).toString() else "尚未成功提交",
             "最近一次通知审计状态签名" to (lastProcessingNotificationAuditSignature ?: "暂无"),
+            "Media3 媒体通知更新次数" to mediaNotificationUpdateCount.toString(),
+            "距最近一次 Media3 通知更新的毫秒数" to if (lastMediaNotificationUpdatedAtMs > 0L) (now - lastMediaNotificationUpdatedAtMs).coerceAtLeast(0L).toString() else "尚未触发",
+            "最近一次 Media3 通知状态签名" to (lastMediaNotificationAuditSignature ?: "暂无"),
+            "通知专属审计轨迹（最近 24 条）" to notificationAuditTrailSnapshot().ifBlank { "暂无通知审计事件" },
             "进度通知更新排队状态" to pendingState,
             "当前会话阶段" to state.phase.name,
             "当前播放服务是否已就绪" to playerReady.toString(),
@@ -1601,6 +1614,12 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             .build()
+        rememberNotificationAudit(
+            "BEFORE processing notice id=" + PROCESSING_NOTIFICATION_ID + " phase=" + state.phase.name +
+                " actions=" + (if (hasProcessingActions) 2 else 0) +
+                " determinateProgress=" + (measuredPercent != null) +
+                " session=" + safeDiagnosticSessionFingerprint(state.key),
+        )
         try {
             manager.notify(PROCESSING_NOTIFICATION_ID, notification)
         } catch (failure: Throwable) {
@@ -1626,6 +1645,10 @@ class PlaybackService : MediaSessionService() {
         lastProcessingNotificationFingerprint = notificationFingerprint
         lastProcessingNotificationPostedAtMs = android.os.SystemClock.elapsedRealtime()
         processingNotificationPostCount += 1L
+        rememberNotificationAudit(
+            "AFTER processing notice id=" + PROCESSING_NOTIFICATION_ID + " phase=" + state.phase.name +
+                " count=" + processingNotificationPostCount + " session=" + safeDiagnosticSessionFingerprint(state.key),
+        )
 
         // Audit only layout/state transitions, not every counter tick. This creates a compact
         // timeline that can be matched to RemoteServiceException's notification tag/id.
@@ -1690,6 +1713,110 @@ class PlaybackService : MediaSessionService() {
         .replace(Regex("\\s+"), " ")
         .trim()
         .take(160)
+
+    private fun rememberNotificationAudit(event: String) {
+        val elapsed = android.os.SystemClock.elapsedRealtime()
+        val line = ("uptimeMs=" + elapsed + " " + event).take(600)
+        synchronized(notificationAuditLock) {
+            recentNotificationAuditTrail.addLast(line)
+            while (recentNotificationAuditTrail.size > MAX_NOTIFICATION_AUDIT_EVENTS) {
+                recentNotificationAuditTrail.removeFirst()
+            }
+        }
+    }
+
+    private fun notificationAuditTrailSnapshot(): String = synchronized(notificationAuditLock) {
+        recentNotificationAuditTrail.joinToString(separator = "\\n")
+    }
+
+    /**
+     * Media3 owns the media-control notification (default ID 1001). Record its state transitions
+     * separately from our processing-progress notification (ID 1004), so a future system-side
+     * RemoteServiceException can be correlated to the notification being refreshed at that time.
+     */
+    override fun onUpdateNotification(
+        session: MediaSession,
+        startInForegroundRequired: Boolean,
+    ) {
+        val player = session.player
+        val state = ui.value
+        val sessionFingerprint = state.key.takeIf { it.isNotBlank() }
+            ?.let(::safeDiagnosticSessionFingerprint).orEmpty().ifBlank { "no-active-session" }
+        val signature = listOf(
+            player.playbackState.toString(),
+            player.playWhenReady.toString(),
+            player.isPlaying.toString(),
+            startInForegroundRequired.toString(),
+            state.phase.name,
+            sessionFingerprint,
+        ).joinToString("|")
+        val changed = signature != lastMediaNotificationAuditSignature
+        val updateNumber = mediaNotificationUpdateCount + 1L
+        val event = "Media3 media notice update #" + updateNumber + " id=1001 phase=" + state.phase.name +
+            " playbackState=" + player.playbackState + " playWhenReady=" + player.playWhenReady +
+            " isPlaying=" + player.isPlaying + " foregroundRequired=" + startInForegroundRequired +
+            " session=" + sessionFingerprint
+        rememberNotificationAudit("BEFORE " + event)
+
+        if (changed) {
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "Media3 即将更新媒体控制通知",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001（Media3 默认媒体通知 ID）",
+                    "通知用途" to "媒体控制/播放状态",
+                    "Media3 更新序号" to updateNumber.toString(),
+                    "播放器状态码" to player.playbackState.toString(),
+                    "playWhenReady" to player.playWhenReady.toString(),
+                    "播放器 isPlaying" to player.isPlaying.toString(),
+                    "是否需要前台服务" to startInForegroundRequired.toString(),
+                    "当前处理阶段" to state.phase.name,
+                    "会话指纹" to sessionFingerprint,
+                    "当前线程" to Thread.currentThread().name,
+                ),
+            )
+        }
+        try {
+            super.onUpdateNotification(session, startInForegroundRequired)
+        } catch (failure: Throwable) {
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    this,
+                    "NotificationDiagnostics",
+                    "Media3 更新媒体控制通知时同步抛出异常",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "通知 ID" to "1001（Media3 默认媒体通知 ID）",
+                        "Media3 更新序号" to updateNumber.toString(),
+                        "播放器状态码" to player.playbackState.toString(),
+                        "是否需要前台服务" to startInForegroundRequired.toString(),
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to sessionFingerprint,
+                    ),
+                )
+            }
+            throw failure
+        }
+        mediaNotificationUpdateCount = updateNumber
+        lastMediaNotificationUpdatedAtMs = android.os.SystemClock.elapsedRealtime()
+        lastMediaNotificationAuditSignature = signature
+        rememberNotificationAudit("AFTER Media3 media notice update #" + updateNumber + " id=1001 returned")
+        if (changed) {
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "Media3 媒体控制通知更新调用已返回",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001（Media3 默认媒体通知 ID）",
+                    "Media3 更新序号" to updateNumber.toString(),
+                    "当前处理阶段" to state.phase.name,
+                    "会话指纹" to sessionFingerprint,
+                    "当前线程" to Thread.currentThread().name,
+                ),
+            )
+        }
+    }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
