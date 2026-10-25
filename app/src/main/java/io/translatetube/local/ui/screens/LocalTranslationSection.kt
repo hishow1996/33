@@ -67,6 +67,10 @@ internal fun LocalTranslationSection(
     var sourceLanguageMenuExpanded by remember { mutableStateOf(false) }
     var detail by rememberSaveable { mutableStateOf("") }
 
+    var mlkitStatuses by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var mlkitBusy by remember { mutableStateOf<String?>(null) }
+    var mlkitError by remember { mutableStateOf("") }
+
     // Handle the phone back gesture inside the selected model's management page first.
     // The parent API manager has its own BackHandler for leaving to app Settings, so without
     // this nested handler a system edge-swipe skips the local-model list entirely.
@@ -75,10 +79,6 @@ internal fun LocalTranslationSection(
         mlkitError = ""
         sourceLanguageMenuExpanded = false
     }
-
-    var mlkitStatuses by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var mlkitBusy by remember { mutableStateOf<String?>(null) }
-    var mlkitError by remember { mutableStateOf("") }
     var opusJob by remember { mutableStateOf<Job?>(null) }
     val opusState by OpusMtModelManager.state.collectAsState()
     var small100Job by remember { mutableStateOf<Job?>(null) }
