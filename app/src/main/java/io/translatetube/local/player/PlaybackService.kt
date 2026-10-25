@@ -37,6 +37,7 @@ import io.translatetube.local.translate.LangMap
 import io.translatetube.local.translate.SourceLanguagePolicy
 import io.translatetube.local.translate.MlKitEngine
 import io.translatetube.local.translate.OpusMtEngine
+import io.translatetube.local.translate.Small100Engine
 import io.translatetube.local.translate.GoogleHybridEngine
 import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
@@ -5435,10 +5436,12 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
             val selectedMlKit = engine as? MlKitEngine
             val selectedOpus = engine as? OpusMtEngine
+            val selectedSmall100 = engine as? Small100Engine
             if (pendingIndices.isNotEmpty()) {
                 when {
                     selectedMlKit != null -> src = selectedMlKit.validateConfiguration(srcLang, tgt, plain)
                     selectedOpus != null -> src = selectedOpus.validateConfiguration(srcLang, tgt, plain)
+                    selectedSmall100 != null -> src = selectedSmall100.validateConfiguration(srcLang, tgt, plain)
                 }
                 if (src.isNotBlank()) {
                     updateUiForSession(key, pipelineGeneration) { it.copy(sourceLang = src) }
