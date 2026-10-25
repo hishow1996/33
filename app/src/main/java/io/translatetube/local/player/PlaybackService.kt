@@ -7204,12 +7204,14 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         if (activeLine in lines.indices) return activeLine
 
         // 首句宽限期：ASR 给第一句的起点普遍偏晚（视频已开口、时间戳还没到）。
-        // 播放头处于片头空白且第一句在 2.5s 内开始时，直接提前显示第一句。
+        // 第一句字幕与第一句配音共用同一个开口时间（字幕/配音统一提前量 + 首句额外提前量，
+        // 见 SubtitleTimingOffset），人一开口字幕就亮、配音就开口；不再在片头空白里提前几秒显示。
+        // positionMs 已经包含统一提前量，所以这里只需再补首句额外提前量。
         val firstSpoken = lines.indexOfFirst { it.text.isNotBlank() }
         if (firstSpoken >= 0) {
             val first = lines[firstSpoken]
             val lead = first.startMs - positionMs
-            if (lead in 0L..2_500L) return firstSpoken
+            if (lead in 0L..SubtitleTimingOffset.FIRST_CUE_EXTRA_LEAD_MS) return firstSpoken
         }
 
         // 短间隙预告：下一句即将开始（≤600ms 且行间隙紧凑）时提前切入，

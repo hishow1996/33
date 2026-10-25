@@ -13,7 +13,8 @@ internal object SubtitleTimingOffset {
     /**
      * 第一句配音额外多提前的量。第一句的字幕起点来自"从静音/片头音乐里检测到人声"，
      * 偏晚得比后面各句更多，统一的 [LEAD_MS] 补不够，表现为"第一句配音比视频原声慢一点"。
-     * 只作用在配音挂载的开口时间上，字幕显示仍用 [LEAD_MS]。
+     * 第一句的字幕显示（PlaybackService 首句宽限期）和配音开口都用这个加大的值，
+     * 保证第一句字幕亮起、配音开口、视频里的人开口是同一刻。其余句子仍用 [LEAD_MS]。
      */
     const val FIRST_CUE_EXTRA_LEAD_MS = 200L
 
