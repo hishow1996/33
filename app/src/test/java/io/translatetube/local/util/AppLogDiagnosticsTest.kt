@@ -20,6 +20,23 @@ class AppLogDiagnosticsTest {
     )
 
     @Test
+    fun notificationInflationCrashIsRecognizedWithoutPretendingItsRootCauseIsKnown() {
+        val diagnosis = AppLogDiagnostics.analyze(
+            record(
+                "UncaughtException",
+                "android.app.RemoteServiceException: Bad notification(tag=null, id=1001) posted from package io.translatetube.local: Couldn't inflate contentViewsjava.util.ConcurrentModificationException",
+                "异常根因链：\\n#0 android.app.RemoteServiceException: Bad notification(tag=null, id=1001): Couldn't inflate contentViewsjava.util.ConcurrentModificationException\\n" +
+                    "完整调用堆栈：\\nandroid.app.RemoteServiceException\\n\\tat android.app.ActivityThread$H.handleMessage(ActivityThread.java:2153)",
+                level = "FATAL",
+            ),
+        )
+        assertEquals("Android 通知内容视图膨胀失败", diagnosis.category)
+        assertTrue(diagnosis.confidence.contains("待验证"))
+        assertTrue(diagnosis.finding.contains("不能仅凭这一行断定是通知 ID 冲突"))
+        assertTrue(diagnosis.nextSteps.any { it.contains("NotificationDiagnostics") })
+    }
+
+    @Test
     fun nuxtBeforeEachErrorDoesNotBlameTheAppWithoutProof() {
         val diagnosis = AppLogDiagnostics.analyze(
             record(
