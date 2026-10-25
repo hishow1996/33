@@ -150,12 +150,27 @@ class DubbingTrackBus {
                 (samples.size.toLong() * targetRate + sourceSampleRate / 2L) / sourceSampleRate
             ).toInt().coerceAtLeast(1)
             val ratio = sourceSampleRate.toDouble() / targetRate.toDouble()
+            val last = samples.lastIndex
+            // 三次（Catmull-Rom）插值：24 kHz → 48 kHz 这类升采样比线性插值少很多镜像失真，
+            // 人声高频更清楚；点数不变、只多读相邻两个样本，开销可以忽略。
             FloatArray(outputCount) { index ->
                 val sourcePosition = index * ratio
-                val low = sourcePosition.toInt().coerceIn(0, samples.lastIndex)
-                val high = (low + 1).coerceAtMost(samples.lastIndex)
-                val fraction = (sourcePosition - low).toFloat()
-                samples[low] * (1f - fraction) + samples[high] * fraction
+                val i1 = sourcePosition.toInt().coerceIn(0, last)
+                val i0 = (i1 - 1).coerceAtLeast(0)
+                val i2 = (i1 + 1).coerceAtMost(last)
+                val i3 = (i1 + 2).coerceAtMost(last)
+                val t = (sourcePosition - i1).toFloat().coerceIn(0f, 1f)
+                val p0 = samples[i0]
+                val p1 = samples[i1]
+                val p2 = samples[i2]
+                val p3 = samples[i3]
+                val value = p1 + 0.5f * t * (
+                    (p2 - p0) + t * (
+                        (2f * p0 - 5f * p1 + 4f * p2 - p3) + t * (3f * (p1 - p2) + p3 - p0)
+                    )
+                )
+                // 三次插值在陡峭处会轻微过冲，限在 [-1, 1] 内，避免后级限幅器多做功。
+                if (value.isFinite()) value.coerceIn(-1f, 1f) else 0f
             }
         }
 

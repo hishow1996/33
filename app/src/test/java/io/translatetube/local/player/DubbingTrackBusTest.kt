@@ -238,4 +238,28 @@ class DubbingTrackBusTest {
         bus.setDubbingEnabled(false)
         assertEquals(-1L, bus.feedSequenced("off", 0L, 0L, FloatArray(10) { 0.5f }, 1000, bus.generationToken()))
     }
+
+    @Test
+    fun resamplingToTheSinkRateKeepsLevelAndScalesLength() {
+        val bus = DubbingTrackBus().also { it.configure(8) }
+        val generation = bus.generationToken()
+        assertTrue(bus.feed("up", 0L, FloatArray(4) { 0.5f }, 4, generation))
+
+        val mixed = bus.readMixWindow(0L, 10)
+        for (i in 0 until 8) assertEquals(0.5f, mixed[i], 0.0001f)
+        assertEquals(0f, mixed[8], 0.0001f)
+    }
+
+    @Test
+    fun resamplingFollowsASmoothRampAndNeverOvershootsWildly() {
+        val bus = DubbingTrackBus().also { it.configure(12) }
+        val generation = bus.generationToken()
+        val ramp = FloatArray(6) { it * 0.1f }
+        assertTrue(bus.feed("ramp", 0L, ramp, 6, generation))
+
+        val mixed = bus.readMixWindow(0L, 12)
+        // 内部点：Catmull-Rom 对直线精确还原，输出位置 k 对应输入位置 k/2。
+        for (k in 2..7) assertEquals(0.05f * k, mixed[k], 0.0001f)
+        assertTrue(mixed.all { it in -0.01f..0.52f })
+    }
 }

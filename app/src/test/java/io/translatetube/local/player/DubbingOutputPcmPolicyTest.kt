@@ -7,12 +7,11 @@ import org.junit.Test
 
 class DubbingOutputPcmPolicyTest {
     @Test
-    fun downSamplesCommonSystemTtsRatesToSixteenKhz() {
+    fun keepsNativeTtsRateInsteadOfDownSamplingBeforeTheBus() {
         val input = FloatArray(24) { (it / 24f) - 0.5f }
         val normalized = DubbingOutputPcmPolicy.normalize(input, 24_000)
-        assertEquals(16_000, normalized.sampleRate)
-        assertEquals(16, normalized.samples.size)
-        assertTrue(normalized.samples.all { it.isFinite() && it in -1f..1f })
+        assertEquals(24_000, normalized.sampleRate)
+        assertSame(input, normalized.samples)
     }
 
     @Test
@@ -35,34 +34,35 @@ class DubbingOutputPcmPolicyTest {
     fun rejectsUnsupportedSampleRates() {
         DubbingOutputPcmPolicy.normalize(floatArrayOf(0.2f), 7_999)
     }
-    @Test
-    fun clipsAndSanitizesCompatibleRatePcmWithoutMutatingTheCachedArray() {
-        val input = floatArrayOf(2.0f, -2.0f, Float.NaN, Float.POSITIVE_INFINITY, 0.25f)
-        val normalized = DubbingOutputPcmPolicy.normalize(input, 8_000)
 
-        assertEquals(8_000, normalized.sampleRate)
+    @Test
+    fun clipsAndSanitizesPcmWithoutMutatingTheCachedArray() {
+        val input = floatArrayOf(2.0f, -2.0f, Float.NaN, Float.POSITIVE_INFINITY, 0.25f)
+        val normalized = DubbingOutputPcmPolicy.normalize(input, 24_000)
+
+        assertEquals(24_000, normalized.sampleRate)
         assertTrue(normalized.samples.contentEquals(floatArrayOf(1.0f, -1.0f, 0.0f, 0.0f, 0.25f)))
         assertTrue(input[0] == 2.0f && input[1] == -2.0f)
     }
 
     @Test
-    fun keepsZeroCopyFastPathForAlreadySafeLowRatePcm() {
+    fun keepsZeroCopyFastPathForAlreadySafePcm() {
         val input = floatArrayOf(-1.0f, -0.2f, 0.0f, 0.6f, 1.0f)
-        assertSame(input, DubbingOutputPcmPolicy.normalize(input, 8_000).samples)
+        assertSame(input, DubbingOutputPcmPolicy.normalize(input, 24_000).samples)
     }
 
     @Test
-    fun keepsTinyNonEmptyHighRatePcmAsOneTargetSample() {
+    fun keepsTinyNonEmptyHighRatePcmUntouched() {
         val input = floatArrayOf(0.4f)
         val normalized = DubbingOutputPcmPolicy.normalize(input, 192_000)
 
-        assertEquals(16_000, normalized.sampleRate)
+        assertEquals(192_000, normalized.sampleRate)
         assertEquals(1, normalized.samples.size)
         assertEquals(0.4f, normalized.samples.single(), 0.0001f)
     }
 
     @Test
-    fun normalizationCanBeCancelledWhileScanningLargeLowRatePcm() {
+    fun normalizationCanBeCancelledWhileScanningLargePcm() {
         val input = FloatArray(24_000) { 0.25f }
         var checks = 0
         val error = runCatching {
@@ -77,18 +77,18 @@ class DubbingOutputPcmPolicyTest {
     }
 
     @Test
-    fun normalizationCanBeCancelledWhileDownSamplingHighRatePcm() {
+    fun normalizationCanBeCancelledWhileSanitizingHighRatePcm() {
         val input = FloatArray(24_000) { 0.25f }
+        input[20_000] = Float.NaN
         var checks = 0
         val error = runCatching {
             DubbingOutputPcmPolicy.normalize(input, 48_000) {
                 checks++
-                if (checks == 2) throw java.util.concurrent.CancellationException("playback superseded")
+                if (checks == 5) throw java.util.concurrent.CancellationException("playback superseded")
             }
         }.exceptionOrNull()
 
         assertTrue(error is java.util.concurrent.CancellationException)
-        assertEquals(2, checks)
+        assertEquals(5, checks)
     }
-
 }
