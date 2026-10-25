@@ -85,6 +85,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.setViewTreeLifecycleOwner
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlayerUiState
@@ -374,7 +375,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
         val host = FrameLayout(ctx)
         moveTextureViewTo(host)
-        androidx.lifecycle.ViewTreeLifecycleOwner.set(host, lifecycleOwner)
+        host.setViewTreeLifecycleOwner(lifecycleOwner)
         floatingControlsVisible.value = true
         floatingControlsInteractionRevision.intValue++
         val controlsView = ComposeView(ctx).apply {
