@@ -853,7 +853,7 @@ private fun isGenericOpenAiCompatibleName(value: String): Boolean {
         "deepseek", "深度求索", "qwen", "通义", "kimi", "moonshot", "月之暗面",
         "claude", "anthropic", "siliconflow", "硅基", "zhipu", "智谱", "glm",
         "minimax", "海螺", "baichuan", "百川", "volcengine", "火山", "豆包",
-        "stepfun", "阶跃", "hunyuan", "混元", "yi", "零一", "openrouter", "groq",
+        "stepfun", "阶跃", "hunyuan", "混元", "lingyiwanwu", "01.ai", "零一", "openrouter", "groq",
         "mistral", "cohere", "together", "fireworks", "novita", "nvidia",
         "huggingface", "cloudflare", "ollama", "gemini", "deepl", "百度翻译",
         "腾讯云", "阿里云", "microsoft translator", "微软翻译",
