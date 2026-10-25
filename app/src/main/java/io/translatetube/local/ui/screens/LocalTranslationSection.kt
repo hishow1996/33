@@ -619,59 +619,6 @@ internal fun LocalTranslationSection(
                         ) { Text(if (activeId == EngineFactory.ID_LOCAL_OPUS) "正在使用 OPUS-MT" else "设为当前翻译引擎") }
                     }
                 }
-                Column(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White)
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text(
-                        "其他官方 OPUS-MT 中文翻译模型",
-                        color = Color(0xFF172033),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        "已确认存在以下官方模型。当前应用集成的只有英语 → 中文量化 ONNX 模型；其余模型需要先转换并验证 Android 推理文件，暂不能下载或实际用于字幕翻译。",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    listOf(
-                        "德语 → 简体中文" to "Helsinki-NLP/opus-mt-de-ZH",
-                        "芬兰语 → 简体中文" to "Helsinki-NLP/opus-mt-fi-ZH",
-                        "瑞典语 → 简体中文" to "Helsinki-NLP/opus-mt-sv-ZH",
-                    ).forEach { (language, modelId) ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFFF8FAFC))
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp),
-                            ) {
-                                Text(
-                                    language,
-                                    color = Color(0xFF172033),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    modelId,
-                                    color = Color(0xFF64748B),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            }
-                            Text(
-                                "待适配",
-                                color = Color(0xFF946200),
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                        }
-                    }
-                }
             } else {
                 Column(
                     modifier = Modifier.fillMaxWidth()
