@@ -40,6 +40,28 @@ object AppLogDiagnostics {
             nextSteps = steps,
         )
 
+        if (
+            hasAny("remoteserviceexception", "bad notification") &&
+            hasAny("couldn't inflate contentviews", "contentviews") &&
+            hasAny("concurrentmodificationexception")
+        ) {
+            val notificationId = Regex("""(?i)\\bid=(-?\\d+)""")
+                .find(raw)?.groupValues?.getOrNull(1)
+            val idEvidence = notificationId?.let { "系统异常消息报告的通知 ID=$it" }
+                ?: "系统异常消息未提取到通知 ID"
+            return result(
+                "Android 通知内容视图膨胀失败",
+                "系统通知失败已确认；具体并发冲突根因仍待验证",
+                "Android 在展开通知 contentViews 时报告 RemoteServiceException，异常消息提及 ConcurrentModificationException。该信息能确认通知显示阶段失败，但不一定包含 SystemUI 内部真实异常对象的调用栈，也不能仅凭这一行断定是通知 ID 冲突。$idEvidence；需要对照通知提交审计记录确认当时哪类通知占用了该 ID。",
+                listOf("RemoteServiceException", "Bad notification", "Couldn't inflate contentViews", "ConcurrentModificationException"),
+                listOf(
+                    "先用系统异常消息中的通知 ID，匹配崩溃前最近的 NotificationDiagnostics 记录，核对通知用途、样式、操作按钮数和提交线程。",
+                    "如果异常对象链没有真正的 ConcurrentModificationException，只是在异常消息文本中出现该名称，就不能把它当成已取得内部栈的根因；继续检查同一通知 ID 是否被不同通知用途复用。",
+                    "检查通知构建后是否仍修改共享 Notification/RemoteViews/Bundle/动作集合，以及是否有多个线程同时提交同一 ID。",
+                    "再次复现时保留完整异常详情与通知审计轨迹；如果新日志未记录系统内部修改栈，应明确注明这是 Android 系统层证据缺口，而不是猜测 App 的具体修改行。",
+                ),
+            )
+        }
         if (hasAny("outofmemoryerror", "failed to allocate", "memory allocation failed", "内存不足")) {
             return result(
                 "内存分配失败",
