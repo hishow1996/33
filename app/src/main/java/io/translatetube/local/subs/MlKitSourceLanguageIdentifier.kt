@@ -25,7 +25,7 @@ object MlKitSourceLanguageIdentifier {
             sample.append(cue, 0, minOf(cue.length, remaining))
         }
         // Japanese kana and Korean Hangul are strong script clues, even in short captions.
-        SubtitleScriptLanguageHint.detect(sample)?.let { return it }
+        SubtitleScriptLanguageHint.detect(sample.toString())?.let { return it }
 
         val letterCount = sample.count { it.isLetter() }
         if (letterCount < 3) return "auto"

@@ -28,6 +28,7 @@ import io.translatetube.local.translate.LocalTranslationEnginePolicy
 import io.translatetube.local.translate.OpusMtModelManager
 import io.translatetube.local.translate.OpusMtAdditionalModelManager
 import io.translatetube.local.translate.OpusMtStatus
+import io.translatetube.local.translate.OpusMtDownloadState
 import io.translatetube.local.translate.Small100LanguagePolicy
 import io.translatetube.local.translate.Small100ModelManager
 import io.translatetube.local.translate.Small100Status

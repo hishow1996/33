@@ -430,7 +430,7 @@ private object BaiduWebViewHost {
      * 因此只要存在前台 Activity 就真实 attach；拿不到 Activity 才退回纯离屏。
      */
     private fun attachToHostWindow(view: WebView) {
-        val activity = TranslateTubeApp.currentActivity
+        val activity = TranslateTubeApp.instance.currentActivity
         if (activity != null && !activity.isDestroyed && !activity.isFinishing) {
             if (view.parent == null) {
                 runCatching {
