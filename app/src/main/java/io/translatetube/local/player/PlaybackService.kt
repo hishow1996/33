@@ -4533,7 +4533,35 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         cloudWav.delete()
                     }
                 }
-                asrLines = decodedAsrLines
+                // 原声音频还在：直接量出第一句真正开口的时刻，字幕和配音都对齐到它，
+                // 不再只靠 ASR/VAD 给的起点（普遍偏晚）。量不出来就保持原起点。
+                val onsetRefinement = withContext(Dispatchers.IO) {
+                    try {
+                        io.translatetube.local.asr.SpeechOnsetDetector.refineFirstCue(
+                            decodedAsrLines,
+                            pcmFile,
+                            checkActive = { pcmOwnerJob?.ensureActive() },
+                        )?.also { refinement ->
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "Transcription",
+                                "已按原声实测校正第一句开口时间",
+                                diagnosticContext = mapOf(
+                                    "原字幕起点 ms" to refinement.previousStartMs.toString(),
+                                    "实测开口时间 ms" to (refinement.measuredOnsetMs?.toString() ?: "未量出"),
+                                    "校正后字幕起点 ms" to refinement.newStartMs.toString(),
+                                    "说明" to "字幕起点 = 实测开口 + 统一提前量 + 首句额外提前量；字幕亮起和配音开口落在实测开口时刻",
+                                ),
+                            )
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        android.util.Log.w("PlaybackService", "First-cue onset measurement failed", error)
+                        null
+                    }
+                }
+                asrLines = onsetRefinement?.lines ?: decodedAsrLines
                 detectedAsrLang = decodedAsrLang
                 ensureCurrentSession(key, pipelineGeneration)
                 transientPcmFile?.file?.delete()
