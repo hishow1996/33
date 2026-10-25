@@ -393,6 +393,8 @@ dependencies {
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    // Fast Hugging Face tokenizer for the multilingual SMaLL-100 ONNX model.
+    implementation("ai.djl.huggingface:tokenizers:0.30.0")
     implementation("io.github.eix128:sentencepiece4j:1.0.2")
 
     // 数据
