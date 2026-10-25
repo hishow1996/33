@@ -759,8 +759,8 @@ internal fun LocalTranslationSection(
                         )
                         Text(
                             small100State.progress.toString() + "% · " +
-                                formatLocalModelBytes(small100State.downloadedBytes) + " / " +
-                                formatLocalModelBytes(small100State.totalBytes) + " · " +
+                                formatSmall100Bytes(small100State.downloadedBytes) + " / " +
+                                formatSmall100Bytes(small100State.totalBytes) + " · " +
                                 small100State.fileIndex + "/" + small100State.fileCount,
                             color = Color(0xFF64748B),
                             style = MaterialTheme.typography.labelSmall,
@@ -911,4 +911,11 @@ private fun formatLocalModelBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 MB"
     val mb = bytes / (1024f * 1024f)
     return if (mb >= 100f) "${mb.toInt()} MB" else String.format(Locale.ROOT, "%.1f MB", mb)
+}
+
+private fun formatSmall100Bytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 MB"
+    val megabytes = bytes / 1_000_000f
+    return if (megabytes >= 100f) "${megabytes.toInt()} MB"
+    else String.format(Locale.ROOT, "%.1f MB", megabytes)
 }
