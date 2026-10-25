@@ -695,7 +695,7 @@ internal fun LocalTranslationSection(
                                         color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
                                     val expectedBytes = OpusMtAdditionalModelManager.downloadSizeBytes(source)
                                     Text(
-                                        "下载总大小：" + formatLocalModelBytes(expectedBytes) + " · " +
+                                        "下载总大小：" + String.format(Locale.ROOT, "%.2f MiB", expectedBytes / (1024.0 * 1024.0)) + " · " +
                                             String.format(Locale.ROOT, "%,d 字节", expectedBytes),
                                         color = Color(0xFF64748B),
                                         style = MaterialTheme.typography.labelSmall,
