@@ -881,6 +881,12 @@ private fun apiLogoSpec(profile: ApiProfile): ApiLogoSpec {
 private fun preferredApiLogoHost(profile: ApiProfile): String? {
     val name = profile.name.lowercase(Locale.ROOT)
     val officialHost = when {
+        profile.type == "DEEPL" || name.contains("deepl") -> "deepl.com"
+        profile.type == "BAIDU_API" || name.contains("百度翻译") -> "fanyi.baidu.com"
+        profile.type == "AZURE" || name.contains("microsoft translator") || name.contains("微软翻译") -> "translator.microsoft.com"
+        profile.type == "TENCENT" || name.contains("腾讯云") -> "cloud.tencent.com"
+        profile.type == "ALIYUN" || name.contains("阿里云机器翻译") -> "alibabacloud.com"
+        profile.type == "LIBRETRANSLATE" || name.contains("libretranslate") -> "libretranslate.com"
         profile.type == "GEMINI" || name.contains("gemini") -> "gemini.google.com"
         profile.type == "GCLOUD" || name.contains("google cloud") || name.contains("谷歌云") -> "cloud.google.com"
         name.contains("deepseek") || name.contains("深度求索") -> "deepseek.com"
@@ -907,6 +913,16 @@ private fun preferredApiLogoHost(profile: ApiProfile): String? {
 private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean, imageLoader: ImageLoader) {
     val context = LocalContext.current.applicationContext
     val spec = remember(profile.type, profile.name, profile.baseUrl) { apiLogoSpec(profile) }
+    // These providers already have official SVG assets bundled with the app, so their logo is
+    // immediate and does not depend on a network request or a logo lookup service.
+    val localLogoResId = remember(profile.type) {
+        when (profile.type) {
+            "DEEPL" -> io.translatetube.local.R.raw.deepl_logo
+            "BAIDU_API" -> io.translatetube.local.R.raw.baidu_translate_logo
+            "AZURE" -> io.translatetube.local.R.raw.microsoft_translator_logo
+            else -> null
+        }
+    }
     val host = remember(profile.type, profile.name, profile.baseUrl) {
         preferredApiLogoHost(profile)
     }
@@ -916,7 +932,8 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean, imageLoader:
     // Gemini 优先用官方彩色 Logo；取不到时回退内置矢量图（不再退成通用图标）。
     val preferOnlineLogo = profile.type == "GEMINI" ||
         profile.name.contains("gemini", ignoreCase = true)
-    val needsOnlineLogo = preferOnlineLogo || (spec.layers.isEmpty() && !spec.useGoogleTranslate)
+    val needsOnlineLogo = localLogoResId == null &&
+        (preferOnlineLogo || (spec.layers.isEmpty() && !spec.useGoogleTranslate))
     val downloadedLogo by produceState<File?>(null, host, needsOnlineLogo, brandIds) {
         value = null
         if (!needsOnlineLogo) return@produceState
@@ -930,6 +947,18 @@ private fun ApiProviderLogo(profile: ApiProfile, selected: Boolean, imageLoader:
         contentAlignment = Alignment.Center,
     ) {
         when {
+            localLogoResId != null -> {
+                SubcomposeAsyncImage(
+                    model = localLogoResId,
+                    contentDescription = "${profile.name} 官方 Logo",
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)),
+                    contentScale = ContentScale.Fit,
+                    imageLoader = imageLoader,
+                    loading = { GenericApiLogo() },
+                    error = { GenericApiLogo() },
+                    success = { SubcomposeAsyncImageContent() },
+                )
+            }
             spec.useGoogleTranslate -> GoogleTranslateIcon(imageLoader)
             // 已规范化的 192×192 透明 PNG，已留好统一边距，直接 Fit 进 40dp 即可贴合卡片。
             downloadedLogo != null -> {

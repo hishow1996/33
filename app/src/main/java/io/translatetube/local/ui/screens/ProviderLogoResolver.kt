@@ -146,7 +146,15 @@ internal object ProviderLogoResolver {
         val host = runCatching { URI(baseUrl.trim()).host }.getOrNull().orEmpty().lowercase(Locale.ROOT)
         val label = name.lowercase(Locale.ROOT)
         val ids = LinkedHashSet<String>()
-        if (type == "GEMINI") ids.add("gemini")
+        when (type) {
+            "DEEPL" -> ids.add("deepl")
+            "BAIDU_API" -> ids.add("baidu")
+            "AZURE" -> ids.add("microsoft")
+            "TENCENT" -> ids.add("tencentcloud")
+            "ALIYUN" -> ids.add("alibabacloud")
+            "LIBRETRANSLATE" -> ids.add("libretranslate")
+            "GEMINI" -> ids.add("gemini")
+        }
         for ((keywords, brandIds) in brandTable) {
             if (keywords.any { host.contains(it) }) ids.addAll(brandIds)
         }
@@ -159,6 +167,12 @@ internal object ProviderLogoResolver {
     /** 关键词 → 品牌图标库（lobehub/lobe-icons）里的图标 id，靠前的 id 优先。 */
     private val brandTable: List<Pair<List<String>, List<String>>> = listOf(
         listOf("gemini", "generativelanguage") to listOf("gemini"),
+        listOf("deepl", "deepl.com") to listOf("deepl"),
+        listOf("baidu translate", "百度翻译", "fanyi.baidu.com") to listOf("baidu"),
+        listOf("microsoft translator", "microsofttranslator", "微软翻译") to listOf("microsoft"),
+        listOf("tencentcloud", "tencent cloud", "cloud.tencent.com", "腾讯云") to listOf("tencentcloud"),
+        listOf("alibabacloud", "aliyun", "aliyuncs", "阿里云") to listOf("alibabacloud"),
+        listOf("libretranslate") to listOf("libretranslate"),
         listOf("deepseek", "深度求索") to listOf("deepseek"),
         listOf("openai", "chatgpt") to listOf("openai"),
         listOf("anthropic", "claude") to listOf("claude", "anthropic"),
