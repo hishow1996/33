@@ -26,6 +26,7 @@
 # Explicit APK build trigger for latest application source commit 92165991ce9dc95130f014b071d7b3faea5c815b.
 # User-requested build of the latest main source (2026-10-19).
 name: Build Android APK
+# User-requested rebuild for the latest dubbing-engine switch fix (2026-10-25).
 
 # Explicit APK build retry after fixing the storage-management icon compile error.
 
