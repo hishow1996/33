@@ -211,3 +211,5 @@ jobs:
 # Explicit one-time APK rebuild requested on 2026-10-25 after fixing ApiManagerScreen.kt when-expression syntax (commit 534b3940).
 
 # Explicit one-time APK rebuild requested on 2026-10-25 after adding DeepL OkHttp Cookie and CookieJar imports (commit 84605f51).
+
+# Explicit user-requested APK build trigger for latest main including SMaLL-100 integration and restored hand-drawn logo (2026-10-25).
