@@ -1808,7 +1808,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     connectionMessage?.let { message ->
                         Text(
                             message,
-                            color = if (message.startsWith("连接成功")) Color(0xFF21945A) else DangerRed,
+                            color = if (message.startsWith("连接成功") || message.startsWith("模型连接成功")) Color(0xFF21945A) else DangerRed,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
