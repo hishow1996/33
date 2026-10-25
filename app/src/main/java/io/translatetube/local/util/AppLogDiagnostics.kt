@@ -45,7 +45,7 @@ object AppLogDiagnostics {
             hasAny("couldn't inflate contentviews", "contentviews") &&
             hasAny("concurrentmodificationexception")
         ) {
-            val notificationId = Regex("""(?i)\\bid=(-?\\d+)""")
+            val notificationId = Regex("""(?i)\bid=(-?\d+)""")
                 .find(raw)?.groupValues?.getOrNull(1)
             val idEvidence = notificationId?.let { "系统异常消息报告的通知 ID=$it" }
                 ?: "系统异常消息未提取到通知 ID"
