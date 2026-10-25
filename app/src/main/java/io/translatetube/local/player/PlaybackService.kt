@@ -340,8 +340,23 @@ private const val STARTUP_READ_HEAD_FREEZE_MS = 2_000L
 /** 开播前 flush 之后，位置不连续回调保留总线的有效期。 */
 private const val STARTUP_FLUSH_KEEP_BUS_NANOS = 1_500_000_000L
 
+// Media3's DefaultMediaNotificationProvider uses notification ID 1001 for media controls.
+// Processing progress must use a distinct ID so BigTextStyle updates cannot replace MediaStyle.
+private const val PROCESSING_NOTIFICATION_ID = 1004
+private const val PROCESSING_NOTIFICATION_MIN_INTERVAL_MS = 750L
+
 class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Serialize notification creation and posting on the main looper; StateFlow progress ticks
+    // can otherwise race with direct service commands while Android is inflating the same notice.
+    private val processingNotificationHandler = Handler(Looper.getMainLooper())
+    private val processingNotificationUpdateLock = Any()
+    private var processingNotificationUpdateScheduled = false
+    private var processingNotificationUpdatePending = false
+    @Volatile private var processingNotificationShuttingDown = false
+    @Volatile private var lastProcessingNotificationPostedAtMs = 0L
+    private var lastProcessingNotificationFingerprint: String? = null
+    private val processingNotificationUpdateRunnable = Runnable { drainProcessingNotificationUpdate() }
     private lateinit var pm: PlayerManager
     // A seek can trigger transient buffering/state callbacks after the immediate play() call.
     // Retry playback once on ExoPlayer's main looper, but cancel the retry on an explicit pause.
@@ -1299,7 +1314,67 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun updateProcessingNotification(state: PlayerUiState) {
-        if (!playerReady && state.phase == Phase.IDLE) return
+        if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
+        val delayMs = synchronized(processingNotificationUpdateLock) {
+            processingNotificationUpdatePending = true
+            if (processingNotificationUpdateScheduled) return
+            processingNotificationUpdateScheduled = true
+            nextProcessingNotificationDelayLocked()
+        }
+        processingNotificationHandler.postDelayed(processingNotificationUpdateRunnable, delayMs)
+    }
+
+    private fun nextProcessingNotificationDelayLocked(): Long {
+        val lastPostedAt = lastProcessingNotificationPostedAtMs
+        if (lastPostedAt <= 0L) return 0L
+        return (lastPostedAt + PROCESSING_NOTIFICATION_MIN_INTERVAL_MS -
+            android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+    }
+
+    private fun drainProcessingNotificationUpdate() {
+        val shouldPublish = synchronized(processingNotificationUpdateLock) {
+            if (!processingNotificationUpdatePending) {
+                processingNotificationUpdateScheduled = false
+                false
+            } else {
+                processingNotificationUpdatePending = false
+                true
+            }
+        }
+        if (!shouldPublish || processingNotificationShuttingDown) return
+
+        // Read the current StateFlow value at execution time, not an older queued emission. This
+        // prevents a late progress update from the previous URL replacing the new session status.
+        publishProcessingNotification(ui.value)
+
+        synchronized(processingNotificationUpdateLock) {
+            if (processingNotificationUpdatePending && !processingNotificationShuttingDown) {
+                processingNotificationHandler.postDelayed(
+                    processingNotificationUpdateRunnable,
+                    nextProcessingNotificationDelayLocked(),
+                )
+            } else {
+                processingNotificationUpdateScheduled = false
+                processingNotificationUpdatePending = false
+            }
+        }
+    }
+
+    private fun publishProcessingNotification(state: PlayerUiState) {
+        if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
+        val preparationIncomplete = isDubbingPreparationIncomplete(state)
+        val shouldShowProcessingNotification = when (state.phase) {
+            Phase.IDLE -> false
+            Phase.READY -> state.waitingForTranscriptionEngine || state.waitingForDubbingEngine ||
+                preparationIncomplete || state.dubbingHasErrors
+            else -> true
+        }
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (!shouldShowProcessingNotification) {
+            manager.cancel(PROCESSING_NOTIFICATION_ID)
+            lastProcessingNotificationFingerprint = null
+            return
+        }
         val (title, detail) = when (state.phase) {
             Phase.PARSING -> "正在分析视频" to state.progress.ifBlank { "正在获取视频信息与字幕" }
             Phase.DOWNLOADING_AUDIO -> "正在准备音轨" to state.progress.ifBlank { "正在检查并读取视频音频" }
@@ -1325,7 +1400,7 @@ class PlaybackService : MediaSessionService() {
                                 "已可以播放视频；配置对应引擎后重新打开视频以继续处理"
                             }
                         }
-                    isDubbingPreparationIncomplete(state) ->
+                    preparationIncomplete ->
                         (if (state.dubbingHasErrors) "配音部分失败 · 仍在准备" else if (state.isPlaying) "播放中 · 配音准备" else "正在准备配音") to if (state.totalLines > 0) {
                             "已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行配音" +
                                 if (state.dubbingHasErrors) "；失败字幕暂用原声" else ""
@@ -1357,7 +1432,7 @@ class PlaybackService : MediaSessionService() {
             Phase.SYNTHESIZING -> if (state.totalLines > 0) {
                 (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else ratioPercentFromProgress(state.progress)
-            Phase.READY -> if (isDubbingPreparationIncomplete(state) && state.totalLines > 0) {
+            Phase.READY -> if (preparationIncomplete && state.totalLines > 0) {
                 (state.preparedCount.coerceIn(0, state.totalLines) * 100f / state.totalLines).toInt().coerceIn(0, 100)
             } else null
             else -> null
@@ -1366,19 +1441,28 @@ class PlaybackService : MediaSessionService() {
             measuredPercent != null &&
             !Regex("\\d+(?:\\.\\d+)?%").containsMatchIn(detail)
         ) "$detail · $measuredPercent%" else detail
+        val ongoing = state.isPlaying || preparationIncomplete ||
+            state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
+        val hasProcessingActions = isProcessingPhase(state.phase)
+        val notificationFingerprint = listOf(
+            state.phase.name,
+            state.key,
+            title,
+            displayDetail,
+            measuredPercent?.toString().orEmpty(),
+            state.isProcessingPaused.toString(),
+            ongoing.toString(),
+            hasProcessingActions.toString(),
+        ).joinToString("\\u001f")
+        if (notificationFingerprint == lastProcessingNotificationFingerprint) return
 
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val notification = NotificationCompat.Builder(this, CH_MAIN)
             .setSmallIcon(R.drawable.ic_stat_brand)
             .setContentTitle(if (state.isProcessingPaused) "已暂停 · $title" else title)
             .setContentText(if (state.isProcessingPaused) "已暂停 · $displayDetail" else displayDetail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(displayDetail))
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-            .setOngoing(
-                state.isPlaying ||
-                    isDubbingPreparationIncomplete(state) ||
-                    state.phase !in setOf(Phase.READY, Phase.ERROR, Phase.IDLE)
-            )
+            .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
             .setContentIntent(
                 PendingIntent.getActivity(
@@ -1388,7 +1472,7 @@ class PlaybackService : MediaSessionService() {
                 )
             )
             .apply {
-                if (isProcessingPhase(state.phase)) {
+                if (hasProcessingActions) {
                     val toggleIntent = Intent(this@PlaybackService, PlaybackService::class.java)
                         .setAction(ACTION_TOGGLE_PROCESSING_PAUSE)
                         .setData(Uri.parse("translate-tube://processing/pause/" + Uri.encode(state.key)))
@@ -1425,7 +1509,9 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             .build()
-        manager.notify(1001, notification)
+        manager.notify(PROCESSING_NOTIFICATION_ID, notification)
+        lastProcessingNotificationFingerprint = notificationFingerprint
+        lastProcessingNotificationPostedAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
     private fun percentFromProgress(progress: String): Int? {
@@ -1632,6 +1718,16 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        processingNotificationShuttingDown = true
+        processingNotificationHandler.removeCallbacks(processingNotificationUpdateRunnable)
+        synchronized(processingNotificationUpdateLock) {
+            processingNotificationUpdatePending = false
+            processingNotificationUpdateScheduled = false
+        }
+        runCatching {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.cancel(PROCESSING_NOTIFICATION_ID)
+        }
         enginePreferenceRestartJob?.cancel()
         enginePreferenceRestartJob = null
         enginePreferencesListener?.let { listener ->
