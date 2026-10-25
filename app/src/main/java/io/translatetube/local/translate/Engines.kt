@@ -455,8 +455,9 @@ object MlKitModelCoordinator {
 
 /** 本地离线翻译（ML Kit bundled 引擎；语言模型首次下载后永久离线） */
 class MlKitEngine : TranslationEngine {
-    override val id = "mlkit-local"
-    override val displayName = "本地引擎（离线）"
+    // Preserve the original engine ID because legacy playback paths use "local" for offline translation.
+    override val id = "local"
+    override val displayName = "ML Kit 本地翻译"
 
     private suspend fun ensureModel(lang: String) {
         MlKitModelCoordinator.ensureDownloaded(lang)

@@ -173,9 +173,16 @@ internal object OpusMtRuntime {
                         ?: throw IOException("OPUS-MT 编码器没有输出")
                     val value = result.get(name).orElseThrow { IOException("编码器没有输出：$name") }
                     val info = value.info as? TensorInfo ?: throw IOException("编码器输出不是张量")
-                    val flat = flattenFloats(value.value)
-                    if (flat.isEmpty() || info.shape.isEmpty()) throw IOException("编码器输出为空")
-                    return flat to info.shape
+                    val shape = info.shape
+                    val expectedSize = shape.fold(1L) { total, dimension ->
+                        if (dimension <= 0L || total > Int.MAX_VALUE.toLong() / dimension) {
+                            throw IOException("编码器输出形状过大或无效")
+                        }
+                        total * dimension
+                    }.toInt()
+                    val flat = flattenFloats(value.value, expectedSize)
+                    if (flat.isEmpty() || shape.isEmpty()) throw IOException("编码器输出为空")
+                    return flat to shape
                 }
             } finally {
                 inputs.values.forEach { runCatching { it.close() } }
@@ -217,19 +224,12 @@ internal object OpusMtRuntime {
                         ?: throw IOException("OPUS-MT 解码器没有输出")
                     val value = result.get(name).orElseThrow { IOException("解码器没有输出：$name") }
                     val info = value.info as? TensorInfo ?: throw IOException("解码器输出不是张量")
-                    val shape = info.shape
-                    val logits = flattenFloats(value.value)
-                    if (shape.isEmpty() || logits.isEmpty()) throw IOException("解码器 logits 为空")
-                    val vocabulary = shape.last().toInt()
-                    val sequence = if (shape.size >= 2) shape[shape.size - 2].toInt() else 1
-                    val offset = (sequence - 1).coerceAtLeast(0) * vocabulary
-                    if (vocabulary <= 0 || offset + vocabulary > logits.size) {
-                        throw IOException("解码器输出形状异常")
-                    }
+                    val logits = lastTokenLogits(value.value, info.shape)
+                    if (logits.isEmpty()) throw IOException("解码器 logits 为空")
                     var best = 0
                     var bestScore = Float.NEGATIVE_INFINITY
-                    for (index in 0 until vocabulary) {
-                        val score = logits[offset + index]
+                    for (index in logits.indices) {
+                        val score = logits[index]
                         if (score > bestScore) {
                             bestScore = score
                             best = index
@@ -243,18 +243,65 @@ internal object OpusMtRuntime {
             }
         }
 
-        private fun flattenFloats(value: Any?): FloatArray {
-            val output = ArrayList<Float>()
+        private fun lastTokenLogits(value: Any?, shape: LongArray): FloatArray {
+            val vocabulary = shape.lastOrNull()?.toInt() ?: throw IOException("解码器输出形状为空")
+            if (vocabulary <= 0) throw IOException("解码器词表维度无效")
+            if (value is FloatArray) {
+                if (value.size < vocabulary) throw IOException("解码器 logits 长度不足")
+                return value.copyOfRange(value.size - vocabulary, value.size)
+            }
+
+            var current = value
+            if (shape.size >= 3) {
+                if (current == null || !current.javaClass.isArray || JavaArray.getLength(current) == 0) {
+                    throw IOException("解码器 logits 缺少 batch 维度")
+                }
+                current = JavaArray.get(current, 0)
+            }
+            if (shape.size >= 2) {
+                val sequenceLength = shape[shape.size - 2].toInt()
+                if (sequenceLength <= 0 || current == null || !current.javaClass.isArray ||
+                    JavaArray.getLength(current) < sequenceLength
+                ) {
+                    throw IOException("解码器 logits 缺少序列维度")
+                }
+                current = JavaArray.get(current, sequenceLength - 1)
+            }
+            if (current is FloatArray) {
+                if (current.size != vocabulary) throw IOException("解码器最后一行 logits 长度异常")
+                return current.copyOf()
+            }
+
+            // Fallback for alternate ONNX Runtime output representations.
+            val flattened = flattenFloats(value, null)
+            if (flattened.size < vocabulary) throw IOException("解码器 logits 为空")
+            return flattened.copyOfRange(flattened.size - vocabulary, flattened.size)
+        }
+
+        /** Uses primitive FloatArray storage instead of boxed Float objects for large ONNX outputs. */
+        private fun flattenFloats(value: Any?, expectedSize: Int?): FloatArray {
+            var output = FloatArray(expectedSize?.coerceAtLeast(1) ?: 4096)
+            var size = 0
             fun visit(current: Any?) {
                 if (current == null) return
-                if (current is Number) {
-                    output += current.toFloat()
-                } else if (current.javaClass.isArray) {
-                    for (index in 0 until JavaArray.getLength(current)) visit(JavaArray.get(current, index))
+                when (current) {
+                    is Number -> {
+                        if (size == output.size) {
+                            val nextSize = if (output.size < 1_048_576) output.size * 2 else output.size + 1_048_576
+                            output = output.copyOf(nextSize)
+                        }
+                        output[size++] = current.toFloat()
+                    }
+                    else -> if (current.javaClass.isArray) {
+                        for (index in 0 until JavaArray.getLength(current)) visit(JavaArray.get(current, index))
+                    }
                 }
             }
             visit(value)
-            return output.toFloatArray()
+            if (expectedSize != null && size != expectedSize) {
+                throw IOException("ONNX 输出元素数量不匹配，预期 $expectedSize，实际 $size")
+            }
+            return if (size == output.size) output else output.copyOf(size)
         }
     }
 

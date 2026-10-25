@@ -13,8 +13,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 enum class OpusMtStatus { NOT_DOWNLOADED, DOWNLOADING, PAUSED, READY, FAILED }
@@ -39,6 +41,7 @@ object OpusMtModelManager {
         val name: String,
         val url: String,
         val minBytes: Long,
+        val sha256: String,
     )
 
     private const val MIB = 1024L * 1024L
@@ -48,21 +51,25 @@ object OpusMtModelManager {
             "encoder_model_quantized.onnx",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/onnx/encoder_model_quantized.onnx",
             50L * MIB,
+            "cb02c542d2ab3010766031f3ce04e9041ffb6bd2df15caa7c41f3aead7cfe6dc",
         ),
         ModelFile(
             "decoder_model_quantized.onnx",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/onnx/decoder_model_quantized.onnx",
             180L * MIB,
+            "ddb2e3913bbdb0622545ad589cba0f05d8621cbc14096d13c6dc6cd17d61c13a",
         ),
         ModelFile(
             "source.spm",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/source.spm",
             500L * 1024L,
+            "5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8",
         ),
         ModelFile(
             "target.spm",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/target.spm",
             500L * 1024L,
+            "81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052",
         ),
     )
 
@@ -106,6 +113,23 @@ object OpusMtModelManager {
                 marker.readText(Charsets.UTF_8).trim() == validationSignature(context)
             }.getOrDefault(false)
     }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private fun hasValidContent(file: File, spec: ModelFile): Boolean =
+        file.isFile && file.length() >= spec.minBytes &&
+            runCatching { sha256(file).equals(spec.sha256, ignoreCase = true) }.getOrDefault(false)
 
     private fun writeReadyMarker(context: Context) {
         val marker = readyMarker(context)
@@ -185,16 +209,28 @@ object OpusMtModelManager {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val target = File(dir, spec.name)
                 if (target.isFile && target.length() >= spec.minBytes) {
-                    mutableState.value = OpusMtDownloadState(
-                        status = OpusMtStatus.DOWNLOADING,
-                        progress = ((index + 1) * 100 / files.size),
-                        currentFile = spec.name,
-                        fileIndex = index + 1,
-                        fileCount = files.size,
-                        downloadedBytes = target.length(),
-                        totalBytes = target.length(),
+                    if (hasValidContent(target, spec)) {
+                        mutableState.value = OpusMtDownloadState(
+                            status = OpusMtStatus.DOWNLOADING,
+                            progress = ((index + 1) * 100 / files.size),
+                            currentFile = spec.name,
+                            fileIndex = index + 1,
+                            fileCount = files.size,
+                            downloadedBytes = target.length(),
+                            totalBytes = target.length(),
+                        )
+                        return@forEachIndexed
+                    }
+                    AppLogStore.warning(
+                        app,
+                        "LocalTranslationModel",
+                        "发现已保存模型文件与官方校验值不一致，将重新下载该文件",
+                        diagnosticContext = mapOf(
+                            "模型文件" to spec.name,
+                            "现有文件字节" to target.length().toString(),
+                        ),
                     )
-                    return@forEachIndexed
+                    if (!target.delete()) throw IOException("无法删除校验失败的模型文件：${spec.name}")
                 }
                 AppLogStore.info(
                     app,
@@ -367,6 +403,13 @@ object OpusMtModelManager {
                 }
                 if (totalLength > 0L && finalSize != totalLength) {
                     throw IOException("文件长度不匹配：${spec.name}，预期 $totalLength 字节，当前 $finalSize 字节")
+                }
+                val actualSha256 = sha256(part)
+                if (!actualSha256.equals(spec.sha256, ignoreCase = true)) {
+                    part.delete()
+                    throw IOException(
+                        "模型文件 SHA-256 校验失败：${spec.name}。已清除损坏文件，可重新下载。"
+                    )
                 }
                 if (target.exists() && !target.delete()) throw IOException("无法替换旧模型文件：${spec.name}")
                 if (!part.renameTo(target)) {
