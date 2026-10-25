@@ -133,6 +133,19 @@ private object ReadyHistorySessionConfigStore {
         dubbing = domainFingerprint(context, EngineConfigDomain.DUBBING),
     )
 
+    /**
+     * Detect whether the selected engines differ from the last successful run for this video.
+     * A changed configuration must synthesize fresh Chinese speech even if a matching subtitle
+     * snapshot for this configuration is already available.
+     */
+    fun hasEngineConfigChangedSinceLastSuccess(context: Context, videoKey: String): Boolean {
+        val previous = savedFingerprints(context, videoKey) ?: return false
+        val current = fingerprints(context)
+        return previous.transcription != current.transcription ||
+            previous.translation != current.translation ||
+            previous.dubbing != current.dubbing
+    }
+
     fun savedProcessingFlow(context: Context, videoKey: String): ProcessingFlow? {
         if (videoKey.isBlank()) return null
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -603,6 +616,7 @@ class PlaybackService : MediaSessionService() {
                 requestToken = requestToken,
                 reuseMountedMediaForRestart = true,
                 restoreReadySnapshot = true,
+                forceRegenerateDubbing = true,
             )
             return true
         }
@@ -650,6 +664,7 @@ class PlaybackService : MediaSessionService() {
                 remoteMediaUserAgent = remoteMediaUserAgent,
                 requestToken = requestToken,
                 reuseMountedMediaForRestart = true,
+                forceRegenerateDubbing = true,
             )
             return true
         }
@@ -866,6 +881,7 @@ class PlaybackService : MediaSessionService() {
                                 remoteMediaCookie = restartRemoteCookie,
                                 remoteMediaUserAgent = restartRemoteUserAgent,
                                 requestToken = restartRequestToken,
+                                forceRegenerateDubbing = true,
                             )
                         }
                     }
@@ -2112,6 +2128,7 @@ class PlaybackService : MediaSessionService() {
         requestToken: Long = 0L,
         reuseMountedMediaForRestart: Boolean = false,
         restoreReadySnapshot: Boolean = false,
+        forceRegenerateDubbing: Boolean = false,
     ) {
         val reusableSnapshot = if (resumeState == null && importedLines == null) {
             ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
@@ -2120,6 +2137,8 @@ class PlaybackService : MediaSessionService() {
         } else null
         val effectiveResumeState = resumeState ?: reusableSnapshot?.state
         val restoreCompletedSnapshot = restoreReadySnapshot || reusableSnapshot != null
+        val regenerateDubbingThisRun = forceRegenerateDubbing ||
+            ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
         val reuseMountedMedia = (effectiveResumeState != null || reuseMountedMediaForRestart) &&
@@ -2266,7 +2285,8 @@ class PlaybackService : MediaSessionService() {
                 "播放请求标记" to requestToken.toString(),
                 "是否使用历史结果恢复" to (effectiveResumeState != null).toString(),
                 "是否直接恢复完整成功会话" to restoreCompletedSnapshot.toString(),
-                "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString(),
+                "本次是否强制重新合成中文配音" to regenerateDubbingThisRun.toString(),
+                "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString()
                 "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
                 "恢复的源语言" to effectiveResumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
                 "本次选择的配音引擎" to configuredTtsName,
@@ -2277,7 +2297,7 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
-                runPipeline(key, pipelineGeneration, videoId, localUri, effectiveResumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie, reuseMountedMedia, restoreCompletedSnapshot)
+                runPipeline(key, pipelineGeneration, videoId, localUri, effectiveResumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie, reuseMountedMedia, restoreCompletedSnapshot, regenerateDubbingThisRun)
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
                 if (
@@ -3432,6 +3452,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         requestedRemoteMediaCookie: String? = null,
         reuseMountedMedia: Boolean = false,
         restoreCompletedSnapshot: Boolean = false,
+        forceRegenerateDubbing: Boolean = false,
     ) {
         // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
         // switch this session to the existing yt-dlp media URL pipeline and continue with audio ASR.
@@ -4797,7 +4818,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         }
                         registerDubbingFailureHandler(d, tts, key)
                         try {
-                            d.attach(tts, finalLines, sourceLanguage = srcLang)
+                            d.attach(tts, finalLines, sourceLanguage = srcLang, forceRegenerateDubbing = forceRegenerateDubbing)
                         } catch (e: Exception) {
                             retireDubbing(d)
                             runCatching { tts.close() }
