@@ -476,12 +476,6 @@ internal object OpusMtRuntime {
         }
     }
 
-    @Synchronized
-    fun closeLoadedModel() {
-        loaded?.close()
-        loaded = null
-    }
-
     private const val DECODER_START_TOKEN = 65000L
     private const val PAD_TOKEN = 65000
     private const val EOS_TOKEN = 0
