@@ -377,7 +377,9 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                     Icon(Icons.Filled.Add, contentDescription = "添加 API", tint = BrandBright)
                 }
             } else {
-                Spacer(Modifier.width(44.dp))
+                // Keep the header row's measured height identical on both tabs. A width-only
+                // spacer collapses vertically and makes the back icon/title jump when switching.
+                Spacer(Modifier.size(44.dp))
             }
         }
 
