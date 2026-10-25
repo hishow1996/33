@@ -3384,7 +3384,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             EngineFactory.ID_LOCAL_MLKIT -> "mlkit-local"
             EngineFactory.ID_LOCAL_OPUS -> "opus-mt-en-zh-4dc37af-onnx-quantized-v2"
             EngineFactory.ID_LOCAL_SMALL100 -> "small100-multilingual-onnx"
-            else -> if (active != null) "api-profile" else "local-fallback"
+            else -> when {
+                EngineFactory.isLocalTranslationEngine(activeId) -> "local-model-$activeId"
+                active != null -> "api-profile"
+                else -> "unregistered-engine-$activeId"
+            }
         }
         val sourceLanguageMode = getSharedPreferences("settings", MODE_PRIVATE)
             .getString("translation_source_language", "auto")
@@ -5333,7 +5337,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         }
     }
 
-    /** 按活跃引擎翻译，失败自动降级：API→本地→原文 */
+    /** 按当前选定的翻译引擎处理字幕；配置不可用时明确报错，不静默替换引擎。 */
     /** 按小批次翻译；每批完成就写入真实进度，避免整批请求期间进度停滞。 */
     private suspend fun translateLines(
         key: String,
@@ -5388,36 +5392,45 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             checkTranslationActive(index)
             plain += line.text
         }
-        var engine: TranslationEngine? = null
-        var engineName = ""
-
-        // Keep old preference values valid while treating local and online translation as one Google engine.
-        if (activeId == -1L || activeId == -2L) {
-            engine = GoogleHybridEngine(this)
-            engineName = engine.displayName
-        } else if (activeId == EngineFactory.ID_FREE_GEMINI || activeId == EngineFactory.ID_FREE_DEEPSEEK) {
-            engine = EngineFactory.getBuiltinEngine(activeId, this)
-            engineName = if (activeId == EngineFactory.ID_FREE_GEMINI) "Google Gemini (免费)" else "DeepSeek (免费)"
-        } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL || activeId == EngineFactory.ID_LOCAL_MLKIT || activeId == EngineFactory.ID_LOCAL_OPUS || activeId == EngineFactory.ID_LOCAL_SMALL100) {
-            engine = EngineFactory.getBuiltinEngine(activeId, this)
-            engineName = engine?.displayName.orEmpty()
+        // Resolve every built-in translation engine through the same factory. Adding a new
+        // local model to EngineFactory then automatically places it on the normal subtitle,
+        // cache, retry, and dubbing pipeline instead of requiring another hand-maintained list.
+        var engine: TranslationEngine? = EngineFactory.getBuiltinEngine(activeId, this)
+        var engineName = when (activeId) {
+            EngineFactory.ID_FREE_GEMINI -> "Google Gemini (免费)"
+            EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek (免费)"
+            else -> engine?.displayName.orEmpty()
         }
         val active = profiles.firstOrNull { it.id == activeId }
         if (engine == null && active != null) {
-            try {
-                engine = EngineFactory.fromProfile(active)
-                engineName = active.name
-            } catch (e: Exception) { /* 坏配置 → 落到本地 */ }
+            engine = try {
+                EngineFactory.fromProfile(active).also { engineName = active.name }
+            } catch (failure: Exception) {
+                throw IllegalStateException(
+                    "所选翻译服务“${active.name}”配置无法初始化：${failure.message ?: failure.javaClass.simpleName}。" +
+                        "请检查 API 配置后重试；不会自动切换到其他翻译引擎。",
+                    failure,
+                )
+            }
         }
         if (engine == null) {
-            engine = MlKitEngine()
-            engineName = "本地引擎（离线）"
+            val localName = EngineFactory.localTranslationEngineName(activeId)
+            if (localName != null) {
+                throw IllegalStateException(
+                    "$localName 本地翻译引擎未能创建。请进入本地翻译管理页检查模型状态；不会自动改用其他引擎。"
+                )
+            }
+            throw IllegalStateException(
+                "当前选择的翻译引擎（配置编号 $activeId）不存在或已停用。请在 API 管理中重新选择；不会自动切换到其他引擎。"
+            )
         }
         // The Google hybrid engine can fall back to offline ML Kit. For these Google paths,
         // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
         // to abort every subtitle and prevent the video from playing.
         val sourceEchoAsUntranslatedFallback =
-            engine!!.id == "local" || engine!!.id == "mlkit-local" || engine!!.id == "opus-mt" || engine!!.id == "small100" || engine!!.id == "google-hybrid" ||
+            EngineFactory.isLocalTranslationEngine(activeId) ||
+                engine!!.id == "local" || engine!!.id == "mlkit-local" || engine!!.id == "opus-mt" ||
+                engine!!.id == "small100" || engine!!.id == "google-hybrid" ||
                 engine!!.id == "microsoft-web" || engine!!.id == "baidu-web"
         val pendingIndices = ArrayList<Int>()
         var completed = 0
@@ -5441,9 +5454,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             if (pendingIndices.isNotEmpty()) {
                 val preferredSource = prefs.getString("translation_source_language", "auto")
                     .orEmpty().ifBlank { "auto" }
-                val selectedLocalId = activeId == EngineFactory.ID_LOCAL_MLKIT ||
-                    activeId == EngineFactory.ID_LOCAL_OPUS ||
-                    activeId == EngineFactory.ID_LOCAL_SMALL100
+                val selectedLocalId = EngineFactory.isLocalTranslationEngine(activeId)
                 if (selectedLocalId && !SourceLanguagePolicy.isUndetermined(preferredSource)) {
                     val scriptDetected = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(plain)
                     val detectedSource = if (!SourceLanguagePolicy.isUndetermined(scriptDetected)) {
@@ -5620,12 +5631,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             } else {
                                 "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
                             }
-                        } else if (activeId == EngineFactory.ID_LOCAL_MLKIT || activeId == EngineFactory.ID_LOCAL_OPUS || activeId == EngineFactory.ID_LOCAL_SMALL100) {
-                            val localName = when (activeId) {
-                                EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT"
-                                EngineFactory.ID_LOCAL_SMALL100 -> "SMaLL-100"
-                                else -> "ML Kit"
-                            }
+                        } else if (EngineFactory.isLocalTranslationEngine(activeId)) {
+                            val localName = EngineFactory.localTranslationEngineName(activeId) ?: "本地翻译模型"
                             "$localName 本地翻译失败：$detail。请检查对应模型或源语言设置，或进入本地翻译管理页处理后重试。"
                         } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL) {
                             val name = when (activeId) {

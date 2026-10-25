@@ -954,6 +954,19 @@ object EngineFactory {
     const val ID_LOCAL_OPUS = -21L
     const val ID_LOCAL_SMALL100 = -22L
 
+    /** All downloaded/on-device translation models are first-class translation engines. */
+    fun isLocalTranslationEngine(activeId: Long): Boolean =
+        activeId == ID_LOCAL_MLKIT ||
+            activeId == ID_LOCAL_OPUS ||
+            activeId == ID_LOCAL_SMALL100
+
+    fun localTranslationEngineName(activeId: Long): String? = when (activeId) {
+        ID_LOCAL_MLKIT -> "ML Kit"
+        ID_LOCAL_OPUS -> "OPUS-MT"
+        ID_LOCAL_SMALL100 -> "SMaLL-100"
+        else -> null
+    }
+
     fun getBuiltinEngine(activeId: Long, context: Context): TranslationEngine? {
         val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         return when (activeId) {
