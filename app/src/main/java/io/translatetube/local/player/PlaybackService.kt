@@ -2297,7 +2297,21 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
-                runPipeline(key, pipelineGeneration, videoId, localUri, effectiveResumeState, importedLinesSnapshot, remoteMediaUrl, remoteMediaTitle, remoteMediaReferrer, remoteMediaCookie, reuseMountedMedia, restoreCompletedSnapshot, regenerateDubbingThisRun)
+                runPipeline(
+                    key = key,
+                    pipelineGeneration = pipelineGeneration,
+                    requestedVideoId = videoId,
+                    localUri = localUri,
+                    resumeState = effectiveResumeState,
+                    sourceImportedLines = importedLinesSnapshot,
+                    requestedRemoteMediaUrl = remoteMediaUrl,
+                    requestedRemoteMediaTitle = remoteMediaTitle,
+                    requestedRemoteMediaReferrer = remoteMediaReferrer,
+                    requestedRemoteMediaCookie = remoteMediaCookie,
+                    reuseMountedMedia = reuseMountedMedia,
+                    restoreCompletedSnapshot = restoreCompletedSnapshot,
+                    forceRegenerateDubbing = regenerateDubbingThisRun,
+                )
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
                 if (
@@ -4995,6 +5009,25 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
             }
             ensureCurrentSession(key, pipelineGeneration)
             saveHistory(meta)
+            if (forceRegenerateDubbing) {
+                // Do not leave the prior run's watch position as the history resume point after
+                // changing engines. The new subtitle/voice timeline is about to start at zero.
+                try {
+                    db.videoDao().setWatched(key, 0L)
+                } catch (error: Exception) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "重新合成配音后清零历史续播位置失败",
+                        error,
+                        diagnosticContext = mapOf(
+                            "视频来源" to diagnosticMediaSourceType(ui.value),
+                            "本次要求起播位置 ms" to "0",
+                            "保留的旧续播位置秒" to (db.videoDao().byKey(key)?.watchedSec ?: -1L).toString(),
+                        ),
+                    )
+                }
+            }
             ensureCurrentSession(key, pipelineGeneration)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
@@ -5061,6 +5094,22 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     startPlaybackWithMountedDubbing(startPositionMs) {
                         ensureCurrentSession(key, pipelineGeneration)
                     }
+                }
+                if (forceRegenerateDubbing) {
+                    val actualStartPositionMs = runCatching { pm.position() }.getOrDefault(-1L)
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "重新合成后的起播位置检查完成",
+                        diagnosticContext = mapOf(
+                            "视频来源" to diagnosticMediaSourceType(ui.value),
+                            "请求起播位置 ms" to "0",
+                            "起播调用后播放器位置 ms" to actualStartPositionMs.toString(),
+                            "播放器播放意图" to runCatching { pm.player.playWhenReady.toString() }.getOrDefault("读取失败"),
+                            "播放器实际状态" to runCatching { pm.player.isPlaying.toString() }.getOrDefault("读取失败"),
+                            "是否重新合成配音" to "true",
+                        ),
+                    )
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
