@@ -952,6 +952,7 @@ object EngineFactory {
     const val ID_FREE_DEEPSEEK = -11L
     const val ID_LOCAL_MLKIT = -20L
     const val ID_LOCAL_OPUS = -21L
+    const val ID_LOCAL_SMALL100 = -22L
 
     fun getBuiltinEngine(activeId: Long, context: Context): TranslationEngine? {
         val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -959,6 +960,7 @@ object EngineFactory {
             ID_GOOGLE, ID_GOOGLE_ALT -> GoogleHybridEngine(context)
             ID_LOCAL_MLKIT -> MlKitEngine()
             ID_LOCAL_OPUS -> OpusMtEngine(context)
+            ID_LOCAL_SMALL100 -> Small100Engine(context)
             ID_MICROSOFT -> MicrosoftWebEngine()
             ID_BAIDU -> BaiduWebEngine()
             ID_DEEPL -> DeepLWebEngine()
