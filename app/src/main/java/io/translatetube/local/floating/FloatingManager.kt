@@ -24,7 +24,7 @@ class FloatingManager(private val ctx: Context) {
     fun canDraw(): Boolean = Settings.canDrawOverlays(ctx)
 
     @SuppressLint("ClickableViewAccessibility")
-    fun show(v: View, wPx: Int, hPx: Int): Boolean {
+    fun show(v: View, wPx: Int, hPx: Int, onWindowTap: () -> Unit = {}): Boolean {
         if (view != null) return true
         val displayMetrics = ctx.resources.displayMetrics
         val maxWidth = displayMetrics.widthPixels.coerceAtLeast(1)
@@ -45,45 +45,68 @@ class FloatingManager(private val ctx: Context) {
         }
         // 整体拖动
         var downX = 0f; var downY = 0f; var origX = 0; var origY = 0; var dragging = false
-        var resizing = false; var startW = 0; var startH = 0
+        var resizing = false; var movedWindow = false; var startW = 0; var startH = 0
+        val touchSlop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
+        // Invisible resize affordance in the bottom-right corner; keep it small so it
+        // does not overlap the normal seekbar or make the whole corner resize by accident.
+        val resizeTouchSize = (24f * displayMetrics.density).roundToInt().coerceAtLeast(24)
         v.setOnTouchListener { _, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = ev.rawX; downY = ev.rawY
                     origX = p.x; origY = p.y
                     startW = p.width; startH = p.height
-                    // 触点在右下 1/4 区域视为缩放
-                    resizing = ev.x > v.width * 0.75f && ev.y > v.height * 0.75f
+                    resizing = ev.x >= v.width - resizeTouchSize &&
+                        ev.y >= v.height - resizeTouchSize
                     dragging = !resizing
-                    // This overlay contains only the video surface. Consume DOWN so Android
-                    // continues delivering MOVE/UP and drag/resize can actually run.
+                    movedWindow = false
+                    // Child controls own their clicks. Unhandled touches on the video surface
+                    // remain available for dragging or toggling the control layer.
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    val dx = ev.rawX - downX
+                    val dy = ev.rawY - downY
                     if (resizing) {
-                        val nw = FloatingWindowPolicy.boundedDimension(
-                            (startW + (ev.rawX - downX)).roundToInt(), 280, maxWidth,
-                        )
-                        val nh = FloatingWindowPolicy.boundedDimension(
-                            (startH + (ev.rawY - downY)).roundToInt(), 200, maxHeight,
-                        )
-                        p.width = nw; p.height = nh
-                        p.x = FloatingWindowPolicy.boundedOffset(p.x, p.width, maxWidth)
-                        p.y = FloatingWindowPolicy.boundedOffset(p.y, p.height, maxHeight)
-                    } else if (dragging) {
+                        if (kotlin.math.abs(dx) >= touchSlop || kotlin.math.abs(dy) >= touchSlop) {
+                            movedWindow = true
+                            val nw = FloatingWindowPolicy.boundedDimension(
+                                (startW + dx).roundToInt(), 280, maxWidth,
+                            )
+                            val nh = FloatingWindowPolicy.boundedDimension(
+                                (startH + dy).roundToInt(), 200, maxHeight,
+                            )
+                            p.width = nw; p.height = nh
+                            p.x = FloatingWindowPolicy.boundedOffset(p.x, p.width, maxWidth)
+                            p.y = FloatingWindowPolicy.boundedOffset(p.y, p.height, maxHeight)
+                            try { wm?.updateViewLayout(v, p) } catch (_: Exception) {}
+                        }
+                    } else if (dragging && (movedWindow ||
+                            kotlin.math.abs(dx) >= touchSlop ||
+                            kotlin.math.abs(dy) >= touchSlop)
+                    ) {
+                        movedWindow = true
                         p.x = FloatingWindowPolicy.boundedOffset(
-                            origX + (ev.rawX - downX).roundToInt(), p.width, maxWidth,
+                            origX + dx.roundToInt(), p.width, maxWidth,
                         )
                         p.y = FloatingWindowPolicy.boundedOffset(
-                            origY + (ev.rawY - downY).roundToInt(), p.height, maxHeight,
+                            origY + dy.roundToInt(), p.height, maxHeight,
                         )
+                        try { wm?.updateViewLayout(v, p) } catch (_: Exception) {}
                     }
-                    try { wm?.updateViewLayout(v, p) } catch (_: Exception) {}
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP -> {
+                    if (!movedWindow && !resizing) onWindowTap()
                     dragging = false
                     resizing = false
+                    movedWindow = false
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    dragging = false
+                    resizing = false
+                    movedWindow = false
                     true
                 }
                 else -> false

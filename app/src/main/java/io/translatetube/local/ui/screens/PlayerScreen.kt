@@ -9,6 +9,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.animateFloat
@@ -44,6 +47,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -52,10 +57,12 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
@@ -278,6 +286,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
     val floating = remember { FloatingManager(ctx) }
     var isFloating by remember { mutableStateOf(false) }
+    val floatingControlsVisible = remember { mutableStateOf(true) }
+    val floatingControlsInteractionRevision = remember { mutableIntStateOf(0) }
     var floatingGranted by remember { mutableStateOf(floating.canDraw()) }
     // 从系统授权页返回时刷新悬浮窗权限状态
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -364,7 +374,55 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
         val host = FrameLayout(ctx)
         moveTextureViewTo(host)
-        val shown = floating.show(host, 640, 360)
+        androidx.lifecycle.ViewTreeLifecycleOwner.set(host, lifecycleOwner)
+        floatingControlsVisible.value = true
+        floatingControlsInteractionRevision.intValue++
+        val controlsView = ComposeView(ctx).apply {
+            setContent {
+                FloatingPlayerControls(
+                    controlsVisible = floatingControlsVisible,
+                    interactionRevision = floatingControlsInteractionRevision.intValue,
+                    onInteraction = { floatingControlsInteractionRevision.intValue++ },
+                    onFullscreen = {
+                        runCatching {
+                            ctx.startActivity(
+                                android.content.Intent(
+                                    ctx,
+                                    io.translatetube.local.MainActivity::class.java,
+                                ).apply {
+                                    addFlags(
+                                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                                            android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                                    )
+                                },
+                            )
+                        }
+                        exitFloating()
+                    },
+                    onClose = {
+                        PlaybackService.instance?.pausePlayback()
+                        PlaybackService.instance?.saveProgress()
+                        exitFloating()
+                    },
+                )
+            }
+        }
+        host.addView(
+            controlsView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        val shown = floating.show(
+            host,
+            640,
+            360,
+            onWindowTap = {
+                floatingControlsVisible.value = !floatingControlsVisible.value
+                floatingControlsInteractionRevision.intValue++
+            },
+        )
         if (shown && floating.isShowing()) {
             isFloating = true
         } else {
@@ -2387,6 +2445,287 @@ private fun ModeButton(
                 },
             )
             Text(title, color = labelColor, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+private fun formatFloatingTime(milliseconds: Long): String {
+    val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1_000L)
+    val seconds = totalSeconds % 60L
+    val minutes = (totalSeconds / 60L) % 60L
+    val hours = totalSeconds / 3_600L
+    return if (hours > 0L) {
+        String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(java.util.Locale.US, "%d:%02d", totalSeconds / 60L, seconds)
+    }
+}
+
+@Composable
+private fun FloatingIconControl(
+    icon: ImageVector,
+    description: String,
+    touchSize: androidx.compose.ui.unit.Dp,
+    iconSize: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .size(touchSize)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = Color.White,
+            modifier = Modifier.size(iconSize),
+        )
+    }
+}
+
+@Composable
+private fun FloatingPlayerControls(
+    controlsVisible: androidx.compose.runtime.MutableState<Boolean>,
+    interactionRevision: Int,
+    onInteraction: () -> Unit,
+    onFullscreen: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val service = PlaybackService.instance
+    val playbackState by PlaybackService.ui.collectAsState()
+    var positionMs by remember(playbackState.key) {
+        mutableStateOf(service?.position() ?: 0L)
+    }
+    var previewPositionMs by remember(playbackState.key) { mutableStateOf(0L) }
+    var scrubbing by remember(playbackState.key) { mutableStateOf(false) }
+    val durationMs = (service?.duration() ?: 0L)
+        .takeIf { it > 0L } ?: playbackState.durationMs.coerceAtLeast(0L)
+
+    LaunchedEffect(playbackState.key) {
+        while (true) {
+            if (!scrubbing) {
+                positionMs = (PlaybackService.instance?.position() ?: positionMs)
+                    .coerceAtLeast(0L)
+            }
+            delay(250)
+        }
+    }
+
+    LaunchedEffect(controlsVisible.value, interactionRevision, scrubbing) {
+        if (!controlsVisible.value || scrubbing) return@LaunchedEffect
+        delay(3_000)
+        controlsVisible.value = false
+    }
+
+    val visiblePosition = if (scrubbing) previewPositionMs else positionMs
+    val fraction = if (durationMs > 0L) {
+        (visiblePosition.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+
+    AnimatedVisibility(
+        visible = controlsVisible.value,
+        enter = fadeIn(animationSpec = tween(150)),
+        exit = fadeOut(animationSpec = tween(180)),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+            val compact = maxWidth < 190.dp
+            val topTouch = if (compact) 30.dp else 36.dp
+            val topIcon = if (compact) 19.dp else 22.dp
+            val sideTouch = if (compact) 34.dp else 42.dp
+            val sideIcon = if (compact) 21.dp else 25.dp
+            val centerTouch = if (compact) 38.dp else 48.dp
+            val centerIcon = if (compact) 27.dp else 34.dp
+            val controlsGap = if (compact) 5.dp else 16.dp
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FloatingIconControl(
+                    icon = Icons.Filled.Fullscreen,
+                    description = "返回应用播放界面",
+                    touchSize = topTouch,
+                    iconSize = topIcon,
+                    onClick = {
+                        onInteraction()
+                        onFullscreen()
+                    },
+                )
+                FloatingIconControl(
+                    icon = Icons.Filled.Close,
+                    description = "关闭悬浮窗口",
+                    touchSize = topTouch,
+                    iconSize = topIcon,
+                    onClick = {
+                        onInteraction()
+                        onClose()
+                    },
+                )
+            }
+
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalArrangement = Arrangement.spacedBy(controlsGap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FloatingIconControl(
+                    icon = Icons.Filled.Replay10,
+                    description = "后退 10 秒",
+                    touchSize = sideTouch,
+                    iconSize = sideIcon,
+                    onClick = {
+                        val current = (service?.position() ?: positionMs).coerceAtLeast(0L)
+                        val target = (current - 10_000L).coerceAtLeast(0L)
+                        service?.seek(target)
+                        positionMs = target
+                        onInteraction()
+                    },
+                )
+                FloatingIconControl(
+                    icon = if (playbackState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    description = if (playbackState.isPlaying) "暂停" else "播放",
+                    touchSize = centerTouch,
+                    iconSize = centerIcon,
+                    onClick = {
+                        if (playbackState.isPlaying) service?.pausePlayback()
+                        else service?.playPlayback()
+                        onInteraction()
+                    },
+                )
+                FloatingIconControl(
+                    icon = Icons.Filled.Forward10,
+                    description = "快进 10 秒",
+                    touchSize = sideTouch,
+                    iconSize = sideIcon,
+                    onClick = {
+                        val current = (service?.position() ?: positionMs).coerceAtLeast(0L)
+                        val target = if (durationMs > 0L) {
+                            (current + 10_000L).coerceAtMost(durationMs)
+                        } else {
+                            current + 10_000L
+                        }
+                        service?.seek(target)
+                        positionMs = target
+                        onInteraction()
+                    },
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 1.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = formatFloatingTime(visiblePosition),
+                        color = Color.White,
+                        fontSize = if (compact) 9.sp else 10.sp,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = formatFloatingTime(durationMs),
+                        color = Color.White,
+                        fontSize = if (compact) 9.sp else 10.sp,
+                        maxLines = 1,
+                    )
+                }
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (compact) 12.dp else 14.dp)
+                        .pointerInput(playbackState.key, durationMs) {
+                            detectTapGestures { offset ->
+                                if (durationMs > 0L && size.width > 0) {
+                                    val target = (
+                                        (offset.x / size.width.toFloat()).coerceIn(0f, 1f) *
+                                            durationMs.toFloat()
+                                        ).toLong().coerceIn(0L, durationMs)
+                                    service?.seek(target)
+                                    positionMs = target
+                                    onInteraction()
+                                }
+                            }
+                        }
+                        .pointerInput(playbackState.key, durationMs) {
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    scrubbing = true
+                                    if (durationMs > 0L && size.width > 0) {
+                                        val fractionAtTouch =
+                                            (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                        previewPositionMs =
+                                            (fractionAtTouch * durationMs.toFloat()).toLong()
+                                                .coerceIn(0L, durationMs)
+                                    }
+                                    onInteraction()
+                                },
+                                onDragEnd = {
+                                    if (durationMs > 0L) {
+                                        service?.seek(previewPositionMs.coerceIn(0L, durationMs))
+                                        positionMs = previewPositionMs.coerceIn(0L, durationMs)
+                                    }
+                                    scrubbing = false
+                                    onInteraction()
+                                },
+                                onDragCancel = {
+                                    scrubbing = false
+                                    onInteraction()
+                                },
+                            ) { change, _ ->
+                                change.consume()
+                                if (durationMs > 0L && size.width > 0) {
+                                    val fractionAtTouch =
+                                        (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                    previewPositionMs =
+                                        (fractionAtTouch * durationMs.toFloat()).toLong()
+                                            .coerceIn(0L, durationMs)
+                                }
+                            }
+                        },
+                ) {
+                    val lineHeight = 2.dp.toPx()
+                    val centerY = size.height / 2f
+                    val corner = CornerRadius(lineHeight / 2f, lineHeight / 2f)
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = 0.42f),
+                        topLeft = Offset(0f, centerY - lineHeight / 2f),
+                        size = Size(size.width, lineHeight),
+                        cornerRadius = corner,
+                    )
+                    val activeWidth = size.width * fraction
+                    if (activeWidth > 0f) {
+                        drawRoundRect(
+                            color = Color.White,
+                            topLeft = Offset(0f, centerY - lineHeight / 2f),
+                            size = Size(activeWidth, lineHeight),
+                            cornerRadius = corner,
+                        )
+                    }
+                }
+            }
         }
     }
 }
