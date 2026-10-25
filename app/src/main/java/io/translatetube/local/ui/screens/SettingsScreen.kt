@@ -252,27 +252,30 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         }
         val apiProfiles by AppDatabase.get(ctx).apiProfileDao().all()
             .collectAsState(initial = emptyList())
-        val translationLabel = apiProfiles
-            .firstOrNull { it.id == activeApiId && it.enabled }
-            ?.let { profile ->
-                listOf(profile.name.trim(), profile.model.trim())
-                    .filter { it.isNotBlank() }
-                    .joinToString(" · ")
-            }
-            ?.takeIf { it.isNotBlank() }
-            ?: when (activeApiId) {
-                io.translatetube.local.translate.EngineFactory.ID_GOOGLE -> "Google 翻译"
-                io.translatetube.local.translate.EngineFactory.ID_GOOGLE_ALT -> "本地/混合翻译"
-                io.translatetube.local.translate.EngineFactory.ID_MICROSOFT -> "微软翻译"
-                io.translatetube.local.translate.EngineFactory.ID_BAIDU -> "百度翻译"
-                io.translatetube.local.translate.EngineFactory.ID_DEEPL -> "DeepL 翻译"
-                io.translatetube.local.translate.EngineFactory.ID_FREE_GEMINI -> "Google Gemini"
-                io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek"
-                io.translatetube.local.translate.EngineFactory.ID_LOCAL_MLKIT -> "ML Kit 本地翻译"
-                io.translatetube.local.translate.EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT 本地翻译"
-                io.translatetube.local.translate.EngineFactory.ID_LOCAL_SMALL100 -> "SMaLL-100 本地翻译"
-                else -> "Google 翻译"
-            }
+        // Built-in/local engine IDs take precedence over saved API profiles so the
+        // workbench always shows the actual selected engine, including offline models.
+        val builtinTranslationLabel = when (activeApiId) {
+            io.translatetube.local.translate.EngineFactory.ID_GOOGLE -> "Google 翻译"
+            io.translatetube.local.translate.EngineFactory.ID_GOOGLE_ALT -> "本地/混合翻译"
+            io.translatetube.local.translate.EngineFactory.ID_MICROSOFT -> "微软翻译"
+            io.translatetube.local.translate.EngineFactory.ID_BAIDU -> "百度翻译"
+            io.translatetube.local.translate.EngineFactory.ID_DEEPL -> "DeepL 翻译"
+            io.translatetube.local.translate.EngineFactory.ID_FREE_GEMINI -> "Google Gemini"
+            io.translatetube.local.translate.EngineFactory.ID_FREE_DEEPSEEK -> "DeepSeek"
+            io.translatetube.local.translate.EngineFactory.ID_LOCAL_MLKIT -> "ML Kit（本地）"
+            io.translatetube.local.translate.EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT（本地）"
+            io.translatetube.local.translate.EngineFactory.ID_LOCAL_SMALL100 -> "SMaLL-100（本地）"
+            else -> null
+        }
+        val translationLabel = builtinTranslationLabel
+            ?: apiProfiles.firstOrNull { it.id == activeApiId && it.enabled }
+                ?.let { profile ->
+                    listOf(profile.name.trim(), profile.model.trim())
+                        .filter { it.isNotBlank() }
+                        .joinToString(" · ")
+                }
+                ?.takeIf { it.isNotBlank() }
+            ?: "Google 翻译"
 
         // Settings overview: surface the active engines before the detailed sections.
         Box(
