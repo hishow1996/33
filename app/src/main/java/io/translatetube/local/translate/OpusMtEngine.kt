@@ -37,23 +37,67 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
         tgtLang: String,
         sampleLines: List<String> = emptyList(),
     ): String {
-        val normalizedSource = SourceLanguagePolicy.sourceForTranslation(srcLang)
-        val detectedSource = if (SourceLanguagePolicy.isUndetermined(normalizedSource)) {
-            io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(sampleLines)
-        } else normalizedSource
-        val primary = SourceLanguagePolicy.normalizeTag(detectedSource)
-            .substringBefore('-').lowercase(Locale.ROOT)
-        val source = if (primary == "eng") "en" else primary
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
-        if (!LocalTranslationEnginePolicy.supportsOpusSource(source)) {
-            val sourceLabel = source.ifBlank { "未知" }
-            throw IllegalStateException(
-                "当前 OPUS-MT 支持英语、德语、芬兰语、瑞典语直接 → 简体中文，以及日语、韩语、俄语经英语中转 → 简体中文；当前源语言为“" +
-                    sourceLabel + "”。请下载相应语言模型，或改用 ML Kit/SMaLL-100。"
-            )
-        }
         if (target !in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn")) {
             throw IllegalStateException("当前 OPUS-MT 模型的目标语言是简体中文。")
+        }
+
+        val normalizedSource = SourceLanguagePolicy.sourceForTranslation(srcLang)
+        val sourceUndetermined = SourceLanguagePolicy.isUndetermined(normalizedSource)
+        // Some callers preflight the engine before subtitle text is available. Defer automatic
+        // language/model validation until the actual batch reaches translate().
+        if (sourceUndetermined && sampleLines.none { it.isNotBlank() }) return "auto"
+
+        val detectedSource = if (sourceUndetermined) {
+            io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(sampleLines)
+        } else normalizedSource
+        if (SourceLanguagePolicy.isUndetermined(detectedSource)) {
+            val nonBlankCues = sampleLines.count { it.isNotBlank() }
+            val sampleChars = sampleLines.filter { it.isNotBlank() }.sumOf { it.length }
+            AppLogStore.warning(
+                context.applicationContext,
+                "Translation",
+                "OPUS-MT 自动识别未能可靠确定源语言",
+                diagnosticContext = mapOf(
+                    "检测方式" to "设备端 ML Kit 语言识别与文字系统辅助判断",
+                    "采样字幕条数" to nonBlankCues.toString(),
+                    "采样字符数" to sampleChars.toString(),
+                    "未记录字幕原文" to "true",
+                ),
+            )
+            throw IllegalStateException(
+                "OPUS-MT 自动识别暂时无法可靠判断源语言。请提供更多原文字幕（建议连续几句）后重试，" +
+                    "或在翻译设置中手动选择源语言；为避免翻错，不会擅自猜测。"
+            )
+        }
+
+        val source = LocalTranslationEnginePolicy.canonicalOpusSource(detectedSource)
+        if (sourceUndetermined) {
+            AppLogStore.info(
+                context.applicationContext,
+                "Translation",
+                "OPUS-MT 自动识别源语言完成",
+                diagnosticContext = mapOf(
+                    "识别语言" to LangMap.display(source),
+                    "源语言代码" to source,
+                    "采样字幕条数" to sampleLines.count { it.isNotBlank() }.toString(),
+                    "采样字符数" to sampleLines.filter { it.isNotBlank() }.sumOf { it.length }.toString(),
+                    "未记录字幕原文" to "true",
+                ),
+            )
+        }
+        if (!LocalTranslationEnginePolicy.supportsOpusSource(source)) {
+            val sourceLabel = LangMap.display(source)
+            if (SourceLanguagePolicy.isChinese(source)) {
+                throw IllegalStateException(
+                    "OPUS-MT 已识别源语言为中文，但当前目标语言也是简体中文。请确认原文字幕语言，" +
+                        "或切换至支持的其他翻译引擎。"
+                )
+            }
+            throw IllegalStateException(
+                "OPUS-MT 已识别源语言为“$sourceLabel”（$source），但当前本地 OPUS-MT 仅支持英语、德语、芬兰语、" +
+                    "瑞典语、日语、韩语、俄语翻译至简体中文。请下载对应模型，或切换至 ML Kit/SMaLL-100。"
+            )
         }
         if (source == "en") {
             if (!OpusMtModelManager.isReady(context)) {
@@ -75,6 +119,7 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (lines.isEmpty()) return emptyList()
+        if (lines.none { it.isNotBlank() }) return lines.map { "" }
         val source = validateConfiguration(srcLang, tgtLang, lines)
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
 

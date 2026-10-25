@@ -7,8 +7,8 @@ import kotlinx.coroutines.tasks.await
 import java.util.Locale
 
 /**
- * On-device source-language identification for Latin-script captions that the Unicode-script
- * detector cannot distinguish. Only a bounded, in-memory sample of subtitle text is inspected.
+ * On-device source-language identification for a bounded, in-memory subtitle sample.
+ * Distinctive Japanese/Korean scripts are handled first; ML Kit helps distinguish other languages.
  */
 object MlKitSourceLanguageIdentifier {
     suspend fun detect(cues: Iterable<String>, maxCues: Int = 120): String {
@@ -24,8 +24,18 @@ object MlKitSourceLanguageIdentifier {
             if (remaining <= 0) break
             sample.append(cue, 0, minOf(cue.length, remaining))
         }
-        // Very short text is ambiguous; retain auto-detect behavior instead of guessing.
-        if (sample.length < 24 || sample.count { it.isLetter() } < 8) return "auto"
+        // Japanese kana and Korean Hangul are strong script clues, even in short captions.
+        SubtitleScriptLanguageHint.detect(sample)?.let { return it }
+
+        val letterCount = sample.count { it.isLetter() }
+        if (letterCount < 3) return "auto"
+        // Latin-script languages need a larger sample to avoid guessing from a short/common word.
+        // For non-Latin scripts (for example Cyrillic, Han, or Arabic), let ML Kit try a smaller
+        // sample; if its confidence is insufficient, the engine will ask the user rather than guess.
+        val hasNonLatinLetters = sample.any {
+            it.isLetter() && Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN
+        }
+        if (!hasNonLatinLetters && (sample.length < 24 || letterCount < 8)) return "auto"
 
         val identifier = LanguageIdentification.getClient(
             LanguageIdentificationOptions.Builder()

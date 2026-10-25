@@ -37,21 +37,33 @@ interface TranslationEngine {
 }
 
 object LocalTranslationEnginePolicy {
-    /** OPUS-MT supports direct Chinese output and Japanese/Korean/Russian via an English pivot. */
-    fun supportsOpusSource(languageTag: String): Boolean {
+    /**
+     * Canonical language code used to select an OPUS-MT model.
+     * Some subtitle and ASR providers return ISO-639-2/3 codes instead of two-letter codes.
+     */
+    fun canonicalOpusSource(languageTag: String): String {
         val primary = SourceLanguagePolicy.normalizeTag(languageTag)
             .substringBefore('-')
             .lowercase(java.util.Locale.ROOT)
-        return primary in setOf("en", "eng", "de", "fi", "sv", "ja", "ko", "ru")
+        return when (primary) {
+            "eng" -> "en"
+            "deu", "ger" -> "de"
+            "fin" -> "fi"
+            "swe" -> "sv"
+            "jpn" -> "ja"
+            "kor" -> "ko"
+            "rus" -> "ru"
+            else -> primary
+        }
     }
 
+    /** OPUS-MT supports direct Chinese output and Japanese/Korean/Russian via an English pivot. */
+    fun supportsOpusSource(languageTag: String): Boolean =
+        canonicalOpusSource(languageTag) in setOf("en", "de", "fi", "sv", "ja", "ko", "ru")
+
     /** These small CTranslate2 models translate into English before the existing ONNX model outputs Chinese. */
-    fun usesEnglishPivot(languageTag: String): Boolean {
-        val primary = SourceLanguagePolicy.normalizeTag(languageTag)
-            .substringBefore('-')
-            .lowercase(java.util.Locale.ROOT)
-        return primary in setOf("ja", "ko", "ru")
-    }
+    fun usesEnglishPivot(languageTag: String): Boolean =
+        canonicalOpusSource(languageTag) in setOf("ja", "ko", "ru")
 }
 
 object LangMap {
