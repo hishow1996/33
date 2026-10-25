@@ -101,7 +101,8 @@ class TranslationBatchResultTest {
             sourceEchoAsUntranslatedFallback = true,
         )
 
-        assertEquals(mapOf(1 to "你好世界", 4 to ""), result.translations)
+        // 人名/缩写原样返回是正确的翻译，保留下来才能被配音念出来，而不是留空回退原声。
+        assertEquals(mapOf(1 to "你好世界", 4 to "J. K. Rowling"), result.translations)
         assertEquals(listOf(7), result.missingIndices)
     }
 
@@ -115,7 +116,7 @@ class TranslationBatchResultTest {
             sourceEchoAsUntranslatedFallback = true,
         )
 
-        assertEquals(mapOf(3 to ""), result.translations)
+        assertEquals(mapOf(3 to "SomeBrandName"), result.translations)
         assertEquals(listOf(2), result.missingIndices)
     }
 

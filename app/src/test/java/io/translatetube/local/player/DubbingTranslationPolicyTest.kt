@@ -72,4 +72,10 @@ class DubbingTranslationPolicyTest {
         assertNull(DubbingTranslationPolicy.usableText("東京", "東京", "ja"))
     }
 
+    @Test
+    fun unchangedTermsAndNamesAreSpokenInsteadOfFallingBackToTheSourceAudio() {
+        assertEquals("H-1B", DubbingTranslationPolicy.usableText("H-1B", "H-1B", "en"))
+        assertEquals("NASA", DubbingTranslationPolicy.usableText("NASA", "NASA", "en"))
+        assertEquals("Elon Musk", DubbingTranslationPolicy.usableText("Elon Musk", "Elon Musk", "en"))
+    }
 }

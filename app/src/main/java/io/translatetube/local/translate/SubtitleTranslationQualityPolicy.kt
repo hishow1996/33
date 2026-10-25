@@ -43,7 +43,32 @@ internal object SubtitleTranslationQualityPolicy {
         val trimmed = value.trim()
         return trimmed.none { it.isLetter() } ||
             urlPattern.matches(trimmed) ||
-            emailPattern.matches(trimmed)
+            emailPattern.matches(trimmed) ||
+            isTermLikeCue(trimmed)
+    }
+
+    /**
+     * 专有名词、缩写、型号、签证类别（"H-1B"、"NASA"、"COVID-19"、"iPhone 15"、"Elon Musk"）本来就不翻译，
+     * 翻译结果与原文相同是正确的，不能当成"没翻译"而让这一句没有中文配音、只能回退原声。
+     * 只放行很短的词条：普通句子/单词原样返回仍按翻译失败处理。
+     */
+    private fun isTermLikeCue(value: String): Boolean {
+        val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty() || tokens.size > 3) return false
+        // 带感叹/问号/分号的是句子，不是词条。
+        if (value.any { it in "!?;:" }) return false
+        val letters = value.filter { it.isLetter() }
+        // 只对拉丁字母的词条放行；日文汉字、西里尔文等原样返回仍按没翻译处理。
+        if (letters.any { Character.UnicodeScript.of(it.code) != Character.UnicodeScript.LATIN }) return false
+        // 全大写缩写 / 含数字的短词条
+        if (letters.none { it.isLowerCase() }) return true
+        if (value.any { it.isDigit() }) return true
+        // 单个驼峰/品牌写法（SomeBrandName、YouTube）：首字母之后还有大写字母。
+        if (tokens.size == 1 && letters.drop(1).any { it.isUpperCase() }) return true
+        // 专有名词：每个词都以大写字母开头（Elon Musk、Silicon Valley）；单个首字母大写的普通词不算。
+        return tokens.size >= 2 && tokens.all { token ->
+            token.firstOrNull { it.isLetter() }?.isUpperCase() == true
+        }
     }
 
     /** Ignore case, whitespace and punctuation so formatting-only changes do not pass as translation. */

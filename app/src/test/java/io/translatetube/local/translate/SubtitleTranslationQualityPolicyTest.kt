@@ -56,4 +56,18 @@ class SubtitleTranslationQualityPolicyTest {
     }
 
 
+
+    @Test
+    fun shortTermsAcronymsAndNamesMayStayUnchanged() {
+        listOf("H-1B", "NASA", "COVID-19", "iPhone 15", "Elon Musk", "Silicon Valley", "OK", "J. K. Rowling", "YouTube").forEach {
+            assertFalse("'$it'", SubtitleTranslationQualityPolicy.isSourceEcho(it, it, "en"))
+        }
+    }
+
+    @Test
+    fun ordinaryWordsAndPhrasesReturnedUnchangedAreStillFailedTranslations() {
+        listOf("Hello", "Thank you very much", "I think so.", "Good morning everyone").forEach {
+            assertTrue("'$it'", SubtitleTranslationQualityPolicy.isSourceEcho(it, it, "en"))
+        }
+    }
 }
