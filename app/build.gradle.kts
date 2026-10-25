@@ -377,6 +377,8 @@ dependencies {
 
     // 离线翻译（bundled 引擎，不依赖 GMS）
     implementation("com.google.mlkit:translate:17.0.3")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("io.github.eix128:sentencepiece4j:1.0.2")
 
     // 数据
     implementation("androidx.room:room-runtime:2.6.1")

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -195,6 +196,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     var adding by remember { mutableStateOf(false) }
     val prefs = remember { ctx.getSharedPreferences("settings", 0) }
     var activeId by remember { mutableStateOf(prefs.getLong("active_api_id", -1L)) }
+    var translationTab by rememberSaveable { mutableStateOf("online") }
 
     var geminiModel by remember {
         mutableStateOf(prefs.getString("free_gemini_model", FreeModelDefaults.GEMINI_MODEL) ?: FreeModelDefaults.GEMINI_MODEL)
@@ -228,6 +230,8 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             val profileName = profile?.name ?: when (id) {
                 -1L -> "Google 翻译"
                 -2L -> "本地/混合翻译"
+                EngineFactory.ID_LOCAL_MLKIT -> "ML Kit 本地翻译"
+                EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT 本地翻译"
                 else -> "内置翻译服务"
             }
             scope.launch(Dispatchers.IO) {
@@ -362,13 +366,17 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text("API 管理", style = MaterialTheme.typography.titleLarge, color = OnBg)
+                Text("翻译引擎", style = MaterialTheme.typography.titleLarge, color = OnBg)
             }
-            IconButton(
-                onClick = { adding = true },
-                modifier = Modifier.size(44.dp),
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "添加 API", tint = BrandBright)
+            if (translationTab == "online") {
+                IconButton(
+                    onClick = { adding = true },
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "添加 API", tint = BrandBright)
+                }
+            } else {
+                Spacer(Modifier.width(44.dp))
             }
         }
 
@@ -377,6 +385,35 @@ fun ApiManagerScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(8.dp))
         }
 
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.White)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            listOf("online" to "在线翻译", "local" to "本地翻译").forEach { (key, label) ->
+                Box(
+                    modifier = Modifier.weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (translationTab == key) Color(0xFF3569D4) else Color.Transparent)
+                        .clickable { translationTab = key }
+                        .padding(vertical = 11.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        color = if (translationTab == key) Color.White else Color(0xFF475569),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = if (translationTab == key)
+                            androidx.compose.ui.text.font.FontWeight.SemiBold
+                        else androidx.compose.ui.text.font.FontWeight.Medium,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        if (translationTab == "online") {
         var googleExpanded by remember { mutableStateOf(false) }
 
         LazyColumn(
@@ -634,6 +671,13 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                     }
                 }
             }
+        }
+        } else {
+            LocalTranslationSection(
+                modifier = Modifier.weight(1f),
+                activeId = activeId,
+                onSelectEngine = { id -> setActive(id) },
+            )
         }
     }
 

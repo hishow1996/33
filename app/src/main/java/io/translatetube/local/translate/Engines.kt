@@ -418,6 +418,19 @@ object MlKitModelCoordinator {
         }
     }
 
+    suspend fun isDownloaded(languageTag: String): Boolean {
+        val language = TranslateLanguage.fromLanguageTag(languageTag) ?: return false
+        val model = TranslateRemoteModel.Builder(language).build()
+        return RemoteModelManager.getInstance().isModelDownloaded(model).await()
+    }
+
+    suspend fun deleteLanguage(languageTag: String) {
+        val language = TranslateLanguage.fromLanguageTag(languageTag)
+            ?: throw IllegalStateException("不支持的离线翻译语言: $languageTag")
+        val model = TranslateRemoteModel.Builder(language).build()
+        RemoteModelManager.getInstance().deleteDownloadedModel(model).await()
+    }
+
     /** 由设置页面主动调用，用户明确操作后才下载。 */
     suspend fun downloadLanguage(languageTag: String, onProgress: (String) -> Unit = {}) {
         val language = TranslateLanguage.fromLanguageTag(languageTag)
@@ -442,7 +455,7 @@ object MlKitModelCoordinator {
 
 /** 本地离线翻译（ML Kit bundled 引擎；语言模型首次下载后永久离线） */
 class MlKitEngine : TranslationEngine {
-    override val id = "local"
+    override val id = "mlkit-local"
     override val displayName = "本地引擎（离线）"
 
     private suspend fun ensureModel(lang: String) {
@@ -881,11 +894,15 @@ object EngineFactory {
     const val ID_DEEPL = -5L
     const val ID_FREE_GEMINI = -10L
     const val ID_FREE_DEEPSEEK = -11L
+    const val ID_LOCAL_MLKIT = -20L
+    const val ID_LOCAL_OPUS = -21L
 
     fun getBuiltinEngine(activeId: Long, context: Context): TranslationEngine? {
         val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         return when (activeId) {
             ID_GOOGLE, ID_GOOGLE_ALT -> GoogleHybridEngine(context)
+            ID_LOCAL_MLKIT -> MlKitEngine()
+            ID_LOCAL_OPUS -> OpusMtEngine(context)
             ID_MICROSOFT -> MicrosoftWebEngine()
             ID_BAIDU -> BaiduWebEngine()
             ID_DEEPL -> DeepLWebEngine()

@@ -3375,6 +3375,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             EngineFactory.ID_DEEPL -> "deepl-web"
             EngineFactory.ID_FREE_GEMINI -> "free-gemini"
             EngineFactory.ID_FREE_DEEPSEEK -> "free-deepseek"
+            EngineFactory.ID_LOCAL_MLKIT -> "mlkit-local"
+            EngineFactory.ID_LOCAL_OPUS -> "opus-mt-en-zh-4dc37af-onnx-quantized-v1"
             else -> if (active != null) "api-profile" else "local-fallback"
         }
         return TranslationCacheIdentity.providerFingerprint(
@@ -5344,7 +5346,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         } else if (activeId == EngineFactory.ID_FREE_GEMINI || activeId == EngineFactory.ID_FREE_DEEPSEEK) {
             engine = EngineFactory.getBuiltinEngine(activeId, this)
             engineName = if (activeId == EngineFactory.ID_FREE_GEMINI) "Google Gemini (免费)" else "DeepSeek (免费)"
-        } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL) {
+        } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL || activeId == EngineFactory.ID_LOCAL_MLKIT || activeId == EngineFactory.ID_LOCAL_OPUS) {
             engine = EngineFactory.getBuiltinEngine(activeId, this)
             engineName = engine?.displayName.orEmpty()
         }
@@ -5363,7 +5365,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
         // to abort every subtitle and prevent the video from playing.
         val sourceEchoAsUntranslatedFallback =
-            engine!!.id == "local" || engine!!.id == "google-hybrid" ||
+            engine!!.id == "local" || engine!!.id == "mlkit-local" || engine!!.id == "opus-mt" || engine!!.id == "google-hybrid" ||
                 engine!!.id == "microsoft-web" || engine!!.id == "baidu-web"
         val pendingIndices = ArrayList<Int>()
         var completed = 0
@@ -5513,6 +5515,9 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         } else {
                             "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
                         }
+                    } else if (activeId == EngineFactory.ID_LOCAL_MLKIT || activeId == EngineFactory.ID_LOCAL_OPUS) {
+                        val localName = if (activeId == EngineFactory.ID_LOCAL_OPUS) "OPUS-MT" else "ML Kit"
+                        "$localName 本地翻译失败：$detail。请检查对应语言模型是否已下载，或进入本地翻译重新下载后重试。"
                     } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL) {
                         val name = when (activeId) {
                             EngineFactory.ID_MICROSOFT -> "微软翻译"
