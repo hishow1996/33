@@ -23,17 +23,21 @@ internal object TranslationCacheIdentity {
         // folding them into this fingerprint so neither primary nor secondary credential material
         // is persisted in a cache key.
         val credentialDigest = sha256(apiKey)
-        val extraCredentialDigest = sha256(credentialsJson)
-        val canonical = listOf(
+        // Preserve fingerprints for existing profiles without secondary credentials; only add
+        // this component for providers that actually require an extra ID/credential field.
+        val canonicalParts = mutableListOf(
             activeId.toString(),
             providerKind.trim().lowercase(Locale.ROOT),
             type.trim().uppercase(Locale.ROOT),
             baseUrl.trim().trimEnd('/'),
             credentialDigest,
-            extraCredentialDigest,
             model.trim(),
             region.trim().lowercase(Locale.ROOT),
-        ).joinToString("\n")
+        )
+        if (credentialsJson.isNotBlank()) {
+            canonicalParts.add(5, sha256(credentialsJson))
+        }
+        val canonical = canonicalParts.joinToString("\n")
         return sha256(canonical).take(PROVIDER_HASH_LENGTH)
     }
 
