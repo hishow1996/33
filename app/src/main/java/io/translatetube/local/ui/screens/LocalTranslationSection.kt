@@ -26,6 +26,7 @@ import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.translate.LocalTranslationEnginePolicy
 import io.translatetube.local.translate.OpusMtModelManager
+import io.translatetube.local.translate.OpusMtAdditionalModelManager
 import io.translatetube.local.translate.OpusMtStatus
 import io.translatetube.local.translate.Small100LanguagePolicy
 import io.translatetube.local.translate.Small100ModelManager
@@ -81,6 +82,8 @@ internal fun LocalTranslationSection(
     }
     var opusJob by remember { mutableStateOf<Job?>(null) }
     val opusState by OpusMtModelManager.state.collectAsState()
+    var opusExtraJobs by remember { mutableStateOf<Map<String, Job>>(emptyMap()) }
+    val opusExtraStates by OpusMtAdditionalModelManager.states.collectAsState()
     var small100Job by remember { mutableStateOf<Job?>(null) }
     val small100State by Small100ModelManager.state.collectAsState()
     val pairs = remember {
@@ -199,6 +202,21 @@ internal fun LocalTranslationSection(
                 )
             }
         }
+        if (detail == "opus") {
+            try {
+                OpusMtAdditionalModelManager.refresh(context)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppLogStore.error(
+                    context,
+                    "LocalTranslationModel",
+                    "读取 OPUS-MT 多语言模型状态失败",
+                    error,
+                    diagnosticContext = mapOf("操作" to "读取德语、芬兰语、瑞典语模型状态"),
+                )
+            }
+        }
         if (detail == "small100" || detail.isBlank()) {
             try {
                 Small100ModelManager.refresh(context)
@@ -266,7 +284,7 @@ internal fun LocalTranslationSection(
             sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_OPUS &&
                 !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection) ->
-                "OPUS-MT 仅支持英语 → 简体中文；当前手动选择的源语言不受支持。请改为自动识别或英语。"
+                "OPUS-MT 当前支持英语、德语、芬兰语、瑞典语 → 简体中文；请选择受支持的源语言或改用其他模型。"
             sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_MLKIT &&
                 pairs.none { it.source == sourceLanguageSelection } ->
@@ -511,10 +529,10 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("英语 → 简体中文", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    Text("源语言（目标固定为简体中文）", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
                     SourceLanguageMenu(
                         selected = sourceLanguageSelection,
-                        languages = pairs.filter { it.source == "en" },
+                        languages = pairs.filter { it.source in setOf("en", "de", "fi", "sv") },
                         expanded = sourceLanguageMenuExpanded,
                         onExpandedChange = { sourceLanguageMenuExpanded = it },
                         onSelected = { setSourceLanguage(it) },
@@ -526,6 +544,8 @@ internal fun LocalTranslationSection(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                    Divider(color = Color(0xFFE7EBF2))
+                    Text("英语 → 简体中文 · 原有 ONNX 模型", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
                     when (opusState.status) {
                         OpusMtStatus.READY -> Text("已下载", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
                         OpusMtStatus.DOWNLOADING -> Text("正在下载 ${opusState.currentFile}", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
@@ -608,15 +628,158 @@ internal fun LocalTranslationSection(
                             enabled = true,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
+                                setSourceLanguage("en")
                                 selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
                                 AppLogStore.info(
                                     context,
                                     "LocalTranslationModel",
-                                    "OPUS-MT 已设为当前翻译引擎",
+                                    "OPUS-MT 英语 → 中文模型已设为当前翻译引擎",
                                     diagnosticContext = mapOf("模型" to "opus-mt-en-zh"),
                                 )
                             },
-                        ) { Text(if (activeId == EngineFactory.ID_LOCAL_OPUS) "正在使用 OPUS-MT" else "设为当前翻译引擎") }
+                        ) { Text(if (activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == "en") "正在使用英语模型" else "使用英语模型") }
+                    }
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.White)
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        "德语、芬兰语、瑞典语 → 简体中文",
+                        color = Color(0xFF172033),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        "每个量化模型约 80 MB，按需下载。下载后会校验文件并执行中文试译，验证通过后才能用于字幕翻译和配音工作台。",
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    listOf(
+                        Triple("德语 → 简体中文", "de", "Helsinki-NLP/opus-mt-de-ZH"),
+                        Triple("芬兰语 → 简体中文", "fi", "Helsinki-NLP/opus-mt-fi-ZH"),
+                        Triple("瑞典语 → 简体中文", "sv", "Helsinki-NLP/opus-mt-sv-ZH"),
+                    ).forEach { (language, source, officialModelId) ->
+                        val state = opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
+                        val job = opusExtraJobs[source]
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFFF8FAFC))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(language, color = Color(0xFF172033), style = MaterialTheme.typography.titleSmall)
+                                    Text(officialModelId, color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
+                                    Text("Android 量化包：" + OpusMtAdditionalModelManager.runtimeRepository(source),
+                                        color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
+                                }
+                                Text(
+                                    when (state.status) {
+                                        OpusMtStatus.READY -> "已验证"
+                                        OpusMtStatus.DOWNLOADING -> "下载中"
+                                        OpusMtStatus.VERIFYING -> "验证中"
+                                        OpusMtStatus.PAUSED -> "已暂停"
+                                        OpusMtStatus.FAILED -> "失败"
+                                        else -> "未下载"
+                                    },
+                                    color = when (state.status) {
+                                        OpusMtStatus.READY -> Color(0xFF25804A)
+                                        OpusMtStatus.FAILED -> Color(0xFFB42318)
+                                        OpusMtStatus.DOWNLOADING, OpusMtStatus.VERIFYING -> Color(0xFF3569D4)
+                                        else -> Color(0xFF64748B)
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                            if (state.error.isNotBlank()) {
+                                Text(state.error, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (state.status == OpusMtStatus.DOWNLOADING || state.status == OpusMtStatus.VERIFYING) {
+                                LinearProgressIndicator(
+                                    progress = (state.progress / 100f).coerceIn(0f, 1f),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color(0xFF3569D4),
+                                )
+                                Text(
+                                    if (state.totalBytes > 0L)
+                                        state.progress.toString() + "% · " + formatLocalModelBytes(state.downloadedBytes) +
+                                            " / " + formatLocalModelBytes(state.totalBytes) + " · " +
+                                            state.fileIndex + "/" + state.fileCount
+                                    else "正在处理模型文件",
+                                    color = Color(0xFF64748B),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                            if (job?.isActive == true || state.status == OpusMtStatus.DOWNLOADING) {
+                                OutlinedButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = {
+                                        job?.cancel()
+                                        opusExtraJobs = opusExtraJobs - source
+                                    },
+                                ) { Text(if (state.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
+                            } else if (state.status == OpusMtStatus.READY) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    OutlinedButton(
+                                        enabled = !(activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == source),
+                                        modifier = Modifier.weight(1f),
+                                        onClick = {
+                                            scope.launch {
+                                                try {
+                                                    withContext(Dispatchers.IO) { OpusMtAdditionalModelManager.delete(context, source) }
+                                                } catch (error: Exception) {
+                                                    AppLogStore.error(context, "LocalTranslationModel", "删除 OPUS-MT 模型失败", error,
+                                                        diagnosticContext = mapOf("源语言" to source))
+                                                }
+                                            }
+                                        },
+                                    ) { Text("删除模型") }
+                                    Button(
+                                        modifier = Modifier.weight(1f),
+                                        onClick = {
+                                            setSourceLanguage(source)
+                                            selectLocalEngine(EngineFactory.ID_LOCAL_OPUS, "OPUS-MT")
+                                            AppLogStore.info(context, "LocalTranslationModel", "已切换 OPUS-MT 中文翻译模型",
+                                                diagnosticContext = mapOf("源语言" to source, "官方模型" to officialModelId))
+                                        },
+                                    ) {
+                                        Text(if (activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == source)
+                                            "正在使用" else "使用此模型")
+                                    }
+                                }
+                            } else {
+                                Button(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = {
+                                        val newJob = scope.launch(Dispatchers.IO) {
+                                            try {
+                                                OpusMtAdditionalModelManager.download(context, source)
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Exception) {
+                                                // The model state and diagnostic log retain the detailed failure.
+                                            }
+                                        }
+                                        opusExtraJobs = opusExtraJobs + (source to newJob)
+                                    },
+                                ) {
+                                    Text(
+                                        if (state.status == OpusMtStatus.PAUSED ||
+                                            OpusMtAdditionalModelManager.hasPartialDownload(context, source)
+                                        ) "继续下载" else "下载模型",
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             } else {

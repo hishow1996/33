@@ -38,23 +38,34 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
         sampleLines: List<String> = emptyList(),
     ): String {
         val normalizedSource = SourceLanguagePolicy.sourceForTranslation(srcLang)
-        val source = if (SourceLanguagePolicy.isUndetermined(normalizedSource)) {
+        val detectedSource = if (SourceLanguagePolicy.isUndetermined(normalizedSource)) {
             io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(sampleLines)
         } else normalizedSource
+        val primary = SourceLanguagePolicy.normalizeTag(detectedSource)
+            .substringBefore('-').lowercase(Locale.ROOT)
+        val source = if (primary == "eng") "en" else primary
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
         if (!LocalTranslationEnginePolicy.supportsOpusSource(source)) {
             val sourceLabel = source.ifBlank { "未知" }
             throw IllegalStateException(
-                "当前 OPUS-MT 模型仅支持英语 → 简体中文，当前源语言为“$sourceLabel”。请在 API 管理 → 本地翻译中将源语言设为英语，或改用 ML Kit。"
+                "当前 OPUS-MT 支持英语、德语、芬兰语、瑞典语 → 简体中文；当前源语言为“" + sourceLabel +
+                    "”。请下载相应语言模型，或改用 ML Kit/SMaLL-100。"
             )
         }
         if (target !in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn")) {
             throw IllegalStateException("当前 OPUS-MT 模型的目标语言是简体中文。")
         }
-        if (!OpusMtModelManager.isReady(context)) {
-            throw IllegalStateException("OPUS-MT 英语 → 中文模型尚未下载或验证，请到 API 管理 → 本地翻译中继续下载。")
+        if (source == "en") {
+            if (!OpusMtModelManager.isReady(context)) {
+                throw IllegalStateException("OPUS-MT 英语 → 中文模型尚未下载或验证，请到 API 管理 → 本地翻译中继续下载。")
+            }
+        } else if (!OpusMtAdditionalModelManager.isReady(context, source)) {
+            throw IllegalStateException(
+                "OPUS-MT " + OpusMtAdditionalModelManager.label(source) +
+                    " → 中文模型尚未下载或验证，请到 API 管理 → 本地翻译中下载并完成试译。"
+            )
         }
-        return "en"
+        return source
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
@@ -73,6 +84,46 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
                 "字幕条数" to lines.size.toString(),
             ),
         )
+        if (source != "en") {
+            return try {
+                val translated = OpusMtCt2Runtime.translate(context.applicationContext, source, lines)
+                if (translated.size != lines.size) {
+                    throw IllegalStateException("CTranslate2 返回的译文条数与原字幕不一致")
+                }
+                AppLogStore.info(
+                    context.applicationContext,
+                    "Translation",
+                    "OPUS-MT CTranslate2 本地翻译完成",
+                    diagnosticContext = mapOf(
+                        "引擎" to id,
+                        "源语言" to source,
+                        "目标语言" to "zh-CN",
+                        "字幕条数" to lines.size.toString(),
+                        "模型" to OpusMtAdditionalModelManager.officialModelId(source),
+                        "未记录字幕原文" to "true",
+                    ),
+                )
+                translated
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppLogStore.error(
+                    context.applicationContext,
+                    "Translation",
+                    "OPUS-MT CTranslate2 本地推理失败",
+                    error,
+                    diagnosticContext = mapOf(
+                        "源语言" to source,
+                        "目标语言" to "zh-CN",
+                        "模型已验证" to OpusMtAdditionalModelManager.isReady(context, source).toString(),
+                        "未记录字幕原文" to "true",
+                    ),
+                )
+                throw IllegalStateException("OPUS-MT " + OpusMtAdditionalModelManager.label(source) + " → 中文翻译失败：" +
+                    (error.message ?: error.javaClass.simpleName), error)
+            }
+        }
+
         var activeLineNumber = 0
         var activeLineLength = 0
         return try {

@@ -38,7 +38,11 @@ val releaseSigningReady = !releaseStorePath.isNullOrBlank() &&
     !releaseKeyPassword.isNullOrBlank() &&
     file(releaseStorePath).isFile
 
+val opusMtCt2JniLibs = layout.buildDirectory.dir("generated/opusmtct2/jniLibs")
+val opusMtCt2SourceDir = rootProject.file("native/opusmt-ct2")
+
 android {
+    sourceSets.getByName("main").jniLibs.srcDir(opusMtCt2JniLibs)
     namespace = "io.translatetube.local"
     compileSdk = 34
 
@@ -96,6 +100,27 @@ android {
         jniLibs.useLegacyPackaging = true
     }
 }
+
+val buildOpusMtCt2 by tasks.registering(Exec::class) {
+    inputs.files(fileTree(opusMtCt2SourceDir))
+    outputs.dir(opusMtCt2JniLibs)
+    doFirst {
+        val androidHome = System.getenv("ANDROID_HOME").orEmpty()
+        val configuredNdk = System.getenv("ANDROID_NDK")
+            ?: System.getenv("ANDROID_NDK_HOME")
+            ?: File(androidHome, "ndk/29.0.14206865").absolutePath
+        environment("ANDROID_NDK", configuredNdk)
+        environment("OPUSMT_CT2_OUT", opusMtCt2JniLibs.get().asFile.absolutePath)
+        environment("OPUSMT_CT2_CACHE", File(System.getProperty("user.home"), ".cache/opusmt-ct2").absolutePath)
+        environment(
+            "PATH",
+            System.getenv("PATH").orEmpty() + File.pathSeparator +
+                File(androidHome, "cmake/3.31.6/bin").absolutePath,
+        )
+    }
+    commandLine("bash", File(opusMtCt2SourceDir, "build.sh").absolutePath)
+}
+tasks.named("preBuild").configure { dependsOn(buildOpusMtCt2) }
 
 val sherpaAarFile = file("libs/sherpa-onnx.aar")
 if (!sherpaAarFile.exists() || sherpaAarFile.length() < 10L * 1024 * 1024) {

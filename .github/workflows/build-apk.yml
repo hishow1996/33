@@ -96,7 +96,7 @@ jobs:
           if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"; fi
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses
-          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;29.0.14206865" "cmake;3.31.6"
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4

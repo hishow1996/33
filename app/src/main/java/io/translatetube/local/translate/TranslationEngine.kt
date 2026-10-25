@@ -37,12 +37,12 @@ interface TranslationEngine {
 }
 
 object LocalTranslationEnginePolicy {
-    /** The available OPUS-MT model translates English to Simplified Chinese only. */
+    /** OPUS-MT has Chinese-target models for English (ONNX), German, Finnish and Swedish (CTranslate2). */
     fun supportsOpusSource(languageTag: String): Boolean {
         val primary = SourceLanguagePolicy.normalizeTag(languageTag)
             .substringBefore('-')
             .lowercase(java.util.Locale.ROOT)
-        return primary == "en" || primary == "eng"
+        return primary in setOf("en", "eng", "de", "fi", "sv")
     }
 }
 
