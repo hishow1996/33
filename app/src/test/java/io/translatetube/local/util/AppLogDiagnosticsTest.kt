@@ -31,6 +31,7 @@ class AppLogDiagnosticsTest {
             ),
         )
         assertEquals("Android 通知内容视图膨胀失败", diagnosis.category)
+        assertTrue(diagnosis.finding.contains("通知 ID=1001"))
         assertTrue(diagnosis.confidence.contains("待验证"))
         assertTrue(diagnosis.finding.contains("不能仅凭这一行断定是通知 ID 冲突"))
         assertTrue(diagnosis.nextSteps.any { it.contains("NotificationDiagnostics") })
