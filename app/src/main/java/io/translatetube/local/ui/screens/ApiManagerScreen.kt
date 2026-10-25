@@ -1467,9 +1467,9 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     "DEEPL" -> "https://api-free.deepl.com"
                     "AZURE" -> "https://api.cognitive.microsofttranslator.com"
                     "LIBRETRANSLATE" -> "https://libretranslate.com"
-                    else -> "https://api.openai.com"
+                    else -> ""
                 }
-            } ?: "https://api.openai.com",
+            } ?: "",
         )
     }
     var apiKey by remember {
@@ -1742,7 +1742,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                 showApiKey = false
                 showSecondaryCredential = false
                 baseUrl = when (value) {
-                    "OPENAI" -> "https://api.openai.com"
+                    "OPENAI" -> ""
                     "DEEPL" -> "https://api-free.deepl.com"
                     "AZURE" -> "https://api.cognitive.microsofttranslator.com"
                     "LIBRETRANSLATE" -> "https://libretranslate.com"
