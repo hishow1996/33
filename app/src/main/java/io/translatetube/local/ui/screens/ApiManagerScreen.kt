@@ -1514,11 +1514,14 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
         "TENCENT" -> "腾讯云地域"
         else -> null
     }
-    val credentialsReady = (!apiKeyRequired || apiKey.isNotBlank()) &&
+    // 拉取模型列表只需要服务商认证信息和接口地址，不应该强制要求先填写模型名。
+    // 否则新建/清空模型字段时，用户无法通过模型列表选择模型，按钮会一直灰掉。
+    val apiCredentialsReady = (!apiKeyRequired || apiKey.isNotBlank()) &&
         (secondaryCredentialLabel == null || secondaryCredential.isNotBlank()) &&
         (regionLabel == null || region.isNotBlank()) &&
-        (!needsBaseUrl || baseUrl.isNotBlank()) &&
-        (fixedEngine || model.isNotBlank())
+        (!needsBaseUrl || baseUrl.isNotBlank())
+    // 测试连接 / 保存完整配置时，仍要求 OpenAI 兼容和 Gemini 配置具备模型名。
+    val credentialsReady = apiCredentialsReady && (fixedEngine || model.isNotBlank())
 
     val configuration = LocalConfiguration.current
     androidx.compose.ui.window.Dialog(
@@ -1967,7 +1970,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             Button(
                                 onClick = { pullModelsNow() },
                                 enabled = !pulling && !testingConnection &&
-                                    credentialsReady,
+                                    apiCredentialsReady,
                                 modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
