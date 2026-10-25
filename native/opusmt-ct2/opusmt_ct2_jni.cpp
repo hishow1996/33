@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "ctranslate2/translator.h"
+#include "ctranslate2/logging.h"
 #include "sentencepiece_processor.h"
 
 namespace {
