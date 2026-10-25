@@ -53,8 +53,13 @@ object LangMap {
         "en" to "en", "ja" to "ja", "ko" to "ko", "fr" to "fr", "de" to "de", "es" to "es",
         "pt" to "pt", "ru" to "ru", "it" to "it", "ar" to "ar", "hi" to "hi", "th" to "th",
         "vi" to "vi", "id" to "id", "nl" to "nl", "pl" to "pl", "tr" to "tr", "sv" to "sv",
-        "da" to "da", "fi" to "fi", "no" to "no", "nb" to "no", "el" to "el", "he" to "he",
-        "hu" to "hu", "cs" to "cs", "ro" to "ro", "uk" to "uk", "bn" to "bn", "ms" to "ms",
+        "da" to "da", "fi" to "fi", "no" to "no", "nb" to "no", "nn" to "no", "el" to "el", "he" to "he",
+        "iw" to "he", "hu" to "hu", "cs" to "cs", "ro" to "ro", "uk" to "uk", "bn" to "bn", "ms" to "ms",
+        "af" to "af", "be" to "be", "bg" to "bg", "ca" to "ca", "cy" to "cy", "eo" to "eo",
+        "et" to "et", "fa" to "fa", "ga" to "ga", "gl" to "gl", "gu" to "gu", "hr" to "hr",
+        "ht" to "ht", "is" to "is", "ka" to "ka", "kn" to "kn", "lt" to "lt", "lv" to "lv",
+        "mk" to "mk", "mr" to "mr", "mt" to "mt", "sk" to "sk", "sl" to "sl", "sq" to "sq",
+        "sw" to "sw", "ta" to "ta", "te" to "te", "tl" to "tl", "ur" to "ur",
     )
     /**
      * Normalize BCP-47 tags and provider variants such as zh_CN and EN-us.
@@ -123,6 +128,14 @@ object LangMap {
             "ar" -> "阿拉伯语"; "hi" -> "印地语"; "th" -> "泰语"; "vi" -> "越南语"
             "id" -> "印尼语"; "nl" -> "荷兰语"; "pl" -> "波兰语"; "tr" -> "土耳其语"
             "sv" -> "瑞典语"; "da" -> "丹麦语"; "fi" -> "芬兰语"; "no" -> "挪威语"
+            "af" -> "南非荷兰语"; "be" -> "白俄罗斯语"; "bg" -> "保加利亚语"
+            "ca" -> "加泰罗尼亚语"; "cy" -> "威尔士语"; "eo" -> "世界语"; "et" -> "爱沙尼亚语"
+            "fa" -> "波斯语"; "ga" -> "爱尔兰语"; "gl" -> "加利西亚语"; "gu" -> "古吉拉特语"
+            "hr" -> "克罗地亚语"; "ht" -> "海地克里奥尔语"; "is" -> "冰岛语"; "ka" -> "格鲁吉亚语"
+            "kn" -> "卡纳达语"; "lt" -> "立陶宛语"; "lv" -> "拉脱维亚语"; "mk" -> "马其顿语"
+            "mr" -> "马拉地语"; "mt" -> "马耳他语"; "sk" -> "斯洛伐克语"; "sl" -> "斯洛文尼亚语"
+            "sq" -> "阿尔巴尼亚语"; "sw" -> "斯瓦希里语"; "ta" -> "泰米尔语"; "te" -> "泰卢固语"
+            "tl" -> "他加禄语"; "ur" -> "乌尔都语"
             else -> code.trim().ifBlank { "the original language" }
         }
     }

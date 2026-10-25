@@ -468,6 +468,31 @@ class MlKitEngine : TranslationEngine {
         MlKitModelCoordinator.ensureDownloaded(lang)
     }
 
+    /** Check source support and both downloaded packs before translating subtitle batches. */
+    suspend fun validateConfiguration(
+        srcLang: String,
+        tgtLang: String,
+        sampleLines: List<String> = emptyList(),
+    ): String {
+        val resolvedSource = if (SourceLanguagePolicy.isUndetermined(srcLang)) {
+            MlKitSourceLanguageIdentifier.detect(sampleLines)
+        } else srcLang
+        if (SourceLanguagePolicy.isUndetermined(resolvedSource)) {
+            throw IllegalStateException("无法可靠识别字幕源语言。请在“API 管理 → 本地翻译”中手动指定源语言后重试。")
+        }
+        if (!LangMap.isMlkitSupported(resolvedSource)) {
+            throw IllegalStateException("ML Kit 本地翻译暂不支持源语言“$resolvedSource”。请选择已支持的语言或切换其他引擎。")
+        }
+        val source = LangMap.mlkitSource(resolvedSource)
+        val target = LangMap.mlkit(tgtLang)
+        if (!LangMap.isMlkitSupported(target)) {
+            throw IllegalStateException("ML Kit 本地翻译暂不支持目标语言“$tgtLang”。")
+        }
+        ensureModel(source)
+        ensureModel(target)
+        return source
+    }
+
     /** Reuse one translator over the playback service's 10-cue batches. */
     private suspend fun translatorFor(source: String, target: String): Translator {
         val pair = "$source->$target"
@@ -503,22 +528,7 @@ class MlKitEngine : TranslationEngine {
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (lines.isEmpty()) return emptyList()
-        val resolvedSource = if (SourceLanguagePolicy.isUndetermined(srcLang)) {
-            MlKitSourceLanguageIdentifier.detect(lines)
-        } else {
-            srcLang
-        }
-        if (SourceLanguagePolicy.isUndetermined(resolvedSource)) {
-            throw IllegalStateException(
-                "无法可靠识别字幕源语言。请在“API 管理 → 本地翻译”中手动指定源语言后重试。",
-            )
-        }
-        if (!LangMap.isMlkitSupported(resolvedSource)) {
-            throw IllegalStateException(
-                "ML Kit 本地翻译暂不支持源语言“$resolvedSource”。请下载支持的语言包，或切换其他翻译引擎。",
-            )
-        }
-        val source = LangMap.mlkitSource(resolvedSource)
+        val source = validateConfiguration(srcLang, tgtLang, lines)
         val target = LangMap.mlkit(tgtLang)
         val translator = translatorFor(source, target)
         return lines.map { if (it.isBlank()) "" else translator.translate(it).await() }

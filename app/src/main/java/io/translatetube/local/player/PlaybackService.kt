@@ -5484,7 +5484,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
 
-            val src = SourceLanguagePolicy.sourceForTranslation(srcLang)
+            var src = SourceLanguagePolicy.sourceForTranslation(srcLang)
+            val selectedMlKit = engine as? MlKitEngine
+            if (pendingIndices.isNotEmpty() && selectedMlKit != null) {
+                // Check support and both source/Chinese packs once against the full subtitle list,
+                // rather than discovering a missing pack after a batch has already started.
+                src = selectedMlKit.validateConfiguration(srcLang, tgt, plain)
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(sourceLang = src)
+                }
+            }
             val batchSize = 10
             val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
             // Checkpoint the first batch immediately, then every few successful batches and
@@ -5507,7 +5516,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         ) { index ->
                             val line = updatedLines[index]
                             line.text.isNotBlank() &&
-                                !needsSubtitleTranslation(line, srcLang) &&
+                                !needsSubtitleTranslation(line, src) &&
                                 !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
                         }
                     contextIndices.takeIf { it.isNotEmpty() }?.let { indices ->
@@ -5601,7 +5610,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         indices = unresolvedIndices,
                         rawTranslations = batchTranslations,
                         sourceTexts = unresolvedIndices.associateWith { plain[it] },
-                        sourceLanguage = srcLang,
+                        sourceLanguage = src,
                         sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                     )
                     resolvedBatch.putAll(parsedBatch.translations)
@@ -5619,7 +5628,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() } ||
                     updatedLines.any { line ->
                         line.text.isNotBlank() &&
-                            !needsSubtitleTranslation(line, srcLang) &&
+                            !needsSubtitleTranslation(line, src) &&
                             !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
                     }
                 if (
@@ -5719,7 +5728,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ensureCurrentSession(key, pipelineGeneration)
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
-                        translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis(),
+                        translationCacheKey, src, cacheRows.toString(), System.currentTimeMillis(),
                         videoKey = key,
                     )
                 )
@@ -5734,7 +5743,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         diagnosticContext = mapOf(
                             "输入原文字幕行数" to lines.size.toString(),
                             "合并后字幕行数" to externallyTranslatedFinal.size.toString(),
-                            "源语言代码" to srcLang,
+                            "源语言代码" to src,
                             "目标语言代码" to "zh",
                             "合并规则" to "以原字幕时间戳为准，匹配译文文本",
                         ),
@@ -5751,11 +5760,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "翻译引擎名称" to engineName,
                         "翻译引擎 ID" to (engine?.id ?: "未知"),
                         "翻译配置编号" to activeId.toString(),
-                        "源语言代码" to srcLang,
+                        "源语言代码" to src,
                         "目标语言代码" to "zh",
                         "字幕总行数" to updatedLines.size.toString(),
                         "已获得非空中文译文行数" to updatedLines.count { !it.zh.isNullOrBlank() }.toString(),
-                        "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, srcLang) && it.zh.isNullOrBlank() }.toString(),
+                        "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, src) && it.zh.isNullOrBlank() }.toString(),
                         "处理批次数" to translationBatches.size.toString(),
                         "累计耗时 ms" to (((System.nanoTime() - translationStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
                         "本次是否有在线/本地引擎请求" to pendingIndices.isNotEmpty().toString(),

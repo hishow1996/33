@@ -35,4 +35,16 @@ class LangMapTest {
         assertEquals("粤语", LangMap.display("yue-Hant-HK"))
         assertEquals("中文", LangMap.display("cmn-Hans-CN"))
     }
+    @Test
+    fun mlkitSupportIncludesExpandedTranslationLanguages() {
+        listOf("af", "be", "bg", "ca", "cy", "eo", "et", "fa", "ga", "gl", "gu", "hr", "ht", "is", "ka", "kn", "lt", "lv", "mk", "mr", "mt", "sk", "sl", "sq", "sw", "ta", "te", "tl", "ur")
+            .forEach { assertEquals(true, LangMap.isMlkitSupported(it)) }
+    }
+
+    @Test
+    fun mlkitCanonicalizesHebrewAndNorwegianAliases() {
+        assertEquals("he", LangMap.mlkit("iw"))
+        assertEquals("no", LangMap.mlkit("nb"))
+        assertEquals("no", LangMap.mlkit("nn"))
+    }
 }
