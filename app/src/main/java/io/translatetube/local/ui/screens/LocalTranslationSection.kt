@@ -321,7 +321,7 @@ internal fun LocalTranslationSection(
                 small100Job?.isActive != true &&
                 small100Compatible
             LocalEngineCard(
-                logo = R.drawable.small100_logo_official,
+                logo = R.drawable.small100_logo,
                 name = "SMaLL-100",
                 selected = activeId == EngineFactory.ID_LOCAL_SMALL100,
                 actionLabel = when {
@@ -875,12 +875,7 @@ private fun LocalEngineCard(
             AsyncImage(
                 model = logo,
                 contentDescription = "$name 官方项目标识",
-                modifier = if (name == "SMaLL-100") {
-                    Modifier.width(116.dp).height(28.dp)
-                } else {
-                    Modifier.size(48.dp).clip(RoundedCornerShape(9.dp))
-                },
-                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(9.dp)),
             )
             Spacer(Modifier.width(12.dp))
             Column(
