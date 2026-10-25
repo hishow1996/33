@@ -1771,7 +1771,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                                     "BAIDU_API" -> "百度开放平台 APP ID"
                                     "TENCENT" -> "腾讯云 SecretId"
                                     "ALIYUN" -> "阿里云 AccessKey ID"
-                                    else -> "",
+                                    else -> ""
                                 },
                             )
                         },
