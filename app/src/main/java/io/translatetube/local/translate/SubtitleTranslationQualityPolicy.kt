@@ -53,7 +53,10 @@ internal object SubtitleTranslationQualityPolicy {
      * 只放行很短的词条：普通句子/单词原样返回仍按翻译失败处理。
      */
     private fun isTermLikeCue(value: String): Boolean {
-        val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        // Compatibility forms (for example full-width Latin letters/digits) must reach the
+        // NFKC-based source-echo comparison instead of being mistaken for unchanged acronyms.
+        if (Normalizer.normalize(value, Normalizer.Form.NFKC) != value) return false
+        val tokens = value.split(Regex("\\\\s+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty() || tokens.size > 3) return false
         // 带感叹/问号/分号的是句子，不是词条。
         if (value.any { it in "!?;:" }) return false
