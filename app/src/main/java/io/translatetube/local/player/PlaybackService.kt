@@ -355,7 +355,9 @@ class PlaybackService : MediaSessionService() {
     private var processingNotificationUpdatePending = false
     @Volatile private var processingNotificationShuttingDown = false
     @Volatile private var lastProcessingNotificationPostedAtMs = 0L
+    @Volatile private var processingNotificationPostCount = 0L
     private var lastProcessingNotificationFingerprint: String? = null
+    @Volatile private var lastProcessingNotificationAuditSignature: String? = null
     private val processingNotificationUpdateRunnable = Runnable { drainProcessingNotificationUpdate() }
     private lateinit var pm: PlayerManager
     // A seek can trigger transient buffering/state callbacks after the immediate play() call.
@@ -470,6 +472,30 @@ class PlaybackService : MediaSessionService() {
             private set
         val ui = MutableStateFlow(PlayerUiState())
         fun state(): StateFlow<PlayerUiState> = ui
+
+        /**
+         * A privacy-safe runtime snapshot attached to uncaught-crash records. Never include raw
+         * video URLs, cookies, subtitle text, API keys, or local file paths here.
+         */
+        fun diagnosticSnapshot(): Map<String, String> {
+            val state = ui.value
+            val service = instance
+            val snapshot = linkedMapOf(
+                "播放服务实例状态" to if (service == null) "当前没有活动的 PlaybackService 实例" else "实例存在",
+                "当前处理阶段" to state.phase.name,
+                "当前视频源类型" to (service?.diagnosticMediaSourceType(state) ?: "服务实例不可用"),
+                "当前会话指纹" to if (state.key.isBlank()) "无活动会话" else
+                    (service?.safeDiagnosticSessionFingerprint(state.key) ?: "服务实例不可用"),
+                "视频播放状态" to if (state.isPlaying) "播放中" else "未播放/状态未知",
+                "中文配音开关" to state.dubbingOn.toString(),
+                "原声音量档位" to state.originalVolume.toString(),
+                "中文配音音量档位" to state.dubbingVolume.toString(),
+                "当前处理是否暂停" to state.isProcessingPaused.toString(),
+            )
+            if (service != null) snapshot.putAll(service.notificationRuntimeSnapshot())
+            return snapshot
+        }
+
         /** 播放画面 TextureView（供悬浮窗摘取 reparent） */
         @Volatile var videoSurfaceView: android.view.TextureView? = null
         const val CH_MAIN = "playback"
@@ -970,7 +996,29 @@ class PlaybackService : MediaSessionService() {
                     )
                 )
                 .build()
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "即将提交播放服务启动前台通知",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001",
+                    "通知用途" to "播放服务启动占位通知；后续可能被 Media3 媒体控制通知替换",
+                    "通知构建方式" to "NotificationCompat.Builder",
+                    "通知是否 ongoing" to "true",
+                    "提交线程" to Thread.currentThread().name,
+                ),
+            )
             startForeground(1001, boot)
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "播放服务启动前台通知提交调用已返回",
+                diagnosticContext = mapOf(
+                    "通知 ID" to "1001",
+                    "通知用途" to "启动占位通知",
+                    "提交线程" to Thread.currentThread().name,
+                ),
+            )
 
             pm = PlayerManager(this)
             pm.playbackAllowed = { !isDubbingPlaybackBlocked(ui.value) }
@@ -1313,6 +1361,36 @@ class PlaybackService : MediaSessionService() {
         pm.play()
     }
 
+    private fun diagnosticMediaSourceType(state: PlayerUiState): String = when {
+        state.key.isBlank() -> "无活动会话"
+        state.key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+        remoteMediaUrl?.isNotBlank() == true -> "网页视频/远程媒体"
+        localUri != null -> "本地视频/文件"
+        state.key.startsWith("import:", ignoreCase = true) -> "字幕导入"
+        else -> "其他或历史会话"
+    }
+
+    private fun notificationRuntimeSnapshot(): Map<String, String> {
+        val state = ui.value
+        val now = android.os.SystemClock.elapsedRealtime()
+        val lastPostedAt = lastProcessingNotificationPostedAtMs
+        val pendingState = synchronized(processingNotificationUpdateLock) {
+            "已排队=$processingNotificationUpdateScheduled；有待合并更新=$processingNotificationUpdatePending"
+        }
+        return linkedMapOf(
+            "进度通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+            "前台启动占位通知 ID" to "1001",
+            "媒体通知与进度通知是否使用独立 ID" to (PROCESSING_NOTIFICATION_ID != 1001).toString(),
+            "进度通知使用的样式" to "NotificationCompat.BigTextStyle",
+            "进度通知成功提交次数" to processingNotificationPostCount.toString(),
+            "距最近一次进度通知成功提交的毫秒数" to if (lastPostedAt > 0L) (now - lastPostedAt).coerceAtLeast(0L).toString() else "尚未成功提交",
+            "最近一次通知审计状态签名" to (lastProcessingNotificationAuditSignature ?: "暂无"),
+            "进度通知更新排队状态" to pendingState,
+            "当前会话阶段" to state.phase.name,
+            "当前播放服务是否已就绪" to playerReady.toString(),
+        )
+    }
+
     private fun updateProcessingNotification(state: PlayerUiState) {
         if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
         val delayMs = synchronized(processingNotificationUpdateLock) {
@@ -1372,7 +1450,21 @@ class PlaybackService : MediaSessionService() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         if (!shouldShowProcessingNotification) {
             manager.cancel(PROCESSING_NOTIFICATION_ID)
+            if (lastProcessingNotificationFingerprint != null) {
+                io.translatetube.local.util.AppLogStore.info(
+                    this,
+                    "NotificationDiagnostics",
+                    "处理结束或进入空闲状态，已清除独立进度通知",
+                    diagnosticContext = mapOf(
+                        "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                        "原因" to if (state.phase == Phase.IDLE) "空闲状态" else "处理已完成且无需继续显示进度通知",
+                    ),
+                )
+            }
             lastProcessingNotificationFingerprint = null
+            lastProcessingNotificationAuditSignature = null
             return
         }
         val (title, detail) = when (state.phase) {
@@ -1509,9 +1601,64 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             .build()
-        manager.notify(PROCESSING_NOTIFICATION_ID, notification)
+        try {
+            manager.notify(PROCESSING_NOTIFICATION_ID, notification)
+        } catch (failure: Throwable) {
+            runCatching {
+                io.translatetube.local.util.AppLogStore.error(
+                    this,
+                    "NotificationDiagnostics",
+                    "提交处理进度通知时同步抛出异常",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                        "通知样式" to "NotificationCompat.BigTextStyle",
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                        "是否包含暂停/取消操作" to hasProcessingActions.toString(),
+                        "是否包含进度条" to (measuredPercent != null).toString(),
+                        "提交线程" to Thread.currentThread().name,
+                    ),
+                )
+            }
+            throw failure
+        }
         lastProcessingNotificationFingerprint = notificationFingerprint
         lastProcessingNotificationPostedAtMs = android.os.SystemClock.elapsedRealtime()
+        processingNotificationPostCount += 1L
+
+        // Audit only layout/state transitions, not every counter tick. This creates a compact
+        // timeline that can be matched to RemoteServiceException's notification tag/id.
+        val auditSignature = listOf(
+            safeDiagnosticSessionFingerprint(state.key),
+            state.phase.name,
+            ongoing.toString(),
+            hasProcessingActions.toString(),
+            (measuredPercent != null).toString(),
+            state.isProcessingPaused.toString(),
+        ).joinToString("|")
+        if (auditSignature != lastProcessingNotificationAuditSignature) {
+            lastProcessingNotificationAuditSignature = auditSignature
+            io.translatetube.local.util.AppLogStore.info(
+                this,
+                "NotificationDiagnostics",
+                "处理进度通知状态已提交（布局/阶段变更）",
+                diagnosticContext = mapOf(
+                    "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                    "通知用途" to "视频解析/转写/翻译/配音进度，不是 Media3 媒体控制通知",
+                    "通知样式" to "NotificationCompat.BigTextStyle",
+                    "当前处理阶段" to state.phase.name,
+                    "会话类型" to diagnosticMediaSourceType(state),
+                    "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                    "是否 ongoing" to ongoing.toString(),
+                    "操作按钮数" to if (hasProcessingActions) "2" else "0",
+                    "是否有确定进度条" to (measuredPercent != null).toString(),
+                    "是否已暂停处理" to state.isProcessingPaused.toString(),
+                    "本次服务进程内成功提交序号" to processingNotificationPostCount.toString(),
+                    "提交线程" to Thread.currentThread().name,
+                ),
+            )
+        }
     }
 
     private fun percentFromProgress(progress: String): Int? {
