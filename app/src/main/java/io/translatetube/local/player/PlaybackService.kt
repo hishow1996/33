@@ -5009,25 +5009,6 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
             }
             ensureCurrentSession(key, pipelineGeneration)
             saveHistory(meta)
-            if (forceRegenerateDubbing) {
-                // Do not leave the prior run's watch position as the history resume point after
-                // changing engines. The new subtitle/voice timeline is about to start at zero.
-                try {
-                    db.videoDao().setWatched(key, 0L)
-                } catch (error: Exception) {
-                    io.translatetube.local.util.AppLogStore.warning(
-                        this@PlaybackService,
-                        "PlaybackFlow",
-                        "重新合成配音后清零历史续播位置失败",
-                        error,
-                        diagnosticContext = mapOf(
-                            "视频来源" to diagnosticMediaSourceType(ui.value),
-                            "本次要求起播位置 ms" to "0",
-                            "保留的旧续播位置秒" to (db.videoDao().byKey(key)?.watchedSec ?: -1L).toString(),
-                        ),
-                    )
-                }
-            }
             ensureCurrentSession(key, pipelineGeneration)
             updateUiForSession(key, pipelineGeneration) {
                 it.copy(
@@ -5056,6 +5037,25 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
             } catch (_: Exception) { 0L }
             val totalMs = meta.durationSec * 1000
+            if (forceRegenerateDubbing) {
+                // Do not leave the prior run's watch position as the history resume point after
+                // changing engines. The new subtitle/voice timeline is about to start at zero.
+                try {
+                    db.videoDao().setWatched(key, 0L)
+                } catch (error: Exception) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "重新合成配音后清零历史续播位置失败",
+                        error,
+                        diagnosticContext = mapOf(
+                            "视频来源" to diagnosticMediaSourceType(ui.value),
+                            "本次要求起播位置 ms" to "0",
+                            "保留的旧续播位置秒" to resumeSec.toString(),
+                        ),
+                    )
+                }
+            }
             if (
                 !forceRegenerateDubbing &&
                 resumeSec > 10 &&
