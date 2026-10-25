@@ -2286,7 +2286,7 @@ class PlaybackService : MediaSessionService() {
                 "是否使用历史结果恢复" to (effectiveResumeState != null).toString(),
                 "是否直接恢复完整成功会话" to restoreCompletedSnapshot.toString(),
                 "本次是否强制重新合成中文配音" to regenerateDubbingThisRun.toString(),
-                "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString()
+                "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString(),
                 "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
                 "恢复的源语言" to effectiveResumeState?.sourceLang.orEmpty().ifBlank { "未确定" },
                 "本次选择的配音引擎" to configuredTtsName,
