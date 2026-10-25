@@ -1,5 +1,6 @@
 package io.translatetube.local.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -65,6 +66,16 @@ internal fun LocalTranslationSection(
     }
     var sourceLanguageMenuExpanded by remember { mutableStateOf(false) }
     var detail by rememberSaveable { mutableStateOf("") }
+
+    // Handle the phone back gesture inside the selected model's management page first.
+    // The parent API manager has its own BackHandler for leaving to app Settings, so without
+    // this nested handler a system edge-swipe skips the local-model list entirely.
+    BackHandler(enabled = detail.isNotBlank()) {
+        detail = ""
+        mlkitError = ""
+        sourceLanguageMenuExpanded = false
+    }
+
     var mlkitStatuses by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var mlkitBusy by remember { mutableStateOf<String?>(null) }
     var mlkitError by remember { mutableStateOf("") }
