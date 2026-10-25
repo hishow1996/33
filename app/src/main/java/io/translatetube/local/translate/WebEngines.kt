@@ -350,6 +350,8 @@ private val newlineRuns = Regex("""\s*\n\s*""")
  */
 private object BaiduWebViewHost {
     private const val PAGE_URL = "https://fanyi.baidu.com/"
+    /** 桌面 Chrome UA：fanyi.baidu.com 只在桌面版页面暴露 v2FetchJSON，移动版没有。 */
+    private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mutex = Mutex()
     private val pending = ConcurrentHashMap<String, CancellableContinuation<String>>()
@@ -385,6 +387,9 @@ private object BaiduWebViewHost {
         // 纯文本翻译用不到图片，直接禁掉省流量。
         view.settings.blockNetworkImage = true
         view.settings.loadsImagesAutomatically = false
+        // 关键：必须用桌面 UA。fanyi.baidu.com 会按 UA 分发不同页面，
+        // 移动版页面里没有 v2FetchJSON（真机 WebView 默认移动 UA 会一直超时）。
+        view.settings.userAgentString = DESKTOP_UA
         CookieManager.getInstance().setAcceptCookie(true)
         view.addJavascriptInterface(Bridge(), "AndroidBaiduBridge")
         // 离屏 WebView：不 attach 到窗口，GONE 即可，纯后台执行 JS。
@@ -419,7 +424,14 @@ private object BaiduWebViewHost {
                 }
                 delay(800L)
             }
-            throw IllegalStateException("百度翻译页面加载超时，请检查网络后重试")
+            // 超时则附带页面诊断（标题/接口状态/UA），便于真机排查是网络、老内核还是页面改版。
+            val diag = eval(
+                "(function(){return (document.title||'').slice(0,24)+' | v2='+typeof window.v2FetchJSON+"
+                    + "' | ua='+navigator.userAgent.slice(0,48);})()",
+            )
+            throw IllegalStateException(
+                "百度翻译页面加载超时（页面状态: ${diag.trim('"')}）。请检查网络后重试；若持续失败可换用微软/DeepL 翻译",
+            )
         }
     }
 
@@ -445,6 +457,8 @@ private object BaiduWebViewHost {
             .put("source", "txt")
             .toString()
         // args 以 JSON 字符串注入再用 JSON.parse 还原，任意文本（引号/换行/emoji）都安全。
+        // 注意：v2FetchJSON 内部把 errno 字段缺失的成功响应也当错误 throw（parseInt(undefined)=NaN），
+        // 所以 catch 里要先检查 e.data——带 data 的是真成功，照常走 onResult。
         val script = buildString {
             append("(function(){var id=").append(jsString(callId)).append(";var args;")
             append("try{args=JSON.parse(").append(jsString(args)).append(");}catch(e){")
@@ -452,7 +466,10 @@ private object BaiduWebViewHost {
             append("window.v2FetchJSON({url:'/transapi',args:args,method:'POST',")
             append("acsConf:{useAcsToken:true,useCaptcha:false}})")
             append(".then(function(r){try{AndroidBaiduBridge.onResult(id,JSON.stringify(r));}catch(e){}})")
-            append(".catch(function(e){try{AndroidBaiduBridge.onError(id,typeof e==='string'?e:JSON.stringify(e));}catch(err){}})")
+            append(".catch(function(e){try{")
+            append("if(e&&e.data){AndroidBaiduBridge.onResult(id,JSON.stringify(e));return;}")
+            append("AndroidBaiduBridge.onError(id,typeof e==='string'?e:JSON.stringify(e));")
+            append("}catch(err){}})")
             append("})();")
         }
         return withTimeout(BAIDU_CALL_TIMEOUT_MS) {
