@@ -315,6 +315,7 @@ internal fun LocalTranslationSection(
                     when (opusState.status) {
                         OpusMtStatus.READY -> Text("已下载", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
                         OpusMtStatus.DOWNLOADING -> Text("正在下载 ${opusState.currentFile}", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
+                        OpusMtStatus.VERIFYING -> Text("正在验证模型", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
                         OpusMtStatus.PAUSED -> Text(
                             if (opusState.error.isNotBlank()) "${opusState.error} · 可继续下载" else "下载已暂停，可继续",
                             color = if (opusState.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
@@ -323,7 +324,9 @@ internal fun LocalTranslationSection(
                         OpusMtStatus.FAILED -> Text(opusState.error.ifBlank { "下载失败，可重试" }, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
                         else -> Text("约 250 MB", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
                     }
-                    if (opusState.status == OpusMtStatus.DOWNLOADING) {
+                    if (opusState.status == OpusMtStatus.VERIFYING) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF3569D4))
+                    } else if (opusState.status == OpusMtStatus.DOWNLOADING) {
                         if (opusState.totalBytes > 0L) {
                             LinearProgressIndicator(
                                 progress = (opusState.progress / 100f).coerceIn(0f, 1f),
@@ -351,7 +354,7 @@ internal fun LocalTranslationSection(
                                 opusJob?.cancel()
                                 opusJob = null
                             },
-                        ) { Text("暂停下载") }
+                        ) { Text(if (opusState.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
                     } else if (opusState.status != OpusMtStatus.READY) {
                         Button(
                             modifier = Modifier.fillMaxWidth(),

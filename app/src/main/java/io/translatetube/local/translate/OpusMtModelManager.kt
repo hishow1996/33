@@ -19,7 +19,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
-enum class OpusMtStatus { NOT_DOWNLOADED, DOWNLOADING, PAUSED, READY, FAILED }
+enum class OpusMtStatus { NOT_DOWNLOADED, DOWNLOADING, VERIFYING, PAUSED, READY, FAILED }
 
 data class OpusMtDownloadState(
     val status: OpusMtStatus = OpusMtStatus.NOT_DOWNLOADED,
@@ -46,6 +46,7 @@ object OpusMtModelManager {
 
     private const val MIB = 1024L * 1024L
     private const val MODEL_REVISION = "4dc37af"
+    private const val RUNTIME_VALIDATION_SCHEMA = 2
     private val files = listOf(
         ModelFile(
             "encoder_model_quantized.onnx",
@@ -92,6 +93,7 @@ object OpusMtModelManager {
         val dir = modelDirectory(context)
         return buildString {
             append(MODEL_REVISION)
+            append(":runtime-validation-").append(RUNTIME_VALIDATION_SCHEMA)
             files.forEach { spec ->
                 val file = File(dir, spec.name)
                 append('\n').append(spec.name)
@@ -159,6 +161,9 @@ object OpusMtModelManager {
     suspend fun refresh(context: Context) = withContext(Dispatchers.IO) {
         val dir = modelDirectory(context)
         val ready = isReady(context)
+        val allModelFilesPresent = files.all { spec ->
+            File(dir, spec.name).let { it.isFile && it.length() >= spec.minBytes }
+        }
         val firstPart = files.firstOrNull { spec ->
             File(dir, "${spec.name}.part").let { it.isFile && it.length() > 0L }
         }
@@ -178,6 +183,7 @@ object OpusMtModelManager {
                 fileIndex = partialSpec?.let { files.indexOf(it) + 1 } ?: 0,
                 fileCount = files.size,
                 downloadedBytes = progressFile?.length() ?: 0L,
+                error = if (allModelFilesPresent) "模型文件已下载，等待重新验证" else "",
             )
             else -> OpusMtDownloadState(status = OpusMtStatus.NOT_DOWNLOADED, fileCount = files.size)
         }
@@ -249,10 +255,22 @@ object OpusMtModelManager {
                 !file.isFile || file.length() < spec.minBytes
             }
             if (invalid != null) throw IOException("模型文件完整性检查失败：${invalid.name}")
-            // Run a real translation before exposing the model as ready, then publish the marker atomically.
+            // Run a real translation before exposing the model as ready. Free the ONNX sessions
+            // immediately afterwards so leaving the settings page does not retain ~250 MB of model state.
             withContext(Dispatchers.IO) {
-                OpusMtRuntime.validate(app)
-                writeReadyMarker(app)
+                try {
+                    mutableState.value = OpusMtDownloadState(
+                        status = OpusMtStatus.VERIFYING,
+                        progress = 100,
+                        currentFile = "验证翻译效果",
+                        fileIndex = files.size,
+                        fileCount = files.size,
+                    )
+                    OpusMtRuntime.validate(app)
+                    writeReadyMarker(app)
+                } finally {
+                    OpusMtRuntime.closeLoadedModel()
+                }
             }
             if (!isReady(app)) throw IOException("OPUS-MT 验证标记或模型完整性检查失败")
             mutableState.value = OpusMtDownloadState(

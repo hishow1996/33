@@ -16,6 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.IOException
 import java.lang.reflect.Array as JavaArray
@@ -23,6 +25,8 @@ import java.nio.file.Paths
 import java.util.Locale
 
 /** First Android OPUS-MT model: English -> Simplified Chinese (quantized ONNX). */
+internal class OpusMtLineLimitException(message: String) : IllegalArgumentException(message)
+
 class OpusMtEngine(private val context: Context) : TranslationEngine {
     override val id: String = "opus-mt"
     override val displayName: String = "OPUS-MT 本地翻译"
@@ -52,12 +56,54 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
                 "字幕条数" to lines.size.toString(),
             ),
         )
+        var activeLineNumber = 0
+        var activeLineLength = 0
         return try {
             withContext(Dispatchers.Default) {
                 val output = ArrayList<String>(lines.size)
                 for ((index, line) in lines.withIndex()) {
                     currentCoroutineContext().ensureActive()
-                    output += if (line.isBlank()) "" else OpusMtRuntime.translateOne(context, line)
+                    activeLineNumber = index + 1
+                    activeLineLength = line.length
+                    val translated = if (line.isBlank()) "" else try {
+                        OpusMtRuntime.translateOne(context, line)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (lineLimit: OpusMtLineLimitException) {
+                        AppLogStore.warning(
+                            context.applicationContext,
+                            "Translation",
+                            "OPUS-MT 已跳过超过单句处理上限的字幕，将保留该行供上层质量恢复处理",
+                            diagnosticContext = mapOf(
+                                "字幕序号" to (index + 1).toString(),
+                                "字幕总数" to lines.size.toString(),
+                                "字幕字符数" to line.length.toString(),
+                                "原因" to (lineLimit.message ?: "超过模型单句上限"),
+                                "未记录字幕原文" to "true",
+                            ),
+                        )
+                        ""
+                    } catch (lineError: Exception) {
+                        AppLogStore.error(
+                            context.applicationContext,
+                            "Translation",
+                            "OPUS-MT 单条字幕推理失败",
+                            lineError,
+                            diagnosticContext = mapOf(
+                                "字幕序号" to (index + 1).toString(),
+                                "字幕总数" to lines.size.toString(),
+                                "字幕字符数" to line.length.toString(),
+                                "源语言" to source,
+                                "目标语言" to "zh-CN",
+                                "未记录字幕原文" to "true",
+                            ),
+                        )
+                        throw IllegalStateException(
+                            "第 ${index + 1} 条字幕翻译失败：${lineError.message ?: lineError.javaClass.simpleName}",
+                            lineError,
+                        )
+                    }
+                    output += translated
                     if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
                         AppLogStore.info(
                             context.applicationContext,
@@ -85,7 +131,10 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
                     "源语言" to source,
                     "目标语言" to "zh-CN",
                     "字幕条数" to lines.size.toString(),
+                    "失败字幕序号" to activeLineNumber.toString(),
+                    "失败字幕字符数" to activeLineLength.toString(),
                     "模型文件已验证" to OpusMtModelManager.isReady(context).toString(),
+                    "未记录字幕原文" to "true",
                 ),
             )
             throw IllegalStateException("OPUS-MT 本地翻译失败：${error.message ?: error.javaClass.simpleName}", error)
@@ -126,21 +175,36 @@ internal object OpusMtRuntime {
             return OnnxTensor.createTensor(environment, buffer, shape)
         }
 
-        fun translateOne(text: String): String {
+        suspend fun translateOne(text: String): String {
             val sourcePieces = sourceTokenizer.encodeNormalized(text, algorithm)
             val sourceIds = (sourcePieces + 0).map { it.toLong() }.toLongArray()
             if (sourceIds.isEmpty()) return ""
+            if (sourceIds.size > MAX_SOURCE_TOKENS) {
+                throw OpusMtLineLimitException(
+                    "原文分词后为 ${sourceIds.size} tokens，模型单句输入上限为 ${MAX_SOURCE_TOKENS} tokens"
+                )
+            }
             val sourceMask = LongArray(sourceIds.size) { 1L }
             val hidden = encode(sourceIds, sourceMask)
             val decoderIds = arrayListOf(DECODER_START_TOKEN)
             val generated = ArrayList<Int>()
-            val maxTokens = (sourceIds.size * 2 + 16).coerceIn(24, 128)
+            val maxTokens = (sourceIds.size * 2 + 16).coerceIn(24, MAX_OUTPUT_TOKENS)
 
+            var reachedEndToken = false
             for (step in 0 until maxTokens) {
+                currentCoroutineContext().ensureActive()
                 val token = decodeNext(decoderIds, hidden.first, hidden.second, sourceMask)
-                if (token == EOS_TOKEN || token == PAD_TOKEN) break
+                if (token == EOS_TOKEN || token == PAD_TOKEN) {
+                    reachedEndToken = true
+                    break
+                }
                 decoderIds += token.toLong()
                 generated += token
+            }
+            if (!reachedEndToken && generated.size >= maxTokens) {
+                throw OpusMtLineLimitException(
+                    "译文达到单句生成长度上限（${maxTokens} tokens），已避免静默截断"
+                )
             }
 
             val raw = targetTokenizer.decodeSmart(generated.filter { it != EOS_TOKEN && it != PAD_TOKEN }).trim()
@@ -306,17 +370,41 @@ internal object OpusMtRuntime {
     }
 
     @Volatile private var loaded: Loaded? = null
+    private val inferenceMutex = Mutex()
 
-    @Synchronized
-    fun translateOne(context: Context, text: String): String = load(context).translateOne(text)
+    /** All session use and release is serialized to prevent deleting a model during active inference. */
+    suspend fun translateOne(context: Context, text: String): String =
+        inferenceMutex.withLock { load(context).translateOne(text) }
 
     /** Load all files and execute a small inference before the download UI reports the model ready. */
-    fun validate(context: Context) {
+    suspend fun validate(context: Context) {
         val sample = translateOne(context, "Hello.")
-        if (sample.isBlank()) throw IllegalStateException("OPUS-MT 模型验证失败：测试句未返回译文")
+        if (sample.isBlank()) {
+            throw IllegalStateException("OPUS-MT 模型验证失败：测试句未返回译文")
+        }
+        if (sample.none { it in '\u4E00'..'\u9FFF' }) {
+            throw IllegalStateException("OPUS-MT 模型验证失败：测试句译文中没有中文字符")
+        }
+        AppLogStore.info(
+            context.applicationContext,
+            "LocalTranslationModel",
+            "OPUS-MT 测试翻译通过",
+            diagnosticContext = mapOf(
+                "模型" to "opus-mt-en-zh",
+                "测试用例" to "固定英语短句",
+                "含中文字符" to "true",
+                "未记录测试译文" to "true",
+            ),
+        )
     }
 
-    @Synchronized
+    suspend fun closeLoadedModel() {
+        inferenceMutex.withLock {
+            loaded?.close()
+            loaded = null
+        }
+    }
+
     private fun load(context: Context): Loaded {
         if (Build.VERSION.SDK_INT < 26) {
             throw IllegalStateException("当前 Android 版本不支持 OPUS-MT 分词运行环境，需要 Android 8.0 或以上。")
@@ -363,6 +451,21 @@ internal object OpusMtRuntime {
                 SentencePieceAlgorithm(true, Scoring.HIGHEST_SCORE),
             )
             loaded = next
+            AppLogStore.info(
+                context.applicationContext,
+                "LocalTranslationModel",
+                "OPUS-MT ONNX 会话加载成功",
+                diagnosticContext = mapOf(
+                    "模型" to "opus-mt-en-zh",
+                    "Android API" to Build.VERSION.SDK_INT.toString(),
+                    "编码器输入" to encoder.inputNames.sorted().joinToString(","),
+                    "编码器输出" to encoder.outputNames.sorted().joinToString(","),
+                    "解码器输入" to decoder.inputNames.sorted().joinToString(","),
+                    "解码器输出" to decoder.outputNames.sorted().joinToString(","),
+                    "分词器文件已加载" to "true",
+                    "未记录字幕原文" to "true",
+                ),
+            )
             return next
         } catch (error: Exception) {
             runCatching { encoder?.close() }
@@ -382,4 +485,6 @@ internal object OpusMtRuntime {
     private const val DECODER_START_TOKEN = 65000L
     private const val PAD_TOKEN = 65000
     private const val EOS_TOKEN = 0
+    private const val MAX_SOURCE_TOKENS = 512
+    private const val MAX_OUTPUT_TOKENS = 256
 }

@@ -3376,7 +3376,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             EngineFactory.ID_FREE_GEMINI -> "free-gemini"
             EngineFactory.ID_FREE_DEEPSEEK -> "free-deepseek"
             EngineFactory.ID_LOCAL_MLKIT -> "mlkit-local"
-            EngineFactory.ID_LOCAL_OPUS -> "opus-mt-en-zh-4dc37af-onnx-quantized-v1"
+            EngineFactory.ID_LOCAL_OPUS -> "opus-mt-en-zh-4dc37af-onnx-quantized-v2"
             else -> if (active != null) "api-profile" else "local-fallback"
         }
         return TranslationCacheIdentity.providerFingerprint(
