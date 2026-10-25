@@ -43,6 +43,8 @@ internal fun LocalTranslationSection(
     var detail by rememberSaveable { mutableStateOf("") }
     var mlkitStatuses by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var mlkitBusy by remember { mutableStateOf<String?>(null) }
+    var mlkitChineseReady by remember { mutableStateOf(false) }
+    var mlkitProgressLabel by remember { mutableStateOf("") }
     var mlkitError by remember { mutableStateOf("") }
     var opusJob by remember { mutableStateOf<Job?>(null) }
     val opusState by OpusMtModelManager.state.collectAsState()
@@ -81,14 +83,17 @@ internal fun LocalTranslationSection(
     }
 
     suspend fun refreshMlKit() {
-        mlkitStatuses = withContext(Dispatchers.IO) {
-            pairs.associate { pair ->
+        val snapshot = withContext(Dispatchers.IO) {
+            val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
+            val statuses = pairs.associate { pair ->
                 pair.source to if (
-                    MlKitModelCoordinator.isDownloaded(pair.source) &&
-                    MlKitModelCoordinator.isDownloaded(pair.target)
+                    MlKitModelCoordinator.isDownloaded(pair.source) && chineseReady
                 ) "ready" else "missing"
             }
+            chineseReady to statuses
         }
+        mlkitChineseReady = snapshot.first
+        mlkitStatuses = snapshot.second
     }
 
     LaunchedEffect(detail) {
@@ -188,6 +193,11 @@ internal fun LocalTranslationSection(
                         .padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    Text(
+                        "每个语言包约 30 MB。中文模型只需下载一次，后续语言共用；下载时会显示当前正在下载的语言包和阶段。ML Kit 暂不提供实时字节数或百分比。",
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     pairs.forEachIndexed { index, pair ->
                         val state = mlkitStatuses[pair.source] ?: "checking"
                         Row(
@@ -202,6 +212,12 @@ internal fun LocalTranslationSection(
                                     pair.name,
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = Color(0xFF172033),
+                                )
+                                Text(
+                                    "本语言包约 30 MB · 中文包 " +
+                                        if (mlkitChineseReady) "已下载（共用）" else "首次另需约 30 MB",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF64748B),
                                 )
                                 when (state) {
                                     "ready" -> Text("已下载", style = MaterialTheme.typography.labelSmall, color = Color(0xFF25804A))
@@ -261,6 +277,7 @@ internal fun LocalTranslationSection(
                                     enabled = mlkitBusy == null,
                                     onClick = {
                                         mlkitBusy = pair.source
+                                        mlkitProgressLabel = "正在检查已下载语言包…"
                                         mlkitStatuses = mlkitStatuses + (pair.source to "downloading")
                                         mlkitError = ""
                                         AppLogStore.info(
@@ -275,15 +292,34 @@ internal fun LocalTranslationSection(
                                         )
                                         scope.launch {
                                             try {
+                                                val missingLanguages = withContext(Dispatchers.IO) {
+                                                    listOf(pair.source, pair.target).distinct()
+                                                        .filterNot { MlKitModelCoordinator.isDownloaded(it) }
+                                                }
+                                                if (missingLanguages.isEmpty()) {
+                                                    mlkitProgressLabel = "模型已存在，正在复核安装状态…"
+                                                } else {
+                                                    missingLanguages.forEachIndexed { stageIndex, languageTag ->
+                                                        val languageName = if (languageTag == pair.source) {
+                                                            pair.name.substringBefore(" →")
+                                                        } else {
+                                                            "中文"
+                                                        }
+                                                        mlkitProgressLabel =
+                                                            "正在下载${languageName}模型包（第 ${stageIndex + 1}/${missingLanguages.size} 个）"
+                                                        withContext(Dispatchers.IO) {
+                                                            MlKitModelCoordinator.downloadLanguage(languageTag)
+                                                        }
+                                                    }
+                                                }
                                                 withContext(Dispatchers.IO) {
-                                                    MlKitModelCoordinator.downloadLanguage(pair.source)
-                                                    MlKitModelCoordinator.downloadLanguage(pair.target)
                                                     if (!MlKitModelCoordinator.isDownloaded(pair.source) ||
                                                         !MlKitModelCoordinator.isDownloaded(pair.target)
                                                     ) {
                                                         throw IllegalStateException("下载后未检测到完整语言模型")
                                                     }
                                                 }
+                                                mlkitProgressLabel = "语言包下载完成，正在刷新状态…"
                                                 AppLogStore.info(
                                                     context,
                                                     "LocalTranslationModel",
@@ -308,16 +344,30 @@ internal fun LocalTranslationSection(
                                                 )
                                             } finally {
                                                 mlkitBusy = null
+                                                mlkitProgressLabel = ""
                                             }
                                         }
                                     },
                                 ) { Text(if (state == "failed") "重试" else "下载") }
                             }
                         }
+                        if (mlkitBusy == pair.source) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color(0xFF3569D4),
+                                )
+                                Text(
+                                    mlkitProgressLabel.ifBlank { "正在通过 ML Kit 下载语言模型…" },
+                                    color = Color(0xFF3569D4),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                        }
                         if (index < pairs.lastIndex) HorizontalDivider(color = Color(0xFFE8ECF3))
-                    }
-                    if (mlkitBusy != null) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF3569D4))
                     }
                     if (mlkitError.isNotBlank()) {
                         Text(mlkitError, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
