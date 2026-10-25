@@ -1,12 +1,23 @@
 package io.translatetube.local.translate
 
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import io.translatetube.local.TranslateTubeApp
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.FormBody
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -19,6 +30,8 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /*
  * 免 API Key 的在线翻译引擎：微软翻译（Edge 浏览器翻译接口）、百度翻译（网页接口）。
@@ -317,35 +330,164 @@ class MicrosoftWebEngine : TranslationEngine {
     }
 }
 
-/** 只存在内存里的 Cookie 容器：百度网页接口需要先访问首页拿到会话 Cookie。 */
-private class MemoryCookieJar : CookieJar {
-    private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+private const val BAIDU_REQUEST_GAP_MS = 150L
+private const val BAIDU_PAGE_READY_TIMEOUT_MS = 30_000L
+private const val BAIDU_CALL_TIMEOUT_MS = 20_000L
+private val newlineRuns = Regex("""\s*\n\s*""")
 
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        val list = store.getOrPut(url.host) { CopyOnWriteArrayList() }
-        for (cookie in cookies) {
-            list.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
-            list.add(cookie)
+/*
+ * 百度翻译的 transapi 接口已启用 Acs-Token 风控：请求必须携带页面内反爬脚本
+ * （heicha/abclite）生成的 Acs-Token 头，否则一律返回 errno 1022「访问出现异常」。
+ * 该令牌无法在 App 直连里伪造，因此这里改为离屏 WebView 方案：
+ *   1. 后台加载一次 fanyi.baidu.com，让页面自带的反爬脚本初始化完成；
+ *   2. 翻译请求通过页面暴露的 window.v2FetchJSON 发出，Acs-Token、X-MT-* 头、
+ *      Cookie 由页面逻辑自动附带，与真实浏览器行为一致；
+ *   3. 结果经 AndroidBaiduBridge 回传 Kotlin，响应里的 data[].dst 与旧解析逻辑兼容。
+ * 已在桌面 Chromium（headless）里端到端验证：v2FetchJSON + Acs-Token 能拿到
+ * status:0 与 data[].dst 译文；真机 WebView 的环境更接近真实浏览器，理论上更稳。
+ */
+private object BaiduWebViewHost {
+    private const val PAGE_URL = "https://fanyi.baidu.com/"
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mutex = Mutex()
+    private val pending = ConcurrentHashMap<String, CancellableContinuation<String>>()
+    private val callSeq = java.util.concurrent.atomic.AtomicLong(0L)
+
+    @Volatile private var webView: WebView? = null
+    @Volatile private var pageReady = false
+
+    /** 带 HTTP 响应体内容的异常：1022=风控会话需刷新，1000/999=接口参数或格式变化。 */
+    class BaiduWebException(message: String) : IllegalStateException(message)
+
+    /** JS 侧把 v2FetchJSON 的结果/错误带回 Kotlin 的桥。 */
+    class Bridge {
+        @JavascriptInterface
+        fun onResult(id: String, body: String) {
+            pending.remove(id)?.let { cont -> if (cont.isActive) cont.resume(body) }
+        }
+
+        @JavascriptInterface
+        fun onError(id: String, message: String) {
+            pending.remove(id)?.let { cont ->
+                if (cont.isActive) cont.resumeWithException(BaiduWebException(message))
+            }
         }
     }
 
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val list = store[url.host] ?: return emptyList()
-        val now = System.currentTimeMillis()
-        return list.filter { it.expiresAt > now && it.matches(url) }
+    private fun ensureWebView(context: android.content.Context): WebView {
+        webView?.let { return it }
+        val view = WebView(context.applicationContext)
+        view.settings.javaScriptEnabled = true
+        view.settings.domStorageEnabled = true
+        view.settings.databaseEnabled = true
+        // 纯文本翻译用不到图片，直接禁掉省流量。
+        view.settings.blockNetworkImage = true
+        view.settings.loadsImagesAutomatically = false
+        CookieManager.getInstance().setAcceptCookie(true)
+        view.addJavascriptInterface(Bridge(), "AndroidBaiduBridge")
+        // 离屏 WebView：不 attach 到窗口，GONE 即可，纯后台执行 JS。
+        view.visibility = View.GONE
+        webView = view
+        return view
+    }
+
+    /** 风控会话失效（1022）后重载页面，重新初始化 Acs-Token。 */
+    suspend fun reset() {
+        pageReady = false
+        val view = webView ?: return
+        withContext(Dispatchers.Main) { view.loadUrl(PAGE_URL) }
+    }
+
+    suspend fun ensureReady() {
+        if (pageReady) return
+        mutex.withLock {
+            if (pageReady) return
+            val appCtx = TranslateTubeApp.instance
+            withContext(Dispatchers.Main) {
+                ensureWebView(appCtx).loadUrl(PAGE_URL)
+            }
+            // 轮询页面 bundle 加载完成（v2FetchJSON 由页面脚本定义）。
+            val deadline = System.currentTimeMillis() + BAIDU_PAGE_READY_TIMEOUT_MS
+            while (System.currentTimeMillis() < deadline) {
+                currentCoroutineContext().ensureActive()
+                val probe = eval("(typeof window.v2FetchJSON === 'function') ? 'ready' : 'no'")
+                if (probe.contains("ready")) {
+                    pageReady = true
+                    return
+                }
+                delay(800L)
+            }
+            throw IllegalStateException("百度翻译页面加载超时，请检查网络后重试")
+        }
+    }
+
+    /** 主线程 evaluateJavascript 并等待同步返回值（用于页面状态探测）。 */
+    private suspend fun eval(script: String): String = withContext(Dispatchers.Main) {
+        suspendCancellableCoroutine { cont ->
+            val view = webView
+            if (view == null) {
+                cont.resume("")
+                return@suspendCancellableCoroutine
+            }
+            view.evaluateJavascript(script) { result -> cont.resume(result.orEmpty()) }
+        }
+    }
+
+    suspend fun transapi(from: String, to: String, query: String): String {
+        ensureReady()
+        val callId = "baidu-" + callSeq.incrementAndGet()
+        val args = JSONObject()
+            .put("from", from)
+            .put("to", to)
+            .put("query", query)
+            .put("source", "txt")
+            .toString()
+        // args 以 JSON 字符串注入再用 JSON.parse 还原，任意文本（引号/换行/emoji）都安全。
+        val script = buildString {
+            append("(function(){var id=").append(jsString(callId)).append(";var args;")
+            append("try{args=JSON.parse(").append(jsString(args)).append(");}catch(e){")
+            append("AndroidBaiduBridge.onError(id,'参数序列化失败');return;}")
+            append("window.v2FetchJSON({url:'/transapi',args:args,method:'POST',")
+            append("acsConf:{useAcsToken:true,useCaptcha:false}})")
+            append(".then(function(r){try{AndroidBaiduBridge.onResult(id,JSON.stringify(r));}catch(e){}})")
+            append(".catch(function(e){try{AndroidBaiduBridge.onError(id,typeof e==='string'?e:JSON.stringify(e));}catch(err){}})")
+            append("})();")
+        }
+        return withTimeout(BAIDU_CALL_TIMEOUT_MS) {
+            suspendCancellableCoroutine { cont ->
+                pending[callId] = cont
+                cont.invokeOnCancellation { pending.remove(callId) }
+                mainHandler.post {
+                    val view = webView
+                    if (view == null) {
+                        pending.remove(callId)?.let {
+                            if (it.isActive) it.resumeWithException(IllegalStateException("百度翻译页面未初始化"))
+                        }
+                    } else {
+                        view.evaluateJavascript(script, null)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 把任意文本转成安全的 JS 单引号字符串字面量。 */
+    private fun jsString(s: String): String = buildString {
+        append('\'')
+        for (c in s) when (c) {
+            '\\' -> append("\\\\")
+            '\'' -> append("\\'")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            '<' -> append("\\u003c")
+            else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
+        }
+        append('\'')
     }
 }
 
-private const val BAIDU_SESSION_TTL_MS = 20L * 60L * 1000L
-private const val BAIDU_REQUEST_GAP_MS = 150L
-private val newlineRuns = Regex("""\s*\n\s*""")
-
-private object BaiduSession {
-    val client: OkHttpClient = webHttp.newBuilder().cookieJar(MemoryCookieJar()).build()
-    @Volatile var readyAt = 0L
-}
-
-/** 百度翻译（免费在线）：网页版 transapi 接口，不需要 appid/密钥。逐条请求，译文与字幕一一对应。 */
+/** 百度翻译（免费在线）：经离屏 WebView 借页面 JS 上下文走 transapi 接口，不需要 appid/密钥。逐条请求，译文与字幕一一对应。 */
 class BaiduWebEngine : TranslationEngine {
     override val id = "baidu-web"
     override val displayName = "百度翻译（免费在线）"
@@ -361,7 +503,6 @@ class BaiduWebEngine : TranslationEngine {
         if (lines.isEmpty()) return emptyList()
         val from = WebLangCodes.baidu(srcLang, target = false)
         val to = WebLangCodes.baidu(tgtLang, target = true)
-        ensureSession()
         val output = ArrayList<String>(lines.size)
         var requestedBefore = false
         for (line in lines) {
@@ -378,43 +519,16 @@ class BaiduWebEngine : TranslationEngine {
         return output
     }
 
-    private suspend fun ensureSession() {
-        val now = System.currentTimeMillis()
-        if (now - BaiduSession.readyAt < BAIDU_SESSION_TTL_MS) return
-        // 与开源项目一致：先访问两次首页，让服务端下发会话 Cookie。
-        repeat(2) {
-            val request = Request.Builder()
-                .url("https://fanyi.baidu.com/")
-                .get()
-                .header("User-Agent", WEB_USER_AGENT)
-                .build()
-            executeWebRequest(BaiduSession.client, request)
-        }
-        BaiduSession.readyAt = now
-    }
-
     private suspend fun translateLine(text: String, from: String, to: String): String {
-        val form = FormBody.Builder()
-            .add("from", from)
-            .add("to", to)
-            .add("query", text)
-            .add("source", "txt")
-            .build()
-        val request = Request.Builder()
-            .url("https://fanyi.baidu.com/transapi")
-            .post(form)
-            .header("Origin", "https://fanyi.baidu.com")
-            .header("Referer", "https://fanyi.baidu.com/")
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header("Accept", "application/json, text/plain, */*")
-            .header("User-Agent", WEB_USER_AGENT)
-            .build()
         val body = try {
-            executeWebRequest(BaiduSession.client, request)
-        } catch (e: IllegalStateException) {
-            // 会话失效时下次请求重新拿 Cookie。
-            BaiduSession.readyAt = 0L
-            throw e
+            BaiduWebViewHost.transapi(from, to, text)
+        } catch (e: BaiduWebViewHost.BaiduWebException) {
+            val message = e.message.orEmpty()
+            val riskRejected = message.contains("1022") || message.contains("captcha", ignoreCase = true)
+            if (!riskRejected) throw e
+            // 风控会话失效：重载页面重新初始化 Acs-Token 后重试一次；再失败就如实报错。
+            BaiduWebViewHost.reset()
+            BaiduWebViewHost.transapi(from, to, text)
         }
         return parseBaiduTranslation(body, to)
     }

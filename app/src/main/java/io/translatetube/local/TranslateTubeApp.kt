@@ -8,9 +8,17 @@ import kotlinx.coroutines.launch
 import io.translatetube.local.util.CrashGuard
 
 class TranslateTubeApp : Application() {
+    companion object {
+        /** 进程级 Application 引用：供无 Context 参数的工具（如翻译 WebView 宿主）使用。 */
+        @Volatile
+        lateinit var instance: TranslateTubeApp
+            private set
+    }
+
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
+        instance = this
         CrashGuard.install(this)
         super.onCreate()
         // Image loading is initialized lazily by the screens that need it.
