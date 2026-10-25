@@ -130,6 +130,7 @@ object AppLogStore {
         threadName: String,
         failure: Throwable,
         timestampMs: Long = System.currentTimeMillis(),
+        diagnosticContext: Map<String, String> = emptyMap(),
     ) {
         val level = if (status == "FATAL") "FATAL" else "ERROR"
         appendAt(
@@ -147,7 +148,7 @@ object AppLogStore {
                 "异常线程" to threadName,
                 "处理方式" to if (status == "FATAL") "交由 Android 默认崩溃处理器，进程退出" else "后台异常被保护，进程继续运行",
                 "异常类" to failure.javaClass.name,
-            ),
+            ) + diagnosticContext,
         )
     }
 
