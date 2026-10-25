@@ -506,7 +506,7 @@ class DubbingEngine(
                             "配音引擎" to (tts?.name ?: "未知引擎"),
                             "配音输出模式" to if (usesImmediateTimelinePlayback) "系统 TTS 即时模式" else "PCM 缓存/混流模式",
                             "强制重新合成配音" to forceRegeneratePcmForAttach.toString(),
-                            "缓存文件数" to cacheDir.listFiles().orEmpty().count { it.isFile }.toString()
+                            "缓存文件数" to cacheDir.listFiles().orEmpty().count { it.isFile }.toString(),
                             "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
                         ),
                     )
