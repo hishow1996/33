@@ -313,7 +313,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         }
         try {
             db.apiProfileDao().all().collect { list ->
-                val supportedProfiles = list.filterNot { it.type == "AZURE" || it.type == "BAIDU" }
+                val supportedProfiles = list.filterNot { it.type == "BAIDU" }
                 profiles = supportedProfiles
                 loadError = null
                 // 已删除、停用或已移除的引擎不能继续作为当前引擎，自动回退到本地引擎。
@@ -763,8 +763,15 @@ private fun apiConnectionFailureMessage(profile: ApiProfile, error: Exception): 
 }
 
 private fun typeLabel(t: String) = when (t) {
-    "OPENAI" -> "OpenAI 兼容大模型"; "GEMINI" -> "Google Gemini 大模型"
-    "GCLOUD" -> "Google Cloud Translation 官方翻译 API（需密钥）"
+    "OPENAI" -> "OpenAI 兼容大模型"
+    "GEMINI" -> "Google Gemini 大模型"
+    "GCLOUD" -> "Google Cloud Translation 官方 API"
+    "DEEPL" -> "DeepL 官方 API"
+    "BAIDU_API" -> "百度翻译官方 API"
+    "AZURE" -> "Microsoft Translator 官方 API"
+    "TENCENT" -> "腾讯云机器翻译"
+    "ALIYUN" -> "阿里云机器翻译"
+    "LIBRETRANSLATE" -> "LibreTranslate"
     else -> t
 }
 
@@ -1271,13 +1278,27 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     val ctx = LocalContext.current.applicationContext
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var type by remember { mutableStateOf(initial?.type ?: "OPENAI") }
-    var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: "") }
+    var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: "https://api.openai.com") }
     var apiKey by remember {
         mutableStateOf(initial?.let { Crypto.decrypt(it.apiKey) } ?: "")
     }
     var showApiKey by remember { mutableStateOf(false) }
     var model by remember { mutableStateOf(initial?.model ?: "") }
     var region by remember { mutableStateOf(initial?.region ?: "") }
+    var secondaryCredential by remember {
+        mutableStateOf(
+            readApiProfileCredential(
+                initial,
+                when (initial?.type) {
+                    "BAIDU_API" -> "appId"
+                    "TENCENT" -> "secretId"
+                    "ALIYUN" -> "accessKeyId"
+                    else -> ""
+                },
+            ),
+        )
+    }
+    var showSecondaryCredential by remember { mutableStateOf(false) }
     var models by remember { mutableStateOf<List<String>?>(null) }
     var pulling by remember { mutableStateOf(false) }
     var pullError by remember { mutableStateOf<String?>(null) }
@@ -1286,10 +1307,25 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
     var connectionTestJob by remember { mutableStateOf<Job?>(null) }
     var connectionTestGeneration by remember { mutableStateOf(0L) }
 
-    val needsBaseUrl = type == "OPENAI"
-    // Azure Translator 同样需要订阅密钥；区域不能替代 API Key。
-    val needsKey = true
-    val fixedEngine = type == "GCLOUD"
+    val needsBaseUrl = type in setOf("OPENAI", "DEEPL", "AZURE", "LIBRETRANSLATE")
+    val apiKeyRequired = type != "LIBRETRANSLATE"
+    val fixedEngine = type !in setOf("OPENAI", "GEMINI")
+    val secondaryCredentialLabel = when (type) {
+        "BAIDU_API" -> "百度翻译 APP ID"
+        "TENCENT" -> "腾讯云 SecretId"
+        "ALIYUN" -> "阿里云 AccessKey ID"
+        else -> null
+    }
+    val regionLabel = when (type) {
+        "AZURE" -> "Azure 资源区域"
+        "TENCENT" -> "腾讯云地域"
+        else -> null
+    }
+    val credentialsReady = (!apiKeyRequired || apiKey.isNotBlank()) &&
+        (secondaryCredentialLabel == null || secondaryCredential.isNotBlank()) &&
+        (regionLabel == null || region.isNotBlank()) &&
+        (!needsBaseUrl || baseUrl.isNotBlank()) &&
+        (fixedEngine || model.isNotBlank())
 
     val configuration = LocalConfiguration.current
     androidx.compose.ui.window.Dialog(
@@ -1308,6 +1344,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             model = model.trim(),
             region = region.trim(),
             enabled = true,
+            credentialsJson = encodeApiProfileExtraCredential(type, secondaryCredential),
         )
 
         fun cancelConnectionTest(message: String) {
@@ -1482,9 +1519,15 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
 
             var typePickerExpanded by remember { mutableStateOf(false) }
             val typeOptions = listOf(
-                "OPENAI" to "OpenAI 兼容",
-                "GEMINI" to "Gemini 大模型",
-                "GCLOUD" to "Google 翻译 API",
+                "OPENAI" to "OpenAI 兼容大模型",
+                "GEMINI" to "Google Gemini 大模型",
+                "GCLOUD" to "Google Cloud Translation",
+                "DEEPL" to "DeepL 官方翻译 API",
+                "BAIDU_API" to "百度翻译官方 API",
+                "AZURE" to "Microsoft Translator 官方 API",
+                "TENCENT" to "腾讯云机器翻译",
+                "ALIYUN" to "阿里云机器翻译",
+                "LIBRETRANSLATE" to "LibreTranslate / 自建翻译服务",
             )
             fun selectServiceType(value: String) {
                 if (value == type) {
@@ -1497,8 +1540,30 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                     connectionMessage = null
                 }
                 type = value
+                // 切换类型时清空旧服务的密钥，避免把一个厂商的凭据误保存给另一个厂商。
+                apiKey = ""
+                secondaryCredential = ""
+                showApiKey = false
+                showSecondaryCredential = false
+                baseUrl = when (value) {
+                    "OPENAI" -> "https://api.openai.com"
+                    "DEEPL" -> "https://api-free.deepl.com"
+                    "AZURE" -> "https://api.cognitive.microsofttranslator.com"
+                    "LIBRETRANSLATE" -> "https://libretranslate.com"
+                    else -> ""
+                }
+                region = when (value) {
+                    "AZURE" -> "global"
+                    "TENCENT" -> "ap-guangzhou"
+                    else -> ""
+                }
+                model = when (value) {
+                    "OPENAI" -> "gpt-4o-mini"
+                    "GEMINI" -> FreeModelDefaults.GEMINI_MODEL
+                    else -> ""
+                }
                 models = null
-                model = ""
+                pullError = null
                 typePickerExpanded = false
             }
             Labeled("服务类型") {
@@ -1572,25 +1637,61 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                 }
             }
 
-            if (needsBaseUrl) Labeled("Base URL") {
+            if (needsBaseUrl) Labeled(
+                when (type) {
+                    "DEEPL" -> "DeepL API 地址（Free/Pro）"
+                    "AZURE" -> "Azure Translator 端点地址（支持自定义端点）"
+                    "LIBRETRANSLATE" -> "LibreTranslate 服务地址"
+                    else -> "Base URL"
+                },
+            ) {
                 OutlinedTextField(
-                    baseUrl, { baseUrl = it }, Modifier.fillMaxWidth(), singleLine = true,
-                    placeholder = { Text("https://api.deepseek.com（填到域名即可）") },
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it.trim() },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            when (type) {
+                                "DEEPL" -> "https://api-free.deepl.com 或 https://api.deepl.com"
+                                "AZURE" -> "https://api.cognitive.microsofttranslator.com"
+                                "LIBRETRANSLATE" -> "https://libretranslate.com"
+                                else -> "https://api.openai.com"
+                            },
+                        )
+                    },
                 )
             }
-            if (needsKey) Labeled("API Key") {
+            Labeled(
+                when (type) {
+                    "DEEPL" -> "DeepL API Key"
+                    "BAIDU_API" -> "百度翻译密钥（Secret Key）"
+                    "AZURE" -> "Microsoft Translator 订阅密钥"
+                    "TENCENT" -> "腾讯云 SecretKey"
+                    "ALIYUN" -> "阿里云 AccessKey Secret"
+                    "GCLOUD" -> "Google Cloud API Key"
+                    "LIBRETRANSLATE" -> "API Key（可选，自建服务可留空）"
+                    else -> "API Key"
+                },
+            ) {
                 OutlinedTextField(
-                    apiKey,
-                    { apiKey = it },
-                    Modifier.fillMaxWidth(),
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
                     placeholder = {
                         Text(
                             when (type) {
+                                "DEEPL" -> "DeepL-Auth-Key"
+                                "BAIDU_API" -> "百度翻译官方密钥"
+                                "AZURE" -> "Azure Translator 订阅密钥"
+                                "TENCENT" -> "SecretKey"
+                                "ALIYUN" -> "AccessKey Secret"
                                 "GCLOUD" -> "Google Cloud API Key"
+                                "LIBRETRANSLATE" -> "可留空"
                                 else -> "API Key（本地加密存储）"
-                            }
+                            },
                         )
                     },
                     trailingIcon = {
@@ -1600,6 +1701,48 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                         ) { Text(if (showApiKey) "隐藏" else "显示") }
                     },
                 )
+            }
+
+            if (secondaryCredentialLabel != null) {
+                Labeled(secondaryCredentialLabel) {
+                    OutlinedTextField(
+                        value = secondaryCredential,
+                        onValueChange = { secondaryCredential = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        visualTransformation = if (showSecondaryCredential) VisualTransformation.None else PasswordVisualTransformation(),
+                        placeholder = {
+                            Text(
+                                when (type) {
+                                    "BAIDU_API" -> "百度开放平台 APP ID"
+                                    "TENCENT" -> "腾讯云 SecretId"
+                                    "ALIYUN" -> "阿里云 AccessKey ID"
+                                    else -> "",
+                                },
+                            )
+                        },
+                        trailingIcon = {
+                            TextButton(
+                                onClick = { showSecondaryCredential = !showSecondaryCredential },
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) { Text(if (showSecondaryCredential) "隐藏" else "显示") }
+                        },
+                    )
+                }
+            }
+
+            if (regionLabel != null) {
+                Labeled(regionLabel) {
+                    OutlinedTextField(
+                        value = region,
+                        onValueChange = { region = it.trim() },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = {
+                            Text(if (type == "AZURE") "global 或资源所在区域，如 eastus" else "ap-guangzhou")
+                        },
+                    )
+                }
             }
 
             if (type == "GCLOUD" && apiKey.trim().startsWith("AQ.")) {
@@ -1631,8 +1774,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                             Button(
                                 onClick = { pullModelsNow() },
                                 enabled = !pulling && !testingConnection &&
-                                    apiKey.isNotBlank() &&
-                                    (!needsBaseUrl || baseUrl.isNotBlank()),
+                                    credentialsReady,
                                 modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
@@ -1644,9 +1786,7 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
                         OutlinedButton(
                             onClick = { testConnectionNow() },
                             enabled = !pulling && !testingConnection &&
-                                apiKey.isNotBlank() &&
-                                (!needsBaseUrl || baseUrl.isNotBlank()) &&
-                                (fixedEngine || model.isNotBlank()),
+                                credentialsReady,
                             modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = BrandBright),
@@ -1691,19 +1831,8 @@ private fun EditDialog(initial: ApiProfile?, onDismiss: () -> Unit, onSave: (Api
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
                 TextButton(onClick = onDismiss) { Text("取消", color = SubText) }
                 Button(
-                    onClick = {
-                        val id = initial?.id ?: 0
-                        onSave(
-                            ApiProfile(
-                                id = id, name = name.ifEmpty { typeLabel(type) }, type = type,
-                                baseUrl = baseUrl.trim(), apiKey = Crypto.encrypt(apiKey.trim()),
-                                model = model.trim(), region = region.trim(), enabled = true,
-                            )
-                        )
-                    },
-                    enabled = (!needsBaseUrl || baseUrl.isNotBlank()) &&
-                        apiKey.isNotBlank() &&
-                        (fixedEngine || model.isNotBlank()),
+                    onClick = { onSave(makeCurrentProfile()) },
+                    enabled = credentialsReady,
                     colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = androidx.compose.ui.graphics.Color.White),
                 ) { Text("保存") }
             }

@@ -121,6 +121,7 @@ data class ApiProfile(
     val region: String,                     // Azure region
     val enabled: Boolean = true,
     val charsUsed: Long = 0,                // 用量统计（字符）
+    @ColumnInfo(defaultValue = "''") val credentialsJson: String = "", // AES 加密的额外凭据（SecretId / APP ID 等）
 )
 
 @Dao
@@ -143,7 +144,7 @@ interface ApiProfileDao {
 
 @Database(
     entities = [VideoEntity::class, SubtitleCacheEntity::class, ApiProfile::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -181,9 +182,15 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE api_profiles ADD COLUMN credentialsJson TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun get(ctx: Context): AppDatabase = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(ctx, AppDatabase::class.java, "translatetube.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .fallbackToDestructiveMigration()
                 .build().also { inst = it }
         }

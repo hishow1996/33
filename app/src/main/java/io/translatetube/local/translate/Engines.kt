@@ -912,6 +912,12 @@ object EngineFactory {
             // profiles so a Gemini API key is never sent to an OAuth-only Vertex/custom endpoint.
             "GEMINI" -> GeminiEngine(key, p.model, "https://generativelanguage.googleapis.com")
             "GCLOUD" -> GoogleCloudEngine(key)
+            "DEEPL" -> DeepLTranslationEngine(key, p.baseUrl)
+            "BAIDU_API" -> BaiduOfficialTranslationEngine(readApiProfileCredential(p, "appId"), key)
+            "AZURE" -> AzureTranslatorEngine(key, p.region, p.baseUrl)
+            "TENCENT" -> TencentCloudTranslationEngine(readApiProfileCredential(p, "secretId"), key, p.region)
+            "ALIYUN" -> AliyunMachineTranslationEngine(readApiProfileCredential(p, "accessKeyId"), key)
+            "LIBRETRANSLATE" -> LibreTranslateEngine(p.baseUrl, key)
             else -> throw IllegalStateException("未知类型 ${p.type}")
         }
     }
