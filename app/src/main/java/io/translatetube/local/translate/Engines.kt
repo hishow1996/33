@@ -416,7 +416,7 @@ object MlKitModelCoordinator {
             ?: throw IllegalStateException("不支持的离线翻译语言: $languageTag")
         val model = TranslateRemoteModel.Builder(language).build()
         if (!RemoteModelManager.getInstance().isModelDownloaded(model).await()) {
-            throw IllegalStateException("离线翻译包 $languageTag 尚未下载，请到设置中手动下载，或切换在线翻译引擎。")
+            throw IllegalStateException("离线翻译包 $languageTag 尚未下载，请到 API 管理 → 本地翻译下载对应语言包，或切换其他翻译引擎。")
         }
     }
 

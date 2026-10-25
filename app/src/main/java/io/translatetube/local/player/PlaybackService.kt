@@ -5486,283 +5486,283 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
 
             val src = SourceLanguagePolicy.sourceForTranslation(srcLang)
             val batchSize = 10
-        val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
-        // Checkpoint the first batch immediately, then every few successful batches and
-        // always at the end. This bounds crash recovery loss while avoiding serializing the full
-        // subtitle timeline to Room after every 10 translated cues.
-        val translationBatches = pendingIndices.chunked(batchSize)
-        for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
-            awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
-            awaitProcessingResumed(key, pipelineGeneration)
-            val batchStartedAtNanos = System.nanoTime()
-            // The playback layer calls the engine once per small batch, so carry the previous
-            // completed cues here; otherwise engine-local context resets at every boundary.
-            val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
-                val contextIndices = io.translatetube.local.translate.TranslationContextPolicy
-                    .mostRecentIndicesBefore(
-                        size = updatedLines.size,
-                        beforeIndex = firstIndex,
-                        maxRows = 3,
-                        checkActive = { translationJob?.ensureActive() },
-                    ) { index ->
-                        val line = updatedLines[index]
+            val translationCacheKey = cacheKeyOverride ?: "${key}|zh|${activeId}"
+            // Checkpoint the first batch immediately, then every few successful batches and
+            // always at the end. This bounds crash recovery loss while avoiding serializing the full
+            // subtitle timeline to Room after every 10 translated cues.
+            val translationBatches = pendingIndices.chunked(batchSize)
+            for ((batchIndex, batchIndices) in translationBatches.withIndex()) {
+                awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)?.let { return it }
+                awaitProcessingResumed(key, pipelineGeneration)
+                val batchStartedAtNanos = System.nanoTime()
+                // The playback layer calls the engine once per small batch, so carry the previous
+                // completed cues here; otherwise engine-local context resets at every boundary.
+                val previousContext = batchIndices.firstOrNull()?.let { firstIndex ->
+                    val contextIndices = io.translatetube.local.translate.TranslationContextPolicy
+                        .mostRecentIndicesBefore(
+                            size = updatedLines.size,
+                            beforeIndex = firstIndex,
+                            maxRows = 3,
+                            checkActive = { translationJob?.ensureActive() },
+                        ) { index ->
+                            val line = updatedLines[index]
+                            line.text.isNotBlank() &&
+                                !needsSubtitleTranslation(line, srcLang) &&
+                                !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
+                        }
+                    contextIndices.takeIf { it.isNotEmpty() }?.let { indices ->
+                        indices.map { updatedLines[it].text } to
+                            indices.map { SubtitleParsers.cleanTranslatedText(updatedLines[it].zh).orEmpty() }
+                    }
+                }
+                // Retry missing rows once. For Google/ML Kit, keep an isolated still-missing cue
+                // on original audio if this batch or earlier rows already contain usable translations.
+                var unresolvedIndices = batchIndices
+                val resolvedBatch = linkedMapOf<Int, String>()
+                var attempt = 0
+                while (unresolvedIndices.isNotEmpty() && attempt < 2) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    val batch = unresolvedIndices.map { plain[it] }
+                    val batchTranslations = try {
+                        engine!!.translateWithContext(batch, src, tgt, previousContext).also {
+                            translationJob?.ensureActive()
+                        }
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "Translation",
+                            "字幕翻译批次失败，正在执行恢复处理",
+                            e,
+                            diagnosticContext = mapOf(
+                                "翻译引擎 ID" to engine?.id.orEmpty(),
+                                "翻译服务商名称" to active?.name.orEmpty().ifBlank { "本地/Google" },
+                                "模型 ID" to active?.model.orEmpty().ifBlank { "未提供" },
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "本次翻译批次大小" to batch.size.toString(),
+                                "本批起始字幕索引" to unresolvedIndices.firstOrNull().toString(),
+                                "本批结束字幕索引" to unresolvedIndices.lastOrNull().toString(),
+                                "当前重试次数" to attempt.toString(),
+                                "已成功翻译行数" to completed.toString(),
+                                "当前任务键类型" to when {
+                                    ui.value.key.startsWith("youtube:") -> "YouTube"
+                                    ui.value.key.startsWith("remote:") -> "网页视频/远程媒体"
+                                    ui.value.key.startsWith("local:") -> "本地视频"
+                                    else -> "其他"
+                                },
+                            ),
+                        )
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
+                            e,
+                        )
+                        // Distinguish API provider failures from Google offline language-pack errors.
+                        val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                        val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
+                            detail.contains("Function", ignoreCase = true) &&
+                            detail.contains("Not found for account", ignoreCase = true)
+                        val message = if (active != null) {
+                            if (functionMissing) {
+                                "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
+                            } else {
+                                "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
+                            }
+                        } else if (activeId == EngineFactory.ID_FREE_GEMINI) {
+                            if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                                "Google Gemini 翻译失败：需要有效 API Key。请在 API 管理中点击 Google Gemini 卡片右侧「•••」填入您的 Gemini API Key（可前往 Google AI Studio 免费获取）。"
+                            } else {
+                                "Google Gemini 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 Gemini 配置。"
+                            }
+                        } else if (activeId == EngineFactory.ID_FREE_DEEPSEEK) {
+                            if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
+                                "DeepSeek 翻译失败：需要有效 API Key。请在 API 管理中点击 DeepSeek 卡片右侧「•••」填入您的 DeepSeek API Key。"
+                            } else {
+                                "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
+                            }
+                        } else if (activeId == EngineFactory.ID_LOCAL_MLKIT || activeId == EngineFactory.ID_LOCAL_OPUS) {
+                            val localName = if (activeId == EngineFactory.ID_LOCAL_OPUS) "OPUS-MT" else "ML Kit"
+                            "$localName 本地翻译失败：$detail。请检查对应语言模型是否已下载，或进入本地翻译重新下载后重试。"
+                        } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL) {
+                            val name = when (activeId) {
+                                EngineFactory.ID_MICROSOFT -> "微软翻译"
+                                EngineFactory.ID_DEEPL -> "DeepL 翻译"
+                                else -> "百度翻译"
+                            }
+                            name + "失败：" + detail + "。这是免密钥的网页接口，可能被限流或已调整，请稍后重试，或在 API 管理中换用其他翻译引擎。"
+                        } else {
+                            "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
+                        }
+                        throw TranslationFailureException(message, e)
+                    }
+
+                    val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
+                        indices = unresolvedIndices,
+                        rawTranslations = batchTranslations,
+                        sourceTexts = unresolvedIndices.associateWith { plain[it] },
+                        sourceLanguage = srcLang,
+                        sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
+                    )
+                    resolvedBatch.putAll(parsedBatch.translations)
+                    unresolvedIndices = parsedBatch.missingIndices
+                    attempt += 1
+                    if (unresolvedIndices.isNotEmpty() && attempt < 2) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Retrying incomplete translation response for ${unresolvedIndices.size} subtitle rows",
+                        )
+                        kotlinx.coroutines.delay(250L)
+                    }
+                }
+
+                val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() } ||
+                    updatedLines.any { line ->
                         line.text.isNotBlank() &&
                             !needsSubtitleTranslation(line, srcLang) &&
                             !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
                     }
-                contextIndices.takeIf { it.isNotEmpty() }?.let { indices ->
-                    indices.map { updatedLines[it].text } to
-                        indices.map { SubtitleParsers.cleanTranslatedText(updatedLines[it].zh).orEmpty() }
+                if (
+                    unresolvedIndices.isNotEmpty() &&
+                    sourceEchoAsUntranslatedFallback &&
+                    hasUsableTranslation
+                ) {
+                    // Google/ML Kit returned useful Chinese for this batch, but a small number of
+                    // cues stayed empty/status-only after retry. Preserve those source subtitles
+                    // without Chinese speech instead of failing the whole video over one bad row.
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Keeping ${unresolvedIndices.size} unresolved Google subtitle cues on original audio",
+                    )
+                    unresolvedIndices.forEach { resolvedBatch[it] = "" }
+                    unresolvedIndices = emptyList()
                 }
-            }
-            // Retry missing rows once. For Google/ML Kit, keep an isolated still-missing cue
-            // on original audio if this batch or earlier rows already contain usable translations.
-            var unresolvedIndices = batchIndices
-            val resolvedBatch = linkedMapOf<Int, String>()
-            var attempt = 0
-            while (unresolvedIndices.isNotEmpty() && attempt < 2) {
+
+                if (unresolvedIndices.isNotEmpty()) {
+                    throw TranslationFailureException(
+                        "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
+                        IllegalStateException("Missing subtitle translation rows: ${unresolvedIndices.joinToString()}"),
+                    )
+                }
+
+                val nextRows = ArrayList<SubLine>(updatedLines.size)
+                for ((rowIndex, line) in updatedLines.withIndex()) {
+                    checkTranslationActive(rowIndex)
+                    nextRows += resolvedBatch[rowIndex]?.let { translation ->
+                        line.copy(zh = translation)
+                    } ?: line
+                }
+                translationJob?.ensureActive()
+                updatedLines = nextRows
+                completed += batchIndices.size
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        lines = updatedLines,
+                        totalLines = updatedLines.size,
+                        translatedLineCount = completed.coerceAtMost(updatedLines.size),
+                        sourceLang = srcLang,
+                        progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
+                    )
+                }
+                // Keep structured logs bounded: record the first, final and periodic successful batches.
+                val completedBatchCount = batchIndex + 1
+                if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
+                    val batchResolvedCount = resolvedBatch.values.count { it.isNotBlank() }
+                    val batchFallbackCount = resolvedBatch.values.count { it.isBlank() }
+                    withContext(Dispatchers.IO) {
+                        io.translatetube.local.util.AppLogStore.info(
+                            this@PlaybackService,
+                            "Translation",
+                            "中文字幕翻译批次处理完成",
+                            diagnosticContext = mapOf(
+                                "翻译引擎名称" to engineName,
+                                "翻译引擎 ID" to (engine?.id ?: "未知"),
+                                "批次进度" to "${completedBatchCount}/${translationBatches.size}",
+                                "本批字幕行数" to batchIndices.size.toString(),
+                                "本批已获得有效译文行数" to batchResolvedCount.toString(),
+                                "本批空译文/原声兜底行数" to batchFallbackCount.toString(),
+                                "本批重试次数" to attempt.toString(),
+                                "本批处理耗时 ms" to (((System.nanoTime() - batchStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                                "源语言代码" to src,
+                                "目标语言代码" to tgt,
+                                "当前累计已完成行数" to completed.coerceAtMost(updatedLines.size).toString(),
+                                "字幕总行数" to updatedLines.size.toString(),
+                                "翻译失败后是否采用原声兜底" to (batchFallbackCount > 0).toString(),
+                            ),
+                        )
+                    }
+                }
+                // The first successful batch and final batch are always checkpointed.
+                if (!io.translatetube.local.translate.TranslationCheckpointPolicy.shouldPersistCheckpoint(
+                        completedBatchCount = completedBatchCount,
+                        totalBatches = translationBatches.size,
+                    )
+                ) {
+                    continue
+                }
+                // Persist only after the triggering batch is complete and every pending row is valid.
+                val cacheRows = org.json.JSONArray()
+                for ((rowIndex, line) in updatedLines.withIndex()) {
+                    if ((rowIndex and 0xff) == 0) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    }
+                    cacheRows.put(
+                        org.json.JSONObject()
+                            .put("s", line.startMs)
+                            .put("e", line.endMs)
+                            .put("t", line.text)
+                            .put("zh", line.zh ?: "")
+                            .put("sp", line.speakerId)
+                    )
+                }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                val batch = unresolvedIndices.map { plain[it] }
-                val batchTranslations = try {
-                    engine!!.translateWithContext(batch, src, tgt, previousContext).also {
-                        translationJob?.ensureActive()
-                    }
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    io.translatetube.local.util.AppLogStore.warning(
-                        this@PlaybackService,
-                        "Translation",
-                        "字幕翻译批次失败，正在执行恢复处理",
-                        e,
-                        diagnosticContext = mapOf(
-                            "翻译引擎 ID" to engine?.id.orEmpty(),
-                            "翻译服务商名称" to active?.name.orEmpty().ifBlank { "本地/Google" },
-                            "模型 ID" to active?.model.orEmpty().ifBlank { "未提供" },
-                            "源语言代码" to src,
-                            "目标语言代码" to tgt,
-                            "本次翻译批次大小" to batch.size.toString(),
-                            "本批起始字幕索引" to unresolvedIndices.firstOrNull().toString(),
-                            "本批结束字幕索引" to unresolvedIndices.lastOrNull().toString(),
-                            "当前重试次数" to attempt.toString(),
-                            "已成功翻译行数" to completed.toString(),
-                            "当前任务键类型" to when {
-                                ui.value.key.startsWith("youtube:") -> "YouTube"
-                                ui.value.key.startsWith("remote:") -> "网页视频/远程媒体"
-                                ui.value.key.startsWith("local:") -> "本地视频"
-                                else -> "其他"
-                            },
-                        ),
+                ensureCurrentSession(key, pipelineGeneration)
+                db.subtitleCacheDao().put(
+                    io.translatetube.local.data.SubtitleCacheEntity(
+                        translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis(),
+                        videoKey = key,
                     )
-                    android.util.Log.w(
-                        "PlaybackService",
-                        "Translation batch failed for rows ${unresolvedIndices.firstOrNull()}..${unresolvedIndices.lastOrNull()}",
-                        e,
-                    )
-                    // Distinguish API provider failures from Google offline language-pack errors.
-                    val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
-                    val functionMissing = detail.contains("HTTP 404", ignoreCase = true) &&
-                        detail.contains("Function", ignoreCase = true) &&
-                        detail.contains("Not found for account", ignoreCase = true)
-                    val message = if (active != null) {
-                        if (functionMissing) {
-                            "API 翻译失败（" + active.name + "）：服务端返回 404，当前模型的推理函数/部署未找到。模型列表能拉取并不代表该模型当前可调用；请更换同服务商可用模型，或请服务商检查后端部署。这不是 Google 离线包问题。原始响应：" + detail
-                        } else {
-                            "API 翻译失败（" + active.name + "）：" + detail + "。请检查服务地址、模型 ID、API Key 权限和供应商状态。"
-                        }
-                    } else if (activeId == EngineFactory.ID_FREE_GEMINI) {
-                        if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
-                            "Google Gemini 翻译失败：需要有效 API Key。请在 API 管理中点击 Google Gemini 卡片右侧「•••」填入您的 Gemini API Key（可前往 Google AI Studio 免费获取）。"
-                        } else {
-                            "Google Gemini 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 Gemini 配置。"
-                        }
-                    } else if (activeId == EngineFactory.ID_FREE_DEEPSEEK) {
-                        if (detail.contains("API Key", ignoreCase = true) || detail.contains("401", ignoreCase = true) || detail.contains("403", ignoreCase = true)) {
-                            "DeepSeek 翻译失败：需要有效 API Key。请在 API 管理中点击 DeepSeek 卡片右侧「•••」填入您的 DeepSeek API Key。"
-                        } else {
-                            "DeepSeek 翻译失败：" + detail + "。请检查网络，或在 API 管理中检查 DeepSeek 配置。"
-                        }
-                    } else if (activeId == EngineFactory.ID_LOCAL_MLKIT || activeId == EngineFactory.ID_LOCAL_OPUS) {
-                        val localName = if (activeId == EngineFactory.ID_LOCAL_OPUS) "OPUS-MT" else "ML Kit"
-                        "$localName 本地翻译失败：$detail。请检查对应语言模型是否已下载，或进入本地翻译重新下载后重试。"
-                    } else if (activeId == EngineFactory.ID_MICROSOFT || activeId == EngineFactory.ID_BAIDU || activeId == EngineFactory.ID_DEEPL) {
-                        val name = when (activeId) {
-                            EngineFactory.ID_MICROSOFT -> "微软翻译"
-                            EngineFactory.ID_DEEPL -> "DeepL 翻译"
-                            else -> "百度翻译"
-                        }
-                        name + "失败：" + detail + "。这是免密钥的网页接口，可能被限流或已调整，请稍后重试，或在 API 管理中换用其他翻译引擎。"
-                    } else {
-                        "翻译失败：" + detail + "。请检查网络，或在 Google 翻译中下载对应离线语言包。"
-                    }
-                    throw TranslationFailureException(message, e)
-                }
-
-                val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
-                    indices = unresolvedIndices,
-                    rawTranslations = batchTranslations,
-                    sourceTexts = unresolvedIndices.associateWith { plain[it] },
-                    sourceLanguage = srcLang,
-                    sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
-                )
-                resolvedBatch.putAll(parsedBatch.translations)
-                unresolvedIndices = parsedBatch.missingIndices
-                attempt += 1
-                if (unresolvedIndices.isNotEmpty() && attempt < 2) {
-                    android.util.Log.w(
-                        "PlaybackService",
-                        "Retrying incomplete translation response for ${unresolvedIndices.size} subtitle rows",
-                    )
-                    kotlinx.coroutines.delay(250L)
-                }
-            }
-
-            val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() } ||
-                updatedLines.any { line ->
-                    line.text.isNotBlank() &&
-                        !needsSubtitleTranslation(line, srcLang) &&
-                        !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
-                }
-            if (
-                unresolvedIndices.isNotEmpty() &&
-                sourceEchoAsUntranslatedFallback &&
-                hasUsableTranslation
-            ) {
-                // Google/ML Kit returned useful Chinese for this batch, but a small number of
-                // cues stayed empty/status-only after retry. Preserve those source subtitles
-                // without Chinese speech instead of failing the whole video over one bad row.
-                android.util.Log.w(
-                    "PlaybackService",
-                    "Keeping ${unresolvedIndices.size} unresolved Google subtitle cues on original audio",
-                )
-                unresolvedIndices.forEach { resolvedBatch[it] = "" }
-                unresolvedIndices = emptyList()
-            }
-
-            if (unresolvedIndices.isNotEmpty()) {
-                throw TranslationFailureException(
-                    "翻译结果不完整：重试后仍有 ${unresolvedIndices.size} 行未得到有效译文。已停止处理，避免在播放页把缺失内容显示为“正在翻译”。请重试或更换翻译引擎。",
-                    IllegalStateException("Missing subtitle translation rows: ${unresolvedIndices.joinToString()}"),
                 )
             }
-
-            val nextRows = ArrayList<SubLine>(updatedLines.size)
-            for ((rowIndex, line) in updatedLines.withIndex()) {
-                checkTranslationActive(rowIndex)
-                nextRows += resolvedBatch[rowIndex]?.let { translation ->
-                    line.copy(zh = translation)
-                } ?: line
-            }
-            translationJob?.ensureActive()
-            updatedLines = nextRows
-            completed += batchIndices.size
-            updateUiForSession(key, pipelineGeneration) {
-                it.copy(
-                    lines = updatedLines,
-                    totalLines = updatedLines.size,
-                    translatedLineCount = completed.coerceAtMost(updatedLines.size),
-                    sourceLang = srcLang,
-                    progress = "翻译成中文 ${completed.coerceAtMost(updatedLines.size)}/${updatedLines.size} 行",
-                )
-            }
-            // Keep structured logs bounded: record the first, final and periodic successful batches.
-            val completedBatchCount = batchIndex + 1
-            if (batchIndex == 0 || completedBatchCount == translationBatches.size || completedBatchCount % 5 == 0) {
-                val batchResolvedCount = resolvedBatch.values.count { it.isNotBlank() }
-                val batchFallbackCount = resolvedBatch.values.count { it.isBlank() }
+            val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
+            if (externallyTranslatedFinal != null) {
                 withContext(Dispatchers.IO) {
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
                         "Translation",
-                        "中文字幕翻译批次处理完成",
+                        "外部翻译字幕已导入并匹配到原字幕时间轴",
                         diagnosticContext = mapOf(
-                            "翻译引擎名称" to engineName,
-                            "翻译引擎 ID" to (engine?.id ?: "未知"),
-                            "批次进度" to "${completedBatchCount}/${translationBatches.size}",
-                            "本批字幕行数" to batchIndices.size.toString(),
-                            "本批已获得有效译文行数" to batchResolvedCount.toString(),
-                            "本批空译文/原声兜底行数" to batchFallbackCount.toString(),
-                            "本批重试次数" to attempt.toString(),
-                            "本批处理耗时 ms" to (((System.nanoTime() - batchStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
-                            "源语言代码" to src,
-                            "目标语言代码" to tgt,
-                            "当前累计已完成行数" to completed.coerceAtMost(updatedLines.size).toString(),
-                            "字幕总行数" to updatedLines.size.toString(),
-                            "翻译失败后是否采用原声兜底" to (batchFallbackCount > 0).toString(),
+                            "输入原文字幕行数" to lines.size.toString(),
+                            "合并后字幕行数" to externallyTranslatedFinal.size.toString(),
+                            "源语言代码" to srcLang,
+                            "目标语言代码" to "zh",
+                            "合并规则" to "以原字幕时间戳为准，匹配译文文本",
                         ),
                     )
                 }
+                return externallyTranslatedFinal
             }
-            // The first successful batch and final batch are always checkpointed.
-            if (!io.translatetube.local.translate.TranslationCheckpointPolicy.shouldPersistCheckpoint(
-                    completedBatchCount = completedBatchCount,
-                    totalBatches = translationBatches.size,
-                )
-            ) {
-                continue
-            }
-            // Persist only after the triggering batch is complete and every pending row is valid.
-            val cacheRows = org.json.JSONArray()
-            for ((rowIndex, line) in updatedLines.withIndex()) {
-                if ((rowIndex and 0xff) == 0) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                }
-                cacheRows.put(
-                    org.json.JSONObject()
-                        .put("s", line.startMs)
-                        .put("e", line.endMs)
-                        .put("t", line.text)
-                        .put("zh", line.zh ?: "")
-                        .put("sp", line.speakerId)
-                )
-            }
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            ensureCurrentSession(key, pipelineGeneration)
-            db.subtitleCacheDao().put(
-                io.translatetube.local.data.SubtitleCacheEntity(
-                    translationCacheKey, srcLang, cacheRows.toString(), System.currentTimeMillis(),
-                    videoKey = key,
-                )
-            )
-        }
-        val externallyTranslatedFinal = awaitManualSubtitleTranslation(key, lines, srcLang, pipelineGeneration)
-        if (externallyTranslatedFinal != null) {
             withContext(Dispatchers.IO) {
                 io.translatetube.local.util.AppLogStore.info(
                     this@PlaybackService,
                     "Translation",
-                    "外部翻译字幕已导入并匹配到原字幕时间轴",
+                    "中文字幕翻译任务完成",
                     diagnosticContext = mapOf(
-                        "输入原文字幕行数" to lines.size.toString(),
-                        "合并后字幕行数" to externallyTranslatedFinal.size.toString(),
+                        "翻译引擎名称" to engineName,
+                        "翻译引擎 ID" to (engine?.id ?: "未知"),
+                        "翻译配置编号" to activeId.toString(),
                         "源语言代码" to srcLang,
                         "目标语言代码" to "zh",
-                        "合并规则" to "以原字幕时间戳为准，匹配译文文本",
+                        "字幕总行数" to updatedLines.size.toString(),
+                        "已获得非空中文译文行数" to updatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                        "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, srcLang) && it.zh.isNullOrBlank() }.toString(),
+                        "处理批次数" to translationBatches.size.toString(),
+                        "累计耗时 ms" to (((System.nanoTime() - translationStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
+                        "本次是否有在线/本地引擎请求" to pendingIndices.isNotEmpty().toString(),
+                        "结果已写入字幕缓存的检查方式" to "由调用方根据译文填充率与缓存完整性另行判断",
                     ),
                 )
             }
-            return externallyTranslatedFinal
-        }
-        withContext(Dispatchers.IO) {
-            io.translatetube.local.util.AppLogStore.info(
-                this@PlaybackService,
-                "Translation",
-                "中文字幕翻译任务完成",
-                diagnosticContext = mapOf(
-                    "翻译引擎名称" to engineName,
-                    "翻译引擎 ID" to (engine?.id ?: "未知"),
-                    "翻译配置编号" to activeId.toString(),
-                    "源语言代码" to srcLang,
-                    "目标语言代码" to "zh",
-                    "字幕总行数" to updatedLines.size.toString(),
-                    "已获得非空中文译文行数" to updatedLines.count { !it.zh.isNullOrBlank() }.toString(),
-                    "仍缺少中文译文行数" to updatedLines.count { needsSubtitleTranslation(it, srcLang) && it.zh.isNullOrBlank() }.toString(),
-                    "处理批次数" to translationBatches.size.toString(),
-                    "累计耗时 ms" to (((System.nanoTime() - translationStartedAtNanos).coerceAtLeast(0L)) / 1_000_000L).toString(),
-                    "本次是否有在线/本地引擎请求" to pendingIndices.isNotEmpty().toString(),
-                    "结果已写入字幕缓存的检查方式" to "由调用方根据译文填充率与缓存完整性另行判断",
-                ),
-            )
-        }
             return updatedLines
         } finally {
             // Release native resources on success, failure, or cancellation, keeping memory bounded.

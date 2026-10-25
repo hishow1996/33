@@ -185,7 +185,7 @@ internal fun LocalTranslationSection(
                     }
                 }
                 Text(
-                    "默认自动识别；识别不准时可手动指定。目标语言固定为中文，手动选择会用于后续翻译。",
+                    "默认自动识别；识别不准可手动指定。目标固定为中文。ML Kit 只使用已下载的语言包，不会自动切换在线翻译。",
                     color = Color(0xFF64748B),
                     style = MaterialTheme.typography.bodySmall,
                 )
