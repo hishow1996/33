@@ -173,7 +173,7 @@ internal object CrashGuard {
                 var depth = 0
                 while (current != null && seen.add(current) && depth < 12) {
                     add(current)
-                    current.suppressed.take(4).forEach(::add)
+                    current.suppressed.take(4).forEach { add(it) }
                     current = current.cause
                     depth++
                 }
