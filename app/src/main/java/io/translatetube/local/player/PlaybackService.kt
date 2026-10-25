@@ -5016,12 +5016,18 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     "字幕行数" to ui.value.lines.size.toString(),
                 ),
             )
-            // 续播：上次观看超过 10 秒且距结尾超 30 秒则跳到上次位置
+            // A changed ASR/translation/TTS configuration requires a fully fresh speech timeline.
+            // Never restore the previous watch position for that run: play the newly synthesized
+            // Chinese dubbing from the beginning, consistently for YouTube, remote web media and local files.
             val resumeSec = try {
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
             } catch (_: Exception) { 0L }
             val totalMs = meta.durationSec * 1000
-            if (resumeSec > 10 && (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)) {
+            if (
+                !forceRegenerateDubbing &&
+                resumeSec > 10 &&
+                (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)
+            ) {
                 ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key, pipelineGeneration)
@@ -5030,10 +5036,29 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     }
                 }
             } else {
+                val startPositionMs = if (forceRegenerateDubbing) 0L else null
+                if (forceRegenerateDubbing) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "引擎切换后的配音已重新生成，视频从开头起播",
+                        diagnosticContext = mapOf(
+                            "视频来源" to when {
+                                key.startsWith("youtube:", ignoreCase = true) -> "YouTube"
+                                key.startsWith("remote:", ignoreCase = true) -> "网页视频/远程媒体"
+                                localUri != null || key.startsWith("local:", ignoreCase = true) -> "本地视频"
+                                else -> "其他视频源"
+                            },
+                            "本次起播位置" to "0 ms（视频开头）",
+                            "忽略的历史续播位置秒" to resumeSec.toString(),
+                            "强制重新合成配音" to "true",
+                        ),
+                    )
+                }
                 ensureCurrentSession(key, pipelineGeneration)
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(key, pipelineGeneration)
-                    startPlaybackWithMountedDubbing(null) {
+                    startPlaybackWithMountedDubbing(startPositionMs) {
                         ensureCurrentSession(key, pipelineGeneration)
                     }
                 }
