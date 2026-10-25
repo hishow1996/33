@@ -109,6 +109,8 @@ class DubbingEngine(
     private val mem = DubbingPcmMemoryCache(maxBytes = pcmMemoryBudgetBytes, maxEntries = 48)
 
     @Volatile private var tts: TtsEngine? = null
+    /** True only for an attach pass that must synthesize fresh speech after an engine change. */
+    @Volatile private var forceRegeneratePcmForAttach: Boolean = false
     // PCM generation can use a separate System TTS instance when live playback mode is selected.
     // This keeps background synthesizeToFile work independent from audible timeline speech.
     @Volatile private var synthesisTts: TtsEngine? = null
@@ -299,7 +301,13 @@ class DubbingEngine(
         return false
     }
 
-    fun attach(tts: TtsEngine, lines: List<SubLine>, sourceLanguage: String = "auto") {
+    fun attach(
+        tts: TtsEngine,
+        lines: List<SubLine>,
+        sourceLanguage: String = "auto",
+        forceRegenerateDubbing: Boolean = false,
+    ) {
+        forceRegeneratePcmForAttach = forceRegenerateDubbing
         // Keep a diagnostic reason only for rows that cannot become speech; this avoids allocating
         // a second per-line object for every valid cue while preserving the original translation.
         val translationDiagnostics = HashMap<Int, DubbingTranslationResolution>()
@@ -497,7 +505,8 @@ class DubbingEngine(
                             "字幕总行数" to this@DubbingEngine.lines.size.toString(),
                             "配音引擎" to (tts?.name ?: "未知引擎"),
                             "配音输出模式" to if (usesImmediateTimelinePlayback) "系统 TTS 即时模式" else "PCM 缓存/混流模式",
-                            "缓存文件数" to cacheDir.listFiles().orEmpty().count { it.isFile }.toString(),
+                            "强制重新合成配音" to forceRegeneratePcmForAttach.toString(),
+                            "缓存文件数" to cacheDir.listFiles().orEmpty().count { it.isFile }.toString()
                             "缓存目录可用空间 MB" to (cacheDir.usableSpace / (1024L * 1024L)).toString(),
                         ),
                     )
@@ -574,7 +583,14 @@ class DubbingEngine(
                             continue
                         }
                         val file = cacheFile(i)
-                        val cacheInspection = inspectCache(file, ::checkCacheInitActive)
+                        // Returning to a previously used engine combination must not reuse its old
+                        // PCM when processing is explicitly restarted after an engine change.
+                        // Queue a fresh synthesis; writeCache atomically replaces this canonical file.
+                        val cacheInspection = if (forceRegeneratePcmForAttach) {
+                            DubbingCacheInspection(null, DubbingCacheFileStamp.capture(file))
+                        } else {
+                            inspectCache(file, ::checkCacheInitActive)
+                        }
                         val cacheHasAudio = cacheInspection.hasAudio
                         val blankTranslation = cue.zh.isNullOrBlank()
                         when {
@@ -1864,6 +1880,10 @@ class DubbingEngine(
         idx: Int,
         checkActive: () -> Unit = {},
     ): Boolean? {
+        if (forceRegeneratePcmForAttach) {
+            checkActive()
+            return null
+        }
         if (memoryAudio(idx) != null) {
             checkActive()
             return true
