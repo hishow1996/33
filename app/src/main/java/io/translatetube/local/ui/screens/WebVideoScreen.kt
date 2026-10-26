@@ -838,6 +838,10 @@ fun WebVideoScreen(
         }.onFailure { Log.w(TAG_WEB, "Unable to set page-specific WebView user agent", it) }
     }
 
+    // Keep these states above resetForNavigation so navigation can cancel an in-flight Bilibili task.
+    var bilibiliResolving by remember(initialUrl) { mutableStateOf(false) }
+    var bilibiliJob by remember(initialUrl) { mutableStateOf<Job?>(null) }
+
     fun resetForNavigation(target: String) {
         applyPikpakUserAgent(target)
         navigationInProgress.set(true)
@@ -896,8 +900,6 @@ fun WebVideoScreen(
     // 推荐位小视频还被嗅探成已验证候选，挡住 yt-dlp 自动兜底——死锁无播放入口。
     // B 站链接改走 view+playurl（HTML5 平台）直连，成功即进本地播放器
     // （播放/字幕翻译/配音全链路），失败回退 WebView 老路。
-    var bilibiliResolving by remember(initialUrl) { mutableStateOf(false) }
-    var bilibiliJob by remember(initialUrl) { mutableStateOf<Job?>(null) }
     val bilibiliHandledAtStart = remember(initialUrl) { BilibiliNativeResolver.isBilibiliLink(initialUrl) }
 
     fun tryBilibiliNative(target: String): Boolean {
