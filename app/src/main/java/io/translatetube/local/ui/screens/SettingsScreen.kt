@@ -201,8 +201,10 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
         val ttsState by dlManager.tts.collectAsState()
         val asrState by dlManager.asr.collectAsState()
-        var asrArchiveSizeBytes by remember { mutableStateOf<Long?>(null) }
-        var asrArchiveSizeLoading by remember { mutableStateOf(false) }
+        var asrArchiveSizeBytes by remember(localAsrModel) {
+            mutableStateOf(dlManager.cachedAsrArchiveSizeBytes(localAsrModel))
+        }
+        var asrArchiveSizeLoading by remember(localAsrModel) { mutableStateOf(false) }
         LaunchedEffect(asrEngine, localAsrModel) {
             if (asrEngine != "local") {
                 asrArchiveSizeLoading = false
