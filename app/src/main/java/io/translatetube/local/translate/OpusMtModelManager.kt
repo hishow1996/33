@@ -40,36 +40,35 @@ object OpusMtModelManager {
     private data class ModelFile(
         val name: String,
         val url: String,
-        val minBytes: Long,
+        val sizeBytes: Long,
         val sha256: String,
     )
 
-    private const val MIB = 1024L * 1024L
     private const val MODEL_REVISION = "4dc37af"
     private const val RUNTIME_VALIDATION_SCHEMA = 2
     private val files = listOf(
         ModelFile(
             "encoder_model_quantized.onnx",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/onnx/encoder_model_quantized.onnx",
-            50L * MIB,
+            52_875_078L,
             "cb02c542d2ab3010766031f3ce04e9041ffb6bd2df15caa7c41f3aead7cfe6dc",
         ),
         ModelFile(
             "decoder_model_quantized.onnx",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/onnx/decoder_model_quantized.onnx",
-            180L * MIB,
+            192_882_669L,
             "ddb2e3913bbdb0622545ad589cba0f05d8621cbc14096d13c6dc6cd17d61c13a",
         ),
         ModelFile(
             "source.spm",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/source.spm",
-            500L * 1024L,
+            806_435L,
             "5775ddc9e3ff2fae91554da56468ad35ff56edaba870fea74447bc7234bfdaa8",
         ),
         ModelFile(
             "target.spm",
             "https://huggingface.co/onnx-community/opus-mt-en-zh/resolve/$MODEL_REVISION/target.spm",
-            500L * 1024L,
+            804_600L,
             "81dc94efa84e4025ef38d25d5d07429fe41e3eb29d44003f1db6fe98487b0052",
         ),
     )
@@ -86,6 +85,9 @@ object OpusMtModelManager {
 
     fun modelDirectory(context: Context): File =
         File(context.applicationContext.filesDir, "models/translation/opus-mt-en-zh")
+
+    /** Exact byte total for the four pinned model files. */
+    fun downloadSizeBytes(): Long = files.sumOf { it.sizeBytes }
 
     private fun readyMarker(context: Context) = File(modelDirectory(context), ".validated")
 
@@ -109,7 +111,7 @@ object OpusMtModelManager {
         return marker.isFile &&
             files.all { spec ->
                 val file = File(dir, spec.name)
-                file.isFile && file.length() >= spec.minBytes
+                file.isFile && file.length() >= spec.sizeBytes
             } &&
             runCatching {
                 marker.readText(Charsets.UTF_8).trim() == validationSignature(context)
@@ -130,7 +132,7 @@ object OpusMtModelManager {
     }
 
     private fun hasValidContent(file: File, spec: ModelFile): Boolean =
-        file.isFile && file.length() >= spec.minBytes &&
+        file.isFile && file.length() >= spec.sizeBytes &&
             runCatching { sha256(file).equals(spec.sha256, ignoreCase = true) }.getOrDefault(false)
 
     private fun writeReadyMarker(context: Context) {
@@ -154,7 +156,7 @@ object OpusMtModelManager {
         ) return true
         return files.any { spec ->
             val target = File(dir, spec.name)
-            target.isFile && target.length() >= spec.minBytes
+            target.isFile && target.length() >= spec.sizeBytes
         } && !isReady(context)
     }
 
@@ -162,14 +164,14 @@ object OpusMtModelManager {
         val dir = modelDirectory(context)
         val ready = isReady(context)
         val allModelFilesPresent = files.all { spec ->
-            File(dir, spec.name).let { it.isFile && it.length() >= spec.minBytes }
+            File(dir, spec.name).let { it.isFile && it.length() >= spec.sizeBytes }
         }
         val firstPart = files.firstOrNull { spec ->
             File(dir, "${spec.name}.part").let { it.isFile && it.length() > 0L }
         }
         val firstMissing = files.firstOrNull { spec ->
             val finalFile = File(dir, spec.name)
-            !finalFile.isFile || finalFile.length() < spec.minBytes
+            !finalFile.isFile || finalFile.length() < spec.sizeBytes
         }
         val partialSpec = firstPart ?: firstMissing
         val progressFile = partialSpec?.let { spec ->
@@ -214,7 +216,7 @@ object OpusMtModelManager {
             files.forEachIndexed { index, spec ->
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val target = File(dir, spec.name)
-                if (target.isFile && target.length() >= spec.minBytes) {
+                if (target.isFile && target.length() >= spec.sizeBytes) {
                     if (hasValidContent(target, spec)) {
                         mutableState.value = OpusMtDownloadState(
                             status = OpusMtStatus.DOWNLOADING,
@@ -252,7 +254,7 @@ object OpusMtModelManager {
             }
             val invalid = files.firstOrNull { spec ->
                 val file = File(dir, spec.name)
-                !file.isFile || file.length() < spec.minBytes
+                !file.isFile || file.length() < spec.sizeBytes
             }
             if (invalid != null) throw IOException("模型文件完整性检查失败：${invalid.name}")
             // Run a real translation before exposing the model as ready. Free the ONNX sessions
@@ -416,7 +418,7 @@ object OpusMtModelManager {
                 }
 
                 val finalSize = part.length()
-                if (finalSize < spec.minBytes) {
+                if (finalSize < spec.sizeBytes) {
                     throw IOException("下载文件不完整：${spec.name}，当前 ${finalSize} 字节")
                 }
                 if (totalLength > 0L && finalSize != totalLength) {
