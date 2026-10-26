@@ -35,6 +35,9 @@ data class ModelState(
     val progress: Int = 0,          // 0-100（下载阶段）
     val downloadedMB: Long = 0,
     val totalMB: Long = 0,
+    /** Exact byte counts from the active HTTP response; zero means the source has not reported them. */
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
     val error: String? = null,
     val stageMessage: String? = null,
 )
@@ -151,6 +154,23 @@ object ModelFiles {
     fun asrReady(ctx: Context): Boolean =
         if (selectedLocalAsrModelId(ctx) == "sensevoice") senseVoiceReady(ctx)
         else whisperReady(ctx)
+
+    /** Exact size on disk of the selected ASR model and its required shared VAD file. */
+    fun installedAsrModelBytes(ctx: Context, modelId: String): Long? {
+        val normalized = if (modelId == "sensevoice") "sensevoice" else "whisper"
+        val ready = if (normalized == "sensevoice") senseVoiceReady(ctx) else whisperReady(ctx)
+        if (!ready) return null
+
+        val modelDirectory = if (normalized == "sensevoice") senseVoiceDir(ctx) else asrDir(ctx)
+        val modelBytes = modelDirectory.walkTopDown()
+            .filter { it.isFile && !it.name.endsWith(".tmp") && !it.name.endsWith(".part") }
+            .sumOf { it.length() }
+        return if (normalized == "sensevoice") {
+            modelBytes + File(asrDir(ctx), "silero_vad.onnx").length()
+        } else {
+            modelBytes
+        }
+    }
 
     internal fun isValidVadModel(file: File): Boolean {
         if (!file.isFile || file.length() < WhisperModelFilePolicy.MIN_VAD_BYTES) {
@@ -311,6 +331,74 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
+
+    // Lightweight metadata probe; never downloads the archive body.
+    private val archiveSizeHttp = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+    private val actualAsrArchiveSizes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun cachedAsrArchiveSizeBytes(modelId: String): Long? =
+        actualAsrArchiveSizes[normalizeAsrModelId(modelId)]
+
+    private fun normalizeAsrModelId(modelId: String): String =
+        if (modelId.equals("sensevoice", ignoreCase = true)) "sensevoice" else "whisper"
+
+    /**
+     * Reads the exact archive length from the selected model's HTTP source.
+     * If HEAD omits Content-Length, a one-byte Range request reads Content-Range metadata.
+     * A null result means the sources did not publish a usable size; callers must not invent one.
+     */
+    suspend fun queryAsrArchiveSizeBytes(modelId: String): Long? {
+        val normalized = normalizeAsrModelId(modelId)
+        actualAsrArchiveSizes[normalized]?.let { return it }
+        val urls = if (normalized == "sensevoice") senseVoiceUrls else asrUrls
+        return withContext(Dispatchers.IO) {
+            for (url in urls.take(2)) {
+                val headSize = readArchiveSize(url, useRange = false)
+                if (headSize != null && headSize > 0L) {
+                    actualAsrArchiveSizes[normalized] = headSize
+                    return@withContext headSize
+                }
+                val rangeSize = readArchiveSize(url, useRange = true)
+                if (rangeSize != null && rangeSize > 0L) {
+                    actualAsrArchiveSizes[normalized] = rangeSize
+                    return@withContext rangeSize
+                }
+            }
+            null
+        }
+    }
+
+    private fun readArchiveSize(url: String, useRange: Boolean): Long? = runCatching {
+        val builder = okhttp3.Request.Builder()
+            .url(url)
+            .header("Accept-Encoding", "identity")
+        val request = if (useRange) {
+            builder.header("Range", "bytes=0-0").get().build()
+        } else {
+            builder.head().build()
+        }
+        archiveSizeHttp.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return@use null
+            if (useRange) {
+                val total = response.header("Content-Range")
+                    ?.substringAfterLast("/")
+                    ?.toLongOrNull()
+                if (total != null && total > 0L) return@use total
+                // Some endpoints ignore Range; their Content-Length still identifies the whole file.
+                if (response.code != 206) {
+                    response.header("Content-Length")?.toLongOrNull()?.takeIf { it > 1L }
+                } else null
+            } else {
+                response.header("Content-Length")?.toLongOrNull()
+                    ?.takeIf { it > 0L }
+                    ?: response.body?.contentLength()?.takeIf { it > 0L }
+            }
+        }
+    }.getOrNull()
 
     init {
         // StateFlow starts from NOT_DOWNLOADED, but models survive process restarts. Reconcile
@@ -754,10 +842,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         )
         state.value = ModelState(status = ModelStatus.DOWNLOADING, totalMB = 0)
         val parentDir = destDir.parentFile ?: throw java.io.IOException("模型目录无效")
+        // Prefer live source metadata for storage preflight. These constants are used only
+        // as a safety fallback if the source does not expose its exact Content-Length.
+        val modelId = if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) "sensevoice" else "whisper"
         val expectedArchiveBytes = when {
             kind == ModelKind.TTS -> 147_031_220L
-            ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name) -> 165_783_878L
-            else -> 207_557_382L
+            else -> queryAsrArchiveSizeBytes(modelId) ?: if (modelId == "sensevoice") 165_783_878L else 207_557_382L
         }
         val resumableBytes = (if (reusablePackage) pkg.length() else {
             urls.maxOfOrNull { url -> ResumableModelArchiveDownloader.partFileFor(pkg, url).length() } ?: 0L
@@ -820,6 +910,8 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                 progress = if (reuseExistingPackage) 99 else 0,
                 downloadedMB = existingPartBytes / 1_048_576L,
                 totalMB = if (reuseExistingPackage) (pkg.length() + 1_048_575L) / 1_048_576L else 0L,
+                downloadedBytes = existingPartBytes,
+                totalBytes = if (reuseExistingPackage) pkg.length() else 0L,
                 stageMessage = when {
                     reuseExistingPackage -> "已下载的模型包完整，正在继续安装…"
                     existingPartBytes > 0L -> "正在续传上次未完成的模型包…"
@@ -864,10 +956,17 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                         },
                         onProgress = { got, total ->
                             val pct = if (total > 0L) (got.toDouble() * 100.0 / total.toDouble()).toInt().coerceIn(0, 99) else 0
+                            if (kind == ModelKind.ASR && total > 0L) {
+                                // Remember the server-reported total so the UI stays exact after extraction
+                                // and the separate VAD download stage replaces the transient progress state.
+                                actualAsrArchiveSizes[modelId] = total
+                            }
                             state.value = state.value.copy(
                                 progress = pct,
                                 downloadedMB = got / 1_048_576L,
                                 totalMB = if (total > 0L) (total + 1_048_575L) / 1_048_576L else 0L,
+                                downloadedBytes = got,
+                                totalBytes = total.coerceAtLeast(0L),
                                 stageMessage = "正在下载模型包（支持断点续传）…",
                             )
                         },
@@ -948,9 +1047,12 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
                                     onProgress = { got, total ->
                                         val expected = total.takeIf { it > 0L } ?: 643_854L
                                         state.value = state.value.copy(
-                                            progress = if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
+                                            progress = if (total > 0L) (got * 100L / total).toInt().coerceIn(0, 99)
+                                                else if (expected > 0L) (got * 100L / expected).toInt().coerceIn(0, 99) else 0,
                                             downloadedMB = got / (1024L * 1024L),
-                                            totalMB = 1,
+                                            totalMB = if (total > 0L) ((total + 1_048_575L) / 1_048_576L) else 1L,
+                                            downloadedBytes = got,
+                                            totalBytes = total.coerceAtLeast(0L),
                                             stageMessage = "正在下载语音检测模型…",
                                         )
                                     },
