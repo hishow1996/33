@@ -235,7 +235,7 @@ internal fun LocalTranslationSection(
                     .apply()
             }
         }
-        if (detail == "opus" || detail == "singlePair" || detail.isBlank()) {
+        if (detail == "opus" || detail.isBlank()) {
             try {
                 OpusMtModelManager.refresh(context)
             } catch (cancelled: CancellationException) {
@@ -250,7 +250,7 @@ internal fun LocalTranslationSection(
                 )
             }
         }
-        if (detail == "opus" || detail == "singlePair") {
+        if (detail == "opus") {
             try {
                 OpusMtAdditionalModelManager.refresh(context)
             } catch (cancelled: CancellationException) {
@@ -265,7 +265,7 @@ internal fun LocalTranslationSection(
                 )
             }
         }
-        if (detail == "small100" || detail.isBlank()) {
+        if (detail == "small100" || detail == "singlePair" || detail.isBlank()) {
             try {
                 Small100ModelManager.refresh(context)
             } catch (cancelled: CancellationException) {
@@ -941,231 +941,156 @@ internal fun LocalTranslationSection(
                         onModeSelected = { manual -> setSinglePairSelectionMode(manual) },
                     )
                     Text(
-                        "日语、韩语、俄语先翻译成英语，再共用英语 → 简体中文模型。",
+                        "日语、韩语、俄语均直接翻译为简体中文，不经过英语中转。三种语言共用已验证的 SMaLL-100 直译模型，下载一次即可使用。",
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Divider(color = Color(0xFFE7EBF2))
                     listOf(
-                        Pair("日语 → 英语 → 简体中文", "ja"),
-                        Pair("韩语 → 英语 → 简体中文", "ko"),
-                        Pair("俄语 → 英语 → 简体中文", "ru"),
+                        Pair("日语 → 简体中文", "ja"),
+                        Pair("韩语 → 简体中文", "ko"),
+                        Pair("俄语 → 简体中文", "ru"),
                     ).forEachIndexed { index, (language, source) ->
-                        val state = opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
-                        val job = opusExtraJobs[source]
-                        Column(
+                        Row(
                             modifier = Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFFF8FAFC))
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (isSinglePairManualSelection && singlePairManualSourceLanguage == source)
+                                        Color(0xFFEFF5FF) else Color(0xFFF8FAFC)
+                                )
+                                .clickable(enabled = isSinglePairManualSelection) { selectSinglePairLanguage(source) }
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                if (isSinglePairManualSelection) {
-                                    RadioButton(
-                                        selected = singlePairManualSourceLanguage == source,
-                                        onClick = { selectSinglePairLanguage(source) },
-                                        modifier = Modifier.size(44.dp),
-                                    )
-                                }
-                                Column(
-                                    modifier = Modifier.weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable(enabled = isSinglePairManualSelection) { selectSinglePairLanguage(source) }
-                                        .padding(vertical = 2.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                                ) {
-                                    Text(
-                                        language,
-                                        color = if (isSinglePairManualSelection && singlePairManualSourceLanguage == source)
-                                            Color(0xFF2858B8) else Color(0xFF172033),
-                                        style = MaterialTheme.typography.titleSmall,
-                                    )
-                                    val expectedBytes = OpusMtAdditionalModelManager.downloadSizeBytes(source)
-                                    Text(
-                                        "下载大小 " + String.format(
-                                            Locale.ROOT, "%,d 字节 · %.2f MB",
-                                            expectedBytes, expectedBytes / 1_000_000.0,
-                                        ),
-                                        color = Color(0xFF64748B),
-                                        style = MaterialTheme.typography.labelSmall,
-                                    )
-                                }
-                                Text(
-                                    when (state.status) {
-                                        OpusMtStatus.READY -> "已验证"
-                                        OpusMtStatus.DOWNLOADING -> "下载中"
-                                        OpusMtStatus.VERIFYING -> "验证中"
-                                        OpusMtStatus.PAUSED -> "已暂停"
-                                        OpusMtStatus.FAILED -> "失败"
-                                        else -> "未下载"
-                                    },
-                                    color = when (state.status) {
-                                        OpusMtStatus.READY -> Color(0xFF25804A)
-                                        OpusMtStatus.FAILED -> Color(0xFFB42318)
-                                        OpusMtStatus.DOWNLOADING, OpusMtStatus.VERIFYING -> Color(0xFF3569D4)
-                                        else -> Color(0xFF64748B)
-                                    },
-                                    style = MaterialTheme.typography.labelMedium,
+                            if (isSinglePairManualSelection) {
+                                RadioButton(
+                                    selected = singlePairManualSourceLanguage == source,
+                                    onClick = { selectSinglePairLanguage(source) },
+                                    modifier = Modifier.size(44.dp),
                                 )
                             }
-                            if (state.error.isNotBlank()) {
-                                Text(state.error, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
-                            }
-                            if (state.status == OpusMtStatus.DOWNLOADING || state.status == OpusMtStatus.VERIFYING) {
-                                LinearProgressIndicator(
-                                    progress = (state.progress / 100f).coerceIn(0f, 1f),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    color = Color(0xFF3569D4),
-                                )
-                                Text(
-                                    if (state.totalBytes > 0L)
-                                        state.progress.toString() + "% · " + formatLocalModelBytes(state.downloadedBytes) +
-                                            " / " + formatLocalModelBytes(state.totalBytes)
-                                    else "正在处理模型文件",
-                                    color = Color(0xFF64748B),
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            }
-                            if (job?.isActive == true || state.status == OpusMtStatus.DOWNLOADING) {
-                                OutlinedButton(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    onClick = {
-                                        job?.cancel()
-                                        opusExtraJobs = opusExtraJobs - source
-                                    },
-                                ) { Text(if (state.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
-                            } else if (state.status == OpusMtStatus.READY) {
-                                if (activeId != EngineFactory.ID_LOCAL_SINGLE_PAIR) {
-                                    OutlinedButton(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        onClick = {
-                                            scope.launch {
-                                                try {
-                                                    withContext(Dispatchers.IO) { OpusMtAdditionalModelManager.delete(context, source) }
-                                                } catch (error: Exception) {
-                                                    AppLogStore.error(
-                                                        context, "LocalTranslationModel", "删除单语言对翻译模型失败", error,
-                                                        diagnosticContext = mapOf("源语言" to source),
-                                                    )
-                                                }
-                                            }
-                                        },
-                                    ) { Text("删除模型") }
-                                }
-                            } else {
-                                Button(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    onClick = {
-                                        val newJob = scope.launch(Dispatchers.IO) {
-                                            try {
-                                                OpusMtAdditionalModelManager.download(context, source)
-                                            } catch (cancelled: CancellationException) {
-                                                throw cancelled
-                                            } catch (_: Exception) {
-                                                // Detailed reason stays in the model state and diagnostic log.
-                                            }
-                                        }
-                                        opusExtraJobs = opusExtraJobs + (source to newJob)
-                                    },
-                                ) {
-                                    Text(
-                                        if (state.status == OpusMtStatus.PAUSED ||
-                                            OpusMtAdditionalModelManager.hasPartialDownload(context, source)
-                                        ) "继续下载" else "下载模型",
-                                    )
-                                }
-                            }
+                            Text(
+                                language,
+                                modifier = Modifier.weight(1f),
+                                color = if (isSinglePairManualSelection && singlePairManualSourceLanguage == source)
+                                    Color(0xFF2858B8) else Color(0xFF172033),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
                         }
                         if (index < 2) HorizontalDivider(color = Color(0xFFE8ECF3))
                     }
-                }
 
-                Column(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White)
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text("共用第二阶段模型", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    Divider(color = Color(0xFFE7EBF2))
+                    Text("共用直译模型", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
+                    val expectedBytes = Small100ModelManager.TOTAL_BYTES
                     Text(
-                        "英语 → 简体中文 · " + String.format(
+                        "SMaLL-100 · " + String.format(
                             Locale.ROOT, "%,d 字节 · %.2f MB",
-                            OpusMtModelManager.downloadSizeBytes(),
-                            OpusMtModelManager.downloadSizeBytes() / 1_000_000.0,
+                            expectedBytes, expectedBytes / 1_000_000.0,
                         ),
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.labelSmall,
                     )
-                    when (opusState.status) {
-                        OpusMtStatus.READY -> Text("已下载并验证", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
-                        OpusMtStatus.DOWNLOADING -> Text("正在下载 " + opusState.currentFile, color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-                        OpusMtStatus.VERIFYING -> Text("正在验证模型", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-                        OpusMtStatus.PAUSED -> Text(
-                            if (opusState.error.isNotBlank()) opusState.error + " · 可继续下载" else "下载已暂停，可继续",
-                            color = if (opusState.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
+                    when (small100State.status) {
+                        Small100Status.READY -> Text(
+                            "已下载并通过直译验证",
+                            color = Color(0xFF25804A),
                             style = MaterialTheme.typography.labelMedium,
                         )
-                        OpusMtStatus.FAILED -> Text(opusState.error.ifBlank { "下载失败，可重试" }, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
+                        Small100Status.DOWNLOADING -> Text(
+                            "正在下载 " + small100State.currentFile,
+                            color = Color(0xFF3569D4),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Small100Status.VERIFYING -> Text(
+                            "正在加载模型并验证中文翻译",
+                            color = Color(0xFF3569D4),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Small100Status.PAUSED -> Text(
+                            if (small100State.error.isNotBlank()) small100State.error + " · 可继续" else "下载已暂停，可继续",
+                            color = if (small100State.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Small100Status.FAILED -> Text(
+                            small100State.error.ifBlank { "下载或验证失败，可重试" },
+                            color = Color(0xFFB42318),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         else -> Text("未下载", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
                     }
-                    if (opusState.status == OpusMtStatus.DOWNLOADING || opusState.status == OpusMtStatus.VERIFYING) {
+                    if (small100State.status == Small100Status.DOWNLOADING ||
+                        small100State.status == Small100Status.VERIFYING
+                    ) {
                         LinearProgressIndicator(
-                            progress = (opusState.progress / 100f).coerceIn(0f, 1f),
+                            progress = (small100State.progress / 100f).coerceIn(0f, 1f),
                             modifier = Modifier.fillMaxWidth(),
                             color = Color(0xFF3569D4),
                         )
                         Text(
-                            if (opusState.totalBytes > 0L)
-                                opusState.progress.toString() + "% · " + formatLocalModelBytes(opusState.downloadedBytes) +
-                                    " / " + formatLocalModelBytes(opusState.totalBytes)
-                            else formatLocalModelBytes(opusState.downloadedBytes) + " 已下载",
+                            small100State.progress.toString() + "% · " +
+                                formatLocalModelBytes(small100State.downloadedBytes) + " / " +
+                                formatLocalModelBytes(small100State.totalBytes) + " · " +
+                                small100State.fileIndex + "/" + small100State.fileCount,
                             color = Color(0xFF64748B),
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }
-                    if (opusJob?.isActive == true || opusState.status == OpusMtStatus.DOWNLOADING) {
+
+                    val directModelBusy = small100Job?.isActive == true ||
+                        small100State.status == Small100Status.DOWNLOADING ||
+                        small100State.status == Small100Status.VERIFYING
+                    if (directModelBusy) {
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
-                            onClick = { opusJob?.cancel(); opusJob = null },
-                        ) { Text(if (opusState.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
-                    } else if (opusState.status == OpusMtStatus.READY) {
-                        if (activeId != EngineFactory.ID_LOCAL_SINGLE_PAIR) {
+                            onClick = {
+                                small100Job?.cancel()
+                                small100Job = null
+                            },
+                        ) {
+                            Text(if (small100State.status == Small100Status.VERIFYING) "取消验证" else "暂停下载")
+                        }
+                    } else if (small100State.status == Small100Status.READY) {
+                        if (activeId != EngineFactory.ID_LOCAL_SINGLE_PAIR &&
+                            activeId != EngineFactory.ID_LOCAL_SMALL100
+                        ) {
                             OutlinedButton(
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = {
                                     scope.launch {
                                         try {
-                                            withContext(Dispatchers.IO) { OpusMtModelManager.delete(context) }
+                                            withContext(Dispatchers.IO) { Small100ModelManager.delete(context) }
                                         } catch (error: Exception) {
-                                            AppLogStore.error(context, "LocalTranslationModel", "删除英语→中文共享模型失败", error)
+                                            AppLogStore.error(
+                                                context, "LocalTranslationModel", "删除单语言对直译模型失败", error,
+                                                diagnosticContext = mapOf("模型" to "SMaLL-100 共用直译模型"),
+                                            )
                                         }
                                     }
                                 },
-                            ) { Text("删除共享模型") }
+                            ) { Text("删除共用模型") }
                         }
                     } else {
                         Button(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = {
-                                opusJob = scope.launch(Dispatchers.IO) {
+                                small100Job = scope.launch(Dispatchers.IO) {
                                     try {
-                                        OpusMtModelManager.download(context)
+                                        Small100ModelManager.download(context)
                                     } catch (cancelled: CancellationException) {
                                         throw cancelled
                                     } catch (_: Exception) {
-                                        // Model state and diagnostic log retain the exact failure.
+                                        // Detailed failure is retained in the shared model state and app log.
                                     }
                                 }
                             },
                         ) {
-                            Text(if (opusState.status == OpusMtStatus.PAUSED || OpusMtModelManager.hasPartialDownload(context))
-                                "继续下载" else "下载共享模型")
+                            Text(
+                                if (small100State.status == Small100Status.PAUSED ||
+                                    Small100ModelManager.hasPartialDownload(context)
+                                ) "继续下载" else "下载直译模型"
+                            )
                         }
                     }
                 }
