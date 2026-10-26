@@ -575,15 +575,9 @@ internal fun LocalTranslationSection(
                         manualSelected = isOpusManualSelection,
                         onModeSelected = { manual -> setOpusSelectionMode(manual) },
                     )
-                    if (sourceLanguageSelection == "auto") {
+                    if (sourceLanguageSelection != "auto" && !opusSourceCompatible) {
                         Text(
-                            "自动识别字幕源语言，并匹配已下载的 OPUS-MT 模型；不会自动下载缺失模型。",
-                            color = Color(0xFF64748B),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    } else if (!opusSourceCompatible) {
-                        Text(
-                            "当前源语言暂不受 OPUS-MT 直译模型支持。请改选英语、德语、芬兰语或瑞典语，或使用其他本地引擎。",
+                            "暂无此语言的 OPUS-MT 直译模型",
                             color = Color(0xFFB42318),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -597,7 +591,7 @@ internal fun LocalTranslationSection(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            "英语 → 简体中文 · 原有 ONNX 模型",
+                            "英语 → 简体中文",
                             modifier = Modifier.weight(1f),
                             color = if (isOpusManualSelection && sourceLanguageSelection == "en") Color(0xFF2858B8) else Color(0xFF172033),
                             style = MaterialTheme.typography.titleMedium,
@@ -609,6 +603,16 @@ internal fun LocalTranslationSection(
                             modifier = Modifier.size(44.dp),
                         )
                     }
+                    Text(
+                        "下载大小 " + String.format(
+                            Locale.ROOT,
+                            "%,d 字节 · %.2f MiB",
+                            OpusMtModelManager.downloadSizeBytes(),
+                            OpusMtModelManager.downloadSizeBytes() / (1024.0 * 1024.0),
+                        ),
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                     when (opusState.status) {
                         OpusMtStatus.READY -> Text("已下载", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
                         OpusMtStatus.DOWNLOADING -> Text("正在下载 ${opusState.currentFile}", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
@@ -619,7 +623,7 @@ internal fun LocalTranslationSection(
                             style = MaterialTheme.typography.labelMedium,
                         )
                         OpusMtStatus.FAILED -> Text(opusState.error.ifBlank { "下载失败，可重试" }, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
-                        else -> Text("约 250 MB", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
+                        else -> Text("未下载", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
                     }
                     if (opusState.status == OpusMtStatus.VERIFYING) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF3569D4))
@@ -631,14 +635,14 @@ internal fun LocalTranslationSection(
                                 color = Color(0xFF3569D4),
                             )
                             Text(
-                                "${opusState.progress}% · ${formatLocalModelBytes(opusState.downloadedBytes)} / ${formatLocalModelBytes(opusState.totalBytes)} · ${opusState.fileIndex}/${opusState.fileCount}",
+                                "${opusState.progress}% · ${formatLocalModelBytes(opusState.downloadedBytes)} / ${formatLocalModelBytes(opusState.totalBytes)}",
                                 color = Color(0xFF64748B),
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         } else {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF3569D4))
                             Text(
-                                "${formatLocalModelBytes(opusState.downloadedBytes)} 已下载 · ${opusState.fileIndex}/${opusState.fileCount}",
+                                "${formatLocalModelBytes(opusState.downloadedBytes)} 已下载",
                                 color = Color(0xFF64748B),
                                 style = MaterialTheme.typography.labelSmall,
                             )
@@ -697,20 +701,15 @@ internal fun LocalTranslationSection(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        "小型 OPUS-MT 模型 · 简体中文输出",
+                        "其他直译模型",
                         color = Color(0xFF172033),
                         style = MaterialTheme.typography.titleMedium,
                     )
-                    Text(
-                        "德语、芬兰语、瑞典语使用小型 INT8 模型直接翻译为中文。日语、韩语、俄语目前没有经验证、可由本应用直接加载的通用中文直译包，因此不会提供英语中转版本。",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
                     listOf(
-                        Triple("德语 → 简体中文", "de", "Helsinki-NLP/opus-mt-de-ZH"),
-                        Triple("芬兰语 → 简体中文", "fi", "Helsinki-NLP/opus-mt-fi-ZH"),
-                        Triple("瑞典语 → 简体中文", "sv", "Helsinki-NLP/opus-mt-sv-ZH"),
-                    ).forEach { (language, source, officialModelId) ->
+                        Pair("德语 → 简体中文", "de"),
+                        Pair("芬兰语 → 简体中文", "fi"),
+                        Pair("瑞典语 → 简体中文", "sv"),
+                    ).forEach { (language, source) ->
                         val state = opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
                         val job = opusExtraJobs[source]
                         Column(
@@ -737,13 +736,14 @@ internal fun LocalTranslationSection(
                                         color = if (isOpusManualSelection && sourceLanguageSelection == source) Color(0xFF2858B8) else Color(0xFF172033),
                                         style = MaterialTheme.typography.titleSmall,
                                     )
-                                    Text(officialModelId, color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
-                                    Text("Android 量化包：" + OpusMtAdditionalModelManager.runtimeRepository(source),
-                                        color = Color(0xFF64748B), style = MaterialTheme.typography.labelSmall)
                                     val expectedBytes = OpusMtAdditionalModelManager.downloadSizeBytes(source)
                                     Text(
-                                        "下载总大小：" + String.format(Locale.ROOT, "%.2f MiB", expectedBytes / (1024.0 * 1024.0)) + " · " +
-                                            String.format(Locale.ROOT, "%,d 字节", expectedBytes),
+                                        "下载大小 " + String.format(
+                                            Locale.ROOT,
+                                            "%,d 字节 · %.2f MiB",
+                                            expectedBytes,
+                                            expectedBytes / (1024.0 * 1024.0),
+                                        ),
                                         color = Color(0xFF64748B),
                                         style = MaterialTheme.typography.labelSmall,
                                     )
@@ -784,8 +784,7 @@ internal fun LocalTranslationSection(
                                 Text(
                                     if (state.totalBytes > 0L)
                                         state.progress.toString() + "% · " + formatLocalModelBytes(state.downloadedBytes) +
-                                            " / " + formatLocalModelBytes(state.totalBytes) + " · " +
-                                            state.fileIndex + "/" + state.fileCount
+                                            " / " + formatLocalModelBytes(state.totalBytes)
                                     else "正在处理模型文件",
                                     color = Color(0xFF64748B),
                                     style = MaterialTheme.typography.labelSmall,
