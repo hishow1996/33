@@ -40,7 +40,7 @@ private object ExternalModelTaskRegistry {
 
     fun register(id: String, title: String): Boolean = synchronized(lock) {
         if (id in tasks.value) return@synchronized false
-        tasks.value = tasks.value + (id to ExternalModelTask(id, title, "正在下载；切换应用后继续"))
+        tasks.value = tasks.value + (id to ExternalModelTask(id, title, "后台执行中；切换应用后继续"))
         true
     }
 
@@ -222,7 +222,7 @@ class ModelDownloadForegroundService : Service() {
                         indeterminate = true,
                     )
                     externalTasksActive -> ModelNotificationContent(
-                        title = if (externalTasks.size == 1) externalTasks.first().title else "正在下载本地模型",
+                        title = if (externalTasks.size == 1) externalTasks.first().title else "正在处理后台任务",
                         detail = externalTaskDetail,
                         indeterminate = true,
                     )
