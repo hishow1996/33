@@ -895,7 +895,7 @@ internal fun LocalTranslationSection(
                                                         // Exact error remains in model state and diagnostics.
                                                     }
                                                 }
-                                                opusExtraJobs = opusExtraJobs + (source to newJob)
+                                                newJob?.let { opusExtraJobs = opusExtraJobs + (source to it) }
                                             }
                                         },
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
