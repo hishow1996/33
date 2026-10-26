@@ -2411,7 +2411,7 @@ class PlaybackService : MediaSessionService() {
             (fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
         val regenerateDubbingThisRun = forceRegenerateDubbing ||
             fallbackRestartStage != null ||
-            (fallbackSnapshot == null &&
+            (reusableSnapshot == null && fallbackSnapshot == null &&
                 ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key))
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
