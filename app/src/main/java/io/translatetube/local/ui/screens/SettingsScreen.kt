@@ -1281,7 +1281,10 @@ private fun YtDlpUpdateSection() {
                                 scope = backgroundScope,
                             ) {
                                 try {
-                                    message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
+                                    val result = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
+                                    withContext(Dispatchers.Main.immediate) {
+                                        message = result
+                                    }
                                 } catch (e: Exception) {
                                     io.translatetube.local.util.AppLogStore.error(
                                         ctx.applicationContext,
@@ -1297,9 +1300,13 @@ private fun YtDlpUpdateSection() {
                                             "总字节数" to (state.totalBytes?.toString() ?: "未知"),
                                         ),
                                     )
-                                    message = "更新失败：" + (e.message ?: "网络错误")
+                                    withContext(Dispatchers.Main.immediate) {
+                                        message = "更新失败：" + (e.message ?: "网络错误")
+                                    }
                                 } finally {
-                                    updating = false
+                                    withContext(Dispatchers.Main.immediate) {
+                                        updating = false
+                                    }
                                 }
                             }
                         } catch (error: Exception) {
