@@ -21,6 +21,10 @@ internal data class ReadyPlaybackSessionSnapshot(
     val ignoreTranscription: Boolean,
     val state: PlayerUiState,
     val savedAt: Long,
+    /** Engine-domain fingerprints belong to the result, not to whichever settings are current later. */
+    val transcriptionFingerprint: String = "",
+    val translationFingerprint: String = "",
+    val dubbingFingerprint: String = "",
 )
 
 internal object ReadySessionSnapshotStore {
@@ -63,9 +67,62 @@ internal object ReadySessionSnapshotStore {
             val state = decodeState(videoKey, stateObject) ?: continue
             val savedAt = root.optLong("savedAt", file.lastModified()).coerceAtLeast(0L)
             runCatching { file.setLastModified(System.currentTimeMillis()) }
-            return ReadyPlaybackSessionSnapshot(currentFingerprint, ignoreTranscription, state, savedAt)
+            return ReadyPlaybackSessionSnapshot(
+                fingerprint = currentFingerprint,
+                ignoreTranscription = ignoreTranscription,
+                state = state,
+                savedAt = savedAt,
+                transcriptionFingerprint = root.optString("transcriptionFingerprint"),
+                translationFingerprint = root.optString("translationFingerprint"),
+                dubbingFingerprint = root.optString("dubbingFingerprint"),
+            )
         }
         return null
+    }
+
+    /**
+     * Finds the latest successful result even when the currently selected engines no longer
+     * match it. The caller compares the fingerprints stored with this snapshot and resumes from
+     * the earliest affected stage instead of throwing away valid upstream work.
+     */
+    fun findLatestForVideo(
+        context: Context,
+        videoKey: String,
+    ): ReadyPlaybackSessionSnapshot? {
+        if (!isSupportedVideoKey(videoKey)) return null
+        val expectedKeyHash = keyHash(videoKey)
+        val candidates = directory(context).listFiles { _, name ->
+            name.startsWith(filePrefix(videoKey)) && name.endsWith(".json")
+        }?.filter { file ->
+            file.isFile && file.length() in 1L..MAX_SNAPSHOT_BYTES
+        } ?: return null
+
+        return candidates.mapNotNull { file ->
+            val root = readRoot(file) ?: return@mapNotNull null
+            if (root.optInt("version", -1) != SNAPSHOT_VERSION ||
+                root.optString("keyHash") != expectedKeyHash
+            ) return@mapNotNull null
+
+            val fingerprint = root.optString("fingerprint")
+            if (!fingerprintPattern.matches(fingerprint)) return@mapNotNull null
+            val ignoreTranscription = root.optBoolean("ignoreTranscription", false)
+            val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
+            if (file.name != "ready_${expectedKeyHash}_${fingerprint}${suffix}") {
+                return@mapNotNull null
+            }
+
+            val stateObject = root.optJSONObject("state") ?: return@mapNotNull null
+            val state = decodeState(videoKey, stateObject) ?: return@mapNotNull null
+            ReadyPlaybackSessionSnapshot(
+                fingerprint = fingerprint,
+                ignoreTranscription = ignoreTranscription,
+                state = state,
+                savedAt = root.optLong("savedAt", file.lastModified()).coerceAtLeast(0L),
+                transcriptionFingerprint = root.optString("transcriptionFingerprint"),
+                translationFingerprint = root.optString("translationFingerprint"),
+                dubbingFingerprint = root.optString("dubbingFingerprint"),
+            )
+        }.maxByOrNull { it.savedAt }
     }
 
     fun save(
@@ -74,6 +131,9 @@ internal object ReadySessionSnapshotStore {
         fingerprint: String,
         ignoreTranscription: Boolean,
         state: PlayerUiState,
+        transcriptionFingerprint: String = "",
+        translationFingerprint: String = "",
+        dubbingFingerprint: String = "",
     ): Boolean {
         if (!isSupportedVideoKey(videoKey) ||
             !fingerprintPattern.matches(fingerprint) ||
@@ -94,6 +154,9 @@ internal object ReadySessionSnapshotStore {
                 .put("fingerprint", fingerprint)
                 .put("ignoreTranscription", ignoreTranscription)
                 .put("savedAt", now)
+                .put("transcriptionFingerprint", transcriptionFingerprint)
+                .put("translationFingerprint", translationFingerprint)
+                .put("dubbingFingerprint", dubbingFingerprint)
                 .put("state", encodeState(state))
             val bytes = root.toString().toByteArray(Charsets.UTF_8)
             if (bytes.isEmpty() || bytes.size.toLong() > MAX_SNAPSHOT_BYTES) return@runCatching false
