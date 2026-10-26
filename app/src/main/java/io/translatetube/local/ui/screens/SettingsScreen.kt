@@ -201,6 +201,21 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         val dlManager = remember { (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).modelDownload }
         val ttsState by dlManager.tts.collectAsState()
         val asrState by dlManager.asr.collectAsState()
+        var asrArchiveSizeBytes by remember { mutableStateOf<Long?>(null) }
+        var asrArchiveSizeLoading by remember { mutableStateOf(false) }
+        LaunchedEffect(asrEngine, localAsrModel) {
+            if (asrEngine != "local") {
+                asrArchiveSizeLoading = false
+                return@LaunchedEffect
+            }
+            asrArchiveSizeBytes = dlManager.cachedAsrArchiveSizeBytes(localAsrModel)
+            asrArchiveSizeLoading = asrArchiveSizeBytes == null
+            if (asrArchiveSizeBytes == null) {
+                asrArchiveSizeBytes = dlManager.queryAsrArchiveSizeBytes(localAsrModel)
+                    ?: dlManager.cachedAsrArchiveSizeBytes(localAsrModel)
+            }
+            asrArchiveSizeLoading = false
+        }
         val playbackState by io.translatetube.local.player.PlaybackService.ui.collectAsState()
         val piperDownloadCount by io.translatetube.local.tts.PiperModels.activeDownloadCount.collectAsState()
         val piperTaskActive = io.translatetube.local.tts.PiperModels.hasActiveDownloads
@@ -478,7 +493,14 @@ Section(
             title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8 转写模型" else "Whisper Base 转写模型",
             state = asrState,
             ready = asrReady,
-            pkgMB = if (localAsrModel == "sensevoice") 158 else 198,
+            packageSizeBytes = asrArchiveSizeBytes
+                ?: dlManager.cachedAsrArchiveSizeBytes(localAsrModel)
+                ?: asrState.totalBytes.takeIf {
+                    it > 10_000_000L && !asrState.stageMessage.orEmpty().contains("语音检测")
+                },
+            packageSizeLoading = asrArchiveSizeLoading,
+            installedSizeBytes = io.translatetube.local.data.ModelFiles.installedAsrModelBytes(ctx, localAsrModel),
+            showInstalledSize = true,
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
             onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
@@ -778,7 +800,7 @@ Section(
                     title = "Kokoro 配音模型",
                     state = ttsState,
                     ready = ttsReady,
-                    pkgMB = 140,
+                    packageSizeBytes = 147_031_220L,
                     onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.TTS) },
                     onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.TTS) },
                 )
@@ -1520,7 +1542,10 @@ private fun ModelRow(
     title: String,
     state: io.translatetube.local.data.ModelState,
     ready: Boolean,
-    pkgMB: Int,
+    packageSizeBytes: Long?,
+    packageSizeLoading: Boolean = false,
+    installedSizeBytes: Long? = null,
+    showInstalledSize: Boolean = false,
     onDownload: () -> Unit,
     onCancel: () -> Unit = {},
 ) {
@@ -1561,6 +1586,23 @@ private fun ModelRow(
             }
         }
         Spacer(Modifier.height(5.dp))
+        val reportedPackageBytes = packageSizeBytes
+            ?: state.totalBytes.takeIf { it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测") }
+        Text(
+            reportedPackageBytes?.let { "下载包大小 ${formatExactModelMB(it)}" }
+                ?: if (packageSizeLoading) "下载包大小正在查询" else "下载包大小：下载时读取源站数据",
+            color = SubText,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (showInstalledSize) {
+            Text(
+                installedSizeBytes?.let { "安装后占用 ${formatExactModelMB(it)}" }
+                    ?: if (ready) "安装后占用暂不可读取" else "安装后占用：安装完成后按实际文件统计",
+                color = SubText,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(Modifier.height(5.dp))
         when {
             ready -> {
                 Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
@@ -1589,10 +1631,10 @@ private fun ModelRow(
                     }
                     Column(Modifier.weight(1f)) {
                         Text(
-                            if (state.totalMB > 0L) {
-                                "下载中 ${state.progress}% · ${state.downloadedMB}/${state.totalMB} MB"
+                            if (state.totalBytes > 0L) {
+                                "下载中 ${state.progress}% · ${formatExactModelMB(state.downloadedBytes)} / ${formatExactModelMB(state.totalBytes)}"
                             } else {
-                                "下载中 · 已下载 ${state.downloadedMB} MB（文件总大小未知）"
+                                "下载中 · 已下载 ${formatExactModelMB(state.downloadedBytes)}"
                             },
                             color = BrandBright,
                             style = MaterialTheme.typography.bodySmall,
@@ -1641,12 +1683,13 @@ private fun ModelRow(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            else -> {
-                Text("下载包约 $pkgMB MB", color = SubText, style = MaterialTheme.typography.bodySmall)
-            }
+            else -> Unit
         }
     }
 }
+
+private fun formatExactModelMB(bytes: Long): String =
+    String.format(java.util.Locale.ROOT, "%.2f MB", bytes.coerceAtLeast(0L) / 1_000_000.0)
 
 /** 在系统应用选择器中打开官网，让用户自行指定浏览器。 */
 private fun openOfficialWebsite(ctx: android.content.Context, url: String) {
