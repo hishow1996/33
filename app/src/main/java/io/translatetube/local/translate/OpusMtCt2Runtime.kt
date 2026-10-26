@@ -47,16 +47,9 @@ internal object OpusMtCt2Runtime {
 
     suspend fun validate(context: Context, source: String, sampleText: String) {
         val translated = translate(context, source, listOf(sampleText)).singleOrNull().orEmpty()
-        val target = OpusMtAdditionalModelManager.targetLanguage(source)
-        val valid = when (target) {
-            "zh" -> translated.any { it in '\u4E00'..'\u9FFF' }
-            "en" -> translated.any { it in 'A'..'Z' || it in 'a'..'z' }
-            else -> translated.isNotBlank()
-        }
-        if (translated.isBlank() || !valid) {
+        if (translated.isBlank() || translated.none { it in '\u4E00'..'\u9FFF' }) {
             release(source)
-            val expected = if (target == "en") "英语" else "中文"
-            throw IllegalStateException("OPUS-MT ${OpusMtAdditionalModelManager.label(source)} 模型已下载，但试译未生成有效${expected}文本，不能标记为可用。")
+            throw IllegalStateException("OPUS-MT ${OpusMtAdditionalModelManager.label(source)} 模型已下载，但试译未生成中文，不能标记为可用。")
         }
         release(source)
     }
