@@ -25,7 +25,7 @@ class SpeechOnsetDetectorTest {
         val samples = clip(quietMs = 1000, loudMs = 1000)
         val onset = SpeechOnsetDetector.findOnsetMs(samples, sampleRate, sliceStartMs = 1000L, captionStartMs = 2400L)
         assertNotNull(onset)
-        assertEquals(2000L, onset!!, 20L)
+        assertEquals(2000.0, onset!!.toDouble(), 20.0)
     }
 
     @Test
@@ -49,7 +49,7 @@ class SpeechOnsetDetectorTest {
         for (i in clickStart until clickStart + 20 * sampleRate / 1000) samples[i] = 0.5f
         val onset = SpeechOnsetDetector.findOnsetMs(samples, sampleRate, sliceStartMs = 1000L, captionStartMs = 2400L)
         assertNotNull(onset)
-        assertEquals(2000L, onset!!, 20L)
+        assertEquals(2000.0, onset!!.toDouble(), 20.0)
     }
 
     @Test
