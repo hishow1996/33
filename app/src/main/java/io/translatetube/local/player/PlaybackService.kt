@@ -39,6 +39,7 @@ import io.translatetube.local.translate.SourceLanguagePolicy
 import io.translatetube.local.translate.MlKitEngine
 import io.translatetube.local.translate.OpusMtEngine
 import io.translatetube.local.translate.Small100Engine
+import io.translatetube.local.translate.SinglePairTranslationEngine
 import io.translatetube.local.translate.GoogleHybridEngine
 import io.translatetube.local.translate.TranslationEngine
 import io.translatetube.local.tts.KokoroTts
@@ -5457,6 +5458,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             val selectedMlKit = engine as? MlKitEngine
             val selectedOpus = engine as? OpusMtEngine
             val selectedSmall100 = engine as? Small100Engine
+            val selectedSinglePair = engine as? SinglePairTranslationEngine
             if (pendingIndices.isNotEmpty()) {
                 val preferredSource = prefs.getString("translation_source_language", "auto")
                     .orEmpty().ifBlank { "auto" }
@@ -5496,6 +5498,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     selectedMlKit != null -> src = selectedMlKit.validateConfiguration(srcLang, tgt, plain)
                     selectedOpus != null -> src = selectedOpus.validateConfiguration(srcLang, tgt, plain)
                     selectedSmall100 != null -> src = selectedSmall100.validateConfiguration(srcLang, tgt, plain)
+                    selectedSinglePair != null -> src = selectedSinglePair.validateConfiguration(srcLang, tgt, plain)
                 }
                 if (src.isNotBlank()) {
                     updateUiForSession(key, pipelineGeneration) { it.copy(sourceLang = src) }

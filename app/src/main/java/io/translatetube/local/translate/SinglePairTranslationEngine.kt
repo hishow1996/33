@@ -26,10 +26,15 @@ class SinglePairTranslationEngine(private val context: Context) : TranslationEng
     override val id: String = "single-pair-model"
     override val displayName: String = "单语言对翻译模型"
 
-    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
-        if (lines.isEmpty()) return emptyList()
-        if (lines.none { it.isNotBlank() }) return lines.map { "" }
-
+    /**
+     * Resolve and validate the complete subtitle track before the playback service begins batching.
+     * Prefer distinctive script detection, with ML Kit as a fallback for ambiguous text.
+     */
+    suspend fun validateConfiguration(
+        srcLang: String,
+        tgtLang: String,
+        sampleLines: List<String> = emptyList(),
+    ): String {
         val target = SourceLanguagePolicy.normalizeTag(tgtLang).lowercase(Locale.ROOT)
         if (target !in setOf("zh", "zh-cn", "zh-hans", "zh-hans-cn")) {
             throw IllegalStateException("单语言对翻译模型的目标语言固定为简体中文。")
@@ -38,29 +43,45 @@ class SinglePairTranslationEngine(private val context: Context) : TranslationEng
         val normalizedSource = SourceLanguagePolicy.sourceForTranslation(srcLang)
         val sourceUndetermined = SourceLanguagePolicy.isUndetermined(normalizedSource)
         val detectedSource = if (sourceUndetermined) {
-            MlKitSourceLanguageIdentifier.detect(lines)
+            val scriptHint = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(sampleLines)
+            if (!SourceLanguagePolicy.isUndetermined(scriptHint)) {
+                scriptHint
+            } else {
+                MlKitSourceLanguageIdentifier.detect(sampleLines)
+            }
         } else normalizedSource
+
         if (SourceLanguagePolicy.isUndetermined(detectedSource)) {
-            throw IllegalStateException("无法自动识别原文语言，请在单语言对翻译模型管理页手动选择日语、韩语或俄语。")
+            throw IllegalStateException(
+                "单语言对翻译模型无法可靠识别原文语言。请在管理页手动选择日语、韩语或俄语后重试。"
+            )
         }
 
         val source = SinglePairModelLanguagePolicy.canonicalSource(detectedSource)
         if (!SinglePairModelLanguagePolicy.supportsSource(source)) {
             throw IllegalStateException(
-                "单语言对翻译模型支持日语、韩语、俄语 → 英语 → 简体中文；当前识别为“${LangMap.display(source)}”。" +
+                "单语言对翻译模型仅支持日语、韩语、俄语 → 英语 → 简体中文；当前识别为“${LangMap.display(source)}”。" +
                     "请在管理页选择受支持的源语言，或切换其他翻译引擎。"
             )
         }
         if (!OpusMtAdditionalModelManager.isReady(context, source)) {
             throw IllegalStateException(
-                "单语言对翻译模型（${LangMap.display(source)} → 英语）尚未下载并通过试译验证，请到本地翻译 → 单语言对翻译模型 → 管理中下载。"
+                "${LangMap.display(source)} → 英语模型尚未下载并通过试译验证。请到本地翻译 → 单语言对翻译模型 → 管理中下载对应模型。"
             )
         }
         if (!OpusMtModelManager.isReady(context)) {
             throw IllegalStateException(
-                "还需要下载并验证共用的英语 → 简体中文模型。请到本地翻译 → 单语言对翻译模型 → 管理中下载共享模型。"
+                "共用的英语 → 简体中文模型尚未下载或验证。请到本地翻译 → 单语言对翻译模型 → 管理中下载共享模型。"
             )
         }
+        return source
+    }
+
+    override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
+        if (lines.isEmpty()) return emptyList()
+        if (lines.none { it.isNotBlank() }) return lines.map { "" }
+
+        val source = validateConfiguration(srcLang, tgtLang, lines)
 
         AppLogStore.info(
             context.applicationContext,

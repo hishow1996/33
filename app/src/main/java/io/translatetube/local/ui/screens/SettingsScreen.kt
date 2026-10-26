@@ -282,6 +282,7 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             io.translatetube.local.translate.EngineFactory.ID_LOCAL_MLKIT -> "ML Kit（本地）"
             io.translatetube.local.translate.EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT（本地）"
             io.translatetube.local.translate.EngineFactory.ID_LOCAL_SMALL100 -> "SMaLL-100（本地）"
+            io.translatetube.local.translate.EngineFactory.ID_LOCAL_SINGLE_PAIR -> "单语言对翻译模型（本地）"
             else -> null
         }
         val translationLabel = builtinTranslationLabel
