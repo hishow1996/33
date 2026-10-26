@@ -610,9 +610,9 @@ internal fun LocalTranslationSection(
                     Text(
                         "下载大小 " + String.format(
                             Locale.ROOT,
-                            "%,d 字节 · %.2f MB",
+                            "%,d 字节 · %.2f MiB",
                             OpusMtModelManager.downloadSizeBytes(),
-                            OpusMtModelManager.downloadSizeBytes() / 1_000_000.0,
+                            OpusMtModelManager.downloadSizeBytes() / (1024.0 * 1024.0),
                         ),
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.labelSmall,
@@ -752,9 +752,9 @@ internal fun LocalTranslationSection(
                                     Text(
                                         "下载大小 " + String.format(
                                             Locale.ROOT,
-                                            "%,d 字节 · %.2f MB",
+                                            "%,d 字节 · %.2f MiB",
                                             expectedBytes,
-                                            expectedBytes / 1_000_000.0,
+                                            expectedBytes / (1024.0 * 1024.0),
                                         ),
                                         color = Color(0xFF64748B),
                                         style = MaterialTheme.typography.labelSmall,
@@ -1097,9 +1097,9 @@ private fun LocalEngineCard(
 }
 
 private fun formatLocalModelBytes(bytes: Long): String {
-    if (bytes <= 0L) return "0 MB"
-    val mb = bytes / (1024f * 1024f)
-    return if (mb >= 100f) "${mb.toInt()} MB" else String.format(Locale.ROOT, "%.1f MB", mb)
+    if (bytes <= 0L) return "0 MiB"
+    val mib = bytes / (1024.0 * 1024.0)
+    return String.format(Locale.ROOT, "%.2f MiB", mib)
 }
 
 private fun formatSmall100Bytes(bytes: Long): String {
