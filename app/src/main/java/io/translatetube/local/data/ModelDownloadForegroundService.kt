@@ -99,8 +99,8 @@ class ModelDownloadForegroundService : Service() {
         // Must enter foreground immediately after the service starts.
         startForegroundCompat(
             buildNotification(
-                title = "正在准备模型任务",
-                text = "正在检查配音与语音转写模型",
+                title = "正在准备后台任务",
+                text = "正在准备下载或网页解析任务",
                 ongoing = true,
                 indeterminate = true,
             )
@@ -355,10 +355,10 @@ class ModelDownloadForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "模型下载",
+                "后台下载与处理",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "显示配音与语音转写模型的下载、校验和安装状态"
+                description = "显示模型下载、安装与网页解析任务状态"
                 setShowBadge(false)
             }
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
