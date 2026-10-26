@@ -774,7 +774,7 @@ internal fun LocalTranslationSection(
                                     ) { Text("暂停", maxLines = 1) }
                                 } else if (state.status == OpusMtStatus.READY) {
                                     if (activeId == EngineFactory.ID_LOCAL_OPUS &&
-                                        (sourceLanguageSelection == "auto" || sourceLanguageSelection == source)
+                                        (source == "en" || sourceLanguageSelection == source)
                                     ) {
                                         Text(
                                             "使用中",
