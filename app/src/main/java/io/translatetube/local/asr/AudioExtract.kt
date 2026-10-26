@@ -28,6 +28,8 @@ object AudioExtract {
     private const val MAX_RESAMPLER_INPUT_CHUNK_SAMPLES = 64 * 1024
     // Some Android 9 codecs can remain in TRY_AGAIN_LATER forever on malformed sources.
     private const val MAX_CODEC_STALL_MS = 60_000L
+    private const val CODEC_BLOCKING_WAIT_US = 10_000L
+    private const val MAX_INPUT_BUFFERS_PER_PASS = 16
 
     data class Pcm(val samples: FloatArray, val sampleRate: Int = 16000)
 
@@ -464,31 +466,41 @@ object AudioExtract {
 
             BufferedOutputStream(FileOutputStream(destination), 64 * 1024).use { output ->
                 var lastCodecProgressAtMs = android.os.SystemClock.elapsedRealtime()
+                var outputWaitUs = CODEC_BLOCKING_WAIT_US
                 while (!sawOutputEos) {
                     checkActive()
                     var loopMadeProgress = false
-                    if (!sawInputEos) {
-                        val inBufferIndex = codec.dequeueInputBuffer(10_000)
-                        if (inBufferIndex >= 0) {
-                            val inputBuffer = codec.getInputBuffer(inBufferIndex)
-                                ?: throw IllegalStateException("音频解码器没有输入缓冲区")
-                            val size = extractor.readSampleData(inputBuffer, 0)
-                            if (size < 0) {
-                                codec.queueInputBuffer(
-                                    inBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-                                )
-                                sawInputEos = true
-                                loopMadeProgress = true
-                            } else {
-                                codec.queueInputBuffer(inBufferIndex, 0, size, extractor.sampleTime, 0)
-                                val hasNextSample = extractor.advance()
-                                loopMadeProgress = loopMadeProgress ||
-                                    CodecProgressPolicy.inputMakesProgress(size, hasNextSample)
-                            }
+                    // Keep the codec's input queue full: hand over every free input buffer right
+                    // now (non-blocking) instead of one frame per loop. A one-in/one-out ping-pong
+                    // makes the app thread and the codec thread wait for each other on every frame.
+                    var queuedThisPass = 0
+                    while (!sawInputEos && queuedThisPass < MAX_INPUT_BUFFERS_PER_PASS) {
+                        val inBufferIndex = codec.dequeueInputBuffer(0)
+                        if (inBufferIndex < 0) break
+                        val inputBuffer = codec.getInputBuffer(inBufferIndex)
+                            ?: throw IllegalStateException("音频解码器没有输入缓冲区")
+                        val size = extractor.readSampleData(inputBuffer, 0)
+                        if (size < 0) {
+                            codec.queueInputBuffer(
+                                inBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                            )
+                            sawInputEos = true
+                            loopMadeProgress = true
+                        } else {
+                            codec.queueInputBuffer(inBufferIndex, 0, size, extractor.sampleTime, 0)
+                            val hasNextSample = extractor.advance()
+                            loopMadeProgress = loopMadeProgress ||
+                                CodecProgressPolicy.inputMakesProgress(size, hasNextSample)
                         }
+                        queuedThisPass++
                     }
 
-                    val outBufferIndex = codec.dequeueOutputBuffer(info, 10_000)
+                    // Output already waiting is taken without blocking; only wait (up to 10 ms,
+                    // woken as soon as a buffer is ready) once the codec has nothing more to give.
+                    val outBufferIndex = codec.dequeueOutputBuffer(info, outputWaitUs)
+                    outputWaitUs = if (outBufferIndex >= 0 ||
+                        outBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
+                    ) 0L else CODEC_BLOCKING_WAIT_US
                     if (outBufferIndex >= 0) {
                         loopMadeProgress = loopMadeProgress || CodecProgressPolicy.outputMakesProgress(
                             outputBytes = info.size,
@@ -701,10 +713,13 @@ object AudioExtract {
             checkActive()
             val count = minOf(samplesPerChunk, samples.size - sampleOffset)
             var byteIndex = 0
-            for (index in sampleOffset until sampleOffset + count) {
-                val value = samples[index].toInt()
-                bytes[byteIndex++] = (value and 0xff).toByte()
-                bytes[byteIndex++] = ((value shr 8) and 0xff).toByte()
+            var index = sampleOffset
+            val end = sampleOffset + count
+            while (index < end) {
+                val value = samples[index++].toInt()
+                bytes[byteIndex] = value.toByte()
+                bytes[byteIndex + 1] = (value shr 8).toByte()
+                byteIndex += 2
             }
             output.write(bytes, 0, byteIndex)
             sampleOffset += count

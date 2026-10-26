@@ -15,6 +15,18 @@ internal object PcmChannelMixer {
         if (channels == 1) return chunk.copyOf()
 
         val mono = ShortArray(chunk.size / channels)
+        if (channels == 2) {
+            // Stereo is by far the common case; plain Int math (the sum of two shorts cannot
+            // overflow and the average cannot leave the Short range) gives the same result.
+            var outputIndex = 0
+            var offset = 0
+            while (offset < chunk.size) {
+                if ((outputIndex and 0x1fff) == 0) checkActive()
+                mono[outputIndex++] = ((chunk[offset] + chunk[offset + 1]) / 2).toShort()
+                offset += 2
+            }
+            return mono
+        }
         var outputIndex = 0
         var offset = 0
         while (offset < chunk.size) {

@@ -81,4 +81,18 @@ class PcmChannelMixerTest {
     fun rejectsUnsupportedChannelCount() {
         PcmChannelMixer.downmixToMono(listOf(shortArrayOf(1)), 0)
     }
+
+    @Test
+    fun stereoChunkFastPathMatchesTheGenericLongAverage() {
+        // 覆盖负数奇数和（向零取整）、极值，和通用算法逐点对比
+        val frames = shortArrayOf(
+            -3, 0, 3, 0, -1, -2, Short.MAX_VALUE, Short.MAX_VALUE,
+            Short.MIN_VALUE, Short.MIN_VALUE, Short.MAX_VALUE, Short.MIN_VALUE,
+            7, 8, -7, -8, 0, 0,
+        )
+        val expected = ShortArray(frames.size / 2) { i ->
+            ((frames[2 * i].toLong() + frames[2 * i + 1].toLong()) / 2).toShort()
+        }
+        assertArrayEquals(expected, PcmChannelMixer.downmixChunk(frames, 2))
+    }
 }
