@@ -77,6 +77,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSavedStateRegistryOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -86,6 +87,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlayerUiState
@@ -294,6 +296,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     var floatingGranted by remember { mutableStateOf(floating.canDraw()) }
     // 从系统授权页返回时刷新悬浮窗权限状态
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val savedStateRegistryOwner = LocalSavedStateRegistryOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
             if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
@@ -377,7 +380,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
         val host = FrameLayout(ctx)
         moveTextureViewTo(host)
+        // WindowManager overlays are detached from the Activity's decor view tree.
+        // ComposeView requires both lifecycle and saved-state owners before it is attached.
         host.setViewTreeLifecycleOwner(lifecycleOwner)
+        host.setViewTreeSavedStateRegistryOwner(savedStateRegistryOwner)
         floatingControlsVisible.value = true
         floatingControlsInteractionRevision.intValue++
         val controlsView = ComposeView(ctx).apply {
