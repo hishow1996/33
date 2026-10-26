@@ -452,11 +452,7 @@ fun WebVideoScreen(
     var pikpakNeedsPasscode by remember(initialUrl) { mutableStateOf(false) }
     var pikpakBusy by remember(initialUrl) { mutableStateOf(false) }
     var pikpakNotice by remember(initialUrl) { mutableStateOf<String?>(null) }
-    val pikpakScope = remember(initialUrl) { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
-
-    DisposableEffect(Unit) {
-        onDispose { pikpakScope.cancel() }
-    }
+    var pikpakJob by remember(initialUrl) { mutableStateOf<Job?>(null) }
 
     // 监听候选变化，对未验证的候选后台校验，并保留 HEAD/Range 的具体证据。
     LaunchedEffect(candidatesState.value, verifiedUrls, verificationAttempts) {
@@ -847,8 +843,13 @@ fun WebVideoScreen(
         navigationInProgress.set(true)
         pageGeneration.incrementAndGet()
         ytDlpRunGeneration.incrementAndGet()
-        ytDlpJob?.cancel()
+        ytDlpJob?.cancel(CancellationException("页面导航已切换"))
         ytDlpJob = null
+        bilibiliJob?.cancel(CancellationException("页面导航已切换"))
+        bilibiliJob = null
+        bilibiliResolving = false
+        pikpakJob?.cancel(CancellationException("页面导航已切换"))
+        pikpakJob = null
         ytDlpBusy = false
         ytDlpAutoAttempts = 0
         ytDlpHint = null
@@ -895,8 +896,8 @@ fun WebVideoScreen(
     // 推荐位小视频还被嗅探成已验证候选，挡住 yt-dlp 自动兜底——死锁无播放入口。
     // B 站链接改走 view+playurl（HTML5 平台）直连，成功即进本地播放器
     // （播放/字幕翻译/配音全链路），失败回退 WebView 老路。
-    val bilibiliScope = rememberCoroutineScope()
     var bilibiliResolving by remember(initialUrl) { mutableStateOf(false) }
+    var bilibiliJob by remember(initialUrl) { mutableStateOf<Job?>(null) }
     val bilibiliHandledAtStart = remember(initialUrl) { BilibiliNativeResolver.isBilibiliLink(initialUrl) }
 
     fun tryBilibiliNative(target: String): Boolean {
@@ -906,13 +907,18 @@ fun WebVideoScreen(
         status = "已识别 B 站链接，正在直连解析视频…"
         pageLoading = false
         candidatesState.value = emptyList()
-        bilibiliScope.launch(Dispatchers.IO) {
+        val resolveGeneration = pageGeneration.get()
+        val job = launchTrackedWebTask(
+            taskId = "bilibili-native-$resolveGeneration",
+            title = "正在解析 B 站视频",
+        ) {
             val cookie = runCatching {
                 android.webkit.CookieManager.getInstance().getCookie("https://www.bilibili.com/")
             }.getOrNull()
             val result = runCatching { BilibiliNativeResolver.resolve(target, cookie) }.getOrNull()
             mainHandler.post {
-                if (!screenActive.get()) return@post
+                if (!screenActive.get() || pageGeneration.get() != resolveGeneration) return@post
+                bilibiliJob = null
                 bilibiliResolving = false
                 if (result != null) {
                     status = "B 站解析成功：" + result.title
@@ -954,6 +960,12 @@ fun WebVideoScreen(
                     runYtDlp(target)
                 }
             }
+        }
+        if (job == null) {
+            bilibiliResolving = false
+            status = "无法启动 B 站后台解析任务，请稍后重试。"
+        } else {
+            bilibiliJob = job
         }
         return true
     }
@@ -1029,7 +1041,11 @@ fun WebVideoScreen(
         // 增量枚举：完整枚举过的子树跳过（点具体文件夹时强制重读该子树）
         val skipParents = if (rootParentId.isBlank()) pikpakEnumeratedParents
         else pikpakEnumeratedParents - rootParentId
-        pikpakScope.launch(Dispatchers.IO) {
+        val taskId = "pikpak-enumerate-$enumerationGeneration-${rootParentId.hashCode()}"
+        val job = launchTrackedWebTask(
+            taskId = taskId,
+            title = "正在读取 PikPak 分享清单",
+        ) {
             try {
                 val result = PikpakShare.enumerateAll(
                     shareId = shareId,
@@ -1146,6 +1162,12 @@ fun WebVideoScreen(
                     pikpakNotice = "读取分享清单失败：" + (error.message ?: error.javaClass.simpleName)
                 }
             }
+        }
+        if (job == null) {
+            pikpakBusy = false
+            pikpakNotice = "后台清单任务已存在或无法启动，请稍后重试。"
+        } else {
+            pikpakJob = job
         }
     }
 
@@ -1450,6 +1472,10 @@ fun WebVideoScreen(
             hideFullScreenView()
             ytDlpJob?.cancel()
             ytDlpJob = null
+            bilibiliJob?.cancel(CancellationException("网页解析页面已关闭"))
+            bilibiliJob = null
+            pikpakJob?.cancel(CancellationException("网页解析页面已关闭"))
+            pikpakJob = null
             webViewState.value?.let { view ->
                 runCatching { view.stopLoading() }
                 runCatching { view.removeJavascriptInterface("ElephantVideoBridge") }
