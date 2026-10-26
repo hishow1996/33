@@ -660,7 +660,7 @@ class PlaybackService : MediaSessionService() {
             io.translatetube.local.util.AppLogStore.info(
                 this,
                 "PlaybackFlow",
-                "命中该视频此前成功的引擎配置组合，复用字幕结果并重新合成当前配音",
+                "命中该视频此前成功的引擎配置组合，直接恢复其完整处理结果",
                 diagnosticContext = mapOf(
                     "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
                     "处理流程" to restoredState.processingFlow.name,
@@ -668,7 +668,7 @@ class PlaybackService : MediaSessionService() {
                     "原文字幕行数" to restoredState.lines.size.toString(),
                     "是否重新转写" to "否",
                     "是否重新翻译" to "否",
-                    "配音缓存策略" to "强制重新合成当前所选引擎，不复用旧 PCM",
+                    "配音缓存策略" to "复用该成功配置自己的 PCM，不重新合成",
                 ),
             )
             open(
@@ -684,10 +684,10 @@ class PlaybackService : MediaSessionService() {
                 remoteMediaUserAgent = remoteMediaUserAgent,
                 requestToken = requestToken,
                 reuseMountedMediaForRestart = true,
-                // Reuse this configuration’s subtitle snapshot, but do not mark the run as
-                // already completed: stage 5 must visibly synthesize the currently selected TTS.
-                restoreReadySnapshot = false,
-                forceRegenerateDubbing = true,
+                // This snapshot was verified against the selected configuration. Restore the
+                // completed playback result and its own PCM cache without revisiting five stages.
+                restoreReadySnapshot = true,
+                forceRegenerateDubbing = false,
             )
             return true
         }
@@ -939,6 +939,59 @@ class PlaybackService : MediaSessionService() {
                         val restartRemoteReferrer = remoteMediaReferrer
                         val restartRemoteCookie = remoteMediaCookie
                         val restartRemoteUserAgent = remoteMediaUserAgent
+
+                        // If this exact engine combination has completed successfully before, restore
+                        // that result directly. It is normal for the latest-success fingerprint to
+                        // differ after the user tried another local/online/cloud engine.
+                        val matchingSuccessfulSnapshot =
+                            ReadySessionSnapshotStore.findForCurrentConfig(this@PlaybackService, sessionKey) { ignore ->
+                                ReadyHistorySessionConfigStore.fingerprint(
+                                    this@PlaybackService,
+                                    ignoreTranscription = ignore,
+                                )
+                            }
+                        if (matchingSuccessfulSnapshot != null) {
+                            val restoredSuccessfulState = matchingSuccessfulSnapshot.state.copy(
+                                dubbingOn = true,
+                                muteOriginal = state.originalVolume <= 0f,
+                                originalVolume = state.originalVolume,
+                                dubbingVolume = state.dubbingVolume,
+                                audioOnly = state.audioOnly,
+                                videoAspect = state.videoAspect,
+                            )
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "切回此前成功的引擎配置组合，直接恢复播放",
+                                diagnosticContext = mapOf(
+                                    "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
+                                    "恢复的配置指纹" to matchingSuccessfulSnapshot.fingerprint.take(16),
+                                    "恢复的处理流程" to restoredSuccessfulState.processingFlow.name,
+                                    "恢复字幕行数" to restoredSuccessfulState.lines.size.toString(),
+                                    "跳过五阶段重新处理" to "是",
+                                    "配音缓存策略" to "复用该成功配置对应的配音 PCM",
+                                ),
+                            )
+                            withContext(Dispatchers.Main.immediate) {
+                                open(
+                                    key = sessionKey,
+                                    videoId = restartVideoId,
+                                    localUri = restartLocalUri,
+                                    importedLines = null,
+                                    resumeState = restoredSuccessfulState,
+                                    remoteMediaUrl = restartRemoteUrl,
+                                    remoteMediaTitle = restartRemoteTitle,
+                                    remoteMediaReferrer = restartRemoteReferrer,
+                                    remoteMediaCookie = restartRemoteCookie,
+                                    remoteMediaUserAgent = restartRemoteUserAgent,
+                                    requestToken = activeOpenRequestToken,
+                                    reuseMountedMediaForRestart = true,
+                                    restoreReadySnapshot = true,
+                                    forceRegenerateDubbing = false,
+                                )
+                            }
+                            return@launch
+                        }
 
                         // On a completed session, compare the saved per-domain fingerprints and
                         // restart at the earliest affected stage. A translation-engine switch
@@ -2411,7 +2464,9 @@ class PlaybackService : MediaSessionService() {
         // latest successful snapshot instead of treating that older matching snapshot as "unchanged".
         val engineConfigChangedSinceLastSuccess =
             ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
-        val reusableSnapshot = if (canRestoreStoredResult && !engineConfigChangedSinceLastSuccess) {
+        // A matching snapshot may be from a configuration used before the latest run. It is still
+        // reusable when the user switches back to that exact successful engine combination.
+        val reusableSnapshot = if (canRestoreStoredResult) {
             ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
                 ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
             }
@@ -2458,17 +2513,18 @@ class PlaybackService : MediaSessionService() {
         }
         val effectiveResumeState = resumeState ?: reusableSnapshot?.state ?: fallbackResumeState
         val restoreCompletedSnapshot = restoreReadySnapshot ||
-            (!engineConfigChangedSinceLastSuccess && reusableSnapshot != null) ||
+            reusableSnapshot != null ||
             (!engineConfigChangedSinceLastSuccess &&
                 fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
-        // Any change in transcription, translation, or dubbing invalidates the old speech output.
-        // DubbingEngine.attach(forceRegenerateDubbing = true) bypasses both PCM memory and disk
-        // cache hits, even if this engine combination has been used successfully in the past.
-        // If a legacy snapshot cannot be compared, prefer fresh synthesis over potentially stale PCM.
+        // Freshly process a genuinely new configuration. If this is an exact historical success,
+        // reuse that configuration's own speech cache instead; restoreReadySnapshot also marks
+        // callers that explicitly hand in a verified, exact-match success snapshot.
         val regenerateDubbingThisRun = forceRegenerateDubbing ||
-            fallbackRestartStage != null ||
-            engineConfigChangedSinceLastSuccess ||
-            (fallbackSnapshot != null && !fallbackCanBeCompared)
+            (!restoreReadySnapshot && reusableSnapshot == null && (
+                fallbackRestartStage != null ||
+                    engineConfigChangedSinceLastSuccess ||
+                    (fallbackSnapshot != null && !fallbackCanBeCompared)
+                ))
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
         val reuseMountedMedia = (effectiveResumeState != null || reuseMountedMediaForRestart) &&
