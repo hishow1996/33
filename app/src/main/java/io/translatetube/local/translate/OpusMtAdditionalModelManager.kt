@@ -27,7 +27,6 @@ object OpusMtAdditionalModelManager {
     private data class ModelSpec(
         val source: String, val label: String, val officialModelId: String,
         val repository: String, val revision: String, val testText: String, val files: List<ModelFile>,
-        val target: String = "zh",
     ) {
         fun url(file: ModelFile) = "https://huggingface.co/" + repository + "/resolve/" + revision + "/" + file.name
     }
@@ -57,31 +56,6 @@ object OpusMtAdditionalModelManager {
                 ModelFile("source.spm", 800_916L, "b5d2cd87731d58c048864935ec1be3fbca7d2392fdb66202f241bb21ee99fec9"),
                 ModelFile("target.spm", 713_467L, "aa0218fd9ae05b8d93ba1fb108e17cc219129aed56f2a8ba76fdeb9366d231c4"),
             )),
-        // Compact INT8 source→English models; the app then reuses its existing English→Chinese ONNX model.
-        ModelSpec("ja", "日语→英语（中转）", "Helsinki-NLP/opus-mt-ja-en", "manancode/opus-mt-ja-en-ctranslate2-android",
-            "89b46f941b38214da7155957c79598e38cef026d", "おはようございます。", listOf(
-                ModelFile("config.json", 223L),
-                ModelFile("model.bin", 77_339_435L, "94ea549b9aaca8b4899d8406f8323c1c558874534ba629659af9874c63bbdf63"),
-                ModelFile("shared_vocabulary.json", 1_208_862L),
-                ModelFile("source.spm", 781_853L, "d0b5c3b10b5959f056ff2c86e2f2356129242ff1fc72d3a4a34d6a8c0eee4e57"),
-                ModelFile("target.spm", 801_883L, "35d89c704e270d441fade716a3931d49c43179400682edcca7f180694982a2f6"),
-            ), target = "en"),
-        ModelSpec("ko", "韩语→英语（中转）", "Helsinki-NLP/opus-mt-ko-en", "manancode/opus-mt-ko-en-ctranslate2-android",
-            "c4244f86b2e687bc6c66d55ea188e217bf304a9d", "안녕하세요.", listOf(
-                ModelFile("config.json", 223L),
-                ModelFile("model.bin", 79_567_635L, "777822da53524112be3b198dfbe59026d4de04f68175d1ba1ddfd9d0361c4cca"),
-                ModelFile("shared_vocabulary.json", 1_405_962L),
-                ModelFile("source.spm", 841_805L, "c9496f7c2be9aecb84c751ae9f35a875915dde8e3892f652a5c76811ab2a0f49"),
-                ModelFile("target.spm", 813_126L, "f1531ac8576fe64267dfca0dc33950a6e9a2d3fd9e05346558ad7ea5ee0e65bf"),
-            ), target = "en"),
-        ModelSpec("ru", "俄语→英语（中转）", "Helsinki-NLP/opus-mt-ru-en", "manancode/opus-mt-ru-en-ctranslate2-android",
-            "9f66440658d009510d9e670ae813c7452fd38234", "Доброе утро.", listOf(
-                ModelFile("config.json", 223L),
-                ModelFile("model.bin", 78_276_475L, "0efde44155f1d73b07d81bae640d9cca79657c6ade8e338d0862e34c30ffeee9"),
-                ModelFile("shared_vocabulary.json", 2_300_269L),
-                ModelFile("source.spm", 1_080_169L, "745998e51ba5b058e38b7ac7765c25c43ed5c1c39cc92b27163b9b2e323c9d7c"),
-                ModelFile("target.spm", 802_781L, "16bebef1389a0b8ab452772c4e35b9e605e5713f8ac7baa71ca701394eaa086d"),
-            ), target = "en"),
     )
 
     private val lock = Mutex()
@@ -95,11 +69,9 @@ object OpusMtAdditionalModelManager {
     fun label(source: String): String = spec(source).label
     fun officialModelId(source: String): String = spec(source).officialModelId
     fun runtimeRepository(source: String): String = spec(source).repository
-    fun targetLanguage(source: String): String = spec(source).target
     fun downloadSizeBytes(source: String): Long = spec(source).files.sumOf { it.size }
     fun modelDirectory(context: Context, source: String): File =
-        File(context.applicationContext.filesDir, "models/translation/opus-mt-" + spec(source).source + "-" +
-            spec(source).target.uppercase(Locale.ROOT) + "-ct2")
+        File(context.applicationContext.filesDir, "models/translation/opus-mt-" + spec(source).source + "-ZH-ct2")
 
     private fun spec(source: String): ModelSpec {
         val normalized = source.trim().substringBefore('-').lowercase(Locale.ROOT)
