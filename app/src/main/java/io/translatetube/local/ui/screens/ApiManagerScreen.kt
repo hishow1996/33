@@ -256,6 +256,14 @@ fun ApiManagerScreen(onBack: () -> Unit) {
         }
     }
 
+    // Migrate the retired single-pair entry to the shared SMaLL-100 engine.
+    // The legacy engine uses the same model runtime, so existing users keep translation working.
+    LaunchedEffect(activeId) {
+        if (activeId == EngineFactory.ID_LOCAL_SINGLE_PAIR) {
+            setActive(EngineFactory.ID_LOCAL_SMALL100)
+        }
+    }
+
     fun testFreeModel(targetId: Long, name: String) {
         scope.launch(Dispatchers.IO) {
             testingFreeModel = name

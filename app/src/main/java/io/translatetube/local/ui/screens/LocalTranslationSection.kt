@@ -475,13 +475,6 @@ internal fun LocalTranslationSection(
                 onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_SMALL100, "SMaLL-100") },
                 onManage = { detail = "small100" },
             )
-            LocalEngineCard(
-                logo = R.drawable.opus_mt_logo,
-                name = "单语言对翻译模型",
-                selected = activeId == EngineFactory.ID_LOCAL_SINGLE_PAIR,
-                onSelect = { selectLocalEngine(EngineFactory.ID_LOCAL_SINGLE_PAIR, "单语言对翻译模型") },
-                onManage = { detail = "singlePair" },
-            )
         } else {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
