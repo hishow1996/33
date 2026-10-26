@@ -824,13 +824,17 @@ class PlaybackService : MediaSessionService() {
      * is open must not leave the previous engine's Chinese subtitles on screen.
      */
     private fun shouldRestartForEnginePreferenceChange(state: PlayerUiState): Boolean =
-        isProcessingPhase(state.phase) || (
-            state.phase == Phase.READY && (
+        isProcessingPhase(state.phase) ||
+            (state.phase == Phase.READY && (
                 state.waitingForTranscriptionEngine ||
                     state.waitingForDubbingEngine ||
                     (state.key.isNotBlank() && state.key == videoKey && state.lines.isNotEmpty())
-                )
-            )
+                )) ||
+            (state.phase == Phase.ERROR &&
+                state.key.isNotBlank() &&
+                state.key == videoKey &&
+                state.lines.isNotEmpty() &&
+                state.sourceLang.isNotBlank())
 
     private fun registerProcessingEnginePreferenceWatcher() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
@@ -881,7 +885,11 @@ class PlaybackService : MediaSessionService() {
                         // restart at the earliest affected stage. A translation-engine switch
                         // reuses the source transcript/timestamps but clears old Chinese text;
                         // a TTS-only switch keeps the validated translation and rebuilds speech.
-                        val previousDomains = if (state.phase == Phase.READY && state.lines.isNotEmpty()) {
+                        val canResumeFailedOrReadyState =
+                            state.phase in setOf(Phase.READY, Phase.ERROR) &&
+                                state.lines.isNotEmpty() &&
+                                state.sourceLang.isNotBlank()
+                        val previousDomains = if (canResumeFailedOrReadyState) {
                             ReadyHistorySessionConfigStore.savedFingerprints(this@PlaybackService, sessionKey)
                         } else null
                         val currentDomains = if (previousDomains != null) {
@@ -895,7 +903,7 @@ class PlaybackService : MediaSessionService() {
                         val readyRestartState = readyRestartStage?.let { stage ->
                             stateForEngineRestart(state, stage)
                         }
-                        val canResumeAtStage = state.phase == Phase.READY &&
+                        val canResumeAtStage = canResumeFailedOrReadyState &&
                             readyRestartStage != null &&
                             readyRestartState != null
                         val importedRestartLines = if (canResumeAtStage && this@PlaybackService.importedLines != null) {
@@ -906,10 +914,13 @@ class PlaybackService : MediaSessionService() {
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            if (canResumeAtStage) {
-                                "播放完成后检测到引擎设置变化，按最早受影响阶段重新处理当前视频"
-                            } else {
-                                "处理期间检测到引擎设置变化，按新配置重新处理当前视频"
+                            when {
+                                canResumeAtStage && state.phase == Phase.READY ->
+                                    "播放完成后检测到引擎设置变化，按最早受影响阶段重新处理当前视频"
+                                canResumeAtStage && state.phase == Phase.ERROR ->
+                                    "处理失败后检测到引擎设置变化，恢复最早受影响阶段并按新配置重试"
+                                else ->
+                                    "处理期间检测到引擎设置变化，按新配置重新处理当前视频"
                             },
                             diagnosticContext = mapOf(
                                 "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
