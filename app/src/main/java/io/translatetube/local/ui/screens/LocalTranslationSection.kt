@@ -223,7 +223,7 @@ internal fun LocalTranslationSection(
         Small100LanguagePolicy.languages.map { (code, name) -> LocalTranslationPair(name + " → 中文", code) }
     }
     suspend fun refreshMlKit() {
-        mlkitStatuses = withContext(Dispatchers.IO) {
+        val statuses = withContext(Dispatchers.IO) {
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
             pairs.associate { pair ->
                 pair.source to when {
@@ -234,6 +234,9 @@ internal fun LocalTranslationSection(
                     else -> "missing"
                 }
             }
+        }
+        withContext(Dispatchers.Main.immediate) {
+            mlkitStatuses = statuses
         }
     }
 
@@ -690,8 +693,10 @@ internal fun LocalTranslationSection(
                                             } catch (cancelled: CancellationException) {
                                                 throw cancelled
                                             } catch (error: Exception) {
-                                                mlkitStatuses = mlkitStatuses + (pair.source to "failed")
-                                                mlkitError = error.message ?: "下载失败，请重试"
+                                                withContext(Dispatchers.Main.immediate) {
+                                                    mlkitStatuses = mlkitStatuses + (pair.source to "failed")
+                                                    mlkitError = error.message ?: "下载失败，请重试"
+                                                }
                                                 AppLogStore.error(
                                                     context,
                                                     "LocalTranslationModel",
@@ -703,7 +708,9 @@ internal fun LocalTranslationSection(
                                                     ),
                                                 )
                                             } finally {
-                                                mlkitBusy = null
+                                                withContext(Dispatchers.Main.immediate) {
+                                                    mlkitBusy = null
+                                                }
                                             }
                                         }
                                         if (taskJob == null) mlkitBusy = null
