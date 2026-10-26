@@ -28,6 +28,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -291,8 +293,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
     val floating = remember { FloatingManager(ctx) }
     var isFloating by remember { mutableStateOf(false) }
-    val floatingControlsVisible = remember { mutableStateOf(true) }
-    val floatingControlsInteractionRevision = remember { mutableIntStateOf(0) }
     var floatingGranted by remember { mutableStateOf(floating.canDraw()) }
     // 从系统授权页返回时刷新悬浮窗权限状态
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -384,14 +384,11 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         // ComposeView requires both lifecycle and saved-state owners before it is attached.
         host.setViewTreeLifecycleOwner(lifecycleOwner)
         host.setViewTreeSavedStateRegistryOwner(savedStateRegistryOwner)
-        floatingControlsVisible.value = true
-        floatingControlsInteractionRevision.intValue++
         val controlsView = ComposeView(ctx).apply {
             setContent {
                 FloatingPlayerControls(
-                    controlsVisible = floatingControlsVisible,
-                    interactionRevision = floatingControlsInteractionRevision.intValue,
-                    onInteraction = { floatingControlsInteractionRevision.intValue++ },
+                    onMoveWindow = { dx, dy -> floating.moveBy(dx, dy) },
+                    onResizeWindow = { dx, dy -> floating.resizeBy(dx, dy) },
                     onFullscreen = {
                         runCatching {
                             ctx.startActivity(
@@ -423,15 +420,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
-        val shown = floating.show(
-            host,
-            640,
-            360,
-            onWindowTap = {
-                floatingControlsVisible.value = !floatingControlsVisible.value
-                floatingControlsInteractionRevision.intValue++
-            },
-        )
+        val shown = floating.show(host, 640, 360)
         if (shown && floating.isShowing()) {
             isFloating = true
         } else {
@@ -2569,13 +2558,20 @@ private fun FloatingIconControl(
 
 @Composable
 private fun FloatingPlayerControls(
-    controlsVisible: androidx.compose.runtime.MutableState<Boolean>,
-    interactionRevision: Int,
-    onInteraction: () -> Unit,
+    onMoveWindow: (Float, Float) -> Unit,
+    onResizeWindow: (Float, Float) -> Unit,
     onFullscreen: () -> Unit,
     onClose: () -> Unit,
 ) {
     val service = PlaybackService.instance
+    // Keep the overlay state inside the overlay's own composition. Sharing it with the
+    // Activity composition caused stale visibility when the Activity was backgrounded.
+    var controlsVisible by remember { mutableStateOf(true) }
+    var interactionRevision by remember { mutableIntStateOf(0) }
+    fun onInteraction() {
+        controlsVisible = true
+        interactionRevision++
+    }
     val playbackState by PlaybackService.ui.collectAsState()
     var positionMs by remember(playbackState.key) {
         mutableStateOf(service?.position() ?: 0L)
@@ -2595,10 +2591,10 @@ private fun FloatingPlayerControls(
         }
     }
 
-    LaunchedEffect(controlsVisible.value, interactionRevision, scrubbing) {
-        if (!controlsVisible.value || scrubbing) return@LaunchedEffect
+    LaunchedEffect(controlsVisible, interactionRevision, scrubbing) {
+        if (!controlsVisible || scrubbing) return@LaunchedEffect
         delay(3_000)
-        controlsVisible.value = false
+        controlsVisible = false
     }
 
     val visiblePosition = if (scrubbing) previewPositionMs else positionMs
@@ -2608,12 +2604,67 @@ private fun FloatingPlayerControls(
         0f
     }
 
-    AnimatedVisibility(
-        visible = controlsVisible.value,
-        enter = fadeIn(animationSpec = tween(150)),
-        exit = fadeOut(animationSpec = tween(180)),
-        modifier = Modifier.fillMaxSize(),
+    val resizeTouchSizePx = with(androidx.compose.ui.platform.LocalDensity.current) {
+        24.dp.toPx()
+    }.coerceAtLeast(24f)
+    val overlayGestureModifier = Modifier.pointerInput(controlsVisible) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            // A control or the seek bar already claimed this touch; do not turn it into
+            // a window gesture or a visibility toggle.
+            if (down.isConsumed) return@awaitEachGesture
+
+            val start = down.position
+            var lastPosition = start
+            var draggingWindow = false
+            var finished = false
+            val resizing = down.position.x >= size.width - resizeTouchSizePx &&
+                down.position.y >= size.height - resizeTouchSizePx
+
+            while (!finished) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (change.isConsumed && !draggingWindow) break
+
+                val totalX = change.position.x - start.x
+                val totalY = change.position.y - start.y
+                if (!draggingWindow &&
+                    (kotlin.math.abs(totalX) > viewConfiguration.touchSlop ||
+                        kotlin.math.abs(totalY) > viewConfiguration.touchSlop)
+                ) {
+                    draggingWindow = true
+                    change.consume()
+                    if (resizing) onResizeWindow(totalX, totalY)
+                    else onMoveWindow(totalX, totalY)
+                } else if (draggingWindow) {
+                    val dx = change.position.x - lastPosition.x
+                    val dy = change.position.y - lastPosition.y
+                    change.consume()
+                    if (resizing) onResizeWindow(dx, dy)
+                    else onMoveWindow(dx, dy)
+                }
+
+                if (!change.pressed) {
+                    if (!draggingWindow && !change.isConsumed) {
+                        controlsVisible = !controlsVisible
+                        if (controlsVisible) interactionRevision++
+                    }
+                    finished = true
+                }
+                lastPosition = change.position
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier.fillMaxSize().then(overlayGestureModifier),
     ) {
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(animationSpec = tween(150)),
+            exit = fadeOut(animationSpec = tween(180)),
+            modifier = Modifier.fillMaxSize(),
+        ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -2804,6 +2855,7 @@ private fun FloatingPlayerControls(
                     }
                 }
             }
+        }
         }
     }
 }
