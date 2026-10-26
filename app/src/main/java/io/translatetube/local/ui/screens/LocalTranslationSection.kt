@@ -66,7 +66,7 @@ internal fun LocalTranslationSection(
     var isMlKitManualSelection by remember {
         mutableStateOf(sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" } != "auto")
     }
-    val opusSupportedSources = setOf("en", "de", "fi", "sv", "ja", "ko", "ru")
+    val opusSupportedSources = setOf("en", "de", "fi", "sv")
     var opusManualSourceLanguage by remember {
         mutableStateOf(
             sourceLanguagePrefs.getString("opus_manual_source_language", null)
@@ -346,7 +346,7 @@ internal fun LocalTranslationSection(
             sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_OPUS &&
                 !LocalTranslationEnginePolicy.supportsOpusSource(sourceLanguageSelection) ->
-                "OPUS-MT 支持英语、德语、芬兰语、瑞典语直接翻译，以及日语、韩语、俄语经英语中转；请选择受支持的源语言或其他模型。"
+                "OPUS-MT 目前只提供英语、德语、芬兰语、瑞典语直译中文；日语、韩语、俄语暂无已验证的应用兼容直译包，请改用其他本地引擎。"
             sourceLanguageSelection != "auto" &&
                 id == EngineFactory.ID_LOCAL_MLKIT &&
                 pairs.none { it.source == sourceLanguageSelection } ->
@@ -583,16 +583,7 @@ internal fun LocalTranslationSection(
                         )
                     } else if (!opusSourceCompatible) {
                         Text(
-                            "当前源语言不受 OPUS-MT 支持。请在手动选择中改为英语、德语、芬兰语、瑞典语、日语、韩语或俄语。",
-                            color = Color(0xFFB42318),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    if (LocalTranslationEnginePolicy.usesEnglishPivot(sourceLanguageSelection) &&
-                        !OpusMtModelManager.isReady(context)
-                    ) {
-                        Text(
-                            "日语、韩语、俄语会先翻译成英语再转中文；还需下载上方英语 → 中文 ONNX 模型。",
+                            "当前源语言暂不受 OPUS-MT 直译模型支持。请改选英语、德语、芬兰语或瑞典语，或使用其他本地引擎。",
                             color = Color(0xFFB42318),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -711,7 +702,7 @@ internal fun LocalTranslationSection(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        "德语、芬兰语、瑞典语直接翻译为中文。日语、韩语、俄语使用小型 INT8 英语中转模型，再由英语 → 中文 ONNX 模型完成第二步；这三种语言需同时下载两个模型。",
+                        "德语、芬兰语、瑞典语使用小型 INT8 模型直接翻译为中文。日语、韩语、俄语目前没有经验证、可由本应用直接加载的通用中文直译包，因此不会提供英语中转版本。",
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -719,9 +710,6 @@ internal fun LocalTranslationSection(
                         Triple("德语 → 简体中文", "de", "Helsinki-NLP/opus-mt-de-ZH"),
                         Triple("芬兰语 → 简体中文", "fi", "Helsinki-NLP/opus-mt-fi-ZH"),
                         Triple("瑞典语 → 简体中文", "sv", "Helsinki-NLP/opus-mt-sv-ZH"),
-                        Triple("日语 → 英语 → 简体中文", "ja", "Helsinki-NLP/opus-mt-ja-en"),
-                        Triple("韩语 → 英语 → 简体中文", "ko", "Helsinki-NLP/opus-mt-ko-en"),
-                        Triple("俄语 → 英语 → 简体中文", "ru", "Helsinki-NLP/opus-mt-ru-en"),
                     ).forEach { (language, source, officialModelId) ->
                         val state = opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
                         val job = opusExtraJobs[source]
