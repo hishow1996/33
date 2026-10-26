@@ -847,7 +847,11 @@ class ModelDownloadManager(private val ctx: Context, private val scope: Coroutin
         val modelId = if (ModelDirectoryKindPolicy.isSenseVoiceDirectoryName(destDir.name)) "sensevoice" else "whisper"
         val expectedArchiveBytes = when {
             kind == ModelKind.TTS -> 147_031_220L
-            else -> queryAsrArchiveSizeBytes(modelId) ?: if (modelId == "sensevoice") 165_783_878L else 207_557_382L
+            // The settings page probes the live asset size first. Use the cached live value here
+            // to avoid delaying a manual download with a second metadata request; constants below
+            // are storage-safety fallbacks only and are never shown as verified UI sizes.
+            else -> cachedAsrArchiveSizeBytes(modelId)
+                ?: if (modelId == "sensevoice") 165_783_878L else 207_557_382L
         }
         val resumableBytes = (if (reusablePackage) pkg.length() else {
             urls.maxOfOrNull { url -> ResumableModelArchiveDownloader.partFileFor(pkg, url).length() } ?: 0L
