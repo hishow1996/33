@@ -12,12 +12,25 @@ class EngineFactorySelectionTest {
             EngineFactory.ID_LOCAL_MLKIT,
             EngineFactory.ID_LOCAL_OPUS,
             EngineFactory.ID_LOCAL_SMALL100,
+            EngineFactory.ID_LOCAL_SINGLE_PAIR,
         )
 
         assertTrue(ids.all(EngineFactory::isLocalTranslationEngine))
         assertEquals("ML Kit", EngineFactory.localTranslationEngineName(EngineFactory.ID_LOCAL_MLKIT))
         assertEquals("OPUS-MT", EngineFactory.localTranslationEngineName(EngineFactory.ID_LOCAL_OPUS))
         assertEquals("SMaLL-100", EngineFactory.localTranslationEngineName(EngineFactory.ID_LOCAL_SMALL100))
+        assertEquals("单语言对翻译模型", EngineFactory.localTranslationEngineName(EngineFactory.ID_LOCAL_SINGLE_PAIR))
+    }
+
+    @Test
+    fun singlePairLanguagePolicySupportsJapaneseKoreanAndRussianOnly() {
+        assertTrue(SinglePairModelLanguagePolicy.supportsSource("ja"))
+        assertTrue(SinglePairModelLanguagePolicy.supportsSource("ja-JP"))
+        assertTrue(SinglePairModelLanguagePolicy.supportsSource("jpn"))
+        assertTrue(SinglePairModelLanguagePolicy.supportsSource("ko-KR"))
+        assertTrue(SinglePairModelLanguagePolicy.supportsSource("rus-RU"))
+        assertFalse(SinglePairModelLanguagePolicy.supportsSource("en"))
+        assertFalse(SinglePairModelLanguagePolicy.supportsSource("de"))
     }
 
     @Test

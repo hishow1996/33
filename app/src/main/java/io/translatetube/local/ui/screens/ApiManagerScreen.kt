@@ -233,6 +233,7 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 EngineFactory.ID_LOCAL_MLKIT -> "ML Kit 本地翻译"
                 EngineFactory.ID_LOCAL_OPUS -> "OPUS-MT 本地翻译"
                 EngineFactory.ID_LOCAL_SMALL100 -> "SMaLL-100 本地翻译"
+                EngineFactory.ID_LOCAL_SINGLE_PAIR -> "单语言对翻译模型"
                 else -> "内置翻译服务"
             }
             scope.launch(Dispatchers.IO) {
