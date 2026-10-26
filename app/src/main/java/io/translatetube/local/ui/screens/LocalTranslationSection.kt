@@ -426,6 +426,14 @@ internal fun LocalTranslationSection(
                                 .background(if (selectedLanguage) Color(0xFFF0F5FF) else Color.Transparent)
                                 .padding(start = 4.dp, end = 2.dp, top = 1.dp, bottom = 1.dp),
                         ) {
+                            if (isMlKitManualSelection) {
+                                RadioButton(
+                                    selected = selectedLanguage,
+                                    onClick = { selectMlKitLanguage(pair.source) },
+                                    enabled = true,
+                                    modifier = Modifier.size(44.dp),
+                                )
+                            }
                             Box(
                                 modifier = Modifier.weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
@@ -440,12 +448,6 @@ internal fun LocalTranslationSection(
                                     maxLines = 1,
                                 )
                             }
-                            RadioButton(
-                                selected = selectedLanguage,
-                                onClick = { selectMlKitLanguage(pair.source) },
-                                enabled = isMlKitManualSelection,
-                                modifier = Modifier.size(44.dp),
-                            )
                             when (state) {
                                 "downloading", "checking" -> CircularProgressIndicator(
                                     modifier = Modifier.size(22.dp),
@@ -590,17 +592,19 @@ internal fun LocalTranslationSection(
                             .padding(horizontal = 4.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (isOpusManualSelection) {
+                            RadioButton(
+                                selected = sourceLanguageSelection == "en",
+                                onClick = { selectOpusLanguage("en") },
+                                enabled = true,
+                                modifier = Modifier.size(44.dp),
+                            )
+                        }
                         Text(
                             "英语 → 简体中文",
                             modifier = Modifier.weight(1f),
                             color = if (isOpusManualSelection && sourceLanguageSelection == "en") Color(0xFF2858B8) else Color(0xFF172033),
                             style = MaterialTheme.typography.titleMedium,
-                        )
-                        RadioButton(
-                            selected = isOpusManualSelection && sourceLanguageSelection == "en",
-                            onClick = { selectOpusLanguage("en") },
-                            enabled = isOpusManualSelection,
-                            modifier = Modifier.size(44.dp),
                         )
                     }
                     Text(
@@ -724,6 +728,14 @@ internal fun LocalTranslationSection(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
+                                if (isOpusManualSelection) {
+                                    RadioButton(
+                                        selected = sourceLanguageSelection == source,
+                                        onClick = { selectOpusLanguage(source) },
+                                        enabled = true,
+                                        modifier = Modifier.size(44.dp),
+                                    )
+                                }
                                 Column(
                                     modifier = Modifier.weight(1f)
                                         .clip(RoundedCornerShape(8.dp))
@@ -748,12 +760,6 @@ internal fun LocalTranslationSection(
                                         style = MaterialTheme.typography.labelSmall,
                                     )
                                 }
-                                RadioButton(
-                                    selected = isOpusManualSelection && sourceLanguageSelection == source,
-                                    onClick = { selectOpusLanguage(source) },
-                                    enabled = isOpusManualSelection,
-                                    modifier = Modifier.size(44.dp),
-                                )
                                 Text(
                                     when (state.status) {
                                         OpusMtStatus.READY -> "已验证"
