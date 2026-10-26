@@ -22,6 +22,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.translatetube.local.R
+import io.translatetube.local.TranslateTubeApp
+import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.translate.EngineFactory
 import io.translatetube.local.translate.MlKitModelCoordinator
 import io.translatetube.local.translate.LocalTranslationEnginePolicy
@@ -51,6 +53,39 @@ internal fun LocalTranslationSection(
 ) {
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
+    // Long model downloads must not belong to a Compose scope: navigating away or sending the
+    // Activity to the background must not cancel them.
+    val backgroundScope = remember(context) { (context as TranslateTubeApp).appScope }
+
+    fun launchTrackedModelDownload(
+        taskId: String,
+        title: String,
+        block: suspend () -> Unit,
+    ): Job? {
+        return try {
+            val job = ModelDownloadForegroundService.launchExternalTask(
+                context = context,
+                taskId = taskId,
+                title = title,
+                scope = backgroundScope,
+                block = block,
+            )
+            if (job == null) {
+                Toast.makeText(context, "该模型任务已在后台进行中", Toast.LENGTH_SHORT).show()
+            }
+            job
+        } catch (error: Exception) {
+            AppLogStore.error(
+                context,
+                "BackgroundModelTask",
+                "启动后台本地翻译模型任务失败",
+                error,
+                diagnosticContext = mapOf("任务" to title, "任务编号" to taskId),
+            )
+            Toast.makeText(context, "后台任务启动失败，请重试", Toast.LENGTH_SHORT).show()
+            null
+        }
+    }
     val sourceLanguagePrefs = remember(context) { context.getSharedPreferences("settings", 0) }
     var sourceLanguageSelection by remember {
         mutableStateOf(sourceLanguagePrefs.getString("translation_source_language", "auto").orEmpty().ifBlank { "auto" })
@@ -191,9 +226,11 @@ internal fun LocalTranslationSection(
         mlkitStatuses = withContext(Dispatchers.IO) {
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
             pairs.associate { pair ->
-                pair.source to if (
-                    MlKitModelCoordinator.isDownloaded(pair.source) && chineseReady
-                ) "ready" else "missing"
+                pair.source to when {
+                    ModelDownloadForegroundService.isExternalTaskActive("mlkit-${pair.source}-zh") -> "downloading"
+                    MlKitModelCoordinator.isDownloaded(pair.source) && chineseReady -> "ready"
+                    else -> "missing"
+                }
             }
         }
     }
@@ -541,11 +578,28 @@ internal fun LocalTranslationSection(
                                 )
                             }
                             when (state) {
-                                "downloading", "checking" -> CircularProgressIndicator(
-                                    modifier = Modifier.size(22.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Color(0xFF3569D4),
-                                )
+                                "downloading", "checking" -> Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color(0xFF3569D4),
+                                    )
+                                    if (state == "downloading" &&
+                                        ModelDownloadForegroundService.isExternalTaskActive("mlkit-${pair.source}-zh")
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                ModelDownloadForegroundService.cancelExternalTask("mlkit-${pair.source}-zh")
+                                                mlkitBusy = null
+                                                mlkitStatuses = mlkitStatuses + (pair.source to "missing")
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                        ) { Text("暂停", maxLines = 1) }
+                                    }
+                                }
                                 "ready" -> TextButton(
                                     enabled = mlkitBusy == null && activeId != EngineFactory.ID_LOCAL_MLKIT,
                                     onClick = {
@@ -603,7 +657,10 @@ internal fun LocalTranslationSection(
                                                 "目标语言" to pair.target,
                                             ),
                                         )
-                                        scope.launch {
+                                        val taskJob = launchTrackedModelDownload(
+                                            taskId = "mlkit-${pair.source}-zh",
+                                            title = "正在下载 ML Kit：${pair.name}",
+                                        ) {
                                             try {
                                                 val missingLanguages = withContext(Dispatchers.IO) {
                                                     listOf(pair.source, pair.target).distinct()
@@ -647,6 +704,7 @@ internal fun LocalTranslationSection(
                                                 mlkitBusy = null
                                             }
                                         }
+                                        if (taskJob == null) mlkitBusy = null
                                     },
                                 ) { Text(if (state == "failed") "重试" else "下载") }
                             }
@@ -756,10 +814,10 @@ internal fun LocalTranslationSection(
                                     TextButton(
                                         onClick = {
                                             if (source == "en") {
-                                                opusJob?.cancel()
+                                                ModelDownloadForegroundService.cancelExternalTask("opus-mt-en-zh")
                                                 opusJob = null
                                             } else {
-                                                job?.cancel()
+                                                ModelDownloadForegroundService.cancelExternalTask("opus-mt-${source}-zh")
                                                 opusExtraJobs = opusExtraJobs - source
                                             }
                                         },
@@ -803,7 +861,10 @@ internal fun LocalTranslationSection(
                                     TextButton(
                                         onClick = {
                                             if (source == "en") {
-                                                opusJob = scope.launch(Dispatchers.IO) {
+                                                opusJob = launchTrackedModelDownload(
+                                                    taskId = "opus-mt-en-zh",
+                                                    title = "正在下载 OPUS-MT 英语模型",
+                                                ) {
                                                     try {
                                                         OpusMtModelManager.download(context)
                                                     } catch (cancelled: CancellationException) {
@@ -813,7 +874,10 @@ internal fun LocalTranslationSection(
                                                     }
                                                 }
                                             } else {
-                                                val newJob = scope.launch(Dispatchers.IO) {
+                                                val newJob = launchTrackedModelDownload(
+                                                    taskId = "opus-mt-${source}-zh",
+                                                    title = "正在下载 OPUS-MT：${source.uppercase(Locale.ROOT)} → 中文",
+                                                ) {
                                                     try {
                                                         OpusMtAdditionalModelManager.download(context, source)
                                                     } catch (cancelled: CancellationException) {
@@ -950,7 +1014,7 @@ internal fun LocalTranslationSection(
                                 small100State.status == Small100Status.VERIFYING
                             ) {
                                 TextButton(
-                                    onClick = { small100Job?.cancel(); small100Job = null },
+                                    onClick = { ModelDownloadForegroundService.cancelExternalTask("small100"); small100Job = null },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 ) { Text("暂停", maxLines = 1) }
                             } else if (small100State.status == Small100Status.READY) {
@@ -987,7 +1051,10 @@ internal fun LocalTranslationSection(
                             } else {
                                 TextButton(
                                     onClick = {
-                                        small100Job = scope.launch(Dispatchers.IO) {
+                                        small100Job = launchTrackedModelDownload(
+                                            taskId = "small100",
+                                            title = "正在下载 SMaLL-100 多语言模型",
+                                        ) {
                                             try {
                                                 Small100ModelManager.download(context)
                                             } catch (cancelled: CancellationException) {
@@ -1093,7 +1160,7 @@ internal fun LocalTranslationSection(
                                 small100State.status == Small100Status.VERIFYING
                             ) {
                                 TextButton(
-                                    onClick = { small100Job?.cancel(); small100Job = null },
+                                    onClick = { ModelDownloadForegroundService.cancelExternalTask("small100"); small100Job = null },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 ) { Text("暂停", maxLines = 1) }
                             } else if (small100State.status == Small100Status.READY) {
@@ -1126,7 +1193,10 @@ internal fun LocalTranslationSection(
                             } else {
                                 TextButton(
                                     onClick = {
-                                        small100Job = scope.launch(Dispatchers.IO) {
+                                        small100Job = launchTrackedModelDownload(
+                                            taskId = "small100",
+                                            title = "正在下载 SMaLL-100 多语言模型",
+                                        ) {
                                             try {
                                                 Small100ModelManager.download(context)
                                             } catch (cancelled: CancellationException) {
