@@ -199,6 +199,13 @@ internal fun LocalTranslationSection(
     }
 
     LaunchedEffect(detail) {
+        if (detail == "small100") {
+            val preferredSource = sourceLanguagePrefs.getString("small100_source_language", "auto")
+                ?.takeIf { it == "auto" || Small100LanguagePolicy.supportsSource(it) }
+                ?: "auto"
+            sourceLanguageSelection = preferredSource
+            sourceLanguagePrefs.edit().putString("translation_source_language", preferredSource).apply()
+        }
         if (detail == "singlePair" && sourceLanguageSelection in singlePairSupportedSources) {
             singlePairManualSourceLanguage = sourceLanguageSelection
             isSinglePairManualSelection = true
@@ -288,6 +295,9 @@ internal fun LocalTranslationSection(
     fun setSourceLanguage(language: String) {
         sourceLanguageSelection = language
         sourceLanguagePrefs.edit().putString("translation_source_language", language).apply()
+        if (detail == "small100") {
+            sourceLanguagePrefs.edit().putString("small100_source_language", language).apply()
+        }
         if (detail == "mlkit" && language != "auto" && pairs.any { it.source == language }) {
             mlkitManualSourceLanguage = language
             sourceLanguagePrefs.edit().putString("mlkit_manual_source_language", language).apply()
@@ -397,6 +407,13 @@ internal fun LocalTranslationSection(
     }
 
     fun selectLocalEngine(id: Long, name: String) {
+        if (id == EngineFactory.ID_LOCAL_SMALL100) {
+            val preferredSource = sourceLanguagePrefs.getString("small100_source_language", "auto")
+                ?.takeIf { it == "auto" || Small100LanguagePolicy.supportsSource(it) }
+                ?: "auto"
+            sourceLanguageSelection = preferredSource
+            sourceLanguagePrefs.edit().putString("translation_source_language", preferredSource).apply()
+        }
         if (id == EngineFactory.ID_LOCAL_SINGLE_PAIR) {
             isSinglePairManualSelection = sourceLanguagePrefs.getBoolean(
                 "single_pair_manual_selection",
@@ -667,154 +684,39 @@ internal fun LocalTranslationSection(
                         )
                     }
                     Divider(color = Color(0xFFE7EBF2))
-                    Row(
-                        modifier = Modifier.fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(enabled = isOpusManualSelection) { selectOpusLanguage("en") }
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (isOpusManualSelection) {
-                            RadioButton(
-                                selected = sourceLanguageSelection == "en",
-                                onClick = { selectOpusLanguage("en") },
-                                enabled = true,
-                                modifier = Modifier.size(44.dp),
-                            )
-                        }
-                        Text(
-                            "英语 → 简体中文",
-                            modifier = Modifier.weight(1f),
-                            color = if (isOpusManualSelection && sourceLanguageSelection == "en") Color(0xFF2858B8) else Color(0xFF172033),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                    }
-                    Text(
-                        "下载大小 " + String.format(
-                            Locale.ROOT,
-                            "%,d 字节 · %.2f MB",
-                            OpusMtModelManager.downloadSizeBytes(),
-                            OpusMtModelManager.downloadSizeBytes() / 1_000_000.0,
-                        ),
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                    when (opusState.status) {
-                        OpusMtStatus.READY -> Text("已下载", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
-                        OpusMtStatus.DOWNLOADING -> Text("正在下载 ${opusState.currentFile}", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-                        OpusMtStatus.VERIFYING -> Text("正在验证模型", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-                        OpusMtStatus.PAUSED -> Text(
-                            if (opusState.error.isNotBlank()) "${opusState.error} · 可继续下载" else "下载已暂停，可继续",
-                            color = if (opusState.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        OpusMtStatus.FAILED -> Text(opusState.error.ifBlank { "下载失败，可重试" }, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
-                        else -> Text("未下载", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
-                    }
-                    if (opusState.status == OpusMtStatus.VERIFYING) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF3569D4))
-                    } else if (opusState.status == OpusMtStatus.DOWNLOADING) {
-                        if (opusState.totalBytes > 0L) {
-                            LinearProgressIndicator(
-                                progress = (opusState.progress / 100f).coerceIn(0f, 1f),
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Color(0xFF3569D4),
-                            )
-                            Text(
-                                "${opusState.progress}% · ${formatLocalModelBytes(opusState.downloadedBytes)} / ${formatLocalModelBytes(opusState.totalBytes)}",
-                                color = Color(0xFF64748B),
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        } else {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF3569D4))
-                            Text(
-                                "${formatLocalModelBytes(opusState.downloadedBytes)} 已下载",
-                                color = Color(0xFF64748B),
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
-                    }
-                    if (opusJob?.isActive == true || opusState.status == OpusMtStatus.DOWNLOADING) {
-                        OutlinedButton(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                opusJob?.cancel()
-                                opusJob = null
-                            },
-                        ) { Text(if (opusState.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
-                    } else if (opusState.status != OpusMtStatus.READY) {
-                        Button(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                opusJob = scope.launch(Dispatchers.IO) {
-                                    try {
-                                        OpusMtModelManager.download(context)
-                                    } catch (cancelled: CancellationException) {
-                                        throw cancelled
-                                    } catch (_: Exception) {
-                                        // The exact failure remains in the model state and diagnostic log.
-                                    }
-                                }
-                            },
-                        ) {
-                            Text(
-                                if (opusState.status == OpusMtStatus.PAUSED || OpusMtModelManager.hasPartialDownload(context))
-                                    "继续下载" else "下载模型"
-                            )
-                        }
-                    } else {
-                        if (activeId != EngineFactory.ID_LOCAL_OPUS) {
-                            OutlinedButton(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    scope.launch {
-                                        try {
-                                            withContext(Dispatchers.IO) { OpusMtModelManager.delete(context) }
-                                        } catch (error: Exception) {
-                                            AppLogStore.error(context, "LocalTranslationModel", "删除 OPUS-MT 模型失败", error)
-                                        }
-                                    }
-                                },
-                            ) { Text("删除模型") }
-                        }
-                    }
-                }
-                Column(
-                    modifier = Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White)
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text(
-                        "其他直译模型",
-                        color = Color(0xFF172033),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
                     listOf(
-                        Pair("德语 → 简体中文", "de"),
-                        Pair("芬兰语 → 简体中文", "fi"),
-                        Pair("瑞典语 → 简体中文", "sv"),
-                    ).forEach { (language, source) ->
-                        val state = opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
-                        val job = opusExtraJobs[source]
+                        "英语 → 简体中文" to "en",
+                        "德语 → 简体中文" to "de",
+                        "芬兰语 → 简体中文" to "fi",
+                        "瑞典语 → 简体中文" to "sv",
+                    ).forEachIndexed { index, (language, source) ->
+                        val state = if (source == "en") {
+                            opusState
+                        } else {
+                            opusExtraStates[source] ?: OpusMtDownloadState(fileCount = 5)
+                        }
+                        val expectedBytes = if (source == "en") {
+                            OpusMtModelManager.downloadSizeBytes()
+                        } else {
+                            OpusMtAdditionalModelManager.downloadSizeBytes(source)
+                        }
+                        val job = if (source == "en") opusJob else opusExtraJobs[source]
+                        val selectedLanguage = isOpusManualSelection && sourceLanguageSelection == source
                         Column(
-                            modifier = Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFFF8FAFC))
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selectedLanguage) Color(0xFFF0F5FF) else Color.Transparent)
+                                    .padding(start = 4.dp, end = 2.dp, top = 1.dp, bottom = 1.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 if (isOpusManualSelection) {
                                     RadioButton(
-                                        selected = sourceLanguageSelection == source,
+                                        selected = selectedLanguage,
                                         onClick = { selectOpusLanguage(source) },
-                                        enabled = true,
                                         modifier = Modifier.size(44.dp),
                                     )
                                 }
@@ -822,110 +724,136 @@ internal fun LocalTranslationSection(
                                     modifier = Modifier.weight(1f)
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable(enabled = isOpusManualSelection) { selectOpusLanguage(source) }
-                                        .padding(vertical = 2.dp),
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalArrangement = Arrangement.spacedBy(3.dp),
                                 ) {
                                     Text(
                                         language,
-                                        color = if (isOpusManualSelection && sourceLanguageSelection == source) Color(0xFF2858B8) else Color(0xFF172033),
-                                        style = MaterialTheme.typography.titleSmall,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = if (selectedLanguage) Color(0xFF2858B8) else Color(0xFF172033),
+                                        maxLines = 1,
                                     )
-                                    val expectedBytes = OpusMtAdditionalModelManager.downloadSizeBytes(source)
                                     Text(
-                                        "下载大小 " + String.format(
-                                            Locale.ROOT,
-                                            "%,d 字节 · %.2f MB",
-                                            expectedBytes,
-                                            expectedBytes / 1_000_000.0,
-                                        ),
+                                        formatLocalModelSizeDetail(expectedBytes),
                                         color = Color(0xFF64748B),
                                         style = MaterialTheme.typography.labelSmall,
                                     )
+                                    Text(
+                                        when (state.status) {
+                                            OpusMtStatus.READY -> "已下载并验证"
+                                            OpusMtStatus.DOWNLOADING -> "下载中 ${state.progress}%"
+                                            OpusMtStatus.VERIFYING -> "正在验证模型"
+                                            OpusMtStatus.PAUSED -> "下载已暂停"
+                                            OpusMtStatus.FAILED -> state.error.ifBlank { "下载失败" }
+                                            else -> "未下载"
+                                        },
+                                        color = when (state.status) {
+                                            OpusMtStatus.READY -> Color(0xFF25804A)
+                                            OpusMtStatus.FAILED -> Color(0xFFB42318)
+                                            OpusMtStatus.DOWNLOADING, OpusMtStatus.VERIFYING -> Color(0xFF3569D4)
+                                            else -> Color(0xFF64748B)
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 2,
+                                    )
                                 }
-                                Text(
-                                    when (state.status) {
-                                        OpusMtStatus.READY -> "已验证"
-                                        OpusMtStatus.DOWNLOADING -> "下载中"
-                                        OpusMtStatus.VERIFYING -> "验证中"
-                                        OpusMtStatus.PAUSED -> "已暂停"
-                                        OpusMtStatus.FAILED -> "失败"
-                                        else -> "未下载"
-                                    },
-                                    color = when (state.status) {
-                                        OpusMtStatus.READY -> Color(0xFF25804A)
-                                        OpusMtStatus.FAILED -> Color(0xFFB42318)
-                                        OpusMtStatus.DOWNLOADING, OpusMtStatus.VERIFYING -> Color(0xFF3569D4)
-                                        else -> Color(0xFF64748B)
-                                    },
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
+                                if (state.status == OpusMtStatus.DOWNLOADING ||
+                                    state.status == OpusMtStatus.VERIFYING
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            if (source == "en") {
+                                                opusJob?.cancel()
+                                                opusJob = null
+                                            } else {
+                                                job?.cancel()
+                                                opusExtraJobs = opusExtraJobs - source
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) { Text("暂停", maxLines = 1) }
+                                } else if (state.status == OpusMtStatus.READY) {
+                                    if (activeId == EngineFactory.ID_LOCAL_OPUS &&
+                                        (sourceLanguageSelection == "auto" || sourceLanguageSelection == source)
+                                    ) {
+                                        Text(
+                                            "使用中",
+                                            modifier = Modifier.padding(horizontal = 8.dp),
+                                            color = Color(0xFF25804A),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                        )
+                                    } else {
+                                        TextButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    try {
+                                                        withContext(Dispatchers.IO) {
+                                                            if (source == "en") OpusMtModelManager.delete(context)
+                                                            else OpusMtAdditionalModelManager.delete(context, source)
+                                                        }
+                                                    } catch (error: Exception) {
+                                                        AppLogStore.error(
+                                                            context,
+                                                            "LocalTranslationModel",
+                                                            "删除 OPUS-MT 直译模型失败",
+                                                            error,
+                                                            diagnosticContext = mapOf("源语言" to source),
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        ) { Text("删除", maxLines = 1) }
+                                    }
+                                } else {
+                                    TextButton(
+                                        onClick = {
+                                            if (source == "en") {
+                                                opusJob = scope.launch(Dispatchers.IO) {
+                                                    try {
+                                                        OpusMtModelManager.download(context)
+                                                    } catch (cancelled: CancellationException) {
+                                                        throw cancelled
+                                                    } catch (_: Exception) {
+                                                        // Exact error remains in model state and diagnostics.
+                                                    }
+                                                }
+                                            } else {
+                                                val newJob = scope.launch(Dispatchers.IO) {
+                                                    try {
+                                                        OpusMtAdditionalModelManager.download(context, source)
+                                                    } catch (cancelled: CancellationException) {
+                                                        throw cancelled
+                                                    } catch (_: Exception) {
+                                                        // Exact error remains in model state and diagnostics.
+                                                    }
+                                                }
+                                                opusExtraJobs = opusExtraJobs + (source to newJob)
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) { Text("下载", maxLines = 1) }
+                                }
                             }
-                            if (state.error.isNotBlank()) {
-                                Text(state.error, color = Color(0xFFB42318), style = MaterialTheme.typography.bodySmall)
-                            }
-                            if (state.status == OpusMtStatus.DOWNLOADING || state.status == OpusMtStatus.VERIFYING) {
+                            if (state.status == OpusMtStatus.DOWNLOADING ||
+                                state.status == OpusMtStatus.VERIFYING
+                            ) {
                                 LinearProgressIndicator(
                                     progress = (state.progress / 100f).coerceIn(0f, 1f),
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.fillMaxWidth().padding(start = 48.dp, end = 4.dp),
                                     color = Color(0xFF3569D4),
                                 )
                                 Text(
-                                    if (state.totalBytes > 0L)
-                                        state.progress.toString() + "% · " + formatLocalModelBytes(state.downloadedBytes) +
-                                            " / " + formatLocalModelBytes(state.totalBytes)
-                                    else "正在处理模型文件",
+                                    formatLocalModelBytes(state.downloadedBytes) + " / " +
+                                        formatLocalModelBytes(state.totalBytes),
+                                    modifier = Modifier.padding(start = 52.dp),
                                     color = Color(0xFF64748B),
                                     style = MaterialTheme.typography.labelSmall,
                                 )
                             }
-                            if (job?.isActive == true || state.status == OpusMtStatus.DOWNLOADING) {
-                                OutlinedButton(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    onClick = {
-                                        job?.cancel()
-                                        opusExtraJobs = opusExtraJobs - source
-                                    },
-                                ) { Text(if (state.status == OpusMtStatus.VERIFYING) "取消验证" else "暂停下载") }
-                            } else if (state.status == OpusMtStatus.READY) {
-                                if (!(activeId == EngineFactory.ID_LOCAL_OPUS && sourceLanguageSelection == source)) {
-                                    OutlinedButton(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        onClick = {
-                                            scope.launch {
-                                                try {
-                                                    withContext(Dispatchers.IO) { OpusMtAdditionalModelManager.delete(context, source) }
-                                                } catch (error: Exception) {
-                                                    AppLogStore.error(context, "LocalTranslationModel", "删除 OPUS-MT 模型失败", error,
-                                                        diagnosticContext = mapOf("源语言" to source))
-                                                }
-                                            }
-                                        },
-                                    ) { Text("删除模型") }
-                                }
-                            } else {
-                                Button(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    onClick = {
-                                        val newJob = scope.launch(Dispatchers.IO) {
-                                            try {
-                                                OpusMtAdditionalModelManager.download(context, source)
-                                            } catch (cancelled: CancellationException) {
-                                                throw cancelled
-                                            } catch (_: Exception) {
-                                                // The model state and diagnostic log retain the detailed failure.
-                                            }
-                                        }
-                                        opusExtraJobs = opusExtraJobs + (source to newJob)
-                                    },
-                                ) {
-                                    Text(
-                                        if (state.status == OpusMtStatus.PAUSED ||
-                                            OpusMtAdditionalModelManager.hasPartialDownload(context, source)
-                                        ) "继续下载" else "下载模型",
-                                    )
-                                }
-                            }
                         }
+                        if (index < 3) HorizontalDivider(color = Color(0xFFE8ECF3))
                     }
                 }
             } else if (detail == "singlePair") {
@@ -940,156 +868,160 @@ internal fun LocalTranslationSection(
                         manualSelected = isSinglePairManualSelection,
                         onModeSelected = { manual -> setSinglePairSelectionMode(manual) },
                     )
-                    Text(
-                        "日语、韩语、俄语均直接翻译为简体中文，不经过英语中转。三种语言共用已验证的 SMaLL-100 直译模型，下载一次即可使用。",
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Divider(color = Color(0xFFE7EBF2))
                     listOf(
-                        Pair("日语 → 简体中文", "ja"),
-                        Pair("韩语 → 简体中文", "ko"),
-                        Pair("俄语 → 简体中文", "ru"),
+                        "日语 → 简体中文" to "ja",
+                        "韩语 → 简体中文" to "ko",
+                        "俄语 → 简体中文" to "ru",
                     ).forEachIndexed { index, (language, source) ->
+                        val selectedLanguage = isSinglePairManualSelection && singlePairManualSourceLanguage == source
                         Row(
                             modifier = Modifier.fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (isSinglePairManualSelection && singlePairManualSourceLanguage == source)
-                                        Color(0xFFEFF5FF) else Color(0xFFF8FAFC)
-                                )
-                                .clickable(enabled = isSinglePairManualSelection) { selectSinglePairLanguage(source) }
-                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                                .background(if (selectedLanguage) Color(0xFFF0F5FF) else Color.Transparent)
+                                .padding(start = 4.dp, end = 2.dp, top = 1.dp, bottom = 1.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             if (isSinglePairManualSelection) {
                                 RadioButton(
-                                    selected = singlePairManualSourceLanguage == source,
+                                    selected = selectedLanguage,
                                     onClick = { selectSinglePairLanguage(source) },
                                     modifier = Modifier.size(44.dp),
                                 )
                             }
-                            Text(
-                                language,
-                                modifier = Modifier.weight(1f),
-                                color = if (isSinglePairManualSelection && singlePairManualSourceLanguage == source)
-                                    Color(0xFF2858B8) else Color(0xFF172033),
-                                style = MaterialTheme.typography.titleSmall,
-                            )
+                            Box(
+                                modifier = Modifier.weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = isSinglePairManualSelection) { selectSinglePairLanguage(source) }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                Text(
+                                    language,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = if (selectedLanguage) Color(0xFF2858B8) else Color(0xFF172033),
+                                    maxLines = 1,
+                                )
+                            }
                         }
                         if (index < 2) HorizontalDivider(color = Color(0xFFE8ECF3))
                     }
 
                     Divider(color = Color(0xFFE7EBF2))
-                    Text("共用直译模型", color = Color(0xFF172033), style = MaterialTheme.typography.titleMedium)
-                    val expectedBytes = Small100ModelManager.TOTAL_BYTES
-                    Text(
-                        "SMaLL-100 · " + String.format(
-                            Locale.ROOT, "%,d 字节 · %.2f MB",
-                            expectedBytes, expectedBytes / 1_000_000.0,
-                        ),
-                        color = Color(0xFF64748B),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                    when (small100State.status) {
-                        Small100Status.READY -> Text(
-                            "已下载并通过直译验证",
-                            color = Color(0xFF25804A),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Small100Status.DOWNLOADING -> Text(
-                            "正在下载 " + small100State.currentFile,
-                            color = Color(0xFF3569D4),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Small100Status.VERIFYING -> Text(
-                            "正在加载模型并验证中文翻译",
-                            color = Color(0xFF3569D4),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Small100Status.PAUSED -> Text(
-                            if (small100State.error.isNotBlank()) small100State.error + " · 可继续" else "下载已暂停，可继续",
-                            color = if (small100State.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Small100Status.FAILED -> Text(
-                            small100State.error.ifBlank { "下载或验证失败，可重试" },
-                            color = Color(0xFFB42318),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        else -> Text("未下载", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
-                    }
-                    if (small100State.status == Small100Status.DOWNLOADING ||
-                        small100State.status == Small100Status.VERIFYING
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFFF8FAFC))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        LinearProgressIndicator(
-                            progress = (small100State.progress / 100f).coerceIn(0f, 1f),
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFF3569D4),
-                        )
-                        Text(
-                            small100State.progress.toString() + "% · " +
-                                formatLocalModelBytes(small100State.downloadedBytes) + " / " +
-                                formatLocalModelBytes(small100State.totalBytes) + " · " +
-                                small100State.fileIndex + "/" + small100State.fileCount,
-                            color = Color(0xFF64748B),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-
-                    val directModelBusy = small100Job?.isActive == true ||
-                        small100State.status == Small100Status.DOWNLOADING ||
-                        small100State.status == Small100Status.VERIFYING
-                    if (directModelBusy) {
-                        OutlinedButton(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                small100Job?.cancel()
-                                small100Job = null
-                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(if (small100State.status == Small100Status.VERIFYING) "取消验证" else "暂停下载")
-                        }
-                    } else if (small100State.status == Small100Status.READY) {
-                        if (activeId != EngineFactory.ID_LOCAL_SINGLE_PAIR &&
-                            activeId != EngineFactory.ID_LOCAL_SMALL100
-                        ) {
-                            OutlinedButton(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    scope.launch {
-                                        try {
-                                            withContext(Dispatchers.IO) { Small100ModelManager.delete(context) }
-                                        } catch (error: Exception) {
-                                            AppLogStore.error(
-                                                context, "LocalTranslationModel", "删除单语言对直译模型失败", error,
-                                                diagnosticContext = mapOf("模型" to "SMaLL-100 共用直译模型"),
-                                            )
-                                        }
-                                    }
-                                },
-                            ) { Text("删除共用模型") }
-                        }
-                    } else {
-                        Button(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                small100Job = scope.launch(Dispatchers.IO) {
-                                    try {
-                                        Small100ModelManager.download(context)
-                                    } catch (cancelled: CancellationException) {
-                                        throw cancelled
-                                    } catch (_: Exception) {
-                                        // Detailed failure is retained in the shared model state and app log.
-                                    }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    "共用直译模型 · SMaLL-100",
+                                    color = Color(0xFF172033),
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(
+                                    formatLocalModelSizeDetail(Small100ModelManager.TOTAL_BYTES),
+                                    color = Color(0xFF64748B),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                                Text(
+                                    when (small100State.status) {
+                                        Small100Status.READY -> "已下载并验证"
+                                        Small100Status.DOWNLOADING -> "下载中 ${small100State.progress}%"
+                                        Small100Status.VERIFYING -> "正在验证模型"
+                                        Small100Status.PAUSED -> "下载已暂停"
+                                        Small100Status.FAILED -> small100State.error.ifBlank { "下载失败" }
+                                        else -> "未下载"
+                                    },
+                                    color = when (small100State.status) {
+                                        Small100Status.READY -> Color(0xFF25804A)
+                                        Small100Status.DOWNLOADING, Small100Status.VERIFYING -> Color(0xFF3569D4)
+                                        Small100Status.FAILED -> Color(0xFFB42318)
+                                        else -> Color(0xFF64748B)
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 2,
+                                )
+                            }
+                            if (small100Job?.isActive == true ||
+                                small100State.status == Small100Status.DOWNLOADING ||
+                                small100State.status == Small100Status.VERIFYING
+                            ) {
+                                TextButton(
+                                    onClick = { small100Job?.cancel(); small100Job = null },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("暂停", maxLines = 1) }
+                            } else if (small100State.status == Small100Status.READY) {
+                                if (activeId == EngineFactory.ID_LOCAL_SINGLE_PAIR ||
+                                    activeId == EngineFactory.ID_LOCAL_SMALL100
+                                ) {
+                                    Text(
+                                        "使用中",
+                                        modifier = Modifier.padding(horizontal = 8.dp),
+                                        color = Color(0xFF25804A),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                    )
+                                } else {
+                                    TextButton(
+                                        onClick = {
+                                            scope.launch {
+                                                try {
+                                                    withContext(Dispatchers.IO) { Small100ModelManager.delete(context) }
+                                                } catch (error: Exception) {
+                                                    AppLogStore.error(
+                                                        context,
+                                                        "LocalTranslationModel",
+                                                        "删除单语言对直译模型失败",
+                                                        error,
+                                                        diagnosticContext = mapOf("模型" to "SMaLL-100"),
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) { Text("删除", maxLines = 1) }
                                 }
-                            },
+                            } else {
+                                TextButton(
+                                    onClick = {
+                                        small100Job = scope.launch(Dispatchers.IO) {
+                                            try {
+                                                Small100ModelManager.download(context)
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Exception) {
+                                                // Exact error remains in model state and diagnostics.
+                                            }
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("下载", maxLines = 1) }
+                            }
+                        }
+                        if (small100State.status == Small100Status.DOWNLOADING ||
+                            small100State.status == Small100Status.VERIFYING
                         ) {
+                            LinearProgressIndicator(
+                                progress = (small100State.progress / 100f).coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF3569D4),
+                            )
                             Text(
-                                if (small100State.status == Small100Status.PAUSED ||
-                                    Small100ModelManager.hasPartialDownload(context)
-                                ) "继续下载" else "下载直译模型"
+                                small100State.progress.toString() + "% · " +
+                                    formatLocalModelBytes(small100State.downloadedBytes) + " / " +
+                                    formatLocalModelBytes(small100State.totalBytes),
+                                color = Color(0xFF64748B),
+                                style = MaterialTheme.typography.labelSmall,
                             )
                         }
                     }
@@ -1109,43 +1041,6 @@ internal fun LocalTranslationSection(
                         onExpandedChange = { sourceLanguageMenuExpanded = it },
                         onSelected = { setSourceLanguage(it) },
                     )
-                    when (small100State.status) {
-                        Small100Status.READY -> Text("模型已下载并通过试译验证", color = Color(0xFF25804A), style = MaterialTheme.typography.labelMedium)
-                        Small100Status.DOWNLOADING -> Text(
-                            "正在下载 " + small100State.currentFile,
-                            color = Color(0xFF3569D4),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Small100Status.VERIFYING -> Text("正在加载模型并验证中文翻译", color = Color(0xFF3569D4), style = MaterialTheme.typography.labelMedium)
-                        Small100Status.PAUSED -> Text(
-                            if (small100State.error.isNotBlank()) small100State.error + " · 可继续" else "下载已暂停，可继续",
-                            color = if (small100State.error.isNotBlank()) Color(0xFFB42318) else Color(0xFF64748B),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Small100Status.FAILED -> Text(
-                            small100State.error.ifBlank { "下载或验证失败，可重试" },
-                            color = Color(0xFFB42318),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        else -> Text("约 615 MB", color = Color(0xFF64748B), style = MaterialTheme.typography.labelMedium)
-                    }
-                    if (small100State.status == Small100Status.DOWNLOADING ||
-                        small100State.status == Small100Status.VERIFYING
-                    ) {
-                        LinearProgressIndicator(
-                            progress = (small100State.progress / 100f).coerceIn(0f, 1f),
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFF3569D4),
-                        )
-                        Text(
-                            small100State.progress.toString() + "% · " +
-                                formatSmall100Bytes(small100State.downloadedBytes) + " / " +
-                                formatSmall100Bytes(small100State.totalBytes) + " · " +
-                                small100State.fileIndex + "/" + small100State.fileCount,
-                            color = Color(0xFF64748B),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
                     val smallSourceCompatible = sourceLanguageSelection == "auto" ||
                         Small100LanguagePolicy.supportsSource(sourceLanguageSelection)
                     if (!smallSourceCompatible) {
@@ -1155,70 +1050,118 @@ internal fun LocalTranslationSection(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (small100Job?.isActive == true ||
-                        small100State.status == Small100Status.DOWNLOADING ||
-                        small100State.status == Small100Status.VERIFYING
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFFF8FAFC))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        OutlinedButton(
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                small100Job?.cancel()
-                                small100Job = null
-                            },
-                        ) { Text(if (small100State.status == Small100Status.VERIFYING) "取消验证" else "暂停下载") }
-                    } else if (small100State.status != Small100Status.READY) {
-                        Button(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                small100Job = scope.launch(Dispatchers.IO) {
-                                    try {
-                                        Small100ModelManager.download(context)
-                                    } catch (cancelled: CancellationException) {
-                                        throw cancelled
-                                    } catch (_: Exception) {
-                                        // Detailed failure is retained in the model state and app log.
-                                    }
-                                }
-                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(
-                                if (small100State.status == Small100Status.PAUSED ||
-                                    Small100ModelManager.hasPartialDownload(context)
-                                ) "继续下载" else "下载模型"
-                            )
-                        }
-                    } else {
-                        if (activeId != EngineFactory.ID_LOCAL_SMALL100) {
-                            OutlinedButton(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = {
-                                    scope.launch {
-                                        try {
-                                            withContext(Dispatchers.IO) { Small100ModelManager.delete(context) }
-                                        } catch (error: Exception) {
-                                            AppLogStore.error(context, "LocalTranslationModel", "删除 SMaLL-100 模型失败", error)
-                                        }
-                                    }
-                                },
-                            ) { Text("删除模型") }
-                        }
-                        Button(
-                            enabled = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                selectLocalEngine(EngineFactory.ID_LOCAL_SMALL100, "SMaLL-100")
-                                AppLogStore.info(
-                                    context,
-                                    "LocalTranslationModel",
-                                    "SMaLL-100 已设为当前翻译引擎",
-                                    diagnosticContext = mapOf(
-                                        "支持语言数" to Small100LanguagePolicy.languages.size.toString(),
-                                        "模型" to "SMaLL-100 ONNX int8",
-                                    ),
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    "SMaLL-100 多语言直译模型",
+                                    color = Color(0xFF172033),
+                                    style = MaterialTheme.typography.titleSmall,
                                 )
-                            },
+                                Text(
+                                    formatLocalModelSizeDetail(Small100ModelManager.TOTAL_BYTES),
+                                    color = Color(0xFF64748B),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                                Text(
+                                    when (small100State.status) {
+                                        Small100Status.READY -> "已下载并通过验证"
+                                        Small100Status.DOWNLOADING -> "下载中 ${small100State.progress}%"
+                                        Small100Status.VERIFYING -> "正在验证模型"
+                                        Small100Status.PAUSED -> "下载已暂停"
+                                        Small100Status.FAILED -> small100State.error.ifBlank { "下载失败" }
+                                        else -> "未下载"
+                                    },
+                                    color = when (small100State.status) {
+                                        Small100Status.READY -> Color(0xFF25804A)
+                                        Small100Status.DOWNLOADING, Small100Status.VERIFYING -> Color(0xFF3569D4)
+                                        Small100Status.FAILED -> Color(0xFFB42318)
+                                        else -> Color(0xFF64748B)
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 2,
+                                )
+                            }
+                            if (small100Job?.isActive == true ||
+                                small100State.status == Small100Status.DOWNLOADING ||
+                                small100State.status == Small100Status.VERIFYING
+                            ) {
+                                TextButton(
+                                    onClick = { small100Job?.cancel(); small100Job = null },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("暂停", maxLines = 1) }
+                            } else if (small100State.status == Small100Status.READY) {
+                                if (activeId == EngineFactory.ID_LOCAL_SMALL100 ||
+                                    activeId == EngineFactory.ID_LOCAL_SINGLE_PAIR
+                                ) {
+                                    Text(
+                                        "使用中",
+                                        modifier = Modifier.padding(horizontal = 8.dp),
+                                        color = Color(0xFF25804A),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1,
+                                    )
+                                } else {
+                                    TextButton(
+                                        onClick = {
+                                            scope.launch {
+                                                try {
+                                                    withContext(Dispatchers.IO) { Small100ModelManager.delete(context) }
+                                                } catch (error: Exception) {
+                                                    AppLogStore.error(
+                                                        context, "LocalTranslationModel", "删除 SMaLL-100 模型失败", error,
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    ) { Text("删除", maxLines = 1) }
+                                }
+                            } else {
+                                TextButton(
+                                    onClick = {
+                                        small100Job = scope.launch(Dispatchers.IO) {
+                                            try {
+                                                Small100ModelManager.download(context)
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Exception) {
+                                                // Exact error remains in model state and diagnostics.
+                                            }
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                ) { Text("下载", maxLines = 1) }
+                            }
+                        }
+                        if (small100State.status == Small100Status.DOWNLOADING ||
+                            small100State.status == Small100Status.VERIFYING
                         ) {
-                            Text(if (activeId == EngineFactory.ID_LOCAL_SMALL100) "正在使用 SMaLL-100" else "设为当前翻译引擎")
+                            LinearProgressIndicator(
+                                progress = (small100State.progress / 100f).coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Color(0xFF3569D4),
+                            )
+                            Text(
+                                small100State.progress.toString() + "% · " +
+                                    formatLocalModelBytes(small100State.downloadedBytes) + " / " +
+                                    formatLocalModelBytes(small100State.totalBytes),
+                                color = Color(0xFF64748B),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
                     }
                 }
@@ -1343,6 +1286,9 @@ private fun LocalEngineCard(
         }
     }
 }
+
+private fun formatLocalModelSizeDetail(bytes: Long): String =
+    "下载大小 " + String.format(Locale.ROOT, "%,d 字节 · %.2f MB", bytes, bytes / 1_000_000.0)
 
 private fun formatLocalModelBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 MB"
