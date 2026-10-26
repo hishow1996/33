@@ -141,4 +141,23 @@ class ParallelDecodePlanTest {
             assertTrue("rate=$rate maxDiff=$maxDiff", maxDiff <= 1)
         }
     }
+
+    @Test
+    fun toleranceGrowsForMillisecondTimestampContainers() {
+        assertEquals(48L, ParallelDecodePlan.ptsTolerance(48_000))
+        assertEquals(4L, ParallelDecodePlan.ptsTolerance(2_000))
+    }
+
+    @Test
+    fun leadingDiscardIsMeasuredFromTheFirstTwoBuffers() {
+        // Opus：pre-skip 312 个样本，第一个缓冲区只剩 648 个样本，第二个缓冲区时间戳在 960
+        assertEquals(312L, ParallelDecodePlan.leadingDiscardFrames(960, 648, 48_000))
+        // AAC：没有丢样本，第二个缓冲区紧接在第一个之后
+        assertEquals(0L, ParallelDecodePlan.leadingDiscardFrames(1024, 1024, 44_100))
+        // 毫秒时间戳的舍入误差不算丢样本
+        assertEquals(0L, ParallelDecodePlan.leadingDiscardFrames(962, 960, 48_000))
+        // 差得离谱（超过 500ms）或为负：放弃并行
+        assertNull(ParallelDecodePlan.leadingDiscardFrames(50_000, 100, 48_000))
+        assertNull(ParallelDecodePlan.leadingDiscardFrames(100, 5_000, 48_000))
+    }
 }

@@ -32,6 +32,8 @@ internal object ParallelDecodePlan {
     const val PREROLL_US = 500_000L
     /** 时间戳推算的帧位置与按数量累加的位置允许的差（采样点）。 */
     const val PTS_TOLERANCE_FRAMES = 4L
+    /** 开头被解码器丢掉的样本数上限（Opus pre-skip 约 6.5ms，留足余量）。 */
+    const val MAX_LEADING_DISCARD_MS = 500L
 
     /**
      * @param sourceEnd 不含；最后一段为 [Long.MAX_VALUE]（一直解到文件结束）
@@ -113,6 +115,27 @@ internal object ParallelDecodePlan {
     /** 帧序号 → 时间戳（微秒）。 */
     fun timeUsForFrame(frame: Long, sampleRate: Int, originUs: Long): Long =
         originUs + frame * 1_000_000L / sampleRate
+
+    /** 时间戳精度只有毫秒的容器（WebM/Matroska）会有最多半毫秒的舍入，容差随采样率放宽。 */
+    fun ptsTolerance(sampleRate: Int): Long = maxOf(PTS_TOLERANCE_FRAMES, sampleRate / 1000L)
+
+    /**
+     * 解码器在流开头可能会丢掉一小段（Opus 的 pre-skip 等），于是"顺序解码的第 n 个样本"
+     * 不等于"时间戳上的第 n 个样本"。用开头两个非空输出缓冲区实测这个差：
+     * 第二个缓冲区按时间戳应该从 [secondBufferPtsFrame] 开始，而顺序解码里它紧接在第一个缓冲区
+     * （[firstBufferFrames] 个样本）之后，差值就是被丢掉的样本数。
+     * 差在时间戳误差内算 0；为负或大得离谱返回 null（行为异常，放弃并行）。
+     */
+    fun leadingDiscardFrames(secondBufferPtsFrame: Long, firstBufferFrames: Long, sampleRate: Int): Long? {
+        val difference = secondBufferPtsFrame - firstBufferFrames
+        val tolerance = ptsTolerance(sampleRate)
+        val maxDiscard = sampleRate.toLong() * MAX_LEADING_DISCARD_MS / 1000L
+        return when {
+            difference in -tolerance..tolerance -> 0L
+            difference in 1L..maxDiscard -> difference
+            else -> null
+        }
+    }
 
     fun isContiguous(expectedFrame: Long, ptsFrame: Long, tolerance: Long = PTS_TOLERANCE_FRAMES): Boolean =
         abs(expectedFrame - ptsFrame) <= tolerance

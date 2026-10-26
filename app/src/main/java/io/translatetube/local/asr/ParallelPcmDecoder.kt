@@ -25,23 +25,26 @@ import kotlinx.coroutines.CancellationException
 /**
  * 本地长音频的分段并行解码：把音轨按时间切成几段，几个线程同时解，最后顺序拼成 16 kHz 单声道 PCM。
  *
- * 只在"有把握"的情况下启用（本地文件/本地 Uri、AAC、时长够长、可随机跳转），并且每一步都有校验：
+ * 只在"有把握"的情况下启用（本地文件/本地 Uri、AAC 或 Opus、时长够长、可随机跳转），并且每一步都有校验：
  * 切点对齐重采样网格、时间戳连续、相邻两段在拼缝处的样本互相吻合、总长度与标称时长吻合。
  * 任何一项对不上都返回 null，由调用方退回原来的顺序解码——所以最坏情况只是没提速，不会出错音频。
  * 取消（[CancellationException]）照常向上抛。
  */
 internal object ParallelPcmDecoder {
     private const val LOG_TAG = "AudioDecode"
-    private const val AAC_MIME = "audio/mp4a-latm"
+    /** 支持并行的编码：帧结构固定、时间戳可靠、跳转后靠预滚就能收敛。 */
+    private val SUPPORTED_MIMES = setOf("audio/mp4a-latm", "audio/opus")
+    /** 跳转后实际落点比请求的时间早太多，说明容器没有可用的索引，跳转等于从头读，并行没有意义。 */
+    private const val MAX_SEEK_SLACK_US = 3_000_000L
+    private const val MEASURE_TIMEOUT_MS = 10_000L
     private const val MAX_CODEC_STALL_MS = 60_000L
     private const val BLOCKING_WAIT_US = 10_000L
     private const val MAX_INPUT_BUFFERS_PER_PASS = 16
     /** 单个解码缓冲区的帧数上限；超过说明解码器行为异常，放弃并行。 */
     private const val MAX_BUFFER_FRAMES = 1 shl 20
 
-    /** 校验失败过一次就不再在本次进程里重复尝试（避免每个视频都白跑一遍）。 */
-    @Volatile
-    private var disabledAfterFailure = false
+    /** 某种编码校验失败过一次，本次进程里就不再对它重复尝试（避免每个视频都白跑一遍）。 */
+    private val disabledMimes: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private class SegmentResult(
         val file: File,
@@ -56,6 +59,7 @@ internal object ParallelPcmDecoder {
         val channels: Int,
         val durationMs: Long,
         val firstPtsUs: Long,
+        val mime: String,
     )
 
     /** @return 解码结果；不适用或校验未通过返回 null（调用方改走顺序解码）。 */
@@ -66,7 +70,6 @@ internal object ParallelPcmDecoder {
         checkActive: () -> Unit,
         onProgressPercent: (Int) -> Unit,
     ): AudioExtract.PcmFile? {
-        if (disabledAfterFailure) return null
         val localUri = src != null && (src.scheme == "content" || src.scheme == "file")
         if (file == null && !localUri) return null
 
@@ -77,7 +80,18 @@ internal object ParallelPcmDecoder {
         } catch (_: Exception) {
             null
         }
-        if (probe == null) return null
+        if (probe == null || probe.mime in disabledMimes) return null
+
+        // 实测开头被解码器丢掉的样本数（AAC 通常为 0，Opus 有 pre-skip），用来把"时间戳位置"
+        // 换算成"顺序解码的样本序号"，保证并行结果与顺序解码对齐。
+        val leadingDiscard: Long? = try {
+            measureLeadingDiscard(ctx, src, file, probe, checkActive)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        if (leadingDiscard == null) return null
 
         val cores = Runtime.getRuntime().availableProcessors()
         val workers = ParallelDecodePlan.workerCount(probe.durationMs, (cores - 1).coerceAtLeast(1))
@@ -103,7 +117,7 @@ internal object ParallelPcmDecoder {
             for (segment in segments) {
                 futures += executor.submit(
                     Callable {
-                        decodeSegment(ctx, src, file, probe, segment, progress[segment.index], workerGuard)
+                        decodeSegment(ctx, src, file, probe, leadingDiscard, segment, progress[segment.index], workerGuard)
                     },
                 )
             }
@@ -196,7 +210,7 @@ internal object ParallelPcmDecoder {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            disabledAfterFailure = true
+            disabledMimes += probe.mime
             AppLogStore.info(
                 ctx,
                 LOG_TAG,
@@ -243,7 +257,8 @@ internal object ParallelPcmDecoder {
             }
             val trackIndex = AudioTrackSelectionPolicy.choose(candidates) ?: return null
             val format = extractor.getTrackFormat(trackIndex)
-            if (format.getString(MediaFormat.KEY_MIME) != AAC_MIME) return null
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
+            if (mime !in SUPPORTED_MIMES) return null
             if (!format.containsKey(MediaFormat.KEY_DURATION)) return null
             val durationUs = format.getLong(MediaFormat.KEY_DURATION)
             if (durationUs <= 0L) return null
@@ -254,8 +269,103 @@ internal object ParallelPcmDecoder {
             extractor.selectTrack(trackIndex)
             val firstPts = extractor.sampleTime
             if (firstPts < 0L) return null
-            return Probe(trackIndex, sampleRate, channels, durationUs / 1000L, firstPts)
+            return Probe(trackIndex, sampleRate, channels, durationUs / 1000L, firstPts, mime)
         } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    /**
+     * 从流开头解出前两个非空输出缓冲区，实测解码器开头丢掉的样本数，见
+     * [ParallelDecodePlan.leadingDiscardFrames]。拿不到或数值异常返回 null（放弃并行）。
+     */
+    private fun measureLeadingDiscard(
+        ctx: Context,
+        src: Uri?,
+        file: File?,
+        probe: Probe,
+        guard: () -> Unit,
+    ): Long? {
+        val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        try {
+            openSource(extractor, ctx, src, file)
+            extractor.selectTrack(probe.trackIndex)
+            val format = extractor.getTrackFormat(probe.trackIndex)
+            val decoder = MediaCodec.createDecoderByType(probe.mime)
+            codec = decoder
+            decoder.configure(format, null, null, 0)
+            decoder.start()
+
+            var channels = probe.channels
+            var encoding = if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+            } else {
+                AudioFormat.ENCODING_PCM_16BIT
+            }
+            val info = MediaCodec.BufferInfo()
+            var firstFrames = -1L
+            var sawInputEos = false
+            val deadline = SystemClock.elapsedRealtime() + MEASURE_TIMEOUT_MS
+            while (SystemClock.elapsedRealtime() < deadline) {
+                guard()
+                var queued = 0
+                while (!sawInputEos && queued < MAX_INPUT_BUFFERS_PER_PASS) {
+                    val inIndex = decoder.dequeueInputBuffer(0)
+                    if (inIndex < 0) break
+                    val inBuffer = decoder.getInputBuffer(inIndex) ?: return null
+                    val size = extractor.readSampleData(inBuffer, 0)
+                    if (size < 0) {
+                        decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        sawInputEos = true
+                    } else {
+                        decoder.queueInputBuffer(inIndex, 0, size, extractor.sampleTime, 0)
+                        extractor.advance()
+                    }
+                    queued++
+                }
+                val outIndex = decoder.dequeueOutputBuffer(info, BLOCKING_WAIT_US)
+                if (outIndex >= 0) {
+                    var result: Long? = null
+                    var finished = false
+                    try {
+                        if (info.size > 0) {
+                            val bytesPerSample = when (encoding) {
+                                AudioFormat.ENCODING_PCM_16BIT -> 2
+                                AudioFormat.ENCODING_PCM_FLOAT -> 4
+                                else -> return null
+                            }
+                            if (channels !in 1..8 || info.size % (bytesPerSample * channels) != 0) return null
+                            val frames = (info.size / (bytesPerSample * channels)).toLong()
+                            if (firstFrames < 0L) {
+                                firstFrames = frames
+                            } else {
+                                val ptsFrame = ParallelDecodePlan.frameIndexAtUs(
+                                    info.presentationTimeUs, probe.firstPtsUs, probe.sampleRate,
+                                )
+                                result = ParallelDecodePlan.leadingDiscardFrames(ptsFrame, firstFrames, probe.sampleRate)
+                                finished = true
+                            }
+                        }
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) finished = true
+                    } finally {
+                        decoder.releaseOutputBuffer(outIndex, false)
+                    }
+                    if (finished) return result
+                } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = decoder.outputFormat
+                    if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        channels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    }
+                    if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        encoding = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    }
+                }
+            }
+            return null
+        } finally {
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
             runCatching { extractor.release() }
         }
     }
@@ -266,6 +376,7 @@ internal object ParallelPcmDecoder {
         src: Uri?,
         file: File?,
         probe: Probe,
+        leadingDiscard: Long,
         segment: ParallelDecodePlan.Segment,
         progress: AtomicLong,
         guard: () -> Unit,
@@ -287,10 +398,15 @@ internal object ParallelPcmDecoder {
             if (!segment.isFirst) {
                 val targetUs = ParallelDecodePlan.timeUsForFrame(keepFrom, rate, probe.firstPtsUs) -
                     ParallelDecodePlan.PREROLL_US
-                extractor.seekTo(maxOf(probe.firstPtsUs, targetUs), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                if (extractor.sampleTime < 0L) throw IllegalStateException("无法跳转到第 ${segment.index} 段")
+                val seekUs = maxOf(probe.firstPtsUs, targetUs)
+                extractor.seekTo(seekUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                val landedUs = extractor.sampleTime
+                if (landedUs < 0L) throw IllegalStateException("无法跳转到第 ${segment.index} 段")
+                if (seekUs - landedUs > MAX_SEEK_SLACK_US) {
+                    throw IllegalStateException("容器跳转不精确（第 ${segment.index} 段落点偏早 ${(seekUs - landedUs) / 1000} ms）")
+                }
             }
-            val decoder = MediaCodec.createDecoderByType(AAC_MIME)
+            val decoder = MediaCodec.createDecoderByType(probe.mime)
             codec = decoder
             decoder.configure(format, null, null, 0)
             decoder.start()
@@ -308,6 +424,8 @@ internal object ParallelPcmDecoder {
             var tailFilled = 0
             var written = 0L
             var nextFrame = -1L
+            var nonEmptyBuffers = 0
+            val ptsTolerance = ParallelDecodePlan.ptsTolerance(rate)
             var done = false
             var sawInputEos = false
             var sawOutputEos = false
@@ -404,51 +522,58 @@ internal object ParallelPcmDecoder {
                                 val frames = info.size / (bytesPerSample * channels)
                                 if (frames > MAX_BUFFER_FRAMES) throw IllegalStateException("音频解码缓冲区异常过大")
 
+                                // 时间戳换算成"顺序解码的样本序号"（减去解码器开头丢掉的样本）。
                                 val ptsFrame = ParallelDecodePlan.frameIndexAtUs(
                                     info.presentationTimeUs, probe.firstPtsUs, rate,
-                                )
-                                val bufferStart = when {
-                                    nextFrame < 0L && segment.isFirst -> 0L
-                                    nextFrame < 0L -> {
-                                        // 预滚没有覆盖到切点：这一段无法保证对齐。
-                                        if (ptsFrame > keepFrom) throw IllegalStateException("第 ${segment.index} 段预滚不足")
-                                        ptsFrame
-                                    }
-                                    else -> {
-                                        if (!ParallelDecodePlan.isContiguous(nextFrame, ptsFrame)) {
-                                            throw IllegalStateException("解码输出时间戳不连续")
+                                ) - leadingDiscard
+                                nonEmptyBuffers++
+                                // 跳转后的第一个输出缓冲区可能被解码器裁掉开头（如 Opus 的 pre-skip），
+                                // 只用来预热，不用它定位；从第二个缓冲区开始以时间戳为锚点。
+                                val warmUpOnly = !segment.isFirst && nonEmptyBuffers == 1
+                                if (!warmUpOnly) {
+                                    val bufferStart = when {
+                                        segment.isFirst && nextFrame < 0L -> 0L
+                                        nextFrame < 0L -> {
+                                            // 预滚没有覆盖到切点：这一段无法保证对齐。
+                                            if (ptsFrame > keepFrom) throw IllegalStateException("第 ${segment.index} 段预滚不足")
+                                            ptsFrame
                                         }
-                                        nextFrame
-                                    }
-                                }
-                                nextFrame = bufferStart + frames
-                                val slice = ParallelDecodePlan.sliceOfBuffer(bufferStart, frames, keepFrom, keepTo)
-                                if (slice != null) {
-                                    val pcm = outBuffer.duplicate()
-                                    pcm.clear()
-                                    val sliceStartByte =
-                                        info.offset + slice.skipFrames * channels * bytesPerSample
-                                    pcm.position(sliceStartByte)
-                                    pcm.limit(sliceStartByte + slice.takeFrames * channels * bytesPerSample)
-                                    val sampleBytes = pcm.slice().order(ByteOrder.LITTLE_ENDIAN)
-                                    val total = slice.takeFrames * channels
-                                    val interleaved = ShortArray(total)
-                                    if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
-                                        val floats = sampleBytes.asFloatBuffer()
-                                        for (i in 0 until total) {
-                                            interleaved[i] = Pcm16SampleConverter.floatToPcm16(floats.get())
+                                        else -> {
+                                            if (!ParallelDecodePlan.isContiguous(nextFrame, ptsFrame, ptsTolerance)) {
+                                                throw IllegalStateException("解码输出时间戳不连续")
+                                            }
+                                            nextFrame
                                         }
-                                    } else {
-                                        sampleBytes.asShortBuffer().get(interleaved, 0, total)
                                     }
-                                    val mono = if (channels == 1) {
-                                        interleaved
-                                    } else {
-                                        PcmChannelMixer.downmixChunk(interleaved, channels, guard)
+                                    nextFrame = bufferStart + frames
+                                    val slice = ParallelDecodePlan.sliceOfBuffer(bufferStart, frames, keepFrom, keepTo)
+                                    if (slice != null) {
+                                        val pcm = outBuffer.duplicate()
+                                        pcm.clear()
+                                        val sliceStartByte =
+                                            info.offset + slice.skipFrames * channels * bytesPerSample
+                                        pcm.position(sliceStartByte)
+                                        pcm.limit(sliceStartByte + slice.takeFrames * channels * bytesPerSample)
+                                        val sampleBytes = pcm.slice().order(ByteOrder.LITTLE_ENDIAN)
+                                        val total = slice.takeFrames * channels
+                                        val interleaved = ShortArray(total)
+                                        if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
+                                            val floats = sampleBytes.asFloatBuffer()
+                                            for (i in 0 until total) {
+                                                interleaved[i] = Pcm16SampleConverter.floatToPcm16(floats.get())
+                                            }
+                                        } else {
+                                            sampleBytes.asShortBuffer().get(interleaved, 0, total)
+                                        }
+                                        val mono = if (channels == 1) {
+                                            interleaved
+                                        } else {
+                                            PcmChannelMixer.downmixChunk(interleaved, channels, guard)
+                                        }
+                                        consume(mono, bufferStart + slice.skipFrames)
                                     }
-                                    consume(mono, bufferStart + slice.skipFrames)
+                                    if (nextFrame >= keepTo) done = true
                                 }
-                                if (nextFrame >= keepTo) done = true
                             }
                             if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEos = true
                         } finally {
