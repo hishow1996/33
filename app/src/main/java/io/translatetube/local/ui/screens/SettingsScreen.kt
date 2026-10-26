@@ -485,13 +485,6 @@ Section(
                 },
             )
         }
-        if (localAsrModel == "sensevoice") {
-            Text(
-                "支持普通话、粤语、英语、日语和韩语；模型还可返回语音情绪与声音事件标签。",
-                color = SubText,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
         ModelRow(
             title = if (localAsrModel == "sensevoice") "SenseVoice Small INT8 转写模型" else "Whisper Base 转写模型",
             state = asrState,
@@ -504,6 +497,7 @@ Section(
             packageSizeLoading = asrArchiveSizeLoading,
             installedSizeBytes = io.translatetube.local.data.ModelFiles.installedAsrModelBytes(ctx, localAsrModel),
             showInstalledSize = true,
+            compactStatus = true,
             onDownload = { dlManager.download(io.translatetube.local.data.ModelKind.ASR) },
             onCancel = { dlManager.cancel(io.translatetube.local.data.ModelKind.ASR) },
         )
@@ -1549,6 +1543,7 @@ private fun ModelRow(
     packageSizeLoading: Boolean = false,
     installedSizeBytes: Long? = null,
     showInstalledSize: Boolean = false,
+    compactStatus: Boolean = false,
     onDownload: () -> Unit,
     onCancel: () -> Unit = {},
 ) {
@@ -1588,27 +1583,41 @@ private fun ModelRow(
                 }
             }
         }
-        Spacer(Modifier.height(5.dp))
         val reportedPackageBytes = packageSizeBytes
             ?: state.totalBytes.takeIf { it > 10_000_000L && !state.stageMessage.orEmpty().contains("语音检测") }
-        Text(
-            reportedPackageBytes?.let { "下载包大小 ${formatExactModelMB(it)}" }
-                ?: if (packageSizeLoading) "下载包大小正在查询" else "下载包大小：下载时读取源站数据",
-            color = SubText,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        if (showInstalledSize) {
+        if (compactStatus) {
+            // 下载中已有实时的“已下载 / 总大小”，避免重复展示同一信息。
+            if (!active) {
+                val sizeSummary = listOfNotNull(
+                    reportedPackageBytes?.let { "下载包 ${formatExactModelMB(it)}" },
+                    if (showInstalledSize) installedSizeBytes?.let { "安装后 ${formatExactModelMB(it)}" } else null,
+                ).joinToString(" · ")
+                if (sizeSummary.isNotBlank()) {
+                    Text(sizeSummary, color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        } else {
             Text(
-                installedSizeBytes?.let { "安装后占用 ${formatExactModelMB(it)}" }
-                    ?: if (ready) "安装后占用暂不可读取" else "安装后占用：安装完成后按实际文件统计",
+                reportedPackageBytes?.let { "下载包大小 ${formatExactModelMB(it)}" }
+                    ?: if (packageSizeLoading) "下载包大小正在查询" else "下载包大小：下载时读取源站数据",
                 color = SubText,
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (showInstalledSize) {
+                Text(
+                    installedSizeBytes?.let { "安装后占用 ${formatExactModelMB(it)}" }
+                        ?: if (ready) "安装后占用暂不可读取" else "安装后占用：安装完成后按实际文件统计",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
         Spacer(Modifier.height(5.dp))
         when {
             ready -> {
-                Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
+                if (!compactStatus) {
+                    Text("模型文件已下载并通过检查", color = SubText, style = MaterialTheme.typography.bodySmall)
+                }
             }
             state.status == io.translatetube.local.data.ModelStatus.DOWNLOADING -> {
                 Row(
@@ -1642,12 +1651,14 @@ private fun ModelRow(
                             color = BrandBright,
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            state.stageMessage ?: "下载完成后自动安装",
-                            color = SubText,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                        if (!compactStatus) {
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                state.stageMessage ?: "下载完成后自动安装",
+                                color = SubText,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                 }
             }
@@ -1670,12 +1681,14 @@ private fun ModelRow(
                             color = BrandBright,
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            state.stageMessage ?: "正在安装模型…",
-                            color = SubText,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                        if (!compactStatus) {
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                state.stageMessage ?: "正在安装模型…",
+                                color = SubText,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                 }
             }
