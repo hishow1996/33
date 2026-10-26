@@ -1,0 +1,144 @@
+package io.translatetube.local.asr
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.math.abs
+
+class ParallelDecodePlanTest {
+    @Test
+    fun alignmentStepMatchesTheResamplingGrid() {
+        assertEquals(441L, ParallelDecodePlan.alignmentStep(44_100))
+        assertEquals(160L, ParallelDecodePlan.outputPerStep(44_100))
+        assertEquals(3L, ParallelDecodePlan.alignmentStep(48_000))
+        assertEquals(1L, ParallelDecodePlan.outputPerStep(48_000))
+        assertEquals(2L, ParallelDecodePlan.alignmentStep(32_000))
+    }
+
+    @Test
+    fun shortOrSingleCoreMediaStaysSequential() {
+        assertEquals(1, ParallelDecodePlan.workerCount(60_000L, 8))
+        assertEquals(1, ParallelDecodePlan.workerCount(600_000L, 1))
+        assertEquals(2, ParallelDecodePlan.workerCount(100_000L, 8)) // 每段至少 40 秒
+        assertEquals(ParallelDecodePlan.MAX_WORKERS, ParallelDecodePlan.workerCount(3_600_000L, 16))
+        assertEquals(3, ParallelDecodePlan.workerCount(3_600_000L, 3))
+    }
+
+    @Test
+    fun segmentsAreContiguousAlignedAndCoverTheWholeStream() {
+        val rate = 44_100
+        val segments = ParallelDecodePlan.plan(rate, 600_000L, 4)
+        assertNotNull(segments)
+        segments!!
+        assertEquals(4, segments.size)
+        assertEquals(0L, segments[0].sourceStart)
+        assertEquals(0L, segments[0].outputStart)
+        assertTrue(segments[0].isFirst)
+        assertTrue(segments.last().isLast)
+        assertEquals(Long.MAX_VALUE, segments.last().sourceEnd)
+        for (i in 0 until segments.size - 1) {
+            val current = segments[i]
+            val next = segments[i + 1]
+            assertEquals(current.sourceEnd, next.sourceStart)
+            assertEquals(0L, next.sourceStart % 441L)
+            assertEquals(current.outputStart + current.outputCount, next.outputStart)
+            assertFalse(current.isLast)
+            assertTrue(current.outputCount > 0L)
+        }
+    }
+
+    @Test
+    fun unsuitableInputsAreNotPlanned() {
+        assertNull(ParallelDecodePlan.plan(44_100, 600_000L, 1))
+        assertNull(ParallelDecodePlan.plan(22_050, 600_000L, 4)) // 可能是 HE-AAC
+        assertNull(ParallelDecodePlan.plan(44_100, 0L, 4))
+    }
+
+    @Test
+    fun bufferSliceKeepsOnlyTheFramesInsideTheRange() {
+        // 缓冲区 [1000, 2024)，保留 [1500, 1800)
+        assertEquals(ParallelDecodePlan.Slice(500, 300), ParallelDecodePlan.sliceOfBuffer(1000, 1024, 1500, 1800))
+        // 整个缓冲区都在保留范围里
+        assertEquals(ParallelDecodePlan.Slice(0, 1024), ParallelDecodePlan.sliceOfBuffer(1000, 1024, 0, 5000))
+        // 预滚：整个缓冲区在保留范围之前
+        assertNull(ParallelDecodePlan.sliceOfBuffer(0, 1024, 2000, 3000))
+        // 已经越过保留范围结尾
+        assertNull(ParallelDecodePlan.sliceOfBuffer(4000, 1024, 2000, 3000))
+        // 恰好从保留范围起点开始
+        assertEquals(ParallelDecodePlan.Slice(0, 24), ParallelDecodePlan.sliceOfBuffer(2000, 1024, 0, 2024))
+    }
+
+    @Test
+    fun frameAndTimeMappingRoundTrips() {
+        val rate = 44_100
+        val origin = 23_000L
+        val frame = 441_000L * 5
+        val us = ParallelDecodePlan.timeUsForFrame(frame, rate, origin)
+        assertEquals(frame, ParallelDecodePlan.frameIndexAtUs(us, origin, rate))
+        assertTrue(ParallelDecodePlan.isContiguous(1000, 1003))
+        assertFalse(ParallelDecodePlan.isContiguous(1000, 1100))
+    }
+
+    @Test
+    fun seamCheckAcceptsMatchingAndRejectsShiftedAudio() {
+        val tail = ShortArray(ParallelDecodePlan.SEAM_SAMPLES) { (it * 37 % 2000 - 1000).toShort() }
+        val sameWithNoise = ShortArray(tail.size) { (tail[it] + (it % 3 - 1)).toShort() }
+        assertTrue(ParallelDecodePlan.seamMatches(tail, sameWithNoise))
+        val shifted = ShortArray(tail.size) { tail[(it + 20) % tail.size] }
+        assertFalse(ParallelDecodePlan.seamMatches(tail, shifted))
+        assertFalse(ParallelDecodePlan.seamMatches(tail, ShortArray(10)))
+        assertFalse(ParallelDecodePlan.seamMatches(ShortArray(0), ShortArray(0)))
+    }
+
+    @Test
+    fun totalLengthMustAgreeWithTheDeclaredDuration() {
+        assertTrue(ParallelDecodePlan.totalLooksRight(1_600_000L, 100_000L))
+        assertTrue(ParallelDecodePlan.totalLooksRight(1_600_000L + 16_000L, 100_000L))
+        assertFalse(ParallelDecodePlan.totalLooksRight(1_000_000L, 100_000L))
+        assertFalse(ParallelDecodePlan.totalLooksRight(0L, 100_000L))
+    }
+
+    /**
+     * 核心保证：每段独立重采样再拼起来，和整段一次重采样结果一致（最多差 1 个 LSB，
+     * 来自 44.1 kHz 网格上的 double 舍入），而且长度完全相同。
+     */
+    @Test
+    fun segmentedResamplingMatchesSequentialResampling() {
+        for ((rate, workers) in listOf(44_100 to 2, 48_000 to 3, 32_000 to 2)) {
+            val durationMs = 100_000L
+            val estimate = ParallelDecodePlan.estimatedSourceSamples(rate, durationMs)
+            val total = (estimate + 137L).toInt() // 真实长度和标称时长不会完全相等
+            val signal = ShortArray(total) { i ->
+                (8000.0 * Math.sin(i * 0.05) + ((i * 7919L) % 1000L) - 500L).toInt().toShort()
+            }
+
+            val sequential = Pcm16StreamingResampler(rate, 16_000).let { r ->
+                r.process(signal) + r.finish()
+            }
+
+            val segments = ParallelDecodePlan.plan(rate, durationMs, workers)!!
+            val stitched = ArrayList<Short>()
+            for (segment in segments) {
+                val resampler = Pcm16StreamingResampler(rate, 16_000)
+                val from = segment.sourceStart.toInt()
+                if (segment.isLast) {
+                    val part = resampler.process(signal.copyOfRange(from, total)) + resampler.finish()
+                    part.forEach { stitched.add(it) }
+                } else {
+                    val to = minOf(total.toLong(), segment.sourceEnd + ParallelDecodePlan.SEAM_SAMPLES).toInt()
+                    val part = resampler.process(signal.copyOfRange(from, to))
+                    assertTrue(part.size >= segment.outputCount)
+                    for (i in 0 until segment.outputCount.toInt()) stitched.add(part[i])
+                }
+            }
+
+            assertEquals("rate=$rate", sequential.size, stitched.size)
+            var maxDiff = 0
+            for (i in sequential.indices) maxDiff = maxOf(maxDiff, abs(sequential[i] - stitched[i]))
+            assertTrue("rate=$rate maxDiff=$maxDiff", maxDiff <= 1)
+        }
+    }
+}
