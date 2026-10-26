@@ -133,8 +133,7 @@ private object ReadyHistorySessionConfigStore {
             key.startsWith("local_tts_") ||
             key.startsWith("piper_") ||
             key.startsWith("kokoro_") ||
-            key.startsWith("system_tts_") ||
-            key.contains("dubbing", ignoreCase = true)
+            key.startsWith("system_tts_")
 
     fun fingerprint(context: Context, ignoreTranscription: Boolean = false): String {
         val relevant = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
@@ -262,8 +261,7 @@ private object ReadyHistorySessionConfigStore {
                 key.startsWith("local_tts_") ||
                 key.startsWith("piper_") ||
                 key.startsWith("kokoro_") ||
-                key.startsWith("system_tts_") ||
-                key.contains("dubbing", ignoreCase = true)
+                key.startsWith("system_tts_")
     }
     fun save(
         context: Context,
