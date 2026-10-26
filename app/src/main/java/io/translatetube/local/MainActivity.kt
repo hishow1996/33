@@ -427,11 +427,31 @@ class MainActivity : ComponentActivity() {
                                         // restart parsing and send the user to source detection again.
                                         screen = Screen.PLAYER
                                     } else {
+                                        // After a webpage candidate is selected, the pending task keeps
+                                        // sourceKey=webpage:<original page> and activeKey=remote:<selected media>.
+                                        // After process death there is no live WebView session to reuse, so
+                                        // resume the selected media directly instead of reopening detection.
+                                        val resumeKey = savedTask
+                                            ?.takeIf {
+                                                taskKey == it.sourceKey &&
+                                                    it.sourceKey.startsWith("webpage:") &&
+                                                    it.activeKey.startsWith("remote:") &&
+                                                    it.activeKey != it.sourceKey
+                                            }
+                                            ?.activeKey
+                                            ?: taskKey
+                                        if (resumeKey != taskKey) {
+                                            io.translatetube.local.util.AppLogStore.info(
+                                                applicationContext,
+                                                "PlaybackFlow",
+                                                "恢复网页视频任务：直接继续已选媒体的五阶段解析，跳过重复的网页源检测",
+                                            )
+                                        }
                                         val request = when {
-                                            taskKey.startsWith("youtube:") -> PlayRequest(videoId = taskKey.removePrefix("youtube:"))
-                                            taskKey.startsWith("webpage:") -> PlayRequest(webPageUrl = taskKey.removePrefix("webpage:"))
-                                            taskKey.startsWith("remote:") -> PlayRequest(mediaUrl = taskKey.removePrefix("remote:"))
-                                            taskKey.startsWith("local:") -> PlayRequest(localUri = taskKey.removePrefix("local:"))
+                                            resumeKey.startsWith("youtube:") -> PlayRequest(videoId = resumeKey.removePrefix("youtube:"))
+                                            resumeKey.startsWith("webpage:") -> PlayRequest(webPageUrl = resumeKey.removePrefix("webpage:"))
+                                            resumeKey.startsWith("remote:") -> PlayRequest(mediaUrl = resumeKey.removePrefix("remote:"))
+                                            resumeKey.startsWith("local:") -> PlayRequest(localUri = resumeKey.removePrefix("local:"))
                                             else -> null
                                         }
                                         if (request != null) {
