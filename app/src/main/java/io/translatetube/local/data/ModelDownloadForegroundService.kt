@@ -17,13 +17,52 @@ import io.translatetube.local.R
 import io.translatetube.local.TranslateTubeApp
 import io.translatetube.local.MainActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+private data class ExternalModelTask(
+    val id: String,
+    val title: String,
+    val detail: String,
+)
+
+private object ExternalModelTaskRegistry {
+    private val lock = Any()
+    private val jobs = mutableMapOf<String, Job>()
+    val tasks = MutableStateFlow<Map<String, ExternalModelTask>>(emptyMap())
+
+    fun register(id: String, title: String): Boolean = synchronized(lock) {
+        if (id in tasks.value) return@synchronized false
+        tasks.value = tasks.value + (id to ExternalModelTask(id, title, "正在下载；切换应用后继续"))
+        true
+    }
+
+    fun attach(id: String, job: Job): Boolean = synchronized(lock) {
+        if (id !in tasks.value) return@synchronized false
+        jobs[id] = job
+        true
+    }
+
+    fun cancel(id: String): Boolean = synchronized(lock) {
+        val job = jobs[id] ?: return@synchronized false
+        job.cancel()
+        true
+    }
+
+    fun isActive(id: String): Boolean = tasks.value.containsKey(id)
+
+    fun finish(id: String) = synchronized(lock) {
+        jobs.remove(id)
+        tasks.value = tasks.value - id
+    }
+}
 
 private data class ModelNotificationContent(
     val title: String,
@@ -80,7 +119,12 @@ class ModelDownloadForegroundService : Service() {
                 val piperTasks = io.translatetube.local.tts.PiperModels.downloadStates.value
                     .filterValues { it.isActive }
                 val piperActive = piperTasks.isNotEmpty()
-                val active = managedActive || piperActive
+                val externalTasks = ExternalModelTaskRegistry.tasks.value.values.toList()
+                val externalTasksActive = externalTasks.isNotEmpty()
+                val externalTaskDetail = externalTasks.joinToString("；") { task ->
+                    task.title + " · " + task.detail
+                }.take(360)
+                val active = managedActive || piperActive || externalTasksActive
 
                 val baseContent = when {
                     ttsActive && asrActive -> ModelNotificationContent(
@@ -159,15 +203,28 @@ class ModelDownloadForegroundService : Service() {
                     ?.toInt()
                 val content = when {
                     piperActive && managedActive -> baseContent.copy(
-                        detail = listOf(baseContent.detail, piperDetail).filter { it.isNotBlank() }.joinToString("；"),
+                        detail = listOf(baseContent.detail, piperDetail, externalTaskDetail)
+                            .filter { it.isNotBlank() }.joinToString("；"),
                         progress = null,
                         indeterminate = true,
                     )
                     piperActive -> ModelNotificationContent(
                         title = "正在准备 Piper 配音模型",
-                        detail = piperDetail,
+                        detail = listOf(piperDetail, externalTaskDetail)
+                            .filter { it.isNotBlank() }.joinToString("；"),
                         progress = piperProgress.takeUnless { piperExtracting },
-                        indeterminate = piperExtracting || piperProgress == null,
+                        indeterminate = piperExtracting || piperProgress == null || externalTasksActive,
+                    )
+                    managedActive && externalTasksActive -> baseContent.copy(
+                        detail = listOf(baseContent.detail, externalTaskDetail)
+                            .filter { it.isNotBlank() }.joinToString("；"),
+                        progress = null,
+                        indeterminate = true,
+                    )
+                    externalTasksActive -> ModelNotificationContent(
+                        title = if (externalTasks.size == 1) externalTasks.first().title else "正在下载本地模型",
+                        detail = externalTaskDetail,
+                        indeterminate = true,
                     )
                     else -> baseContent
                 }
@@ -183,7 +240,9 @@ class ModelDownloadForegroundService : Service() {
                     ongoing = active,
                     progress = content.progress,
                     indeterminate = content.indeterminate,
-                    showActions = active,
+                    // Pause/cancel controls target the speech-model managers only. Do not show them
+                    // for a tracked translation task that those actions cannot control.
+                    showActions = active && !externalTasksActive,
                     paused = paused,
                 )
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -320,7 +379,59 @@ class ModelDownloadForegroundService : Service() {
     companion object {
         const val ACTION_TOGGLE_PAUSE = "io.translatetube.local.action.TOGGLE_MODEL_DOWNLOAD_PAUSE"
         const val ACTION_CANCEL_ACTIVE = "io.translatetube.local.action.CANCEL_MODEL_DOWNLOAD"
+        const val ACTION_EXTERNAL_TASK_CHANGED = "io.translatetube.local.action.EXTERNAL_MODEL_TASK_CHANGED"
         private const val CHANNEL_ID = "model_downloads"
         private const val NOTIFICATION_ID = 7302
+
+        /**
+         * Run a long model download in Application scope and keep a foreground notification alive.
+         * The stable task ID prevents duplicate downloads after navigating away and back.
+         */
+        fun launchExternalTask(
+            context: Context,
+            taskId: String,
+            title: String,
+            scope: CoroutineScope,
+            block: suspend () -> Unit,
+        ): Job? {
+            require(taskId.isNotBlank()) { "taskId must not be blank" }
+            val appContext = context.applicationContext
+            if (!ExternalModelTaskRegistry.register(taskId, title)) return null
+
+            try {
+                val intent = Intent(appContext, ModelDownloadForegroundService::class.java)
+                    .setAction(ACTION_EXTERNAL_TASK_CHANGED)
+                    .setData(Uri.parse("translate-tube://model-download/external/" + Uri.encode(taskId)))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
+            } catch (failure: Exception) {
+                ExternalModelTaskRegistry.finish(taskId)
+                throw failure
+            }
+
+            val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                try {
+                    block()
+                } finally {
+                    ExternalModelTaskRegistry.finish(taskId)
+                }
+            }
+            if (!ExternalModelTaskRegistry.attach(taskId, job)) {
+                job.cancel()
+                ExternalModelTaskRegistry.finish(taskId)
+                return null
+            }
+            job.start()
+            return job
+        }
+
+        fun cancelExternalTask(taskId: String): Boolean =
+            ExternalModelTaskRegistry.cancel(taskId)
+
+        fun isExternalTaskActive(taskId: String): Boolean =
+            ExternalModelTaskRegistry.isActive(taskId)
     }
 }
