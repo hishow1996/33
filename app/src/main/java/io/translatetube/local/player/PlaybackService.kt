@@ -3842,7 +3842,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
 
             // ---- 1. 元信息 ----
             var srcLang = resumeState?.sourceLang.orEmpty()
-            if (resumeState != null) {
+            if (restoreCompletedSnapshot && resumeState != null) {
+                // A complete snapshot is already translated and synthesized. Keep the playback
+                // page in READY while the media source and cached dubbing queue are reattached.
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(phase = Phase.READY, progress = "", sourceLang = srcLang, error = null)
+                }
+            } else if (resumeState != null) {
                 // Keep current metadata for selective restarts. An empty snapshot means the ASR
                 // stage is rerunning; populated captions resume at translation only when their
                 // Chinese text is missing, otherwise go straight to dubbing.
