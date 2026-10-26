@@ -818,10 +818,18 @@ class PlaybackService : MediaSessionService() {
     private fun processingEnginePreferenceFingerprint(ignoreTranscription: Boolean = false): String =
         ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription)
 
+    /**
+     * Restart the active pipeline when an output-affecting engine setting changes.
+     * A completed READY session is eligible too: changing translation engines while the player
+     * is open must not leave the previous engine's Chinese subtitles on screen.
+     */
     private fun shouldRestartForEnginePreferenceChange(state: PlayerUiState): Boolean =
         isProcessingPhase(state.phase) || (
-            state.phase == Phase.READY &&
-                (state.waitingForTranscriptionEngine || state.waitingForDubbingEngine)
+            state.phase == Phase.READY && (
+                state.waitingForTranscriptionEngine ||
+                    state.waitingForDubbingEngine ||
+                    (state.key.isNotBlank() && state.key == videoKey && state.lines.isNotEmpty())
+                )
             )
 
     private fun registerProcessingEnginePreferenceWatcher() {
@@ -855,6 +863,7 @@ class PlaybackService : MediaSessionService() {
                             return@launch
                         }
                         if (stableFingerprint == processingEngineConfigFingerprint) return@launch
+
                         val sessionKey = changedSessionKey
                         val restartLocalUri = localUri
                         val restartRemoteUrl = remoteMediaUrl
@@ -867,18 +876,56 @@ class PlaybackService : MediaSessionService() {
                         val restartRemoteReferrer = remoteMediaReferrer
                         val restartRemoteCookie = remoteMediaCookie
                         val restartRemoteUserAgent = remoteMediaUserAgent
+
+                        // On a completed session, compare the saved per-domain fingerprints and
+                        // restart at the earliest affected stage. A translation-engine switch
+                        // reuses the source transcript/timestamps but clears old Chinese text;
+                        // a TTS-only switch keeps the validated translation and rebuilds speech.
+                        val previousDomains = if (state.phase == Phase.READY && state.lines.isNotEmpty()) {
+                            ReadyHistorySessionConfigStore.savedFingerprints(this@PlaybackService, sessionKey)
+                        } else null
+                        val currentDomains = if (previousDomains != null) {
+                            ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        } else null
+                        val readyRestartStage = if (previousDomains != null && currentDomains != null) {
+                            val ignoreTranscription = completedReadySessionKey == sessionKey &&
+                                completedReadySessionIgnoresTranscription
+                            chooseEngineRestartStage(previousDomains, currentDomains, state, ignoreTranscription)
+                        } else null
+                        val readyRestartState = readyRestartStage?.let { stage ->
+                            stateForEngineRestart(state, stage)
+                        }
+                        val canResumeAtStage = state.phase == Phase.READY &&
+                            readyRestartStage != null &&
+                            readyRestartState != null
+                        val importedRestartLines = if (canResumeAtStage && this@PlaybackService.importedLines != null) {
+                            readyRestartState?.lines
+                        } else null
                         val restartRequestToken = activeOpenRequestToken
+
                         io.translatetube.local.util.AppLogStore.info(
                             this@PlaybackService,
                             "PlaybackFlow",
-                            "处理期间检测到引擎设置变化，自动按新配置重新处理当前视频",
+                            if (canResumeAtStage) {
+                                "播放完成后检测到引擎设置变化，按最早受影响阶段重新处理当前视频"
+                            } else {
+                                "处理期间检测到引擎设置变化，按新配置重新处理当前视频"
+                            },
                             diagnosticContext = mapOf(
                                 "视频会话指纹" to safeDiagnosticSessionFingerprint(sessionKey),
                                 "触发时处理阶段" to state.phase.name,
                                 "处理流程" to state.processingFlow.name,
                                 "旧引擎配置指纹" to processingEngineConfigFingerprint.take(16),
                                 "新引擎配置指纹" to stableFingerprint.take(16),
-                                "音频策略" to "重新检查缓存；转写/翻译缓存按所选引擎隔离；重新准备配音",
+                                "选择的恢复阶段" to (readyRestartStage?.name ?: "从流程入口恢复"),
+                                "已复用字幕行数" to (readyRestartState?.lines?.size ?: 0).toString(),
+                                "恢复策略" to when (readyRestartStage) {
+                                    EngineRestartStage.TRANSCRIPTION -> "重新获取/转写原文字幕，再翻译和配音"
+                                    EngineRestartStage.TRANSLATION -> "复用原文和时间轴，按新翻译引擎重新翻译，再生成配音"
+                                    EngineRestartStage.DUBBING -> "复用原文、中文字幕和时间轴，仅重新生成配音"
+                                    null -> "使用现有缓存策略重新进入公共处理流程"
+                                },
+                                "音频策略" to "已缓存音轨和原文字幕按来源与转写引擎隔离复用",
                             ),
                         )
                         withContext(Dispatchers.Main.immediate) {
@@ -886,13 +933,15 @@ class PlaybackService : MediaSessionService() {
                                 key = sessionKey,
                                 videoId = restartVideoId,
                                 localUri = restartLocalUri,
-                                resumeState = null,
+                                importedLines = importedRestartLines,
+                                resumeState = if (canResumeAtStage) readyRestartState else null,
                                 remoteMediaUrl = restartRemoteUrl,
                                 remoteMediaTitle = restartRemoteTitle,
                                 remoteMediaReferrer = restartRemoteReferrer,
                                 remoteMediaCookie = restartRemoteCookie,
                                 remoteMediaUserAgent = restartRemoteUserAgent,
                                 requestToken = restartRequestToken,
+                                reuseMountedMediaForRestart = canResumeAtStage,
                                 forceRegenerateDubbing = true,
                             )
                         }
