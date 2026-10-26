@@ -2360,7 +2360,12 @@ class PlaybackService : MediaSessionService() {
         forceRegenerateDubbing: Boolean = false,
     ) {
         val canRestoreStoredResult = resumeState == null && importedLines == null && key.isNotBlank()
-        val reusableSnapshot = if (canRestoreStoredResult) {
+        // A matching snapshot may belong to an older run of the current configuration. Compare
+        // against the latest successful run first; if any engine domain changed, restart from the
+        // latest successful snapshot instead of treating that older matching snapshot as "unchanged".
+        val engineConfigChangedSinceLastSuccess =
+            ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
+        val reusableSnapshot = if (canRestoreStoredResult && !engineConfigChangedSinceLastSuccess) {
             ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
                 ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
             }
@@ -2407,13 +2412,17 @@ class PlaybackService : MediaSessionService() {
         }
         val effectiveResumeState = resumeState ?: reusableSnapshot?.state ?: fallbackResumeState
         val restoreCompletedSnapshot = restoreReadySnapshot ||
-            reusableSnapshot != null ||
-            (fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
+            (!engineConfigChangedSinceLastSuccess && reusableSnapshot != null) ||
+            (!engineConfigChangedSinceLastSuccess &&
+                fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
+        // Any change in transcription, translation, or dubbing invalidates the old speech output.
+        // DubbingEngine.attach(forceRegenerateDubbing = true) bypasses both PCM memory and disk
+        // cache hits, even if this engine combination has been used successfully in the past.
+        // If a legacy snapshot cannot be compared, prefer fresh synthesis over potentially stale PCM.
         val regenerateDubbingThisRun = forceRegenerateDubbing ||
             fallbackRestartStage != null ||
-            (reusableSnapshot == null &&
-                (fallbackSnapshot == null || !fallbackCanBeCompared) &&
-                ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key))
+            engineConfigChangedSinceLastSuccess ||
+            (fallbackSnapshot != null && !fallbackCanBeCompared)
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
         val reuseMountedMedia = (effectiveResumeState != null || reuseMountedMediaForRestart) &&
@@ -2578,6 +2587,7 @@ class PlaybackService : MediaSessionService() {
                     fallbackCanBeCompared -> "引擎配置未变化：恢复完整成功结果"
                     else -> "旧快照缺少配置指纹：安全地重新解析"
                 },
+                "自上次成功处理后引擎配置是否变化" to engineConfigChangedSinceLastSuccess.toString(),
                 "本次是否强制重新合成中文配音" to regenerateDubbingThisRun.toString(),
                 "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString(),
                 "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
