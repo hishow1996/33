@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.translatetube.local.data.AppDatabase
+import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.translate.Crypto
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -1270,27 +1271,55 @@ private fun YtDlpUpdateSection() {
                     onClick = {
                         updating = true
                         message = null
-                        scope.launch {
-                            try {
-                                message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
-                            } catch (e: Exception) {
-                                io.translatetube.local.util.AppLogStore.error(
-                                    ctx.applicationContext,
-                                    "YtDlp",
-                                    "更新网页视频解析规则失败",
-                                    e,
-                                    diagnosticContext = mapOf(
-                                        "操作" to "设置页执行规则更新",
-                                        "更新前本机版本" to state.current.orEmpty().ifBlank { "未知" },
-                                        "检查到的最新版本" to state.latest.orEmpty().ifBlank { "未知" },
-                                        "更新阶段" to state.updateStage.orEmpty().ifBlank { "未知" },
-                                        "已下载字节数" to state.downloadedBytes.toString(),
-                                        "总字节数" to (state.totalBytes?.toString() ?: "未知"),
-                                    ),
-                                )
-                                message = "更新失败：" + (e.message ?: "网络错误")
-                            } finally {
-                                updating = false
+                        val backgroundScope =
+                            (ctx.applicationContext as io.translatetube.local.TranslateTubeApp).appScope
+                        val updateJob = try {
+                            ModelDownloadForegroundService.launchExternalTask(
+                                context = ctx.applicationContext,
+                                taskId = "yt-dlp-rules-update",
+                                title = "正在更新 yt-dlp 解析规则",
+                                scope = backgroundScope,
+                            ) {
+                                try {
+                                    message = io.translatetube.local.yt.YtDlpRepo.updateRules(ctx.applicationContext)
+                                } catch (e: Exception) {
+                                    io.translatetube.local.util.AppLogStore.error(
+                                        ctx.applicationContext,
+                                        "YtDlp",
+                                        "更新网页视频解析规则失败",
+                                        e,
+                                        diagnosticContext = mapOf(
+                                            "操作" to "设置页执行规则更新",
+                                            "更新前本机版本" to state.current.orEmpty().ifBlank { "未知" },
+                                            "检查到的最新版本" to state.latest.orEmpty().ifBlank { "未知" },
+                                            "更新阶段" to state.updateStage.orEmpty().ifBlank { "未知" },
+                                            "已下载字节数" to state.downloadedBytes.toString(),
+                                            "总字节数" to (state.totalBytes?.toString() ?: "未知"),
+                                        ),
+                                    )
+                                    message = "更新失败：" + (e.message ?: "网络错误")
+                                } finally {
+                                    updating = false
+                                }
+                            }
+                        } catch (error: Exception) {
+                            io.translatetube.local.util.AppLogStore.error(
+                                ctx.applicationContext,
+                                "BackgroundWebTask",
+                                "无法启动 yt-dlp 规则后台更新",
+                                error,
+                                diagnosticContext = mapOf("任务" to "yt-dlp 规则更新"),
+                            )
+                            null
+                        }
+                        if (updateJob == null) {
+                            updating = false
+                            message = if (
+                                ModelDownloadForegroundService.isExternalTaskActive("yt-dlp-rules-update")
+                            ) {
+                                "解析规则已在后台更新，请稍后查看状态"
+                            } else {
+                                "无法启动后台规则更新，请重试"
                             }
                         }
                     },
