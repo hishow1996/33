@@ -57,13 +57,9 @@ object LocalTranslationEnginePolicy {
         }
     }
 
-    /** OPUS-MT supports direct Chinese output and Japanese/Korean/Russian via an English pivot. */
+    /** Only list OPUS-MT source languages with a verified Android model that outputs Chinese directly. */
     fun supportsOpusSource(languageTag: String): Boolean =
-        canonicalOpusSource(languageTag) in setOf("en", "de", "fi", "sv", "ja", "ko", "ru")
-
-    /** These small CTranslate2 models translate into English before the existing ONNX model outputs Chinese. */
-    fun usesEnglishPivot(languageTag: String): Boolean =
-        canonicalOpusSource(languageTag) in setOf("ja", "ko", "ru")
+        canonicalOpusSource(languageTag) in setOf("en", "de", "fi", "sv")
 }
 
 object LangMap {
