@@ -5488,8 +5488,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 )
             }
             throw IllegalStateException(
-                "当前选择的翻译引擎（配置编号 $activeId）不存在或已停用。请在 API 管理中重新选择；不会自动切换到其他引擎。"
+                "当前选择的翻译引擎（配置编号 $activeId）不存在或已停用。请在 API 管理中重新选择；不会自动切换到其他翻译引擎。"
             )
+        }
+        // Publish the selected engine before model/configuration preflight can fail. This keeps
+        // the five-stage processing UI and its error details aligned with the newly selected engine.
+        updateUiForSession(key, pipelineGeneration) { state ->
+            if (state.key == key) state.copy(engineName = engineName) else state
         }
         // The Google hybrid engine can fall back to offline ML Kit. For these Google paths,
         // an unchanged proper name/acronym is a legitimate "no Chinese text" cue, not a reason
