@@ -414,18 +414,56 @@ class MainActivity : ComponentActivity() {
                                     val live = PlaybackService.ui.value
                                     val currentRequest = playReq.value
                                     val savedTask = pendingResumeTaskState.value ?: loadPendingResumeTask()
+                                    // The activity can be recreated while the foreground playback
+                                    // service keeps processing. In that case playReq may be null or stale,
+                                    // but the service's key/phase/progress are still the live session.
+                                    // Match the persisted source+active pair directly and reconnect to
+                                    // that session instead of calling PlayerScreen.open() for a new run.
+                                    val savedTaskMatchesLive = savedTask != null &&
+                                        live.key == savedTask.activeKey &&
+                                        (taskKey == savedTask.sourceKey || taskKey == savedTask.activeKey)
                                     val belongsToExistingRun = live.phase != Phase.IDLE &&
                                         live.key.isNotBlank() &&
-                                        currentRequest?.key == live.key &&
-                                        (
-                                            taskKey == live.key ||
-                                                taskKey == savedTask?.sourceKey ||
-                                                taskKey == savedTask?.activeKey
-                                            )
+                                        (live.key == taskKey || savedTaskMatchesLive)
                                     if (belongsToExistingRun) {
-                                        // Never mint a new request token for a live run; doing so can
-                                        // restart parsing and send the user to source detection again.
-                                        screen = Screen.PLAYER
+                                        val activeRequest = currentRequest?.takeIf { it.key == live.key }
+                                            ?: when {
+                                                live.key.startsWith("youtube:") ->
+                                                    PlayRequest(videoId = live.key.removePrefix("youtube:"))
+                                                live.key.startsWith("remote:") ->
+                                                    PlayRequest(mediaUrl = live.key.removePrefix("remote:"))
+                                                live.key.startsWith("local:") ->
+                                                    PlayRequest(localUri = live.key.removePrefix("local:"))
+                                                live.key.startsWith("webpage:") ->
+                                                    PlayRequest(webPageUrl = live.key.removePrefix("webpage:"))
+                                                else -> null
+                                            }
+                                        if (activeRequest != null) {
+                                            // ts=0 disables the "new request" path in PlayerScreen.
+                                            // PlaybackService.ui remains authoritative for the current phase.
+                                            playReq.value = activeRequest.copy(
+                                                ts = 0L,
+                                                preferReadyHistoryResume = false,
+                                                showPlayerWhileRestoringHistory = false,
+                                            )
+                                            returnToWebAfterPlayer = false
+                                            webDetectionUrl = null
+                                            screen = if (activeRequest.webPageUrl != null) Screen.WEB else Screen.PLAYER
+                                            io.translatetube.local.util.AppLogStore.info(
+                                                applicationContext,
+                                                "PlaybackFlow",
+                                                "首页恢复现有视频处理会话，继续上次阶段，不重新启动解析管线",
+                                                diagnosticContext = mapOf(
+                                                    "当前处理阶段" to live.phase.name,
+                                                    "当前阶段进度" to live.progress.take(160),
+                                                    "任务会话键是否匹配" to "是",
+                                                    "恢复模式" to "复用现有 PlaybackService 会话",
+                                                ),
+                                            )
+                                            if (live.phase == Phase.READY && savedTask != null) {
+                                                clearPendingResumeTask(savedTask)
+                                            }
+                                        }
                                     } else {
                                         // After a webpage candidate is selected, the pending task keeps
                                         // sourceKey=webpage:<original page> and activeKey=remote:<selected media>.
