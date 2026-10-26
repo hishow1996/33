@@ -227,8 +227,10 @@ internal fun LocalTranslationSection(
             val chineseReady = MlKitModelCoordinator.isDownloaded("zh")
             pairs.associate { pair ->
                 pair.source to when {
-                    ModelDownloadForegroundService.isExternalTaskActive("mlkit-${pair.source}-zh") -> "downloading"
+                    // A successful download can still be inside its task's finally block. Prefer
+                    // the actual installed-file state so a just-completed model never stays spinning.
                     MlKitModelCoordinator.isDownloaded(pair.source) && chineseReady -> "ready"
+                    ModelDownloadForegroundService.isExternalTaskActive("mlkit-${pair.source}-zh") -> "downloading"
                     else -> "missing"
                 }
             }
