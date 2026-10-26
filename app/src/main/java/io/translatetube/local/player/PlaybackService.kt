@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -382,6 +383,12 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var processingNotificationPostCount = 0L
     private var lastProcessingNotificationFingerprint: String? = null
     @Volatile private var lastProcessingNotificationAuditSignature: String? = null
+    /** Keep processing in the foreground even when Media3 no longer needs a playback notification. */
+    @Volatile private var processingForegroundActive = false
+    @Volatile private var latestProcessingNotification: Notification? = null
+    private val audioExtractionWakeLockLock = Any()
+    private var audioExtractionWakeLock: PowerManager.WakeLock? = null
+    @Volatile private var lastProcessingForegroundFailureKey: String? = null
     private val notificationAuditLock = Any()
     private val recentNotificationAuditTrail = java.util.ArrayDeque<String>()
     @Volatile private var mediaNotificationUpdateCount = 0L
@@ -1539,7 +1546,110 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    /**
+     * Keep the CPU awake while a webpage audio stream is being downloaded. The lock is
+     * released immediately on pause, phase change, cancellation, or service destruction.
+     */
+    private fun syncAudioExtractionWakeLock(state: PlayerUiState) {
+        val shouldHold = !processingNotificationShuttingDown &&
+            state.phase == Phase.DOWNLOADING_AUDIO &&
+            !state.isProcessingPaused
+        synchronized(audioExtractionWakeLockLock) {
+            val existing = audioExtractionWakeLock
+            if (!shouldHold) {
+                if (existing?.isHeld == true) runCatching { existing.release() }
+                return
+            }
+            if (existing?.isHeld == true) return
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            val lock = existing ?: powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "TranslateTube:WebAudioExtraction",
+            ).apply {
+                setReferenceCounted(false)
+            }.also {
+                audioExtractionWakeLock = it
+            }
+            // A wake-lock failure must not fail or cancel the media extraction itself.
+            runCatching { lock.acquire() }
+        }
+    }
+
+    private fun releaseAudioExtractionWakeLock() {
+        synchronized(audioExtractionWakeLockLock) {
+            val lock = audioExtractionWakeLock
+            if (lock?.isHeld == true) runCatching { lock.release() }
+            audioExtractionWakeLock = null
+        }
+    }
+
+    private fun promoteProcessingForeground(
+        notification: Notification,
+        state: PlayerUiState,
+        reason: String,
+    ) {
+        try {
+            // PlaybackService is already declared as a mediaPlayback foreground service in the
+            // manifest. Using the processing notification here prevents background demotion while
+            // downloading/extracting an audio track or advancing the remaining parse stages.
+            startForeground(PROCESSING_NOTIFICATION_ID, notification)
+            processingForegroundActive = true
+            lastProcessingForegroundFailureKey = null
+        } catch (failure: Throwable) {
+            if (failure is VirtualMachineError || failure is ThreadDeath) throw failure
+            processingForegroundActive = false
+            runCatching {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                    ?.notify(PROCESSING_NOTIFICATION_ID, notification)
+            }
+            val failureKey = safeDiagnosticSessionFingerprint(state.key) + "|" +
+                state.phase.name + "|" + failure.javaClass.name
+            if (lastProcessingForegroundFailureKey != failureKey) {
+                lastProcessingForegroundFailureKey = failureKey
+                io.translatetube.local.util.AppLogStore.error(
+                    this,
+                    "ProcessingForeground",
+                    "无法将处理进度通知提升为前台服务；已回退为普通进度通知",
+                    failure,
+                    diagnosticContext = mapOf(
+                        "调用位置" to reason,
+                        "当前处理阶段" to state.phase.name,
+                        "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                        "服务类型" to "mediaPlayback",
+                        "异常类型" to failure.javaClass.name,
+                    ),
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "ProcessingForeground",
+                        failureKey,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun releaseProcessingForegroundIfSafe(state: PlayerUiState) {
+        if (!processingForegroundActive) return
+        val playerNeedsForeground = if (playerReady && ::pm.isInitialized) {
+            val player = pm.player
+            player.playWhenReady &&
+                player.playbackState != androidx.media3.common.Player.STATE_IDLE &&
+                player.playbackState != androidx.media3.common.Player.STATE_ENDED
+        } else {
+            state.isPlaying
+        }
+        if (playerNeedsForeground) {
+            // Media3 should keep the service in the foreground for playback.
+            processingForegroundActive = false
+            return
+        }
+        runCatching {
+            stopForeground(android.app.Service.STOP_FOREGROUND_DETACH)
+        }
+        processingForegroundActive = false
+    }
+
     private fun publishProcessingNotification(state: PlayerUiState) {
+        syncAudioExtractionWakeLock(state)
         if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
         val preparationIncomplete = isDubbingPreparationIncomplete(state)
         val shouldShowProcessingNotification = when (state.phase) {
@@ -1550,6 +1660,8 @@ class PlaybackService : MediaSessionService() {
         }
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         if (!shouldShowProcessingNotification) {
+            latestProcessingNotification = null
+            releaseProcessingForegroundIfSafe(state)
             manager.cancel(PROCESSING_NOTIFICATION_ID)
             if (lastProcessingNotificationFingerprint != null) {
                 io.translatetube.local.util.AppLogStore.info(
@@ -1647,7 +1759,10 @@ class PlaybackService : MediaSessionService() {
             ongoing.toString(),
             hasProcessingActions.toString(),
         ).joinToString("\\u001f")
-        if (notificationFingerprint == lastProcessingNotificationFingerprint) return
+        if (notificationFingerprint == lastProcessingNotificationFingerprint) {
+            if (!isProcessingPhase(state.phase)) releaseProcessingForegroundIfSafe(state)
+            return
+        }
 
         val notification = NotificationCompat.Builder(this, CH_MAIN)
             .setSmallIcon(R.drawable.ic_stat_brand)
@@ -1708,27 +1823,34 @@ class PlaybackService : MediaSessionService() {
                 " determinateProgress=" + (measuredPercent != null) +
                 " session=" + safeDiagnosticSessionFingerprint(state.key),
         )
-        try {
-            manager.notify(PROCESSING_NOTIFICATION_ID, notification)
-        } catch (failure: Throwable) {
-            runCatching {
-                io.translatetube.local.util.AppLogStore.error(
-                    this,
-                    "NotificationDiagnostics",
-                    "提交处理进度通知时同步抛出异常",
-                    failure,
-                    diagnosticContext = mapOf(
-                        "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
-                        "通知样式" to "NotificationCompat.BigTextStyle",
-                        "当前处理阶段" to state.phase.name,
-                        "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
-                        "是否包含暂停/取消操作" to hasProcessingActions.toString(),
-                        "是否包含进度条" to (measuredPercent != null).toString(),
-                        "提交线程" to Thread.currentThread().name,
-                    ),
-                )
+        if (isProcessingPhase(state.phase)) {
+            latestProcessingNotification = notification
+            promoteProcessingForeground(notification, state, "处理进度通知更新")
+        } else {
+            latestProcessingNotification = null
+            releaseProcessingForegroundIfSafe(state)
+            try {
+                manager.notify(PROCESSING_NOTIFICATION_ID, notification)
+            } catch (failure: Throwable) {
+                runCatching {
+                    io.translatetube.local.util.AppLogStore.error(
+                        this,
+                        "NotificationDiagnostics",
+                        "提交处理进度通知时同步抛出异常",
+                        failure,
+                        diagnosticContext = mapOf(
+                            "通知 ID" to PROCESSING_NOTIFICATION_ID.toString(),
+                            "通知样式" to "NotificationCompat.BigTextStyle",
+                            "当前处理阶段" to state.phase.name,
+                            "会话指纹" to safeDiagnosticSessionFingerprint(state.key),
+                            "是否包含暂停/取消操作" to hasProcessingActions.toString(),
+                            "是否包含进度条" to (measuredPercent != null).toString(),
+                            "提交线程" to Thread.currentThread().name,
+                        ),
+                    )
+                }
+                throw failure
             }
-            throw failure
         }
         lastProcessingNotificationFingerprint = notificationFingerprint
         lastProcessingNotificationPostedAtMs = android.os.SystemClock.elapsedRealtime()
@@ -1886,6 +2008,29 @@ class PlaybackService : MediaSessionService() {
             }
             throw failure
         }
+        // Media3 may demote this service when the video is not actively playing. Processing is
+        // independent of the visible Activity, so restore the progress notification as the FGS
+        // notification after Media3 has finished updating its own media-control notification.
+        val currentProcessingState = ui.value
+        syncAudioExtractionWakeLock(currentProcessingState)
+        if (isProcessingPhase(currentProcessingState.phase)) {
+            val processingNotice = latestProcessingNotification
+            if (processingNotice != null) {
+                promoteProcessingForeground(
+                    processingNotice,
+                    currentProcessingState,
+                    "Media3 媒体通知更新后恢复前台状态",
+                )
+            } else {
+                publishProcessingNotification(currentProcessingState)
+            }
+        } else if (startInForegroundRequired) {
+            // Media3 now owns foreground status for active playback.
+            processingForegroundActive = false
+        } else {
+            releaseProcessingForegroundIfSafe(currentProcessingState)
+        }
+
         mediaNotificationUpdateCount = updateNumber
         lastMediaNotificationUpdatedAtMs = android.os.SystemClock.elapsedRealtime()
         lastMediaNotificationAuditSignature = signature
@@ -2081,6 +2226,9 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         processingNotificationShuttingDown = true
+        releaseAudioExtractionWakeLock()
+        latestProcessingNotification = null
+        processingForegroundActive = false
         processingNotificationHandler.removeCallbacks(processingNotificationUpdateRunnable)
         synchronized(processingNotificationUpdateLock) {
             processingNotificationUpdatePending = false
