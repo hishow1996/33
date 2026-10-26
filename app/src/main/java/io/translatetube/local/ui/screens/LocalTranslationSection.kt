@@ -606,9 +606,9 @@ internal fun LocalTranslationSection(
                     Text(
                         "下载大小 " + String.format(
                             Locale.ROOT,
-                            "%,d 字节 · %.2f MiB",
+                            "%,d 字节 · %.2f MB",
                             OpusMtModelManager.downloadSizeBytes(),
-                            OpusMtModelManager.downloadSizeBytes() / (1024.0 * 1024.0),
+                            OpusMtModelManager.downloadSizeBytes() / 1_000_000.0,
                         ),
                         color = Color(0xFF64748B),
                         style = MaterialTheme.typography.labelSmall,
@@ -740,9 +740,9 @@ internal fun LocalTranslationSection(
                                     Text(
                                         "下载大小 " + String.format(
                                             Locale.ROOT,
-                                            "%,d 字节 · %.2f MiB",
+                                            "%,d 字节 · %.2f MB",
                                             expectedBytes,
-                                            expectedBytes / (1024.0 * 1024.0),
+                                            expectedBytes / 1_000_000.0,
                                         ),
                                         color = Color(0xFF64748B),
                                         style = MaterialTheme.typography.labelSmall,
