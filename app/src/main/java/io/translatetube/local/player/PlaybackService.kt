@@ -169,6 +169,12 @@ private object ReadyHistorySessionConfigStore {
         }
     }
 
+    fun savedCompositeFingerprint(context: Context, videoKey: String): String? {
+        if (videoKey.isBlank()) return null
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(storageKey(videoKey), null)
+    }
+
     fun savedFingerprints(context: Context, videoKey: String): EngineConfigFingerprints? {
         if (videoKey.isBlank()) return null
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -2353,15 +2359,60 @@ class PlaybackService : MediaSessionService() {
         restoreReadySnapshot: Boolean = false,
         forceRegenerateDubbing: Boolean = false,
     ) {
-        val reusableSnapshot = if (resumeState == null && importedLines == null) {
+        val canRestoreStoredResult = resumeState == null && importedLines == null && key.isNotBlank()
+        val reusableSnapshot = if (canRestoreStoredResult) {
             ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
                 ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
             }
         } else null
-        val effectiveResumeState = resumeState ?: reusableSnapshot?.state
-        val restoreCompletedSnapshot = restoreReadySnapshot || reusableSnapshot != null
+        val fallbackSnapshot = if (canRestoreStoredResult && reusableSnapshot == null) {
+            ReadySessionSnapshotStore.findLatestForVideo(this, key)
+        } else null
+        val fallbackPreviousDomains = fallbackSnapshot?.let { snapshot ->
+            val hasSnapshotFingerprints = snapshot.transcriptionFingerprint.isNotBlank() &&
+                snapshot.translationFingerprint.isNotBlank() &&
+                snapshot.dubbingFingerprint.isNotBlank()
+            when {
+                hasSnapshotFingerprints -> EngineConfigFingerprints(
+                    transcription = snapshot.transcriptionFingerprint,
+                    translation = snapshot.translationFingerprint,
+                    dubbing = snapshot.dubbingFingerprint,
+                )
+                ReadyHistorySessionConfigStore.savedCompositeFingerprint(this, key) == snapshot.fingerprint ->
+                    ReadyHistorySessionConfigStore.savedFingerprints(this, key)
+                else -> null
+            }
+        }
+        val fallbackCurrentDomains = fallbackSnapshot?.let {
+            ReadyHistorySessionConfigStore.fingerprints(this)
+        }
+        val fallbackRestartStage = if (
+            fallbackSnapshot != null &&
+            fallbackPreviousDomains != null &&
+            fallbackCurrentDomains != null
+        ) {
+            chooseEngineRestartStage(
+                previous = fallbackPreviousDomains,
+                current = fallbackCurrentDomains,
+                state = fallbackSnapshot.state,
+                ignoreTranscription = fallbackSnapshot.ignoreTranscription,
+            )
+        } else null
+        val fallbackCanBeCompared = fallbackPreviousDomains != null && fallbackCurrentDomains != null
+        val fallbackResumeState = when {
+            fallbackSnapshot == null || !fallbackCanBeCompared -> null
+            fallbackRestartStage != null ->
+                stateForEngineRestart(fallbackSnapshot.state, fallbackRestartStage)
+            else -> fallbackSnapshot.state
+        }
+        val effectiveResumeState = resumeState ?: reusableSnapshot?.state ?: fallbackResumeState
+        val restoreCompletedSnapshot = restoreReadySnapshot ||
+            reusableSnapshot != null ||
+            (fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
         val regenerateDubbingThisRun = forceRegenerateDubbing ||
-            ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key)
+            fallbackRestartStage != null ||
+            (fallbackSnapshot == null &&
+                ReadyHistorySessionConfigStore.hasEngineConfigChangedSinceLastSuccess(this, key))
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
         val reuseMountedMedia = (effectiveResumeState != null || reuseMountedMediaForRestart) &&
@@ -2445,7 +2496,14 @@ class PlaybackService : MediaSessionService() {
         val originalVolume = audioPrefs.getFloat(PREF_PLAYER_ORIGINAL_VOLUME, 1f).coerceIn(0f, 1f)
         val dubbingVolume = audioPrefs.getFloat(PREF_PLAYER_DUBBING_VOLUME, 1f).coerceIn(0f, 1f)
         ui.value = PlayerUiState(
-            phase = if (restoreCompletedSnapshot) Phase.READY else if (effectiveResumeState != null && effectiveResumeState.lines.isNotEmpty()) Phase.TRANSLATING else Phase.PARSING,
+            phase = when {
+                restoreCompletedSnapshot -> Phase.READY
+                effectiveResumeState == null || effectiveResumeState.lines.isEmpty() -> Phase.PARSING
+                !isChineseLanguage(effectiveResumeState.sourceLang) &&
+                    effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) } ->
+                    Phase.TRANSLATING
+                else -> Phase.SYNTHESIZING
+            },
             processingFlow = effectiveResumeState?.processingFlow ?: when {
                 !importedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
                 videoId != null -> ProcessingFlow.AUTO
@@ -2458,8 +2516,11 @@ class PlaybackService : MediaSessionService() {
             progress = when {
                 restoreCompletedSnapshot -> ""
                 effectiveResumeState == null -> "解析中…"
-                effectiveResumeState.lines.isNotEmpty() -> "恢复已获取的字幕，继续处理未完成的阶段…"
-                else -> "复用现有视频资源，准备重新转写…"
+                effectiveResumeState.lines.isEmpty() -> "复用现有视频资源，准备重新转写…"
+                !isChineseLanguage(effectiveResumeState.sourceLang) &&
+                    effectiveResumeState.lines.any { needsSubtitleTranslation(it, effectiveResumeState.sourceLang) } ->
+                    "恢复已获取的原文字幕，继续翻译…"
+                else -> "原文与中文字幕已就绪，正在准备配音…"
             },
             title = effectiveResumeState?.title.orEmpty(),
             channel = effectiveResumeState?.channel.orEmpty(),
@@ -2508,6 +2569,14 @@ class PlaybackService : MediaSessionService() {
                 "播放请求标记" to requestToken.toString(),
                 "是否使用历史结果恢复" to (effectiveResumeState != null).toString(),
                 "是否直接恢复完整成功会话" to restoreCompletedSnapshot.toString(),
+                "是否发现旧配置成功快照" to (fallbackSnapshot != null).toString(),
+                "跨重启恢复阶段" to when {
+                    reusableSnapshot != null -> "完整成功结果：跳过前四阶段"
+                    fallbackSnapshot == null -> "没有可恢复成功快照"
+                    fallbackRestartStage != null -> fallbackRestartStage.name
+                    fallbackCanBeCompared -> "引擎配置未变化：恢复完整成功结果"
+                    else -> "旧快照缺少配置指纹：安全地重新解析"
+                },
                 "本次是否强制重新合成中文配音" to regenerateDubbingThisRun.toString(),
                 "恢复前字幕行数" to (effectiveResumeState?.lines?.size ?: 0).toString(),
                 "已导入字幕行数" to (importedLinesSnapshot?.size ?: 0).toString(),
@@ -2569,6 +2638,9 @@ class PlaybackService : MediaSessionService() {
                             fingerprint = completedFingerprint,
                             ignoreTranscription = ignoreTranscription,
                             state = finishedState,
+                            transcriptionFingerprint = completedDomainFingerprints.transcription,
+                            translationFingerprint = completedDomainFingerprints.translation,
+                            dubbingFingerprint = completedDomainFingerprints.dubbing,
                         )
                     }
                     completedReadySessionKey = key
@@ -3994,10 +4066,23 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // 首次处理显示字幕读取阶段；完整成功快照恢复时不再展示解析、转写和翻译阶段。
             if (restoreCompletedSnapshot) {
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.READY, progress = "") }
-            } else if (resumeState == null) {
-                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…") }
+            } else if (resumeState == null || resumeState.lines.isEmpty()) {
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(phase = Phase.PARSING, progress = "正在检查本地字幕文件与缓存…")
+                }
             } else {
-                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "继续翻译尚未完成的字幕…") }
+                val resumeNeedsTranslation = !isChineseLanguage(resumeState.sourceLang) &&
+                    resumeState.lines.any { needsSubtitleTranslation(it, resumeState.sourceLang) }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(
+                        phase = if (resumeNeedsTranslation) Phase.TRANSLATING else Phase.SYNTHESIZING,
+                        progress = if (resumeNeedsTranslation) {
+                            "继续翻译尚未完成的字幕…"
+                        } else {
+                            "原文与中文字幕已就绪，正在准备配音…"
+                        },
+                    )
+                }
             }
             // 先读本地缓存，再决定是否请求 YouTube 字幕，避免重试重复下载。
             val storedTranslationCache = if (resumeState == null) db.subtitleCacheDao().get(translationCacheKey) else null
