@@ -73,6 +73,8 @@ internal fun LocalTranslationSection(
         mutableStateOf(
             sourceLanguagePrefs.getString("single_pair_manual_source_language", null)
                 ?.takeIf { it in singlePairSupportedSources }
+                ?: sourceLanguagePrefs.getString("translation_source_language", null)
+                    ?.takeIf { it in singlePairSupportedSources }
                 ?: "ja"
         )
     }

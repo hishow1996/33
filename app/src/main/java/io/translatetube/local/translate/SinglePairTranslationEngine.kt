@@ -42,14 +42,13 @@ class SinglePairTranslationEngine(private val context: Context) : TranslationEng
 
         val normalizedSource = SourceLanguagePolicy.sourceForTranslation(srcLang)
         val sourceUndetermined = SourceLanguagePolicy.isUndetermined(normalizedSource)
-        val detectedSource = if (sourceUndetermined) {
-            val scriptHint = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(sampleLines)
-            if (!SourceLanguagePolicy.isUndetermined(scriptHint)) {
-                scriptHint
-            } else {
-                MlKitSourceLanguageIdentifier.detect(sampleLines)
-            }
-        } else normalizedSource
+        val scriptHint = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(sampleLines)
+        // Trust a distinctive supported source script over a possibly stale provider/track hint.
+        val detectedSource = when {
+            SinglePairModelLanguagePolicy.supportsSource(scriptHint) -> scriptHint
+            sourceUndetermined -> MlKitSourceLanguageIdentifier.detect(sampleLines)
+            else -> normalizedSource
+        }
 
         if (SourceLanguagePolicy.isUndetermined(detectedSource)) {
             throw IllegalStateException(
