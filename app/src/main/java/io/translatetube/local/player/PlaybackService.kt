@@ -1525,11 +1525,14 @@ class PlaybackService : MediaSessionService() {
      * @param ensureCurrent 每次等待之后检查会话是否仍然有效，失效时抛出取消。
      */
     private fun isDubbingPlaybackBlocked(state: PlayerUiState): Boolean =
-        state.dubbingOn && (
-            state.waitingForDubbingEngine ||
-                state.dubbingHasErrors ||
-                state.phase == Phase.ERROR
-            )
+        // Never let a pending seek/resume or external media-control action start the source
+        // while ASR is waiting for the user to select/install/configure a transcription engine.
+        state.waitingForTranscriptionEngine ||
+            (state.dubbingOn && (
+                state.waitingForDubbingEngine ||
+                    state.dubbingHasErrors ||
+                    state.phase == Phase.ERROR
+                ))
 
     private suspend fun startPlaybackWithMountedDubbing(
         seekToMs: Long?,
@@ -4434,11 +4437,34 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                             noModelHint = hint,
                             waitingForTranscriptionEngine = true,
                             waitingForDubbingEngine = false,
+                            isPlaying = false,
                             phase = if (it.phase == Phase.ERROR) it.phase else Phase.TRANSCRIBING,
                             progress = "视频音频已提取完成；转写等待引擎就绪" +
                                 if (asrProvider == "local") "（设置 → 转写引擎 → 本地转写）" else "（设置 → 转写引擎）",
                         )
                     }
+                    // Stop here instead of falling through with an empty transcript. Falling
+                    // through skipped transcription/translation/dubbing and reached the final
+                    // auto-play block, which started a local video as original-audio playback.
+                    ensureCurrentSession(key, pipelineGeneration)
+                    withContext(Dispatchers.Main.immediate) {
+                        ensureCurrentSession(key, pipelineGeneration)
+                        pm.pause()
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "转写引擎未就绪，已暂停视频并停在转写阶段等待设置",
+                        diagnosticContext = mapOf(
+                            "视频来源" to if (localUri != null) "本地视频" else if (remoteMediaUrl != null) "网页视频" else "YouTube",
+                            "当前阶段" to Phase.TRANSCRIBING.name,
+                            "转写引擎配置" to asrProvider,
+                            "等待本地模型" to missingLocalModel.toString(),
+                            "等待云端 API Key" to missingCloudKey.toString(),
+                            "自动播放" to "禁止；设置变更后重新处理并进入第五阶段",
+                        ),
+                    )
+                    return
                 } else {
                 val partialAsrCacheKey = "${sourceSubtitleCacheKey}|asr-progress-v2"
 
