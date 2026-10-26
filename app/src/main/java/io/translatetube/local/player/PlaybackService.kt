@@ -3844,12 +3844,24 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             var srcLang = resumeState?.sourceLang.orEmpty()
             if (resumeState != null) {
                 // Keep current metadata for selective restarts. An empty snapshot means the ASR
-                // stage is rerunning; populated captions resume at translation or dubbing.
+                // stage is rerunning; populated captions resume at translation only when their
+                // Chinese text is missing, otherwise go straight to dubbing.
                 val restartingTranscription = resumeState.lines.isEmpty()
+                val restartingTranslation = !restartingTranscription &&
+                    !isChineseLanguage(srcLang) &&
+                    resumeState.lines.any { needsSubtitleTranslation(it, srcLang) }
                 updateUiForSession(key, pipelineGeneration) {
                     it.copy(
-                        phase = if (restartingTranscription) Phase.PARSING else Phase.TRANSLATING,
-                        progress = if (restartingTranscription) "复用已有视频信息，准备重新转写…" else "继续处理已获取的字幕…",
+                        phase = when {
+                            restartingTranscription -> Phase.PARSING
+                            restartingTranslation -> Phase.TRANSLATING
+                            else -> Phase.SYNTHESIZING
+                        },
+                        progress = when {
+                            restartingTranscription -> "复用已有视频信息，准备重新转写…"
+                            restartingTranslation -> "恢复已获取的原文字幕，继续翻译…"
+                            else -> "原文与中文字幕已就绪，正在准备配音…"
+                        },
                         sourceLang = srcLang,
                         error = null,
                     )
