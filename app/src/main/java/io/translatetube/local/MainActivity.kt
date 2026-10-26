@@ -446,8 +446,22 @@ class MainActivity : ComponentActivity() {
                                                 preferReadyHistoryResume = false,
                                                 showPlayerWhileRestoringHistory = false,
                                             )
-                                            returnToWebAfterPlayer = false
-                                            webDetectionUrl = null
+                                            val resumeToExistingWebPage = savedTask != null &&
+                                                savedTask.sourceKey.startsWith("webpage:") &&
+                                                savedTask.activeKey == live.key &&
+                                                live.key.startsWith("remote:")
+                                            if (resumeToExistingWebPage) {
+                                                // Keep the already-mounted WebView and its detected cards.
+                                                // Only recover the original URL if this Activity had no
+                                                // in-memory page (for example, after process recreation).
+                                                if (webDetectionUrl.isNullOrBlank()) {
+                                                    webDetectionUrl = savedTask!!.sourceKey.removePrefix("webpage:")
+                                                }
+                                                returnToWebAfterPlayer = !webDetectionUrl.isNullOrBlank()
+                                            } else {
+                                                returnToWebAfterPlayer = false
+                                                webDetectionUrl = null
+                                            }
                                             screen = if (activeRequest.webPageUrl != null) Screen.WEB else Screen.PLAYER
                                             io.translatetube.local.util.AppLogStore.info(
                                                 applicationContext,
