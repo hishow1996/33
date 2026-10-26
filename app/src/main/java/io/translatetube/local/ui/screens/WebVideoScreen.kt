@@ -77,6 +77,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import io.translatetube.local.TranslateTubeApp
+import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.web.PikpakShare.PikpakEntry
 import io.translatetube.local.web.PikpakShare
 import io.translatetube.local.web.WebMediaUrlPolicy
@@ -86,6 +88,7 @@ import io.translatetube.local.web.BilibiliNativeResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -240,6 +243,7 @@ fun WebVideoScreen(
     onOpenMedia: (mediaUrl: String, title: String, referrer: String, cookie: String?, userAgent: String?) -> Unit,
 ) {
     val appCtx = LocalContext.current.applicationContext
+    val backgroundScope = remember(appCtx) { (appCtx as TranslateTubeApp).appScope }
     var address by remember(initialUrl) { mutableStateOf(initialUrl) }
     var currentPage by remember(initialUrl) { mutableStateOf(initialUrl) }
     val candidatesState = remember { mutableStateOf<List<WebVideoCandidate>>(emptyList()) }
@@ -558,7 +562,30 @@ fun WebVideoScreen(
     }
 
     // ---- yt-dlp 兜底解析：网页直链/HLS 检测不到时，交给 yt-dlp 处理（B站/TikTok/Twitter 等） ----
-    val ytScope = rememberCoroutineScope()
+    fun launchTrackedWebTask(
+        taskId: String,
+        title: String,
+        block: suspend () -> Unit,
+    ): Job? {
+        return try {
+            ModelDownloadForegroundService.launchExternalTask(
+                context = appCtx,
+                taskId = taskId,
+                title = title,
+                scope = backgroundScope,
+                block = block,
+            )
+        } catch (error: Exception) {
+            io.translatetube.local.util.AppLogStore.error(
+                appCtx,
+                "BackgroundWebTask",
+                "启动后台网页任务失败",
+                error,
+                diagnosticContext = mapOf("任务" to title, "任务编号" to taskId),
+            )
+            null
+        }
+    }
     var ytDlpBusy by remember(initialUrl) { mutableStateOf(false) }
     var ytDlpAutoAttempts by remember(initialUrl) { mutableStateOf(0) }
     var ytDlpHint by remember(initialUrl) { mutableStateOf<String?>(null) }
@@ -650,7 +677,10 @@ fun WebVideoScreen(
         )
         val requestGeneration = pageGeneration.get()
         val runGeneration = ytDlpRunGeneration.incrementAndGet()
-        val job = ytScope.launch(Dispatchers.IO) {
+        val job = launchTrackedWebTask(
+            taskId = "yt-dlp-resolve-$runGeneration",
+            title = "正在解析网页视频",
+        ) {
             try {
                 // 透传 WebView 里的站点 Cookie（登录态），提高需登录站点的解析成功率
                 val cookieHeader = runCatching {
@@ -741,7 +771,10 @@ fun WebVideoScreen(
                     if (io.translatetube.local.yt.YtDlpRepo.updateState.value.hasUpdate && !rulesUpdatedForRetry) {
                         rulesUpdatedForRetry = true
                         status = "检测到 yt-dlp 有新版解析规则，正在自动更新（约 30MB）…"
-                        ytScope.launch(Dispatchers.IO) {
+                        val updateJob = launchTrackedWebTask(
+                            taskId = "yt-dlp-rules-update",
+                            title = "正在更新 yt-dlp 解析规则",
+                        ) {
                             try {
                                 io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
                             } catch (updateError: Exception) {
@@ -760,7 +793,7 @@ fun WebVideoScreen(
                                 mainHandler.post {
                                     status = "解析规则自动更新失败，可稍后在设置里手动更新后重试。"
                                 }
-                                return@launch
+                                return@launchTrackedWebTask
                             }
                             mainHandler.post {
                                 if (screenActive.get() && pageGeneration.get() == requestGeneration && !ytDlpBusy) {
@@ -769,9 +802,18 @@ fun WebVideoScreen(
                                 }
                             }
                         }
+                        if (updateJob == null) {
+                            status = "解析规则已在其他后台任务中更新；完成后可重试解析。"
+                        }
                     }
                 }
             }
+        }
+        if (job == null) {
+            ytDlpBusy = false
+            ytDlpHint = "无法启动后台解析任务，请稍后重试。"
+            status = ytDlpHint.orEmpty()
+            return
         }
         ytDlpJob = job
     }
@@ -2289,7 +2331,10 @@ fun WebVideoScreen(
                                         ytDlpUpdatingRules = true
                                         ytDlpHint = null
                                         status = "正在更新 yt-dlp 解析规则（约 30MB，请稍候）…"
-                                        ytScope.launch(Dispatchers.IO) {
+                                        val updateJob = launchTrackedWebTask(
+                                            taskId = "yt-dlp-rules-update",
+                                            title = "正在更新 yt-dlp 解析规则",
+                                        ) {
                                             try {
                                                 val message = io.translatetube.local.yt.YtDlpRepo.updateRules(appCtx)
                                                 mainHandler.post {
@@ -2316,6 +2361,10 @@ fun WebVideoScreen(
                                                     status = "规则更新失败，可稍后重试。"
                                                 }
                                             }
+                                        }
+                                        if (updateJob == null) {
+                                            ytDlpUpdatingRules = false
+                                            status = "解析规则已在其他后台任务中更新；完成后可重试。"
                                         }
                                     },
                                 ) {
