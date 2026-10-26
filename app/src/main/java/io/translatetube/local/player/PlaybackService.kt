@@ -386,8 +386,8 @@ class PlaybackService : MediaSessionService() {
     /** Keep processing in the foreground even when Media3 no longer needs a playback notification. */
     @Volatile private var processingForegroundActive = false
     @Volatile private var latestProcessingNotification: Notification? = null
-    private val audioExtractionWakeLockLock = Any()
-    private var audioExtractionWakeLock: PowerManager.WakeLock? = null
+    private val processingWakeLockLock = Any()
+    private var processingWakeLock: PowerManager.WakeLock? = null
     @Volatile private var lastProcessingForegroundFailureKey: String? = null
     private val notificationAuditLock = Any()
     private val recentNotificationAuditTrail = java.util.ArrayDeque<String>()
@@ -1547,15 +1547,18 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
-     * Keep the CPU awake while a webpage audio stream is being downloaded. The lock is
-     * released immediately on pause, phase change, cancellation, or service destruction.
+     * Keep CPU time available for the entire active processing pipeline, not just network
+     * downloads. Local ASR/translation and speech preparation can continue with the screen off.
+     * Pausing or finishing processing releases the lock to avoid unnecessary battery use.
      */
-    private fun syncAudioExtractionWakeLock(state: PlayerUiState) {
+    private fun syncProcessingWakeLock(state: PlayerUiState) {
+        val hasActiveWork = isProcessingPhase(state.phase) ||
+            (state.phase == Phase.READY && isDubbingPreparationIncomplete(state))
         val shouldHold = !processingNotificationShuttingDown &&
-            state.phase == Phase.DOWNLOADING_AUDIO &&
+            hasActiveWork &&
             !state.isProcessingPaused
-        synchronized(audioExtractionWakeLockLock) {
-            val existing = audioExtractionWakeLock
+        synchronized(processingWakeLockLock) {
+            val existing = processingWakeLock
             if (!shouldHold) {
                 if (existing?.isHeld == true) runCatching { existing.release() }
                 return
@@ -1564,22 +1567,22 @@ class PlaybackService : MediaSessionService() {
             val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
             val lock = existing ?: powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
-                "TranslateTube:WebAudioExtraction",
+                "TranslateTube:Processing",
             ).apply {
                 setReferenceCounted(false)
             }.also {
-                audioExtractionWakeLock = it
+                processingWakeLock = it
             }
             // A wake-lock failure must not fail or cancel the media extraction itself.
             runCatching { lock.acquire() }
         }
     }
 
-    private fun releaseAudioExtractionWakeLock() {
-        synchronized(audioExtractionWakeLockLock) {
-            val lock = audioExtractionWakeLock
+    private fun releaseProcessingWakeLock() {
+        synchronized(processingWakeLockLock) {
+            val lock = processingWakeLock
             if (lock?.isHeld == true) runCatching { lock.release() }
-            audioExtractionWakeLock = null
+            processingWakeLock = null
         }
     }
 
@@ -1649,7 +1652,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun publishProcessingNotification(state: PlayerUiState) {
-        syncAudioExtractionWakeLock(state)
+        syncProcessingWakeLock(state)
         if (processingNotificationShuttingDown || (!playerReady && state.phase == Phase.IDLE)) return
         val preparationIncomplete = isDubbingPreparationIncomplete(state)
         val shouldShowProcessingNotification = when (state.phase) {
@@ -2012,7 +2015,7 @@ class PlaybackService : MediaSessionService() {
         // independent of the visible Activity, so restore the progress notification as the FGS
         // notification after Media3 has finished updating its own media-control notification.
         val currentProcessingState = ui.value
-        syncAudioExtractionWakeLock(currentProcessingState)
+        syncProcessingWakeLock(currentProcessingState)
         if (isProcessingPhase(currentProcessingState.phase)) {
             val processingNotice = latestProcessingNotification
             if (processingNotice != null) {
@@ -2226,7 +2229,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         processingNotificationShuttingDown = true
-        releaseAudioExtractionWakeLock()
+        releaseProcessingWakeLock()
         latestProcessingNotification = null
         processingForegroundActive = false
         processingNotificationHandler.removeCallbacks(processingNotificationUpdateRunnable)
