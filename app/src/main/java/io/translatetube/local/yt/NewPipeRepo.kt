@@ -542,6 +542,10 @@ object NewPipeRepo {
     /** 播放用：完整 StreamInfo（videoOnly/muxed/audio 由上层挑） */
     suspend fun streams(videoId: String): StreamInfo = info(videoId)
 
+    /** 暴露原声音轨语言提示，供播放流程检查旧字幕/转写缓存是否与原声语言一致。 */
+    suspend fun sourceAudioLanguageHint(videoId: String): String? =
+        sourceLanguageHint(info(videoId))
+
     /** 转写用音频流：优先 M4A 的最低有效码率，减少下载时间与缓存占用。 */
     suspend fun audioForAsr(videoId: String): AudioStream? {
         val streams = info(videoId).audioStreams
