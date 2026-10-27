@@ -655,7 +655,7 @@ internal fun isThinkingControlRejected(error: Throwable): Boolean {
         .lowercase(java.util.Locale.ROOT)
     // Only retry explicit client-side parameter rejections. Never turn rate limits, auth,
     // network timeout, missing routes, or upstream failures into a duplicate paid request.
-    val httpStatus = Regex("""\\bhttp\\s+(\\d{3})\\b""", RegexOption.IGNORE_CASE)
+    val httpStatus = Regex("""\bhttp\s+(\d{3})\b""", RegexOption.IGNORE_CASE)
         .find(detail)?.groupValues?.getOrNull(1)?.toIntOrNull()
     if (httpStatus != null && httpStatus !in setOf(400, 422)) return false
 
