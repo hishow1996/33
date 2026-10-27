@@ -4,7 +4,11 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import io.translatetube.local.subs.MlKitSourceLanguageIdentifier
@@ -17,6 +21,7 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -562,6 +567,9 @@ class MlKitEngine : TranslationEngine {
 
     private var activePair: String? = null
     private var activeTranslator: Translator? = null
+    // A translator must not be closed/replaced while a subtitle batch is using it.
+    private val translationMutex = Mutex()
+    private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private suspend fun ensureModel(lang: String) {
         MlKitModelCoordinator.ensureDownloaded(lang)
@@ -618,19 +626,27 @@ class MlKitEngine : TranslationEngine {
     }
 
     override fun close() {
-        synchronized(this) {
-            activeTranslator?.close()
-            activeTranslator = null
-            activePair = null
+        // The interface is synchronous, but ML Kit operations are suspend-based. Defer closing
+        // until the current batch is complete instead of invalidating an in-flight translator.
+        closeScope.launch {
+            translationMutex.withLock {
+                synchronized(this@MlKitEngine) {
+                    activeTranslator?.close()
+                    activeTranslator = null
+                    activePair = null
+                }
+            }
         }
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> {
         if (lines.isEmpty()) return emptyList()
-        val source = validateConfiguration(srcLang, tgtLang, lines)
-        val target = LangMap.mlkit(tgtLang)
-        val translator = translatorFor(source, target)
-        return lines.map { if (it.isBlank()) "" else translator.translate(it).await() }
+        return translationMutex.withLock {
+            val source = validateConfiguration(srcLang, tgtLang, lines)
+            val target = LangMap.mlkit(tgtLang)
+            val translator = translatorFor(source, target)
+            lines.map { if (it.isBlank()) "" else translator.translate(it).await() }
+        }
     }
 }
 
