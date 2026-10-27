@@ -55,10 +55,6 @@ internal fun buildContextUserPrompt(
 }
 
 /**
- * Recognize only parser/alignment failures that can improve by lowering the LLM request size.
- * Authentication, quota, transport and server errors must keep their normal error path.
- */
-/**
  * Whether a compatible chat endpoint returned an assistant message without usable final text.
  * This is narrow on purpose: only this response-shape failure may try one alternate request
  * control style; provider, quota, authentication and transport errors must not be duplicated.
@@ -72,6 +68,10 @@ internal fun isEmptyAssistantContentResponse(error: Throwable): Boolean {
             detail.contains("message 缺少 content 字段"))
 }
 
+/**
+ * Recognize only parser/alignment failures that can improve by lowering the LLM request size.
+ * Authentication, quota, transport and server errors must keep their normal error path.
+ */
 internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
     val message = error.message.orEmpty()
     val normalized = message.lowercase(java.util.Locale.ROOT)
