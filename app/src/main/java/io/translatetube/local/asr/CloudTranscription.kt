@@ -122,6 +122,39 @@ object CloudTranscription {
         return value.takeUnless(SourceLanguagePolicy::isUndetermined)
     }
 
+    private val cartesiaSourceLanguageCodes = setOf(
+        "en", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru", "it", "hi", "ar",
+        "nl", "tr", "pl", "vi", "th", "id", "fi", "uk", "sv", "da", "no", "nn",
+    )
+    private val kawaSourceLanguageCodes = cartesiaSourceLanguageCodes - "nn"
+
+    /**
+     * YouTube audio metadata is more authoritative than an unrelated saved ASR language setting.
+     * Return null when metadata is unknown or the selected provider cannot be safely given that
+     * language; callers then use automatic detection instead of silently forcing English.
+     */
+    internal fun youtubeSourceLanguageHint(provider: String, audioLanguage: String?): String? {
+        val normalized = SourceLanguagePolicy.normalizeTag(audioLanguage.orEmpty())
+        if (SourceLanguagePolicy.isUndetermined(normalized)) return null
+        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        return when (provider) {
+            "elevenlabs" -> elevenLabsLanguageCode(primary)
+            "cartesia" -> cartesiaLanguageCode(primary)?.takeIf { it in cartesiaSourceLanguageCodes }
+            "kawa" -> kawaLanguageCode(primary)?.takeIf { it in kawaSourceLanguageCodes }
+            else -> null
+        }
+    }
+
+    /** ElevenLabs accepts an optional ISO-639-1/3 hint; null keeps its automatic language detection. */
+    internal fun elevenLabsLanguageCode(language: String): String? {
+        val normalized = SourceLanguagePolicy.normalizeTag(language)
+        if (SourceLanguagePolicy.isUndetermined(normalized)) return null
+        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        return primary.takeIf { code ->
+            code.length in 2..3 && code.all { it in 'a'..'z' }
+        }
+    }
+
     private val kawaJobIdPattern = Regex("[A-Za-z0-9_-]{1,256}")
 
     /** Keep server-returned job IDs inside one fixed path segment before attaching the API key. */
@@ -455,6 +488,7 @@ object CloudTranscription {
             .apply {
                 if (provider == "elevenlabs") {
                     addFormDataPart("model_id", "scribe_v2")
+                    elevenLabsLanguageCode(language)?.let { addFormDataPart("language_code", it) }
                     addFormDataPart("tag_audio_events", "false")
                     addFormDataPart("timestamps_granularity", "word")
                 } else {
