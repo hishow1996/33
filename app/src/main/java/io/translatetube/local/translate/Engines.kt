@@ -34,6 +34,7 @@ private val http: OkHttpClient = OkHttpClient.Builder()
 
 /** 批间衔接时携带的上批尾部行数（原文+译文对照）。 */
 private const val CONTEXT_LINES = 3
+private const val SLOW_TRANSLATION_REQUEST_WARNING_MS = 8_000L
 
 /**
  * 组装带上一批上下文的用户提示词。上下文仅供模型保持译名/指代连贯，
@@ -606,7 +607,7 @@ internal fun thinkingControlOrder(baseUrl: String, model: String): List<Thinking
  * Detect provider errors caused by a thinking-control parameter that the provider/model does not
  * support. Other HTTP errors must not trigger a series of repeated translation requests.
  */
-private fun isThinkingControlRejected(error: Throwable): Boolean {
+internal fun isThinkingControlRejected(error: Throwable): Boolean {
     val detail = generateSequence(error) { it.cause }
         .take(8)
         .joinToString(" ") { it.message.orEmpty() }
@@ -758,6 +759,7 @@ class OpenAiCompatEngine(
         for (style in thinkingControlOrder(baseUrl, model)) {
             currentCoroutineContext().ensureActive()
             val requestPayload = payloadWithThinkingControl(payload, style)
+            val startedAtNanos = System.nanoTime()
             try {
                 val responseBody = post(
                     endpoint("/chat/completions"),
@@ -765,17 +767,45 @@ class OpenAiCompatEngine(
                     requestPayload.toString(),
                     ownerJob,
                 )
-                return extractOpenAiCompatContent(responseBody)
+                val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000L
+                if (elapsedMs >= SLOW_TRANSLATION_REQUEST_WARNING_MS) {
+                    android.util.Log.w(
+                        "TranslationAPI",
+                        "Slow model response: model=${model.take(100)}, thinkingControl=$style, elapsedMs=$elapsedMs",
+                    )
+                }
+                val content = try {
+                    extractOpenAiCompatContent(responseBody)
+                } catch (reasoningOnly: ReasoningOnlyResponseException) {
+                    lastReasoningOnly = reasoningOnly
+                    android.util.Log.w(
+                        "TranslationAPI",
+                        "Response had reasoning but no final text: model=${model.take(100)}, " +
+                            "thinkingControl=$style, elapsedMs=$elapsedMs",
+                    )
+                    continue
+                }
+                return content
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (reasoningOnly: ReasoningOnlyResponseException) {
-                lastReasoningOnly = reasoningOnly
-                // Try the next common disable-thinking request style.
             } catch (error: Exception) {
+                val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000L
                 if (style != ThinkingControlStyle.PLAIN && isThinkingControlRejected(error)) {
                     lastRejectedControl = error
-                    // This gateway/model does not recognize this control field; try another shape.
+                    android.util.Log.w(
+                        "TranslationAPI",
+                        "Provider rejected thinking control: model=${model.take(100)}, " +
+                            "thinkingControl=$style, elapsedMs=$elapsedMs",
+                    )
                 } else {
+                    if (elapsedMs >= SLOW_TRANSLATION_REQUEST_WARNING_MS) {
+                        android.util.Log.w(
+                            "TranslationAPI",
+                            "Translation request failed after ${elapsedMs}ms: " +
+                                "model=${model.take(100)}, thinkingControl=$style, " +
+                                "errorType=${error.javaClass.simpleName}",
+                        )
+                    }
                     throw error
                 }
             }
