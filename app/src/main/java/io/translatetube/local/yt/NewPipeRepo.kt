@@ -545,7 +545,10 @@ object NewPipeRepo {
             .mapNotNull { it.audioLocale?.toLanguageTag() }
             .toList()
         val fallbackAudioLanguages = audioStreams.asSequence()
-            .filter { it.audioTrackType != AudioTrackType.DUBBED }
+            .filter {
+                it.audioTrackType == null ||
+                    it.audioTrackType == AudioTrackType.ORIGINAL
+            }
             .mapNotNull { it.audioLocale?.toLanguageTag() }
             .toList()
         val streamLanguage = runCatching { streamInfo.languageInfo?.toLanguageTag() }.getOrNull()
