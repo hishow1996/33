@@ -187,7 +187,7 @@ object AppLogTitleResolver {
             return "下载失败"
         }
         if (normalizedTag.contains("dubbingengine") && message == "配音 PCM 缓存预检完成") {
-            return "PCM 缓存预检完成"
+            return "PCM 预检完成"
         }
         return null
     }
