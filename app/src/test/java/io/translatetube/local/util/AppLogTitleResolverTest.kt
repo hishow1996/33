@@ -1,26 +1,27 @@
 package io.translatetube.local.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppLogTitleResolverTest {
     @Test
-    fun dubbingTitleNamesTheSpecificOutputStage() {
+    fun dubbingTitlesNameTheSpecificOperationWithoutRepeatingTheModule() {
         assertEquals(
-            "配音 / PCM 合成与缓存：配音 PCM 缓存预检完成",
+            "配音缓存：PCM 预检完成",
             AppLogTitleResolver.title("DubbingEngine", "配音 PCM 缓存预检完成"),
         )
         assertEquals(
-            "配音 / 音频混流：配音混流处理器写入缓冲失败",
+            "配音混流：写入缓冲失败",
             AppLogTitleResolver.title("DubbingMixer", "配音混流处理器写入缓冲失败"),
         )
         assertEquals(
-            "配音 / 系统 TTS 朗读：系统 TTS 朗读失败",
+            "系统 TTS：朗读失败",
             AppLogTitleResolver.title("DubbingEngine", "系统 TTS 朗读失败"),
         )
         assertEquals(
-            "配音 / 译文缺失与原声回退：播放第 7/20 句时未检测到可播放中文配音，已恢复原声",
+            "配音回退：第 7/20 句无可用配音，已恢复原声",
             AppLogTitleResolver.title(
                 "DubbingFallback",
                 "播放第 7/20 句时未检测到可播放中文配音，已恢复原声",
@@ -29,31 +30,62 @@ class AppLogTitleResolverTest {
     }
 
     @Test
-    fun sourceDetectionTitlesDistinguishAudioTrackRecognition() {
+    fun sourceDetectionTitlesIdentifyTheRecognizedResource() {
         assertEquals(
-            "视频源检测 / 音轨识别：检测到网页独立音轨",
+            "网页音轨：已识别独立音轨",
             AppLogTitleResolver.title("WebAudioSource", "检测到网页独立音轨"),
         )
     }
 
     @Test
-    fun ytdlpUpdateGetsItsOwnFeatureTitle() {
+    fun ytdlpUpdateTitleStatesTheExactFailure() {
         assertEquals(
-            "yt-dlp / 版本检查与更新：yt-dlp 更新下载失败",
+            "yt-dlp 更新：下载失败",
             AppLogTitleResolver.title("YtDlpUpdater", "yt-dlp 更新下载失败"),
         )
     }
 
     @Test
-    fun unknownTagsStillHaveAReadableModuleTitle() {
-        val title = AppLogTitleResolver.title("CustomAudioManager", "初始化完成")
-        assertTrue(title.startsWith("功能日志 / Custom Audio Manager："))
+    fun selfDescribingMessagesAreNotPrefixedTwice() {
+        assertEquals(
+            "字幕翻译失败：接口返回空内容",
+            AppLogTitleResolver.title("Translation", "字幕翻译失败：接口返回空内容"),
+        )
     }
 
     @Test
-    fun blankMessageFallsBackToOriginalTag() {
+    fun genericFailureIncludesOnlyAConciseRootCause() {
         assertEquals(
-            "诊断日志 / 记录与写入：AppLogStore",
+            "字幕翻译：接口请求失败（原因：HTTP 429 Too Many Requests）",
+            AppLogTitleResolver.title(
+                "Translation",
+                "接口请求失败 | IllegalStateException: 包装异常；根因=HttpException: HTTP 429 Too Many Requests",
+            ),
+        )
+    }
+
+    @Test
+    fun titlesHaveALengthLimitAndDoNotShowTheExceptionChain() {
+        val longMessage = "接口请求失败，服务器返回了非常长的诊断说明，用于验证列表标题不会持续增长或挤满整个屏幕".repeat(3) +
+            " | IllegalStateException: wrapper；根因=IOException: hidden root cause"
+        val title = AppLogTitleResolver.title("Translation", longMessage)
+        assertTrue(title.codePointCount(0, title.length) <= 72)
+        assertFalse(title.contains("hidden root cause"))
+        assertFalse(title.contains("IllegalStateException"))
+    }
+
+    @Test
+    fun unknownTagsRemainReadable() {
+        assertEquals(
+            "Custom Audio Manager：初始化完成",
+            AppLogTitleResolver.title("CustomAudioManager", "初始化完成"),
+        )
+    }
+
+    @Test
+    fun blankMessageGetsAUsefulFallbackTitle() {
+        assertEquals(
+            "日志记录：未提供日志摘要",
             AppLogTitleResolver.title("AppLogStore", ""),
         )
     }
