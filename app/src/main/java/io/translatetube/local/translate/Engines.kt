@@ -1022,6 +1022,26 @@ internal fun extractOpenAiCompatContent(body: String): String {
     )
 }
 
+/**
+ * Build endpoints for OpenAI-compatible APIs without injecting a second version segment.
+ *
+ * Most providers use an unversioned Base URL and require /v1, while some providers
+ * (including Zhipu's /api/paas/v4 and gateways ending in /api/v3) include the API
+ * version in the Base URL already. In that case, append the resource path directly.
+ */
+internal fun openAiCompatEndpoint(baseUrl: String, path: String): String {
+    val base = baseUrl.trim().trimEnd('/')
+    require(base.isNotEmpty()) { "API Base URL 不能为空" }
+
+    val basePath = runCatching { java.net.URI(base).path.orEmpty().trimEnd('/') }
+        .getOrDefault("")
+    val finalPathSegment = basePath.substringAfterLast('/')
+    val hasExplicitVersion = finalPathSegment.startsWith("v") &&
+        finalPathSegment.length > 1 && finalPathSegment.drop(1).all { it in '0'..'9' }
+    val apiRoot = if (hasExplicitVersion) base else "$base/v1"
+    return "$apiRoot/${path.trimStart('/')}"
+}
+
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
 class OpenAiCompatEngine(
     private val baseUrl: String,
@@ -1161,10 +1181,8 @@ class OpenAiCompatEngine(
         )
     }
 
-    private fun endpoint(path: String): String {
-        val b = baseUrl.trimEnd('/')
-        return if (b.endsWith("/v1")) b + path else "$b/v1$path"
-    }
+    private fun endpoint(path: String): String =
+        openAiCompatEndpoint(baseUrl, path)
 
     override suspend fun listModels(): List<String> {
         val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"), currentCoroutineContext()[Job])

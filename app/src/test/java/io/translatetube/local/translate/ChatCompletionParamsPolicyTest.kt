@@ -72,4 +72,37 @@ class ChatCompletionParamsPolicyTest {
         assertFalse(ChatCompletionParamsPolicy.isLengthTruncation("未知"))
         assertFalse(ChatCompletionParamsPolicy.isLengthTruncation(null))
     }
+
+    @Test
+    fun zhipuV4BaseDoesNotGetAnExtraV1Segment() {
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            openAiCompatEndpoint("https://open.bigmodel.cn/api/paas/v4", "/chat/completions")
+        )
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/models",
+            openAiCompatEndpoint("https://open.bigmodel.cn/api/paas/v4/", "/models")
+        )
+    }
+
+    @Test
+    fun alreadyVersionedCompatibleBaseKeepsItsVersion() {
+        assertEquals(
+            "https://gateway.example/api/v3/chat/completions",
+            openAiCompatEndpoint("https://gateway.example/api/v3", "/chat/completions")
+        )
+        assertEquals(
+            "https://gateway.example/v1/models",
+            openAiCompatEndpoint("https://gateway.example/v1/", "/models")
+        )
+    }
+
+    @Test
+    fun unversionedCompatibleBaseStillGetsV1() {
+        assertEquals(
+            "https://api.deepseek.com/v1/chat/completions",
+            openAiCompatEndpoint("https://api.deepseek.com", "/chat/completions")
+        )
+    }
+
 }
