@@ -6519,7 +6519,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     // failed local model or a remote API failure still fails the batch.
                     android.util.Log.w(
                         "PlaybackService",
-                        "Keeping ${unresolvedIndices.size} unresolved Google subtitle cues on original audio",
+                        "Keeping ${unresolvedIndices.size} unresolved subtitle cues on original audio",
                     )
                     unresolvedIndices.forEach { resolvedBatch[it] = "" }
                     unresolvedIndices = emptyList()
