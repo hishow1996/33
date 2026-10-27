@@ -164,7 +164,8 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
         var sampleReadMs = 0L
         var inferenceMs = 0L
         var decodedSegments = 0
-        segs.forEachIndexed { index, (startMs, endMs) ->
+        pcmFile.openReader(checkActive).use { pcmReader ->
+            segs.forEachIndexed { index, (startMs, endMs) ->
             checkActive()
             val safeStartMs = startMs.coerceIn(0L, durationMs)
             val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
@@ -177,7 +178,7 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                 val sampleCount = endSample - startSample
                 require(sampleCount <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
                 val readStartedMs = android.os.SystemClock.elapsedRealtime()
-                val samples = pcmFile.readFloatSamples(startSample, sampleCount.toInt(), checkActive)
+                val samples = pcmReader.readFloatSamples(startSample, sampleCount.toInt())
                 sampleReadMs += android.os.SystemClock.elapsedRealtime() - readStartedMs
                 val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
                 val result = decodeResult(samples)
@@ -200,6 +201,7 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                 }
             }
             onProgress(index + 1, segs.size)
+            }
         }
         LocalAsrPerformanceLogger.log(
             modelId = "whisper",
