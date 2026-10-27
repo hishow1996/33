@@ -699,13 +699,26 @@ private fun extractTextFromContentValue(value: Any?): String = when (value) {
         if (type.isNotBlank() && isReasoningFieldName(type)) {
             ""
         } else {
-            val directText = listOf("text", "output_text", "final_answer", "answer")
-                .firstNotNullOfOrNull { key ->
-                    (value.opt(key) as? String)?.takeIf { it.isNotBlank() }
-                }
-            if (directText != null) directText else {
-                val parts = value.opt("parts")
-                if (parts is JSONArray) extractTextFromContentValue(parts) else ""
+            val directText = listOf(
+                "text", "output_text", "final_answer", "answer", "translated_text",
+                "translation", "content", "value",
+            ).firstNotNullOfOrNull { key ->
+                (value.opt(key) as? String)?.takeIf { it.isNotBlank() }
+            }
+            if (directText != null) {
+                directText
+            } else {
+                // Some gateways nest the actual text one level deeper (e.g. content.value,
+                // message.content, or result.parts) instead of using a standard text field.
+                listOf("parts", "content", "output", "data", "result", "message")
+                    .firstNotNullOfOrNull { key ->
+                        when (val nested = value.opt(key)) {
+                            is JSONObject, is JSONArray ->
+                                extractTextFromContentValue(nested).takeIf { it.isNotBlank() }
+                            is String -> nested.takeIf { it.isNotBlank() }
+                            else -> null
+                        }
+                    }.orEmpty()
             }
         }
     }
@@ -714,8 +727,13 @@ private fun extractTextFromContentValue(value: Any?): String = when (value) {
 
 /** Read common final-text variants used by Chat Completions and Responses-style gateways. */
 private fun extractAlternativeResponseText(root: JSONObject): String {
-    val topLevel = (root.opt("output_text") as? String).orEmpty().trim()
-    if (topLevel.isNotEmpty()) return topLevel
+    // OpenAI-style and several compatible gateways put final text directly on the response.
+    val topLevel = listOf(
+        "output_text", "final_answer", "final", "answer", "translated_text", "translation", "text",
+    ).firstNotNullOfOrNull { field ->
+        (root.opt(field) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+    }
+    if (!topLevel.isNullOrBlank()) return topLevel
 
     val output = root.optJSONArray("output") ?: return ""
     val parts = mutableListOf<String>()
@@ -799,10 +817,22 @@ internal fun extractOpenAiCompatContent(body: String): String {
             val message = (rawError.opt("message") as? String)
                 ?.takeIf { it.isNotBlank() }
                 ?: "服务商未提供错误详情"
-            val code = (rawError.opt("code") as? String)
+            // Some gateways encode error codes as numbers and expose useful context via type/param.
+            val code = rawError.opt("code")
+                ?.takeIf { it != JSONObject.NULL }
+                ?.toString()
                 ?.takeIf { it.isNotBlank() && it != "null" }
+            val type = (rawError.opt("type") as? String)
+                ?.takeIf { it.isNotBlank() }
+            val param = (rawError.opt("param") as? String)
+                ?.takeIf { it.isNotBlank() }
+            val errorContext = buildList {
+                type?.let { add("type=$it") }
+                param?.let { add("param=$it") }
+            }.joinToString(", ").let { if (it.isBlank()) "" else " ($it)" }
             throw IllegalStateException(
-                "API 返回错误" + (code?.let { " [$it]" } ?: "") + "：" + message.take(400)
+                "API 返回错误" + (code?.let { " [$it]" } ?: "") +
+                    errorContext + "：" + message.take(400)
             )
         }
         is String -> if (rawError.isNotBlank()) {
