@@ -45,7 +45,7 @@ class ModelTranslationParserTest {
     @Test
     fun rejectsVeryLargeOutOfRangeIndexes() {
         val error = runCatching {
-            parseModelTranslations("0|first\\n1|second\\n10000|unexpected", 2)
+            parseModelTranslations("0|first\n1|second\n10000|unexpected", 2)
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
@@ -55,7 +55,7 @@ class ModelTranslationParserTest {
     @Test
     fun rejectsUnnumberedTextMixedIntoIndexedResults() {
         val error = runCatching {
-            parseModelTranslations("0|first\\n1|second\\nextra unnumbered text", 2)
+            parseModelTranslations("0|first\n1|second\nextra unnumbered text", 2)
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
