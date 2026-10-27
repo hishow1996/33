@@ -77,6 +77,27 @@ class YouTubeSubtitleSelectionPolicyTest {
     }
 
     @Test
+    fun missingLocaleOnExplicitOriginalTrackDoesNotBorrowAnotherTracksLanguage() {
+        assertNull(
+            YouTubeSubtitleSelectionPolicy.sourceLanguageHint(
+                originalAudioLanguageTags = emptyList(),
+                streamLanguageTag = null,
+                fallbackAudioLanguageTags = listOf("en-US"),
+                originalAudioTrackPresent = true,
+            ),
+        )
+        assertEquals(
+            "ko",
+            YouTubeSubtitleSelectionPolicy.sourceLanguageHint(
+                originalAudioLanguageTags = emptyList(),
+                streamLanguageTag = "ko-KR",
+                fallbackAudioLanguageTags = listOf("en-US"),
+                originalAudioTrackPresent = true,
+            ),
+        )
+    }
+
+    @Test
     fun streamLanguageIsUsedWhenOriginalAudioMetadataIsUnavailable() {
         assertEquals(
             "ja",
