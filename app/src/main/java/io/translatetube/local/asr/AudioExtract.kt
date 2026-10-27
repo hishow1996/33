@@ -71,43 +71,71 @@ object AudioExtract {
                 }
             }
 
+        /**
+         * Opens one random-access reader for a complete ASR pass. Reusing it across voice segments
+         * avoids reopening the PCM file and allocating a new byte buffer for every segment.
+         */
+        fun openReader(checkActive: () -> Unit = {}): Reader = Reader(checkActive)
+
         fun readFloatSamples(
             startSample: Long,
             count: Int,
             checkActive: () -> Unit = {},
-        ): FloatArray {
-            require(startSample >= 0L && count >= 0 && startSample <= sampleCount) {
-                "无效的 PCM 读取范围"
-            }
-            require(count.toLong() <= sampleCount - startSample) { "PCM 读取范围超出文件长度" }
-            require(count.toLong() * 2L <= Int.MAX_VALUE.toLong()) { "单次读取的 PCM 片段过大" }
-            require(count.toLong() * 4L <= AudioExtract.MAX_FLOAT_ARRAY_BYTES) {
-                "单次 PCM 浮点读取超过 32 MB 安全上限，请缩小分段范围"
-            }
-            if (count == 0) return FloatArray(0)
-            // A cancelled/stale ASR task must stop before file inspection or array allocation.
-            checkActive()
+        ): FloatArray = openReader(checkActive).use { reader ->
+            reader.readFloatSamples(startSample, count)
+        }
 
-            // Validate offset arithmetic and the on-disk range before reserving memory. A stale or
-            // truncated PCM file must fail cheaply instead of allocating a buffer and failing later.
-            require(sampleCount <= Long.MAX_VALUE / 2L) { "PCM 文件采样范围超出可寻址长度" }
-            val endSample = startSample + count.toLong()
-            val endByte = endSample * 2L
-            val expectedFileBytes = sampleCount * 2L
-            require(file.isFile && file.length() == expectedFileBytes && endByte <= expectedFileBytes) {
-                "PCM 临时文件长度与声明的采样数不一致"
-            }
+        inner class Reader internal constructor(
+            private val checkActive: () -> Unit,
+        ) : AutoCloseable {
+            private var input: RandomAccessFile? = null
+            private var byteBuffer: ByteArray? = null
+            private var closed = false
 
-            val result = FloatArray(count)
-            RandomAccessFile(file, "r").use { input ->
-                input.seek(startSample * 2L)
-                val bytes = ByteArray(minOf(64 * 1024, maxOf(2L, count.toLong() * 2L)).toInt())
+            fun readFloatSamples(startSample: Long, count: Int): FloatArray {
+                check(!closed) { "PCM 读取器已关闭" }
+                require(startSample >= 0L && count >= 0 && startSample <= sampleCount) {
+                    "无效的 PCM 读取范围"
+                }
+                require(count.toLong() <= sampleCount - startSample) {
+                    "PCM 读取范围超出文件长度"
+                }
+                require(count.toLong() * 2L <= Int.MAX_VALUE.toLong()) {
+                    "单次读取的 PCM 片段过大"
+                }
+                require(count.toLong() * 4L <= AudioExtract.MAX_FLOAT_ARRAY_BYTES) {
+                    "单次 PCM 浮点读取超过 32 MB 安全上限，请缩小分段范围"
+                }
+                if (count == 0) return FloatArray(0)
+                // A cancelled/stale ASR task must stop before file inspection or array allocation.
+                checkActive()
+
+                require(sampleCount <= Long.MAX_VALUE / 2L) {
+                    "PCM 文件采样范围超出可寻址长度"
+                }
+                val endSample = startSample + count.toLong()
+                val endByte = endSample * 2L
+                val expectedFileBytes = sampleCount * 2L
+                var reader = input
+                if (reader == null) {
+                    require(file.isFile && file.length() == expectedFileBytes && endByte <= expectedFileBytes) {
+                        "PCM 临时文件长度与声明的采样数不一致"
+                    }
+                    reader = RandomAccessFile(file, "r")
+                    input = reader
+                } else {
+                    require(endByte <= expectedFileBytes) { "PCM 读取范围超出文件长度" }
+                }
+
+                val result = FloatArray(count)
+                val bytes = byteBuffer ?: ByteArray(64 * 1024).also { byteBuffer = it }
+                reader.seek(startSample * 2L)
                 var written = 0
                 while (written < count) {
                     checkActive()
                     val samplesInChunk = minOf(bytes.size / 2, count - written)
                     val byteCount = samplesInChunk * 2
-                    input.readFully(bytes, 0, byteCount)
+                    reader.readFully(bytes, 0, byteCount)
                     var byteIndex = 0
                     repeat(samplesInChunk) {
                         val raw = (bytes[byteIndex].toInt() and 0xff) or
@@ -116,8 +144,16 @@ object AudioExtract {
                         byteIndex += 2
                     }
                 }
+                return result
             }
-            return result
+
+            override fun close() {
+                if (closed) return
+                closed = true
+                runCatching { input?.close() }
+                input = null
+                byteBuffer = null
+            }
         }
     }
 
