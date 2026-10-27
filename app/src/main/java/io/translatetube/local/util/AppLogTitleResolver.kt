@@ -143,10 +143,21 @@ object AppLogTitleResolver {
 
         val knownSummary = summarizeKnownEvent(tag, visibleMessage)
         if (knownSummary != null) {
-            return limitTitle("$feature：$knownSummary")
+            val cause = if (isGenericFailure(knownSummary)) rootCauseSummary(message) else null
+            val summary = if (!cause.isNullOrBlank() && !knownSummary.contains(cause, ignoreCase = true)) {
+                "$knownSummary（原因：$cause）"
+            } else {
+                knownSummary
+            }
+            return limitTitle("$feature：$summary")
         }
 
         if (alreadyHasUsefulFeatureAndOutcome(visibleMessage, feature)) {
+            val outcome = visibleMessage.substring(feature.length).trimStart(' ', '：', ':', '/', '—', '-')
+            val cause = if (isGenericFailure(outcome)) rootCauseSummary(message) else null
+            if (!cause.isNullOrBlank() && !visibleMessage.contains(cause, ignoreCase = true)) {
+                return limitTitle("$visibleMessage（原因：$cause）")
+            }
             return limitTitle(visibleMessage)
         }
 
@@ -255,7 +266,7 @@ object AppLogTitleResolver {
             technicalSuffix
         }
         val withoutExceptionClass = root.replace(
-            Regex("^[A-Za-z0-9_.$]+(?::\\s*)?"),
+            Regex("^[A-Za-z0-9_.$]+:\\s*"),
             "",
         ).trim()
         val summary = normalizeMessage(withoutExceptionClass.ifBlank { root })
