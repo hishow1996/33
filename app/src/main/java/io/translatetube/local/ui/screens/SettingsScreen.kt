@@ -4,7 +4,6 @@ package io.translatetube.local.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandHorizontally
@@ -50,7 +49,6 @@ import io.translatetube.local.data.ModelDownloadForegroundService
 import io.translatetube.local.ui.theme.*
 import io.translatetube.local.translate.Crypto
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import io.translatetube.local.floating.FloatingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -158,16 +156,6 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
             // Refresh even when an older app version stored a filtered voice catalogue.
             refreshSystemTtsVoices()
         }
-    }
-    val floatingManager = remember { FloatingManager(ctx) }
-    var canFloat by remember { mutableStateOf(floatingManager.canDraw()) }
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) canFloat = floatingManager.canDraw()
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     Column(
         Modifier.fillMaxSize()
@@ -841,28 +829,6 @@ Section("视频源（yt-dlp）") {
     YtDlpUpdateSection()
 }
 
-        Section("播放体验") {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("悬浮窗权限", color = OnBg, style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.weight(1f))
-                if (canFloat) {
-                    Text("已开启", color = BrandBright, style = MaterialTheme.typography.labelLarge)
-                } else {
-                    Button(
-                        onClick = {
-                            ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + ctx.packageName)))
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Brand),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    ) { Text("去开启") }
-                }
-            }
-        }
-
         Section("存储管理", onHeaderClick = onStorageManagement) { }
 
         Section("关于应用") {
@@ -919,7 +885,7 @@ private fun Section(
         "翻译引擎", "翻译设置" -> Icons.Filled.Translate
         "配音设置" -> Icons.Filled.VolumeUp
         "模型管理", "视频源（yt-dlp）" -> Icons.Filled.Download
-        "播放体验", "存储管理" -> Icons.Filled.FolderOpen
+        "存储管理" -> Icons.Filled.FolderOpen
         else -> Icons.Filled.Info
     }
     val sectionBorderColor by animateColorAsState(
