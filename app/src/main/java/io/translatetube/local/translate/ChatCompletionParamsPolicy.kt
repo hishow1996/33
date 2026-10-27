@@ -35,6 +35,10 @@ internal object ChatCompletionParamsPolicy {
         openAiReasoningRegex.containsMatchIn(normalizedModel) ||
             normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5")
 
+    /** finish_reason 表示"输出额度用完被截断"（不同服务商写法不同）。 */
+    fun isLengthTruncation(finishReason: String?): Boolean =
+        finishReason?.trim()?.lowercase(java.util.Locale.ROOT) in setOf("length", "max_tokens", "max_output_tokens")
+
     fun forModel(baseUrl: String, model: String): ChatSamplingParams {
         val normalizedModel = model.trim().lowercase(java.util.Locale.ROOT)
         val normalizedBase = baseUrl.trim().lowercase(java.util.Locale.ROOT)

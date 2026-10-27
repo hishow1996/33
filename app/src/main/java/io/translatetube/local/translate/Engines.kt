@@ -1061,7 +1061,10 @@ class OpenAiCompatEngine(
         return payload
     }
 
-    private suspend fun requestTranslationContent(payload: JSONObject): String {
+    private suspend fun requestTranslationContent(
+        payload: JSONObject,
+        outputBudgetRaised: Boolean = false,
+    ): String {
         var lastReasoningOnly: ReasoningOnlyResponseException? = null
         var lastRejectedControl: Throwable? = null
         val ownerJob = currentCoroutineContext()[Job]
@@ -1135,6 +1138,25 @@ class OpenAiCompatEngine(
                     }
                     throw error
                 }
+            }
+        }
+
+        // The model spent its whole output budget on reasoning (finish_reason=length): the same
+        // request will fail again, so give it more room once before giving up.
+        if (!outputBudgetRaised &&
+            lastReasoningOnly != null &&
+            ChatCompletionParamsPolicy.isLengthTruncation(lastReasoningOnly.finishReason)
+        ) {
+            val raised = JSONObject(payload.toString())
+            val budgetKey = if (raised.has("max_completion_tokens")) "max_completion_tokens" else "max_tokens"
+            if (raised.optInt(budgetKey, 0) < ChatCompletionParamsPolicy.REASONING_MAX_TOKENS) {
+                raised.put(budgetKey, ChatCompletionParamsPolicy.REASONING_MAX_TOKENS)
+                android.util.Log.w(
+                    "TranslationAPI",
+                    "Reasoning used the whole output budget; retrying once with $budgetKey=" +
+                        "${ChatCompletionParamsPolicy.REASONING_MAX_TOKENS}: model=${model.take(100)}",
+                )
+                return requestTranslationContent(raised, outputBudgetRaised = true)
             }
         }
 

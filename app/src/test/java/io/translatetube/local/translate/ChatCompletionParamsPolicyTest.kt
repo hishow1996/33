@@ -62,4 +62,14 @@ class ChatCompletionParamsPolicyTest {
         assertFalse(ChatCompletionParamsPolicy.isThinkingOnlyModel("deepseek-chat"))
         assertFalse(ChatCompletionParamsPolicy.isThinkingOnlyModel("qwen3.8-flash"))
     }
+
+    @Test
+    fun lengthTruncationIsRecognisedAcrossProviderSpellings() {
+        assertTrue(ChatCompletionParamsPolicy.isLengthTruncation("length"))
+        assertTrue(ChatCompletionParamsPolicy.isLengthTruncation(" LENGTH "))
+        assertTrue(ChatCompletionParamsPolicy.isLengthTruncation("max_tokens"))
+        assertFalse(ChatCompletionParamsPolicy.isLengthTruncation("stop"))
+        assertFalse(ChatCompletionParamsPolicy.isLengthTruncation("未知"))
+        assertFalse(ChatCompletionParamsPolicy.isLengthTruncation(null))
+    }
 }
