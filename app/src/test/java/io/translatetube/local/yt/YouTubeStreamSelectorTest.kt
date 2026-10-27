@@ -96,6 +96,54 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun asrPrefersExplicitOriginalTrackOverLowerBitrateDubbedTrack() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/dub-en.m4a", "m4a", 32_000,
+                languageTag = "en", isDubbed = true,
+            ),
+            YouTubeAudioCandidate(
+                "https://cdn.test/original-ko.m4a", "m4a", 128_000,
+                languageTag = "ko", isOriginal = true,
+            ),
+        )
+        assertEquals(1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio, "ko"))
+    }
+
+    @Test
+    fun asrUsesKnownOriginalLanguageWhenTrackTypeIsMissing() {
+        val audio = listOf(
+            YouTubeAudioCandidate("https://cdn.test/audio-en.m4a", "m4a", 64_000, languageTag = "en"),
+            YouTubeAudioCandidate("https://cdn.test/audio-ko.m4a", "m4a", 96_000, languageTag = "ko"),
+        )
+        assertEquals(1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio, "ko"))
+    }
+
+    @Test
+    fun asrRejectsAmbiguousUnmarkedLanguagesInsteadOfGuessingFromBitrate() {
+        val audio = listOf(
+            YouTubeAudioCandidate("https://cdn.test/audio-en.m4a", "m4a", 32_000, languageTag = "en"),
+            YouTubeAudioCandidate("https://cdn.test/audio-ko.m4a", "m4a", 96_000, languageTag = "ko"),
+        )
+        assertEquals(-1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio))
+    }
+
+    @Test
+    fun asrRejectsDubbedOnlyAudioWhenNoOriginalTrackIsAvailable() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/dub-en.m4a", "m4a", 32_000,
+                languageTag = "en", isDubbed = true,
+            ),
+            YouTubeAudioCandidate(
+                "https://cdn.test/descriptive.m4a", "m4a", 64_000,
+                languageTag = "ko", isDescriptive = true,
+            ),
+        )
+        assertEquals(-1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio))
+    }
+
+    @Test
     fun asrFallsBackToLowestKnownCompatibleStreamWhenM4aIsUnavailable() {
         val audio = listOf(
             YouTubeAudioCandidate("https://cdn.test/opus-high.webm", "webm", 256_000),
