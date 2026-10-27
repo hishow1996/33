@@ -68,6 +68,24 @@ internal object YouTubeSubtitleSelectionPolicy {
     }
 
     /**
+     * Whether a saved subtitle-based YouTube success snapshot should be discarded before playback.
+     * Strong text-language evidence and a saved language label must both agree with the source
+     * audio when available. Completely unidentifiable snapshots are rebuilt rather than trusted.
+     */
+    fun shouldInvalidateSubtitleSnapshot(
+        expectedSourceLanguage: String?,
+        detectedTextLanguage: String?,
+        savedSourceLanguage: String?,
+    ): Boolean {
+        val expected = normalizeLanguageCode(expectedSourceLanguage) ?: return false
+        val detected = normalizeLanguageCode(detectedTextLanguage)
+        val saved = normalizeLanguageCode(savedSourceLanguage)
+        return (detected != null && detected != expected) ||
+            (saved != null && saved != expected) ||
+            (detected == null && saved == null)
+    }
+
+    /**
      * Matching-language captions always outrank another language, even when the matching track is
      * automatic and the unrelated track is manually authored. Within one language, manual captions
      * are preferred over automatically generated captions. Unknown source language never implies
