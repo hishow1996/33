@@ -43,6 +43,26 @@ class ModelTranslationParserTest {
         assertTrue(error?.message.orEmpty().contains("超出本批范围"))
     }
     @Test
+    fun rejectsVeryLargeOutOfRangeIndexes() {
+        val error = runCatching {
+            parseModelTranslations("0|first\\n1|second\\n10000|unexpected", 2)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("超出本批范围"))
+    }
+
+    @Test
+    fun rejectsUnnumberedTextMixedIntoIndexedResults() {
+        val error = runCatching {
+            parseModelTranslations("0|first\\n1|second\\nextra unnumbered text", 2)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("混入未编号内容"))
+    }
+
+    @Test
     fun normalizesCaseAndUnderscoreLanguageTags() {
         assertEquals("en", LangMap.mlkit("EN-us"))
         assertEquals("zh", LangMap.mlkit("zh_CN"))
