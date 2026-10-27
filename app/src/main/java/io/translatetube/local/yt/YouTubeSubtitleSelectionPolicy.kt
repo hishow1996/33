@@ -10,6 +10,21 @@ import java.util.Locale
  */
 internal object YouTubeSubtitleSelectionPolicy {
     private val undeterminedTags = setOf("und", "mul", "zxx", "auto", "unknown", "undefined")
+    private val iso6393To6391 = mapOf(
+        "eng" to "en", "kor" to "ko", "jpn" to "ja",
+        "zho" to "zh", "chi" to "zh", "cmn" to "zh",
+        "spa" to "es", "fra" to "fr", "fre" to "fr",
+        "deu" to "de", "ger" to "de", "por" to "pt",
+        "rus" to "ru", "ara" to "ar", "hin" to "hi",
+        "tha" to "th", "vie" to "vi", "ind" to "id",
+        "nld" to "nl", "dut" to "nl", "pol" to "pl",
+        "tur" to "tr", "swe" to "sv", "dan" to "da",
+        "fin" to "fi", "ukr" to "uk", "ell" to "el",
+        "gre" to "el", "heb" to "he", "hun" to "hu",
+        "ces" to "cs", "cze" to "cs", "ron" to "ro",
+        "rum" to "ro", "ben" to "bn", "msa" to "ms",
+        "may" to "ms", "nob" to "no", "nno" to "nn",
+    )
 
     fun normalizeLanguageCode(tag: String?): String? {
         val primary = tag
@@ -18,10 +33,10 @@ internal object YouTubeSubtitleSelectionPolicy {
             ?.substringBefore('-')
             ?.lowercase(Locale.ROOT)
             ?: return null
-        return primary.takeIf {
-            it.length in 2..3 &&
-                it.all { character -> character in 'a'..'z' } &&
-                it !in undeterminedTags
+        if (primary in undeterminedTags) return null
+        val canonical = iso6393To6391[primary] ?: primary
+        return canonical.takeIf {
+            it.length in 2..3 && it.all { character -> character in 'a'..'z' }
         }
     }
 
@@ -30,14 +45,21 @@ internal object YouTubeSubtitleSelectionPolicy {
         streamLanguageTag: String?,
         fallbackAudioLanguageTags: Iterable<String?>,
     ): String? {
-        originalAudioLanguageTags.forEach { tag ->
-            normalizeLanguageCode(tag)?.let { return it }
-        }
+        val originalLanguages = originalAudioLanguageTags
+            .mapNotNull(::normalizeLanguageCode)
+            .distinct()
+        if (originalLanguages.size == 1) return originalLanguages.single()
+        // Conflicting explicit ORIGINAL markers are ambiguous. Do not guess from stream order.
+        if (originalLanguages.size > 1) return null
+
         normalizeLanguageCode(streamLanguageTag)?.let { return it }
-        fallbackAudioLanguageTags.forEach { tag ->
-            normalizeLanguageCode(tag)?.let { return it }
-        }
-        return null
+
+        // A fallback is safe only if all non-dubbed primary/unknown-type audio tracks agree.
+        // Multi-language tracks without an ORIGINAL marker must be left for automatic ASR.
+        val fallbackLanguages = fallbackAudioLanguageTags
+            .mapNotNull(::normalizeLanguageCode)
+            .distinct()
+        return fallbackLanguages.singleOrNull()
     }
 
     fun matchesSourceLanguage(sourceLanguageTag: String?, subtitleLanguageTag: String?): Boolean {
