@@ -66,7 +66,7 @@ class ModelTranslationParserTest {
     fun keepsPositionalFallbackWhenEveryOutputRowIsUnnumbered() {
         assertEquals(
             listOf("First translation", "第二条译文"),
-            parseModelTranslations("First translation\\n第二条译文", 2),
+            parseModelTranslations("First translation\n第二条译文", 2),
         )
     }
 
