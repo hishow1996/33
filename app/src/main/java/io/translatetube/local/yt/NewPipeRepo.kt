@@ -597,6 +597,7 @@ object NewPipeRepo {
                 isOriginal = stream.audioTrackType == AudioTrackType.ORIGINAL,
                 isDubbed = stream.audioTrackType == AudioTrackType.DUBBED,
                 isDescriptive = stream.audioTrackType == AudioTrackType.DESCRIPTIVE,
+                isSecondary = stream.audioTrackType == AudioTrackType.SECONDARY,
             )
         }
         val selectedIndex = YouTubeStreamSelector.chooseAudioStreamForAsrIndex(
