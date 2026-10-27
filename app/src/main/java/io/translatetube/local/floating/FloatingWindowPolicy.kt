@@ -1,7 +1,6 @@
 package io.translatetube.local.floating
 
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
