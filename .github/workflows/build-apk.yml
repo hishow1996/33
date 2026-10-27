@@ -225,3 +225,4 @@ jobs:
 # Explicit user-requested APK build trigger (2026-10-27 video-aspect resize).
 # Explicit user-requested APK build trigger (2026-10-27 11:36 Asia/Singapore).
 # Explicit user-requested APK build after floating-window replay and shared dubbing playback synchronization fix (2026-10-27).
+# Explicit retry of user-requested APK build after fixing Canvas size name shadowing in floating resize handle (2026-10-27).
