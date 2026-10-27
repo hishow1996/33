@@ -5,6 +5,54 @@ import org.junit.Test
 
 class AudioExtractPcmFileTest {
     @Test
+    fun oneReaderReusesRandomAccessStateAcrossMultipleSegmentReads() {
+        val pcmFile = File.createTempFile("pcm-reader-reuse-test", ".s16le")
+        try {
+            pcmFile.writeBytes(
+                byteArrayOf(
+                    0, 0,       // 0
+                    0, 64,      // 16384 -> 0.5
+                    0, -128,    // -32768 -> -1
+                    -1, 127,    // 32767
+                )
+            )
+            val pcm = AudioExtract.PcmFile(pcmFile, sampleCount = 4L)
+            pcm.openReader().use { reader ->
+                org.junit.Assert.assertEquals(
+                    listOf(0f, 0.5f),
+                    reader.readFloatSamples(0L, 2).toList(),
+                )
+                org.junit.Assert.assertEquals(
+                    listOf(-1f, 32767 / 32768f),
+                    reader.readFloatSamples(2L, 2).toList(),
+                )
+                // Repeat with a non-sequential range to ensure each call seeks to its own offset.
+                org.junit.Assert.assertEquals(
+                    listOf(0.5f, -1f),
+                    reader.readFloatSamples(1L, 2).toList(),
+                )
+            }
+        } finally {
+            pcmFile.delete()
+        }
+    }
+
+    @Test
+    fun oneShotReadsKeepTheirExistingBehaviorWhenUsingTheReusableReader() {
+        val pcmFile = File.createTempFile("pcm-reader-single-test", ".s16le")
+        try {
+            pcmFile.writeBytes(byteArrayOf(0, 64, 0, -128))
+            val pcm = AudioExtract.PcmFile(pcmFile, sampleCount = 2L)
+            org.junit.Assert.assertEquals(
+                listOf(0.5f, -1f),
+                pcm.readFloatSamples(0L, 2).toList(),
+            )
+        } finally {
+            pcmFile.delete()
+        }
+    }
+
+    @Test
     fun durationCalculationDoesNotOverflowForExtremeSampleCounts() {
         val count = Long.MAX_VALUE
         val rate = 16_000
