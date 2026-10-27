@@ -2731,9 +2731,11 @@ private fun FloatingPlayerControls(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxSize().then(overlayGestureModifier),
     ) {
+        // 缩放把手独立于按钮层，按钮自动隐藏后仍可从右下角拖动调整尺寸。
+        val resizeHandleSize = if (maxWidth < 190.dp) 22.dp else 28.dp
         AnimatedVisibility(
             visible = controlsVisible,
             enter = fadeIn(animationSpec = tween(150)),
@@ -2831,14 +2833,6 @@ private fun FloatingPlayerControls(
                 )
             }
 
-            val resizeHandleSize = if (compact) 22.dp else 28.dp
-            FloatingResizeHandle(
-                modifier = Modifier.align(Alignment.BottomEnd),
-                size = resizeHandleSize,
-                onBegin = onBeginWindowDrag,
-                onResize = onResizeWindow,
-                onDraggingChange = { windowDragging = it },
-            )
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -2941,6 +2935,16 @@ private fun FloatingPlayerControls(
                 }
             }
         }
+        // 常驻缩放把手位于 AnimatedVisibility 外部，不随播放按钮一起隐藏。
+        FloatingResizeHandle(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 8.dp, bottom = 4.dp),
+            size = resizeHandleSize,
+            onBegin = onBeginWindowDrag,
+            onResize = onResizeWindow,
+            onDraggingChange = { windowDragging = it },
+        )
         }
     }
 }
