@@ -136,8 +136,8 @@ object AppLogTitleResolver {
 
     fun title(tag: String, message: String): String {
         val feature = featureLabel(tag, message)
-        // A vertical bar is also valid message content. Remove only the technical exception
-        // suffix appended by AppLogStore, not ordinary event details after a pipe.
+        // Keep the event summary in the title; appended technical exception details stay in
+        // the record details and are intentionally never surfaced in the title.
         val visibleMessage = normalizeMessage(splitTechnicalSuffix(message).first)
         if (visibleMessage.isBlank()) {
             return limitTitle("$feature：未提供日志摘要")
@@ -145,33 +145,15 @@ object AppLogTitleResolver {
 
         val knownSummary = summarizeKnownEvent(tag, visibleMessage)
         if (knownSummary != null) {
-            val cause = if (isGenericFailure(knownSummary)) rootCauseSummary(message) else null
-            val summary = if (!cause.isNullOrBlank() && !knownSummary.contains(cause, ignoreCase = true)) {
-                "$knownSummary（原因：$cause）"
-            } else {
-                knownSummary
-            }
-            return limitTitle("$feature：$summary")
+            return limitTitle("$feature：$knownSummary")
         }
 
         if (alreadyHasUsefulFeatureAndOutcome(visibleMessage, feature)) {
-            val outcome = visibleMessage.substring(feature.length).trimStart(' ', '：', ':', '/', '—', '-')
-            val cause = if (isGenericFailure(outcome)) rootCauseSummary(message) else null
-            if (!cause.isNullOrBlank() && !visibleMessage.contains(cause, ignoreCase = true)) {
-                return limitTitle("$visibleMessage（原因：$cause）")
-            }
             return limitTitle(visibleMessage)
         }
 
-        var summary = stripRedundantPrefix(tag, feature, visibleMessage)
-        if (summary.isBlank()) summary = visibleMessage
-
-        if (isGenericFailure(summary)) {
-            val cause = rootCauseSummary(message)
-            if (!cause.isNullOrBlank() && !summary.contains(cause, ignoreCase = true)) {
-                summary += "（原因：$cause）"
-            }
-        }
+        val summary = stripRedundantPrefix(tag, feature, visibleMessage)
+            .ifBlank { visibleMessage }
         return limitTitle("$feature：$summary")
     }
 
@@ -265,52 +247,6 @@ object AppLogTitleResolver {
             }
         }
         return message
-    }
-
-    private fun rootCauseSummary(message: String): String? {
-        val technicalSuffix = splitTechnicalSuffix(message).second.trim()
-        if (technicalSuffix.isBlank()) return null
-        val root = if (technicalSuffix.contains("根因=")) {
-            technicalSuffix.substringAfterLast("根因=").trim()
-        } else {
-            technicalSuffix
-        }
-        val withoutExceptionClass = root.replace(
-            Regex("^[A-Za-z0-9_.$]+:\\s*"),
-            "",
-        ).trim()
-        val summary = normalizeMessage(withoutExceptionClass.ifBlank { root })
-        if (summary.isBlank()) return null
-        return summary.take(36).trimEnd()
-    }
-
-    /**
-     * Returns (displayable message, appended exception summary). A plain " | " in a log message
-     * must stay visible; only strip the suffix when it has the structure AppLogStore appends.
-     */
-    private fun splitTechnicalSuffix(message: String): Pair<String, String> {
-        var delimiter = message.indexOf(" | ")
-        while (delimiter >= 0) {
-            val suffix = message.substring(delimiter + 3).trim()
-            if (isTechnicalExceptionSuffix(suffix)) {
-                return message.substring(0, delimiter).trim() to suffix
-            }
-            delimiter = message.indexOf(" | ", delimiter + 3)
-        }
-        return message to ""
-    }
-
-    private fun isTechnicalExceptionSuffix(value: String): Boolean {
-        if (value.contains("根因=")) return true
-        return Regex("^[A-Za-z_$][A-Za-z0-9_.$]*(?:Exception|Error|Throwable)\\s*(?::|$)")
-            .containsMatchIn(value)
-    }
-
-    private fun isGenericFailure(message: String): Boolean {
-        val compact = message.trim()
-        return compact.length <= 18 && listOf("失败", "错误", "异常", "超时", "中断").any {
-            compact.endsWith(it)
-        }
     }
 
     private fun normalizeMessage(message: String): String =
