@@ -649,11 +649,13 @@ private fun extractAlternativeResponseText(root: JSONObject): String {
         val content = item.optJSONArray("content") ?: continue
         for (partIndex in 0 until content.length()) {
             val part = content.optJSONObject(partIndex) ?: continue
+            val type = part.optString("type", "").lowercase(java.util.Locale.ROOT)
+            if (type.isNotBlank() && isReasoningFieldName(type)) continue
             val text = (part.opt("text") as? String).orEmpty()
             if (text.isNotBlank()) parts += text
         }
     }
-    return parts.joinToString("\\n").trim()
+    return parts.joinToString("\n").trim()
 }
 
 /** Extract text from a non-streaming OpenAI-compatible chat-completion response. */
