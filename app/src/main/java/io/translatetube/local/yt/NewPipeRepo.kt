@@ -540,10 +540,9 @@ object NewPipeRepo {
      */
     private fun sourceLanguageHint(streamInfo: StreamInfo): String? {
         val audioStreams = runCatching { streamInfo.audioStreams }.getOrDefault(emptyList())
-        val originalAudioLanguages = audioStreams.asSequence()
-            .filter { it.audioTrackType == AudioTrackType.ORIGINAL }
+        val originalAudioTracks = audioStreams.filter { it.audioTrackType == AudioTrackType.ORIGINAL }
+        val originalAudioLanguages = originalAudioTracks
             .mapNotNull { it.audioLocale?.toLanguageTag() }
-            .toList()
         val fallbackAudioLanguages = audioStreams.asSequence()
             .filter {
                 it.audioTrackType == null ||
@@ -556,6 +555,7 @@ object NewPipeRepo {
             originalAudioLanguageTags = originalAudioLanguages,
             streamLanguageTag = streamLanguage,
             fallbackAudioLanguageTags = fallbackAudioLanguages,
+            originalAudioTrackPresent = originalAudioTracks.isNotEmpty(),
         )
     }
 
