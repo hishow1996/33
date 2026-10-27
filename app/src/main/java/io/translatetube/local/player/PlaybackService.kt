@@ -2709,14 +2709,14 @@ class PlaybackService : MediaSessionService() {
                 var pipelineRestoresCompleteSnapshot = restoreCompletedSnapshot
                 var pipelineMustRegenerateDubbing = regenerateDubbingThisRun
 
-                // A completed YouTube snapshot can bypass the normal subtitle-cache validation.
-                // Before trusting a subtitle-based (or legacy AUTO) snapshot, compare its source
-                // language and visible original text with the video's original audio language.
-                // This repairs snapshots produced by the former English-first caption policy.
+                // Any restored subtitle-based YouTube state can bypass normal source-cache
+                // validation, including a restart at TRANSLATION after an engine setting changes.
+                // Check the original text before reusing it; never let a stale English-caption
+                // snapshot survive just because this run is not restoring a complete READY result.
                 if (
                     videoId != null &&
-                    pipelineRestoresCompleteSnapshot &&
                     pipelineResumeState != null &&
+                    pipelineResumeState.lines.isNotEmpty() &&
                     pipelineResumeState.processingFlow != ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 ) {
                     try {
