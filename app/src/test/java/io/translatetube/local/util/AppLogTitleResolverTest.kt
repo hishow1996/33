@@ -54,9 +54,9 @@ class AppLogTitleResolverTest {
     }
 
     @Test
-    fun alreadyLabelledGenericFailureStillShowsTheRootCause() {
+    fun alreadyLabelledGenericFailureDoesNotShowTheRootCause() {
         assertEquals(
-            "字幕翻译失败（原因：HTTP 429 Too Many Requests）",
+            "字幕翻译失败",
             AppLogTitleResolver.title(
                 "Translation",
                 "字幕翻译失败 | HttpException: HTTP 429 Too Many Requests",
@@ -67,7 +67,7 @@ class AppLogTitleResolverTest {
     @Test
     fun translationAndTranscriptionTitlesDoNotRepeatTheOperationName() {
         assertEquals(
-            "字幕翻译：请求失败（原因：HTTP 503 Service Unavailable）",
+            "字幕翻译：请求失败",
             AppLogTitleResolver.title(
                 "Translation",
                 "翻译请求失败 | HttpException: HTTP 503 Service Unavailable",
@@ -92,9 +92,9 @@ class AppLogTitleResolverTest {
     }
 
     @Test
-    fun genericFailureIncludesOnlyAConciseRootCause() {
+    fun genericFailureTitleDoesNotIncludeTheRootCause() {
         assertEquals(
-            "字幕翻译：接口请求失败（原因：HTTP 429 Too Many Requests）",
+            "字幕翻译：接口请求失败",
             AppLogTitleResolver.title(
                 "Translation",
                 "接口请求失败 | IllegalStateException: 包装异常；根因=HttpException: HTTP 429 Too Many Requests",
