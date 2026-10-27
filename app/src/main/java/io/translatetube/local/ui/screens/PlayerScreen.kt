@@ -2613,8 +2613,9 @@ private fun FloatingResizeHandle(
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.fillMaxSize().padding(5.dp)) {
-            val w = size.width
-            val h = size.height
+            // Use DrawScope's canvas size, not the outer Dp argument named "size".
+            val w = this.size.width
+            val h = this.size.height
             val stroke = 1.5.dp.toPx()
             val color = Color.White
             // 两条短斜线只在右下角手柄范围内绘制，不会延伸覆盖视频画面。
