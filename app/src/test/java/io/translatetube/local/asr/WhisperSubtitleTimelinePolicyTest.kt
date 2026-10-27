@@ -154,6 +154,23 @@ class WhisperSubtitleTimelinePolicyTest {
     }
 
     @Test
+    fun doesNotHoldSubtitleAcrossLongSilenceWhenTokenDurationIsMissing() {
+        val tokens = listOf("We", " should", " pause", " then", " resume.")
+        val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+            tokens = tokens,
+            timestampsSeconds = listOf(0.0f, 0.2f, 0.4f, 1.5f, 1.7f),
+            durationsSeconds = listOf(0.15f, 0.15f, Float.NaN, 0.15f, 0.15f),
+            segmentStartMs = 2_000L,
+            segmentEndMs = 5_000L,
+            expectedText = "We should pause then resume.",
+        )
+
+        assertEquals(2, cues.size)
+        assertEquals(3_000L, cues[0].second)
+        assertEquals(3_500L, cues[1].first)
+    }
+
+    @Test
     fun capsTokenDurationAtTheNextDistinctTokenStart() {
         val tokens = listOf("alpha", " beta", ".")
         val timestamps = listOf(0.0f, 0.3f, 0.6f)
