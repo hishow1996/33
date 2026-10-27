@@ -24,6 +24,8 @@ internal object WhisperSubtitleTimelinePolicy {
         val text: String,
         val startMs: Long,
         val endMs: Long,
+        /** End inferred from the model before capping it at the next token boundary. */
+        val inferredEndMs: Long,
     )
 
     fun fromTokenTimestamps(
@@ -128,10 +130,13 @@ internal object WhisperSubtitleTimelinePolicy {
             // Clamp the duration before addition. Finite-but-hostile model durations can round
             // to Long.MAX_VALUE; adding the segment's non-zero base time first would overflow,
             // wrap negative and silently discard a token that should be clamped to the crop end.
-            val safeDurationMs = boundedDurationMs.coerceAtMost(segmentEndMs - startMs)
+            val maxDurationMs = segmentEndMs - startMs
+            val inferredDurationMs = durationMs.coerceAtMost(maxDurationMs)
+            val safeDurationMs = boundedDurationMs.coerceAtMost(maxDurationMs)
             val endMs = startMs + safeDurationMs
+            val inferredEndMs = startMs + inferredDurationMs
             if (endMs <= startMs) continue
-            timedTokens += TimedToken(token, startMs, endMs)
+            timedTokens += TimedToken(token, startMs, endMs, inferredEndMs)
         }
         if (timedTokens.isEmpty()) return emptyList()
 
@@ -141,7 +146,7 @@ internal object WhisperSubtitleTimelinePolicy {
         var cueEndMs = -1L
         var cueCodePointCount = 0
         var cueHasCjk = false
-        var previousTokenStartMs: Long? = null
+        var previousTokenInferredEndMs: Long? = null
 
         fun flushCue() {
             // Token text can carry tokenizer-specific repeated boundary spaces. Keep the
@@ -193,7 +198,7 @@ internal object WhisperSubtitleTimelinePolicy {
             val tooLongInTime = text.isNotBlank() &&
                 token.startMs - cueStartMs >= MAX_CUE_DURATION_MS
             val longPauseBefore = text.isNotBlank() &&
-                previousTokenStartMs?.let { token.startMs - it >= MAX_INTER_TOKEN_GAP_MS } == true
+                previousTokenInferredEndMs?.let { token.startMs - it >= MAX_INTER_TOKEN_GAP_MS } == true
 
             if (tooLong || tooLongInTime || longPauseBefore) flushCue()
 
@@ -214,7 +219,7 @@ internal object WhisperSubtitleTimelinePolicy {
             }
 
             if (text.isNotBlank() && endsSentence(token.text)) flushCue()
-            previousTokenStartMs = token.startMs
+            previousTokenInferredEndMs = token.inferredEndMs
         }
         flushCue()
 
