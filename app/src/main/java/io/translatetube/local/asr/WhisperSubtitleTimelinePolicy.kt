@@ -13,6 +13,8 @@ internal object WhisperSubtitleTimelinePolicy {
     private const val MAX_CUE_DURATION_MS = 3_600L
     /** Split a displayed cue when token starts indicate a meaningful pause in speech. */
     private const val MAX_INTER_TOKEN_GAP_MS = 900L
+    /** Without model durations, do not extend a token across a long silent gap by guesswork. */
+    private const val MAX_INFERRED_TOKEN_DURATION_MS = 600L
     /** Bound token/timestamp arrays before joining text or allocating timeline stacks. */
     private const val MAX_TOKEN_COUNT = 200_000
     private const val MAX_CJK_CODE_POINTS = 24
@@ -114,7 +116,10 @@ internal object WhisperSubtitleTimelinePolicy {
             val durationMs = when {
                 declaredDuration != null -> (declaredDuration * 1_000.0).roundToLong().coerceAtLeast(1L)
                 nextStartSeconds != null ->
-                    ((nextStartSeconds - startSeconds) * 1_000.0).roundToLong().coerceAtLeast(1L)
+                    ((nextStartSeconds - startSeconds) * 1_000.0)
+                        .roundToLong()
+                        .coerceAtLeast(1L)
+                        .coerceAtMost(MAX_INFERRED_TOKEN_DURATION_MS)
                 else -> MIN_LAST_TOKEN_DURATION_MS
             }
             // A token's declared duration can drift through a later token or a silence gap.
