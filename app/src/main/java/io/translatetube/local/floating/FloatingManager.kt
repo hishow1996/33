@@ -2,6 +2,7 @@ package io.translatetube.local.floating
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.Point
 import android.os.Build
 import android.provider.Settings
 import android.view.Gravity
@@ -28,26 +29,24 @@ class FloatingManager(private val ctx: Context) {
 
     fun show(v: View, wPx: Int, hPx: Int): Boolean {
         if (view != null) return true
-        val displayMetrics = ctx.resources.displayMetrics
-        val maxWidth = displayMetrics.widthPixels.coerceAtLeast(1)
-        val maxHeight = displayMetrics.heightPixels.coerceAtLeast(1)
+        val manager = ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            ?: return false
+        val (maxWidth, maxHeight) = screenSizePx(manager)
         val windowWidth = FloatingWindowPolicy.boundedDimension(wPx, MIN_WIDTH_PX, maxWidth)
         val windowHeight = FloatingWindowPolicy.boundedDimension(hPx, MIN_HEIGHT_PX, maxHeight)
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+        // 不使用 FLAG_LAYOUT_NO_LIMITS：该标志允许悬浮窗越过屏幕边界，
+        // 手动限位和系统布局限位需要同时生效，避免拖动后窗口被移出可见屏幕。
         val p = WindowManager.LayoutParams(
             windowWidth, windowHeight, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = FloatingWindowPolicy.boundedOffset(40, windowWidth, maxWidth); y = FloatingWindowPolicy.boundedOffset(200, windowHeight, maxHeight)
-        }
-        val manager = ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-        if (manager == null) {
-            return false
+            x = FloatingWindowPolicy.boundedOffset(40, windowWidth, maxWidth)
+            y = FloatingWindowPolicy.boundedOffset(200, windowHeight, maxHeight)
         }
         return try {
             manager.addView(v, p)
@@ -62,6 +61,20 @@ class FloatingManager(private val ctx: Context) {
             params = null
             false
         }
+    }
+
+    /**
+     * 返回当前显示屏的真实像素尺寸，作为悬浮窗缩放与拖动共用的边界。
+     * displayMetrics 可能受应用窗口配置影响，不能单独作为全屏悬浮窗的物理边界。
+     */
+    @Suppress("DEPRECATION")
+    private fun screenSizePx(manager: WindowManager): Pair<Int, Int> {
+        val fallback = ctx.resources.displayMetrics
+        val realSize = Point()
+        runCatching { manager.defaultDisplay.getRealSize(realSize) }
+        val width = realSize.x.takeIf { it > 0 } ?: fallback.widthPixels
+        val height = realSize.y.takeIf { it > 0 } ?: fallback.heightPixels
+        return width.coerceAtLeast(1) to height.coerceAtLeast(1)
     }
 
     // ---- 拖动 / 缩放：全部基于手指的屏幕绝对坐标（见 FloatingHostLayout） ----
@@ -96,9 +109,7 @@ class FloatingManager(private val ctx: Context) {
         val manager = wm ?: return
         val currentView = view ?: return
         val currentParams = params ?: return
-        val metrics = ctx.resources.displayMetrics
-        val maxWidth = metrics.widthPixels.coerceAtLeast(1)
-        val maxHeight = metrics.heightPixels.coerceAtLeast(1)
+        val (maxWidth, maxHeight) = screenSizePx(manager)
         val newX = FloatingWindowPolicy.draggedOffset(
             anchorX, anchorRawX, pointerRawX, currentParams.width, maxWidth,
         )
@@ -116,9 +127,7 @@ class FloatingManager(private val ctx: Context) {
         val manager = wm ?: return
         val currentView = view ?: return
         val currentParams = params ?: return
-        val metrics = ctx.resources.displayMetrics
-        val maxWidth = metrics.widthPixels.coerceAtLeast(1)
-        val maxHeight = metrics.heightPixels.coerceAtLeast(1)
+        val (maxWidth, maxHeight) = screenSizePx(manager)
         val newWidth = FloatingWindowPolicy.resizedDimension(
             anchorWidth, anchorRawX, pointerRawX, MIN_WIDTH_PX, maxWidth,
         )
