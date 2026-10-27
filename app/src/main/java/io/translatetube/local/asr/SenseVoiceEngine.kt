@@ -86,30 +86,30 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
         var decodedSegments = 0
         pcmFile.openReader(checkActive).use { pcmReader ->
             segs.forEachIndexed { index, (startMs, endMs) ->
-            checkActive()
-            val safeStartMs = startMs.coerceIn(0L, durationMs)
-            val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
-            require(safeEndMs - safeStartMs <= VadSegmentMergePolicy.MAX_MERGED_SEGMENT_MS) {
-                "单条 SenseVoice 语音段超过 25 秒安全上限，请先重新分段"
-            }
-            val startSample = safeStartMs * sampleRate / 1000L
-            val endSample = (safeEndMs * sampleRate / 1000L).coerceAtMost(pcmFile.sampleCount)
-            if (endSample > startSample) {
-                val count = endSample - startSample
-                require(count <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
-                val readStartedMs = android.os.SystemClock.elapsedRealtime()
-                val samples = pcmReader.readFloatSamples(startSample, count.toInt())
-                sampleReadMs += android.os.SystemClock.elapsedRealtime() - readStartedMs
-                val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
-                val result = decodeResult(samples)
-                inferenceMs += android.os.SystemClock.elapsedRealtime() - decodeStartedMs
-                audioMs += safeEndMs - safeStartMs
-                decodedSegments++
-                val text = result.text.trim()
                 checkActive()
-                if (text.isNotEmpty()) output += Triple(safeStartMs, safeEndMs, text)
-            }
-            onProgress(index + 1, segs.size)
+                val safeStartMs = startMs.coerceIn(0L, durationMs)
+                val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
+                require(safeEndMs - safeStartMs <= VadSegmentMergePolicy.MAX_MERGED_SEGMENT_MS) {
+                    "单条 SenseVoice 语音段超过 25 秒安全上限，请先重新分段"
+                }
+                val startSample = safeStartMs * sampleRate / 1000L
+                val endSample = (safeEndMs * sampleRate / 1000L).coerceAtMost(pcmFile.sampleCount)
+                if (endSample > startSample) {
+                    val count = endSample - startSample
+                    require(count <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
+                    val readStartedMs = android.os.SystemClock.elapsedRealtime()
+                    val samples = pcmReader.readFloatSamples(startSample, count.toInt())
+                    sampleReadMs += android.os.SystemClock.elapsedRealtime() - readStartedMs
+                    val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
+                    val result = decodeResult(samples)
+                    inferenceMs += android.os.SystemClock.elapsedRealtime() - decodeStartedMs
+                    audioMs += safeEndMs - safeStartMs
+                    decodedSegments++
+                    val text = result.text.trim()
+                    checkActive()
+                    if (text.isNotEmpty()) output += Triple(safeStartMs, safeEndMs, text)
+                }
+                onProgress(index + 1, segs.size)
             }
         }
         LocalAsrPerformanceLogger.log(
