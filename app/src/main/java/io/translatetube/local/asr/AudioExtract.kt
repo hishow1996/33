@@ -419,11 +419,6 @@ object AudioExtract {
         onProgressPercent: (Int) -> Unit = {},
     ): PcmFile {
         PcmTempFilePolicy.cleanupStale(ctx.cacheDir)
-        // 不限时长的整段解码：长的本地 AAC 音轨先尝试分段并行解码（有校验，不通过会返回 null，
-        // 下面照旧顺序解码）。限定时长的短解码（截取片段）不走并行。
-        if (maxDurationMs == Long.MAX_VALUE) {
-            ParallelPcmDecoder.tryDecode(ctx, src, file, checkActive, onProgressPercent)?.let { return it }
-        }
         val destination = File.createTempFile("translate-pcm-", ".s16le", ctx.cacheDir)
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
@@ -747,7 +742,7 @@ object AudioExtract {
         }
     }
 
-    internal fun writePcm16Le(
+    private fun writePcm16Le(
         output: BufferedOutputStream,
         samples: ShortArray,
         bytes: ByteArray,
