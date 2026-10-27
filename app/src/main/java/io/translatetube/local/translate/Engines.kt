@@ -637,6 +637,40 @@ internal fun isReasoningFieldName(name: String): Boolean {
     return listOf("reason", "think", "analysis", "thought").any(normalized::contains)
 }
 
+/** Read text from string, array-of-content-blocks, or object-style provider content. */
+private fun extractTextFromContentValue(value: Any?): String = when (value) {
+    is String -> value
+    is JSONArray -> {
+        val parts = mutableListOf<String>()
+        for (index in 0 until value.length()) {
+            val item = value.opt(index)
+            if (item is JSONObject) {
+                val type = item.optString("type", "").lowercase(java.util.Locale.ROOT)
+                if (type.isNotBlank() && isReasoningFieldName(type)) continue
+            }
+            val text = extractTextFromContentValue(item)
+            if (text.isNotBlank()) parts += text
+        }
+        parts.joinToString("\n")
+    }
+    is JSONObject -> {
+        val type = value.optString("type", "").lowercase(java.util.Locale.ROOT)
+        if (type.isNotBlank() && isReasoningFieldName(type)) {
+            ""
+        } else {
+            val directText = listOf("text", "output_text", "final_answer", "answer")
+                .firstNotNullOfOrNull { key ->
+                    (value.opt(key) as? String)?.takeIf { it.isNotBlank() }
+                }
+            if (directText != null) directText else {
+                val parts = value.opt("parts")
+                if (parts is JSONArray) extractTextFromContentValue(parts) else ""
+            }
+        }
+    }
+    else -> ""
+}
+
 /** Read common final-text variants used by Chat Completions and Responses-style gateways. */
 private fun extractAlternativeResponseText(root: JSONObject): String {
     val topLevel = (root.opt("output_text") as? String).orEmpty().trim()
@@ -646,12 +680,14 @@ private fun extractAlternativeResponseText(root: JSONObject): String {
     val parts = mutableListOf<String>()
     for (index in 0 until output.length()) {
         val item = output.optJSONObject(index) ?: continue
-        val content = item.optJSONArray("content") ?: continue
-        for (partIndex in 0 until content.length()) {
-            val part = content.optJSONObject(partIndex) ?: continue
-            val type = part.optString("type", "").lowercase(java.util.Locale.ROOT)
-            if (type.isNotBlank() && isReasoningFieldName(type)) continue
-            val text = (part.opt("text") as? String).orEmpty()
+        val itemType = item.optString("type", "").lowercase(java.util.Locale.ROOT)
+        if (itemType.isNotBlank() && isReasoningFieldName(itemType)) continue
+        val content = item.optJSONArray("content")
+        if (content != null) {
+            val text = extractTextFromContentValue(content)
+            if (text.isNotBlank()) parts += text
+        } else {
+            val text = (item.opt("text") as? String).orEmpty()
             if (text.isNotBlank()) parts += text
         }
     }
@@ -666,15 +702,20 @@ private fun extractOpenAiCompatContent(body: String): String {
         throw IllegalStateException("API 响应不是有效的 JSON，无法读取翻译结果", error)
     }
 
-    root.optJSONObject("error")?.let { apiError ->
-        val message = (apiError.opt("message") as? String)
-            ?.takeIf { it.isNotBlank() }
-            ?: "服务商未提供错误详情"
-        val code = (apiError.opt("code") as? String)
-            ?.takeIf { it.isNotBlank() && it != "null" }
-        throw IllegalStateException(
-            "API 返回错误" + (code?.let { " [$it]" } ?: "") + "：" + message.take(400)
-        )
+    when (val rawError = root.opt("error")) {
+        is JSONObject -> {
+            val message = (rawError.opt("message") as? String)
+                ?.takeIf { it.isNotBlank() }
+                ?: "服务商未提供错误详情"
+            val code = (rawError.opt("code") as? String)
+                ?.takeIf { it.isNotBlank() && it != "null" }
+            throw IllegalStateException(
+                "API 返回错误" + (code?.let { " [$it]" } ?: "") + "：" + message.take(400)
+            )
+        }
+        is String -> if (rawError.isNotBlank()) {
+            throw IllegalStateException("API 返回错误：" + rawError.take(400))
+        }
     }
 
     val alternativeResponseText = extractAlternativeResponseText(root)
@@ -702,24 +743,7 @@ private fun extractOpenAiCompatContent(body: String): String {
     val finishReason = choice.optString("finish_reason", "未知")
     val rawContent = message.opt("content")
 
-    val text = when (rawContent) {
-        is String -> rawContent
-        is JSONArray -> {
-            val parts = mutableListOf<String>()
-            for (index in 0 until rawContent.length()) {
-                val item = rawContent.opt(index)
-                when (item) {
-                    is String -> if (item.isNotBlank()) parts += item
-                    is JSONObject -> {
-                        val partText = item.opt("text") as? String
-                        if (!partText.isNullOrBlank()) parts += partText
-                    }
-                }
-            }
-            parts.joinToString("\n")
-        }
-        else -> ""
-    }.trim()
+    val text = extractTextFromContentValue(rawContent).trim()
 
     if (text.isNotEmpty()) return text
 
