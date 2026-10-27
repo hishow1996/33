@@ -65,6 +65,33 @@ class AppLogTitleResolverTest {
     }
 
     @Test
+    fun translationAndTranscriptionTitlesDoNotRepeatTheOperationName() {
+        assertEquals(
+            "字幕翻译：请求失败（原因：HTTP 503 Service Unavailable）",
+            AppLogTitleResolver.title(
+                "Translation",
+                "翻译请求失败 | HttpException: HTTP 503 Service Unavailable",
+            ),
+        )
+        assertEquals(
+            "字幕翻译：结果为空",
+            AppLogTitleResolver.title("Translation", "翻译结果为空"),
+        )
+        assertEquals(
+            "语音转写：任务失败",
+            AppLogTitleResolver.title("Transcription", "转写任务失败"),
+        )
+    }
+
+    @Test
+    fun ordinaryPipeSeparatedEventDetailsArePreserved() {
+        assertEquals(
+            "Custom Parser：解析完成 | 发现 2 个音轨",
+            AppLogTitleResolver.title("CustomParser", "解析完成 | 发现 2 个音轨"),
+        )
+    }
+
+    @Test
     fun genericFailureIncludesOnlyAConciseRootCause() {
         assertEquals(
             "字幕翻译：接口请求失败（原因：HTTP 429 Too Many Requests）",
