@@ -125,7 +125,12 @@ object AudioExtract {
                 require(endByte <= expectedFileBytes) { "PCM 读取范围超出文件长度" }
 
                 val result = FloatArray(count)
-                val bytes = byteBuffer ?: ByteArray(64 * 1024).also { byteBuffer = it }
+                val requiredBufferSize = minOf(
+                    64 * 1024,
+                    maxOf(2L, count.toLong() * 2L),
+                ).toInt()
+                val bytes = byteBuffer?.takeIf { it.size >= requiredBufferSize }
+                    ?: ByteArray(requiredBufferSize).also { byteBuffer = it }
                 activeReader.seek(startSample * 2L)
                 var written = 0
                 while (written < count) {
