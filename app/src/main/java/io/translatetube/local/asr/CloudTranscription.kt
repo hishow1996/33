@@ -134,9 +134,8 @@ object CloudTranscription {
      * language; callers then use automatic detection instead of silently forcing English.
      */
     internal fun youtubeSourceLanguageHint(provider: String, audioLanguage: String?): String? {
-        val normalized = SourceLanguagePolicy.normalizeTag(audioLanguage.orEmpty())
-        if (SourceLanguagePolicy.isUndetermined(normalized)) return null
-        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        val primary = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+            .normalizeLanguageCode(audioLanguage) ?: return null
         return when (provider) {
             "elevenlabs" -> elevenLabsLanguageCode(primary)
             "cartesia" -> cartesiaLanguageCode(primary)?.takeIf { it in cartesiaSourceLanguageCodes }
