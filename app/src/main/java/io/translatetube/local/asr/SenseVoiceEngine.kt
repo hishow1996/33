@@ -73,6 +73,7 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
         segs: List<Pair<Long, Long>>,
         checkActive: () -> Unit,
         onProgress: (done: Int, total: Int) -> Unit,
+        sharedPcmReader: AudioExtract.PcmFile.Reader?,
     ): List<Triple<Long, Long, String>> {
         check(!closed) { "SenseVoice 识别器已关闭" }
         require(pcmFile.sampleRate == 16_000) { "SenseVoice 只支持 16kHz PCM 输入" }
@@ -84,7 +85,9 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
         var sampleReadMs = 0L
         var inferenceMs = 0L
         var decodedSegments = 0
-        pcmFile.openReader(checkActive).use { pcmReader ->
+        val ownsPcmReader = sharedPcmReader == null
+        val pcmReader = sharedPcmReader ?: pcmFile.openReader(checkActive)
+        try {
             segs.forEachIndexed { index, (startMs, endMs) ->
                 checkActive()
                 val safeStartMs = startMs.coerceIn(0L, durationMs)
@@ -111,6 +114,8 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
                 }
                 onProgress(index + 1, segs.size)
             }
+        } finally {
+            if (ownsPcmReader) pcmReader.close()
         }
         LocalAsrPerformanceLogger.log(
             modelId = "sensevoice",
