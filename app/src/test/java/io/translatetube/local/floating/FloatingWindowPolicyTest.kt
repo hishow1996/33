@@ -45,6 +45,24 @@ class FloatingWindowPolicyTest {
     }
 
     @Test
+    fun expandingWindowToFullDisplayWidthAlignsBothHorizontalEdges() {
+        val displayWidth = 1080
+        val expandedWidth = FloatingWindowPolicy.resizedDimension(
+            anchorSize = 640,
+            anchorPointer = 900f,
+            currentPointer = 3000f,
+            minimum = 280,
+            available = displayWidth,
+        )
+
+        assertEquals(displayWidth, expandedWidth)
+        // 缩放到全屏宽度时，左边缘回到 x=0，右边缘恰好等于屏幕宽度。
+        val left = FloatingWindowPolicy.boundedOffset(240, expandedWidth, displayWidth)
+        assertEquals(0, left)
+        assertEquals(displayWidth, left + expandedWidth)
+    }
+
+    @Test
     fun resizeFollowsThePointerAndRespectsLimits() {
         assertEquals(740, FloatingWindowPolicy.resizedDimension(640, 900f, 1000f, 280, 1080))
         assertEquals(740, FloatingWindowPolicy.resizedDimension(640, 900f, 1000f, 280, 1080))
