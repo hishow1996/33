@@ -548,7 +548,53 @@ private class ReasoningOnlyResponseException(
         "message 字段=${messageFields.joinToString(",")}；finish_reason=$finishReason"
 )
 
-private enum class ThinkingControlStyle {
+internal enum class ThinkingControlStyle {
+    DEEPSEEK,
+    QWEN,
+    OPENROUTER,
+    REASONING_EFFORT,
+    PLAIN,
+}
+
+/**
+ * Select at most two request formats. Retrying every vendor's speculative controls can multiply
+ * latency and token charges for every subtitle batch; use one provider/model-specific format and
+ * one fallback only if the response shows reasoning without final text or the parameter is rejected.
+ */
+internal fun thinkingControlOrder(baseUrl: String, model: String): List<ThinkingControlStyle> {
+    val normalizedBase = baseUrl.lowercase(java.util.Locale.ROOT)
+    val normalizedModel = model.lowercase(java.util.Locale.ROOT)
+    val preferred = when {
+        normalizedBase.contains("openrouter.ai") -> ThinkingControlStyle.OPENROUTER
+        normalizedBase.contains("api.deepseek.com") || normalizedModel.contains("deepseek") ->
+            ThinkingControlStyle.DEEPSEEK
+        normalizedBase.contains("dashscope") ||
+            normalizedBase.contains("qwencloud") ||
+            normalizedModel.contains("qwen") ->
+            ThinkingControlStyle.QWEN
+        normalizedModel.contains("kimi") ||
+            normalizedModel.contains("glm") ||
+            normalizedModel.contains("zhipu") ||
+            normalizedModel.contains("reasoner") ||
+            normalizedModel.contains("thinking") ||
+            normalizedModel.contains("qwq") ||
+            Regex("""(^|[-_/])(r1|r2|o1|o3|o4)([-_/]|$)""").containsMatchIn(normalizedModel) ||
+            normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ->
+            ThinkingControlStyle.REASONING_EFFORT
+        else -> ThinkingControlStyle.PLAIN
+    }
+
+    val fallback = when (preferred) {
+        ThinkingControlStyle.DEEPSEEK,
+        ThinkingControlStyle.QWEN,
+        ThinkingControlStyle.OPENROUTER,
+        ThinkingControlStyle.PLAIN -> ThinkingControlStyle.REASONING_EFFORT
+        ThinkingControlStyle.REASONING_EFFORT -> ThinkingControlStyle.PLAIN
+    }
+    return listOf(preferred, fallback).distinct()
+}
+
+
     DEEPSEEK,
     QWEN,
     OPENROUTER,
@@ -655,9 +701,12 @@ private fun extractOpenAiCompatContent(body: String): String {
     if (reasoningFields.isNotEmpty()) {
         throw ReasoningOnlyResponseException(messageFields.sorted(), reasoningFields, finishReason)
     }
+    val refusal = (message.opt("refusal") as? String).orEmpty().takeIf { it.isNotBlank() }
     val detail = when {
         hasToolCalls ->
             "模型返回了 tool_calls 工具调用，而不是字幕翻译文本"
+        refusal != null ->
+            "模型拒绝了本次请求：${refusal.take(240)}"
         message.has("content") ->
             "message.content 为空或不是可识别的文本"
         else ->
@@ -677,46 +726,6 @@ class OpenAiCompatEngine(
 ) : TranslationEngine {
     override val id = "openai"
     override val displayName = model.ifEmpty { "OpenAI 兼容" }
-
-    /**
-     * Thinking controls are not standardized across OpenAI-compatible services. Prefer the
-     * documented request shape for recognizable model/provider families, then try compatible
-     * alternatives only if the provider rejects the parameter or returns reasoning without a
-     * final answer. Unknown models use an unmodified request first.
-     */
-    private fun thinkingControlOrder(): List<ThinkingControlStyle> {
-        val normalizedBase = baseUrl.lowercase(java.util.Locale.ROOT)
-        val normalizedModel = model.lowercase(java.util.Locale.ROOT)
-        val preferred = when {
-            normalizedBase.contains("openrouter.ai") -> ThinkingControlStyle.OPENROUTER
-            normalizedBase.contains("api.deepseek.com") || normalizedModel.contains("deepseek") ->
-                ThinkingControlStyle.DEEPSEEK
-            normalizedBase.contains("dashscope") ||
-                normalizedBase.contains("qwencloud") ||
-                normalizedModel.contains("qwen") ->
-                ThinkingControlStyle.QWEN
-            normalizedModel.contains("kimi") ||
-                normalizedModel.contains("glm") ||
-                normalizedModel.contains("zhipu") ||
-                normalizedModel.contains("reasoner") ||
-                normalizedModel.contains("thinking") ||
-                normalizedModel.contains("qwq") ||
-                Regex("""(^|[-_/])(r1|r2|o1|o3|o4)([-_/]|$)""").containsMatchIn(normalizedModel) ||
-                normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ->
-                ThinkingControlStyle.REASONING_EFFORT
-            else -> ThinkingControlStyle.PLAIN
-        }
-        val candidates = listOf(
-            preferred,
-            ThinkingControlStyle.REASONING_EFFORT,
-            ThinkingControlStyle.DEEPSEEK,
-            ThinkingControlStyle.QWEN,
-            ThinkingControlStyle.OPENROUTER,
-        )
-        // Avoid resending the unmodified request after it already returned a reasoning-only answer.
-        return (candidates + if (preferred == ThinkingControlStyle.PLAIN) emptyList()
-            else listOf(ThinkingControlStyle.PLAIN)).distinct()
-    }
 
     private fun payloadWithThinkingControl(
         original: JSONObject,
@@ -746,7 +755,7 @@ class OpenAiCompatEngine(
         var lastRejectedControl: Throwable? = null
         val ownerJob = currentCoroutineContext()[Job]
 
-        for (style in thinkingControlOrder()) {
+        for (style in thinkingControlOrder(baseUrl, model)) {
             currentCoroutineContext().ensureActive()
             val requestPayload = payloadWithThinkingControl(payload, style)
             try {
