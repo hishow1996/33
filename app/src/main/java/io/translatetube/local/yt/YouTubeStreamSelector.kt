@@ -128,8 +128,12 @@ internal object YouTubeStreamSelector {
                 val knownLanguages = safeNonDubbed.mapNotNull {
                     YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
                 }.distinct()
-                // If metadata exposes conflicting non-dubbed languages but does not identify the
-                // original track, do not silently transcribe whichever one has the lowest bitrate.
+                // If a preferred source language is known but every tagged track disagrees, do
+                // not fall back to another language. Also reject ambiguous unmarked tracks when no
+                // original-language hint exists, rather than letting bitrate decide the language.
+                if (preferredLanguage != null && knownLanguages.isNotEmpty() &&
+                    preferredLanguage !in knownLanguages
+                ) return -1
                 if (preferredLanguage == null && knownLanguages.size > 1) return -1
                 safeNonDubbed
             }
