@@ -112,7 +112,7 @@ internal object YouTubeStreamSelector {
             matchingLanguage.isNotEmpty() -> matchingLanguage
             safeNonDubbed.isNotEmpty() -> {
                 val knownLanguages = safeNonDubbed.mapNotNull {
-                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(input[it].languageTag)
+                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
                 }.distinct()
                 if (preferredLanguage != null && knownLanguages.isNotEmpty() &&
                     preferredLanguage !in knownLanguages
@@ -180,7 +180,7 @@ internal object YouTubeStreamSelector {
             matchingLanguage.isNotEmpty() -> matchingLanguage
             safeNonDubbed.isNotEmpty() -> {
                 val knownLanguages = safeNonDubbed.mapNotNull {
-                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
+                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(input[it].languageTag)
                 }.distinct()
                 // If a preferred source language is known but every tagged track disagrees, do
                 // not fall back to another language. Also reject ambiguous unmarked tracks when no
