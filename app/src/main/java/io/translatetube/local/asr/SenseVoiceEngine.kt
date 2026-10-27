@@ -19,6 +19,9 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
     override var lastLang: String = ""
         private set
 
+    /** 按音频时长投票得出整段视频的语言，避免被结尾一句很短的话认错。 */
+    private val languageVote = AsrLanguageVotePolicy()
+
     @Volatile
     override var lastEmotion: String = ""
         private set
@@ -58,7 +61,6 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
             stream.acceptWaveform(samples, sampleRate = 16000)
             recognizer.decode(stream)
             return recognizer.getResult(stream).also { result ->
-                result.lang.takeIf { it.isNotBlank() }?.let { lastLang = it }
                 result.emotion.takeIf { it.isNotBlank() }?.let { lastEmotion = it }
                 result.event.takeIf { it.isNotBlank() }?.let { lastEvent = it }
             }
@@ -111,6 +113,8 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
                     val text = result.text.trim()
                     checkActive()
                     if (text.isNotEmpty()) {
+                        languageVote.add(result.lang, safeEndMs - safeStartMs)
+                        languageVote.best().takeIf { it.isNotEmpty() }?.let { lastLang = it }
                         // SenseVoice 没有词级时间戳：一个语音段（最长 25 秒）按标点拆成短句行，
                         // 并清掉幻觉/循环输出，字幕和配音才不会是一整行几十秒的长句。
                         output.addAll(
@@ -140,6 +144,7 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
     @Synchronized
     override fun clearDetectedLanguage() {
         check(!closed) { "SenseVoice 识别器已关闭" }
+        languageVote.clear()
         lastLang = ""
         lastEmotion = ""
         lastEvent = ""

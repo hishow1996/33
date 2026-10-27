@@ -15,6 +15,8 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
     /** 最近一次转写检测到的语言码（如 "en"/"ja"） */
     @Volatile override var lastLang: String = ""
         private set
+    /** 按音频时长投票得出整段视频的语言，避免被结尾一句很短的话认错。 */
+    private val languageVote = AsrLanguageVotePolicy()
     override val lastEmotion: String get() = ""
     override val lastEvent: String get() = ""
 
@@ -52,17 +54,25 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
         try {
             stream.acceptWaveform(pcm, sampleRate = 16000)
             recognizer.decode(stream)
-            return recognizer.getResult(stream).also { result ->
-                result.lang?.takeIf { it.isNotBlank() }?.let { lastLang = it }
-            }
+            return recognizer.getResult(stream)
         } finally {
             // sherpa streams own native memory; always release even when decode/result throws.
             runCatching { stream.release() }
         }
     }
 
+    /** 只有真正识别出文字的片段才参与语言投票，权重是片段时长（毫秒）。 */
+    private fun recordLanguage(result: OfflineRecognizerResult, weightMs: Long) {
+        languageVote.add(result.lang, weightMs)
+        languageVote.best().takeIf { it.isNotEmpty() }?.let { lastLang = it }
+    }
+
     @Synchronized
-    fun transcribe(pcm: FloatArray): String = decodeResult(pcm).text
+    fun transcribe(pcm: FloatArray): String {
+        val result = decodeResult(pcm)
+        if (result.text.isNotBlank()) recordLanguage(result, pcm.size.toLong() * 1000L / 16_000L)
+        return result.text
+    }
 
     /** 长音频分段转写：30s 窗口 + 1s 重叠，返回带时间轴文本 */
     @Synchronized
@@ -97,6 +107,7 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
     @Synchronized
     override fun clearDetectedLanguage() {
         check(!closed) { "Whisper 识别器已关闭" }
+        languageVote.clear()
         lastLang = ""
     }
 
@@ -128,6 +139,7 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                 val text = result.text.trim()
                 checkActive()
                 if (text.isNotEmpty()) {
+                    recordLanguage(result, endMs - startMs)
                     val timedRows = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
                         tokens = result.tokens.toList(),
                         timestampsSeconds = result.timestamps.toList(),
@@ -195,6 +207,7 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                     val text = result.text.trim()
                     checkActive()
                     if (text.isNotEmpty()) {
+                        recordLanguage(result, safeEndMs - safeStartMs)
                         val timedRows = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
                             tokens = result.tokens.toList(),
                             timestampsSeconds = result.timestamps.toList(),
