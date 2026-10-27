@@ -70,6 +70,9 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
     // A batch that exceeds context/request limits may succeed when split. Do not include generic
     // token/max-token errors, authentication failures, rate limits, or temporary server errors.
     val requestTooLarge = normalized.contains("http 413") ||
+        normalized.contains("finish_reason=length") ||
+        normalized.contains("finish_reason: length") ||
+        normalized.contains("finish reason length") ||
         listOf(
             "context length exceeded",
             "maximum context length",
@@ -83,6 +86,7 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
             "payload too large",
             "request body too large",
             "maximum context window",
+            "incomplete response due to length",
         ).any(normalized::contains)
     return requestTooLarge
 }
