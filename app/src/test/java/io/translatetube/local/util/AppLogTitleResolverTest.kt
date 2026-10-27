@@ -54,6 +54,17 @@ class AppLogTitleResolverTest {
     }
 
     @Test
+    fun alreadyLabelledGenericFailureStillShowsTheRootCause() {
+        assertEquals(
+            "字幕翻译失败（原因：HTTP 429 Too Many Requests）",
+            AppLogTitleResolver.title(
+                "Translation",
+                "字幕翻译失败 | HttpException: HTTP 429 Too Many Requests",
+            ),
+        )
+    }
+
+    @Test
     fun genericFailureIncludesOnlyAConciseRootCause() {
         assertEquals(
             "字幕翻译：接口请求失败（原因：HTTP 429 Too Many Requests）",
