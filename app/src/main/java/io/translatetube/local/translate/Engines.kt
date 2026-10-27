@@ -562,6 +562,12 @@ internal enum class ThinkingControlStyle {
  * latency and token charges for every subtitle batch; use one provider/model-specific format and
  * one fallback only if the response shows reasoning without final text or the parameter is rejected.
  */
+internal fun fallbackAfterThinkingControlRejection(
+    current: ThinkingControlStyle,
+    configuredFallback: ThinkingControlStyle,
+): ThinkingControlStyle =
+    if (current == ThinkingControlStyle.PLAIN) configuredFallback else ThinkingControlStyle.PLAIN
+
 internal fun thinkingControlOrder(baseUrl: String, model: String): List<ThinkingControlStyle> {
     val normalizedBase = baseUrl.lowercase(java.util.Locale.ROOT)
     val normalizedModel = model.lowercase(java.util.Locale.ROOT)
@@ -795,7 +801,7 @@ class OpenAiCompatEngine(
                     lastRejectedControl = error
                     val styleIndex = styles.indexOf(style)
                     if (styleIndex == 0 && styles.size > 1) {
-                        styles[1] = ThinkingControlStyle.PLAIN
+                        styles[1] = fallbackAfterThinkingControlRejection(style, styles[1])
                     }
                     android.util.Log.w(
                         "TranslationAPI",
