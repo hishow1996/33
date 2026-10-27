@@ -136,7 +136,9 @@ object AppLogTitleResolver {
 
     fun title(tag: String, message: String): String {
         val feature = featureLabel(tag, message)
-        val visibleMessage = normalizeMessage(message.substringBefore(" | "))
+        // A vertical bar is also valid message content. Remove only the technical exception
+        // suffix appended by AppLogStore, not ordinary event details after a pipe.
+        val visibleMessage = normalizeMessage(splitTechnicalSuffix(message).first)
         if (visibleMessage.isBlank()) {
             return limitTitle("$feature：未提供日志摘要")
         }
@@ -229,6 +231,13 @@ object AppLogTitleResolver {
                 candidates += listOf("yt-dlp 更新", "yt-dlp")
             normalizedTag.contains("webaudio") ->
                 candidates += listOf("网页独立音轨", "网页音轨")
+            normalizedTag.contains("translation") || normalizedTag.contains("translate") ->
+                candidates += "翻译"
+            normalizedTag.contains("transcription") || normalizedTag.contains("transcrib") ||
+                normalizedTag.contains("localasr") || normalizedTag.endsWith("asr") ->
+                candidates += listOf("语音识别", "语音转写", "转写")
+            normalizedTag.contains("audioextract") ->
+                candidates += listOf("音轨提取", "音频解码", "提取音频")
         }
 
         for (candidate in candidates.distinct().sortedByDescending { it.length }) {
@@ -241,9 +250,10 @@ object AppLogTitleResolver {
                 (first != null && first in charArrayOf('：', ':', '/', '—', '-', '、')) ||
                 startsWithAny(
                     trimmed,
-                    "处理器", "引擎", "模块", "任务", "下载", "读取", "请求", "调用", "创建",
-                    "初始化", "合成", "缓存", "预检", "执行", "获取", "检测", "识别", "写入",
-                    "返回", "解析", "转写", "加载", "安装", "更新", "恢复", "播放", "退出",
+                    "处理器", "引擎", "模块", "模型", "任务", "服务", "接口", "响应", "内容",
+                    "字幕", "音轨", "下载", "读取", "请求", "调用", "创建", "初始化", "合成",
+                    "缓存", "预检", "执行", "获取", "检测", "识别", "写入", "返回", "结果",
+                    "解析", "转写", "加载", "安装", "更新", "恢复", "播放", "退出",
                 )
             ) {
                 val compacted = trimmed
@@ -258,7 +268,7 @@ object AppLogTitleResolver {
     }
 
     private fun rootCauseSummary(message: String): String? {
-        val technicalSuffix = message.substringAfter(" | ", "").trim()
+        val technicalSuffix = splitTechnicalSuffix(message).second.trim()
         if (technicalSuffix.isBlank()) return null
         val root = if (technicalSuffix.contains("根因=")) {
             technicalSuffix.substringAfterLast("根因=").trim()
@@ -272,6 +282,28 @@ object AppLogTitleResolver {
         val summary = normalizeMessage(withoutExceptionClass.ifBlank { root })
         if (summary.isBlank()) return null
         return summary.take(36).trimEnd()
+    }
+
+    /**
+     * Returns (displayable message, appended exception summary). A plain " | " in a log message
+     * must stay visible; only strip the suffix when it has the structure AppLogStore appends.
+     */
+    private fun splitTechnicalSuffix(message: String): Pair<String, String> {
+        var delimiter = message.indexOf(" | ")
+        while (delimiter >= 0) {
+            val suffix = message.substring(delimiter + 3).trim()
+            if (isTechnicalExceptionSuffix(suffix)) {
+                return message.substring(0, delimiter).trim() to suffix
+            }
+            delimiter = message.indexOf(" | ", delimiter + 3)
+        }
+        return message to ""
+    }
+
+    private fun isTechnicalExceptionSuffix(value: String): Boolean {
+        if (value.contains("根因=")) return true
+        return Regex("^[A-Za-z_$][A-Za-z0-9_.$]*(?:Exception|Error|Throwable)\\s*(?::|$)")
+            .containsMatchIn(value)
     }
 
     private fun isGenericFailure(message: String): Boolean {
