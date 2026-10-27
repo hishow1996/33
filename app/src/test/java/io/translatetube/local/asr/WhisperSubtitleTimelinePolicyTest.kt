@@ -118,6 +118,45 @@ class WhisperSubtitleTimelinePolicyTest {
         assertTrue(cues.zipWithNext().all { (left, right) -> left.first < right.first })
     }
     @Test
+    fun splitsSubtitleCuesAtLongPausesEvenWhenPhraseIsShort() {
+        val tokens = listOf("We", " should", " pause", " then", " resume.")
+        val timestamps = listOf(0.0f, 0.2f, 0.4f, 1.5f, 1.7f)
+        val durations = List(tokens.size) { 0.15f }
+
+        val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+            tokens = tokens,
+            timestampsSeconds = timestamps,
+            durationsSeconds = durations,
+            segmentStartMs = 2_000L,
+            segmentEndMs = 5_000L,
+            expectedText = "We should pause then resume.",
+        )
+
+        assertEquals(2, cues.size)
+        assertEquals(Triple(2_000L, 2_550L, "We should pause"), cues[0])
+        assertEquals(Triple(3_500L, 3_850L, "then resume."), cues[1])
+    }
+
+    @Test
+    fun capsTokenDurationAtTheNextDistinctTokenStart() {
+        val tokens = listOf("alpha", " beta", ".")
+        val timestamps = listOf(0.0f, 0.3f, 0.6f)
+        val durations = listOf(1.5f, 0.2f, 0.2f)
+
+        val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+            tokens = tokens,
+            timestampsSeconds = timestamps,
+            durationsSeconds = durations,
+            segmentStartMs = 1_000L,
+            segmentEndMs = 3_000L,
+            expectedText = "alpha beta.",
+        )
+
+        assertEquals(1, cues.size)
+        assertEquals(Triple(1_000L, 1_800L, "alpha beta."), cues.single())
+    }
+
+    @Test
     fun createsChronologicalCuesForLargeTokenLists() {
         val tokens = List(3_000) { "a" }
         val timestamps = List(3_000) { it * 0.05f }
