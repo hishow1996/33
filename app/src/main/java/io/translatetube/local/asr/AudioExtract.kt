@@ -116,11 +116,19 @@ object AudioExtract {
                 val endSample = startSample + count.toLong()
                 val endByte = endSample * 2L
                 val expectedFileBytes = sampleCount * 2L
-                val activeReader = input ?: run {
+                val existingReader = input
+                val activeReader = existingReader ?: run {
                     require(file.isFile && file.length() == expectedFileBytes && endByte <= expectedFileBytes) {
                         "PCM 临时文件长度与声明的采样数不一致"
                     }
                     RandomAccessFile(file, "r").also { input = it }
+                }
+                if (existingReader != null) {
+                    // The scratch file should be immutable during ASR. Detect concurrent truncation,
+                    // replacement or append rather than combining samples from a changed source.
+                    require(file.isFile && file.length() == expectedFileBytes && endByte <= expectedFileBytes) {
+                        "PCM 临时文件长度与声明的采样数不一致"
+                    }
                 }
                 require(endByte <= expectedFileBytes) { "PCM 读取范围超出文件长度" }
 
