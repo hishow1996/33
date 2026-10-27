@@ -91,6 +91,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.translatetube.local.floating.FloatingManager
+import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
 import io.translatetube.local.player.PlayerUiState
 import io.translatetube.local.player.Phase
@@ -293,6 +294,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
     val floating = remember { FloatingManager(ctx) }
     var isFloating by remember { mutableStateOf(false) }
+    // 悬浮窗自己的生命周期：不能借用 Activity 的，否则切到桌面后 Compose 会暂停刷新悬浮窗里的按钮层。
+    val overlayOwnerHolder = remember { arrayOfNulls<FloatingOverlayLifecycleOwner>(1) }
     var floatingGranted by remember { mutableStateOf(floating.canDraw()) }
     // 从系统授权页返回时刷新悬浮窗权限状态
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -360,6 +363,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     fun exitFloating() {
         if (isFloating) {
             floating.hide()
+            overlayOwnerHolder[0]?.destroy()
+            overlayOwnerHolder[0] = null
             moveTextureViewTo(frame)
             isFloating = false
         }
@@ -382,8 +387,14 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         moveTextureViewTo(host)
         // WindowManager overlays are detached from the Activity's decor view tree.
         // ComposeView requires both lifecycle and saved-state owners before it is attached.
-        host.setViewTreeLifecycleOwner(lifecycleOwner)
-        host.setViewTreeSavedStateRegistryOwner(savedStateRegistryOwner)
+        // Use the overlay's own always-RESUMED owner: the Activity's one stops when the user goes
+        // to the home screen, which freezes recomposition of the controls inside the overlay.
+        overlayOwnerHolder[0]?.destroy()
+        val overlayOwner = FloatingOverlayLifecycleOwner()
+        overlayOwnerHolder[0] = overlayOwner
+        host.setViewTreeLifecycleOwner(overlayOwner)
+        host.setViewTreeSavedStateRegistryOwner(overlayOwner)
+        overlayOwner.resume()
         val controlsView = ComposeView(ctx).apply {
             setContent {
                 FloatingPlayerControls(
@@ -426,6 +437,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         } else {
             // WindowManager can reject an overlay even after permission was granted. Never leave
             // the TextureView parented to a detached host or the player turns black.
+            overlayOwner.destroy()
+            overlayOwnerHolder[0] = null
             moveTextureViewTo(frame)
             isFloating = false
             android.widget.Toast.makeText(
@@ -2568,6 +2581,8 @@ private fun FloatingPlayerControls(
     // Activity composition caused stale visibility when the Activity was backgrounded.
     var controlsVisible by remember { mutableStateOf(true) }
     var interactionRevision by remember { mutableIntStateOf(0) }
+    // 拖动/缩放悬浮窗期间不能自动隐藏按钮层，否则界面重组会打断正在进行的手势。
+    var windowDragging by remember { mutableStateOf(false) }
     fun onInteraction() {
         controlsVisible = true
         interactionRevision++
@@ -2591,8 +2606,8 @@ private fun FloatingPlayerControls(
         }
     }
 
-    LaunchedEffect(controlsVisible, interactionRevision, scrubbing) {
-        if (!controlsVisible || scrubbing) return@LaunchedEffect
+    LaunchedEffect(controlsVisible, interactionRevision, scrubbing, windowDragging) {
+        if (!controlsVisible || scrubbing || windowDragging) return@LaunchedEffect
         delay(3_000)
         controlsVisible = false
     }
@@ -2607,7 +2622,9 @@ private fun FloatingPlayerControls(
     val resizeTouchSizePx = with(androidx.compose.ui.platform.LocalDensity.current) {
         24.dp.toPx()
     }.coerceAtLeast(24f)
-    val overlayGestureModifier = Modifier.pointerInput(controlsVisible) {
+    // 手势协程不要随 controlsVisible 重启（重启会把正在进行的拖动打断），用最新值读取即可。
+    val latestControlsVisible by rememberUpdatedState(controlsVisible)
+    val overlayGestureModifier = Modifier.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             // A control or the seek bar already claimed this touch; do not turn it into
@@ -2615,43 +2632,44 @@ private fun FloatingPlayerControls(
             if (down.isConsumed) return@awaitEachGesture
 
             val start = down.position
-            var lastPosition = start
             var draggingWindow = false
-            var finished = false
             val resizing = down.position.x >= size.width - resizeTouchSizePx &&
                 down.position.y >= size.height - resizeTouchSizePx
 
-            while (!finished) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (change.isConsumed && !draggingWindow) break
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (change.isConsumed && !draggingWindow) break
 
-                val totalX = change.position.x - start.x
-                val totalY = change.position.y - start.y
-                if (!draggingWindow &&
-                    (kotlin.math.abs(totalX) > viewConfiguration.touchSlop ||
-                        kotlin.math.abs(totalY) > viewConfiguration.touchSlop)
-                ) {
-                    draggingWindow = true
-                    change.consume()
-                    if (resizing) onResizeWindow(totalX, totalY)
-                    else onMoveWindow(totalX, totalY)
-                } else if (draggingWindow) {
-                    val dx = change.position.x - lastPosition.x
-                    val dy = change.position.y - lastPosition.y
-                    change.consume()
-                    if (resizing) onResizeWindow(dx, dy)
-                    else onMoveWindow(dx, dy)
-                }
-
-                if (!change.pressed) {
-                    if (!draggingWindow && !change.isConsumed) {
-                        controlsVisible = !controlsVisible
-                        if (controlsVisible) interactionRevision++
+                    if (!draggingWindow &&
+                        (kotlin.math.abs(change.position.x - start.x) > viewConfiguration.touchSlop ||
+                            kotlin.math.abs(change.position.y - start.y) > viewConfiguration.touchSlop)
+                    ) {
+                        draggingWindow = true
+                        windowDragging = true
                     }
-                    finished = true
+                    if (draggingWindow) {
+                        // 悬浮窗跟着手指移动，手势坐标是相对悬浮窗自身的，窗口一动坐标系也跟着动。
+                        // 所以必须相对"按下时抓住的那一点"算偏移：窗口已经跟上时偏移约为 0，
+                        // 手指跑在前面时偏移就是差距。若用相邻两次事件的差，窗口自己的位移会
+                        // 抵消手指的位移，表现为拖动迟钝、窗口来回跳动。
+                        val dx = change.position.x - start.x
+                        val dy = change.position.y - start.y
+                        change.consume()
+                        if (resizing) onResizeWindow(dx, dy) else onMoveWindow(dx, dy)
+                    }
+
+                    if (!change.pressed) {
+                        if (!draggingWindow && !change.isConsumed) {
+                            controlsVisible = !latestControlsVisible
+                            if (controlsVisible) interactionRevision++
+                        }
+                        break
+                    }
                 }
-                lastPosition = change.position
+            } finally {
+                if (draggingWindow) windowDragging = false
             }
         }
     }
