@@ -110,7 +110,7 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
  * Upper bound shared by every retry/split derived from one original subtitle batch.
  * Without a shared budget, a 30-row malformed response could trigger dozens of paid requests.
  */
-internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 32
+internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 64
 
 private class TranslationRecoveryBudget {
     private var attempts = 0
