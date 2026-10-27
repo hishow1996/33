@@ -58,6 +58,20 @@ internal fun buildContextUserPrompt(
  * Recognize only parser/alignment failures that can improve by lowering the LLM request size.
  * Authentication, quota, transport and server errors must keep their normal error path.
  */
+/**
+ * Whether a compatible chat endpoint returned an assistant message without usable final text.
+ * This is narrow on purpose: only this response-shape failure may try one alternate request
+ * control style; provider, quota, authentication and transport errors must not be duplicated.
+ */
+internal fun isEmptyAssistantContentResponse(error: Throwable): Boolean {
+    val detail = generateSequence(error) { it.cause }
+        .take(8)
+        .joinToString(" ") { it.message.orEmpty() }
+    return detail.contains("API 未返回可用的翻译文本") &&
+        (detail.contains("message.content 为空或不是可识别的文本") ||
+            detail.contains("message 缺少 content 字段"))
+}
+
 internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
     val message = error.message.orEmpty()
     val normalized = message.lowercase(java.util.Locale.ROOT)
@@ -1064,7 +1078,19 @@ class OpenAiCompatEngine(
                     android.util.Log.w(
                         "TranslationAPI",
                         "Provider rejected thinking control: model=${model.take(100)}, " +
-                            "thinkingControl=$style, elapsedMs=$elapsedMs",
+                            "thinkingControl=$style, elapsedMs=${elapsedMs}",
+                    )
+                } else if (styles.indexOf(style) == 0 &&
+                    styles.size > 1 &&
+                    isEmptyAssistantContentResponse(error)
+                ) {
+                    // Some gateways intermittently omit message.content. Try the second request
+                    // shape once for this batch; do not recursively split a response that has no
+                    // usable text, which would multiply calls without a reliable alignment gain.
+                    android.util.Log.w(
+                        "TranslationAPI",
+                        "Assistant content missing; retrying once with alternate request control: " +
+                            "model=${model.take(100)}, thinkingControl=$style, elapsedMs=${elapsedMs}",
                     )
                 } else {
                     if (elapsedMs >= SLOW_TRANSLATION_REQUEST_WARNING_MS) {
