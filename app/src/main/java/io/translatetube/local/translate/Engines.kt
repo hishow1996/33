@@ -729,8 +729,59 @@ private fun extractAlternativeResponseText(root: JSONObject): String {
     return parts.joinToString("\n").trim()
 }
 
+private fun hasMeaningfulResponseValue(value: Any?): Boolean = when (value) {
+    is String -> value.isNotBlank()
+    is JSONObject -> value.length() > 0
+    is JSONArray -> value.length() > 0
+    null, JSONObject.NULL -> false
+    else -> true
+}
+
+/**
+ * Find provider-specific reasoning fields anywhere in a bounded-depth JSON tree.
+ * This includes Responses-style output items whose type is "reasoning", even when choices is absent.
+ */
+private fun findReasoningFields(root: Any?): List<String> {
+    val found = linkedSetOf<String>()
+    val pending = java.util.ArrayDeque<Any>()
+    if (root is JSONObject || root is JSONArray) pending.add(root)
+    var visited = 0
+    while (pending.isNotEmpty() && visited < 20_000) {
+        visited++
+        when (val node = pending.removeLast()) {
+            is JSONObject -> {
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val value = node.opt(key)
+                    if (isReasoningFieldName(key) && hasMeaningfulResponseValue(value)) {
+                        found += key
+                    }
+                    if (key.equals("type", ignoreCase = true) &&
+                        value is String && isReasoningFieldName(value)
+                    ) {
+                        found += value
+                    }
+                    when (value) {
+                        is JSONObject, is JSONArray -> pending.add(value)
+                    }
+                }
+            }
+            is JSONArray -> {
+                for (index in 0 until node.length()) {
+                    when (val value = node.opt(index)) {
+                        is JSONObject, is JSONArray -> pending.add(value)
+                    }
+                }
+            }
+        }
+        if (found.isNotEmpty()) return found.toList()
+    }
+    return found.toList()
+}
+
 /** Extract text from a non-streaming OpenAI-compatible chat-completion response. */
-private fun extractOpenAiCompatContent(body: String): String {
+internal fun extractOpenAiCompatContent(body: String): String {
     val root = try {
         JSONObject(body)
     } catch (error: Exception) {
@@ -757,11 +808,29 @@ private fun extractOpenAiCompatContent(body: String): String {
     if (alternativeResponseText.isNotBlank()) return alternativeResponseText
 
     val choices = root.optJSONArray("choices")
-        ?: throw IllegalStateException(
-            "API 响应格式不兼容：既没有 choices，也没有可识别的 output_text/output 内容。" +
-                "object=${root.optString("object", "未知")}；请检查中转站接口类型。"
-        )
+        ?: run {
+            val reasoningFields = findReasoningFields(root)
+            if (reasoningFields.isNotEmpty()) {
+                throw ReasoningOnlyResponseException(
+                    listOf("response"),
+                    reasoningFields,
+                    root.optString("status", "未知"),
+                )
+            }
+            throw IllegalStateException(
+                "API 响应格式不兼容：既没有 choices，也没有可识别的 output_text/output 内容。" +
+                    "object=${root.optString("object", "未知")}；请检查中转站接口类型。"
+            )
+        }
     if (choices.length() == 0) {
+        val reasoningFields = findReasoningFields(root)
+        if (reasoningFields.isNotEmpty()) {
+            throw ReasoningOnlyResponseException(
+                listOf("response"),
+                reasoningFields,
+                root.optString("status", "未知"),
+            )
+        }
         throw IllegalStateException("API 返回了空 choices，未生成翻译结果")
     }
 
@@ -792,14 +861,7 @@ private fun extractOpenAiCompatContent(body: String): String {
     val messageFields = mutableListOf<String>()
     val keys = message.keys()
     while (keys.hasNext()) messageFields += keys.next()
-    val reasoningFields = messageFields.filter { field ->
-        isReasoningFieldName(field) && when (val value = message.opt(field)) {
-            is String -> value.isNotBlank()
-            is JSONObject -> value.length() > 0
-            is JSONArray -> value.length() > 0
-            else -> false
-        }
-    }
+    val reasoningFields = findReasoningFields(message)
     val hasToolCalls = (message.optJSONArray("tool_calls")?.length() ?: 0) > 0
     if (reasoningFields.isNotEmpty()) {
         throw ReasoningOnlyResponseException(messageFields.sorted(), reasoningFields, finishReason)
