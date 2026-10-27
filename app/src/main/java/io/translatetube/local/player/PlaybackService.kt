@@ -4298,9 +4298,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             }
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                // YouTube rolling captions were normalized to one cue per line in v5.
-                // Keep the existing local-model cache where possible; isolate cloud ASR by provider.
-                videoId != null -> "$key|source|youtube-v5" + when (asrProvider) {
+                // v6 is a one-time migration: v5 caches do not record whether text came from a
+                // language-matched caption track or the original-audio ASR fallback. Reusing an
+                // unproven v5 cache could silently bring back English-first captions for Korean audio.
+                // All v6 source caches are written only after strict caption matching or ASR fallback.
+                videoId != null -> "$key|source|youtube-v6-original-audio" + when (asrProvider) {
                     "local" -> "|asr-$localAsrModelId"
                     else -> "|asr-$asrCacheIdentity-cloud-v1"
                 }
