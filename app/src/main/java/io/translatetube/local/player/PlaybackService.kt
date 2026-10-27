@@ -26,6 +26,7 @@ import io.translatetube.local.asr.SpeechOnsetDetector
 import io.translatetube.local.asr.WhisperEngine
 import io.translatetube.local.asr.vadSegments
 import io.translatetube.local.asr.vadSegmentsFromFile
+import io.translatetube.local.asr.VAD_QUIET_AUDIO_THRESHOLD
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.data.SourceType
 import io.translatetube.local.data.VideoEntity
@@ -4928,7 +4929,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 asrTimelineDurationMs = pcmFile.durationMs
                 val (decodedAsrLines, decodedAsrLang) = if (asrProvider == "local") {
 updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0%") }
-                val segs = withContext(Dispatchers.IO) {
+                val firstPassSegs = withContext(Dispatchers.IO) {
                     vadSegmentsFromFile(
                         this@PlaybackService,
                         pcmFile,
@@ -4943,6 +4944,30 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     )
                 }
                 ensureCurrentSession(key, pipelineGeneration)
+                // 说话声音很小的录音，默认灵敏度可能一段语音都检测不到：提高灵敏度再试一次，
+                // 而不是直接报"未检测到语音内容"。
+                val segs = if (firstPassSegs.isEmpty()) {
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(progress = "声音较小，正在提高灵敏度重新检测语音…")
+                    }
+                    withContext(Dispatchers.IO) {
+                        vadSegmentsFromFile(
+                            this@PlaybackService,
+                            pcmFile,
+                            checkActive = { pcmOwnerJob?.ensureActive() },
+                            onProgressPercent = { percent ->
+                                updateUiForSession(key, pipelineGeneration) { state ->
+                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                        state.copy(progress = "提高灵敏度重新检测 ${percent}%")
+                                    } else state
+                                }
+                            },
+                            threshold = VAD_QUIET_AUDIO_THRESHOLD,
+                        )
+                    }.also { ensureCurrentSession(key, pipelineGeneration) }
+                } else {
+                    firstPassSegs
+                }
                 if (segs.isEmpty()) throw IllegalStateException("未检测到语音内容")
                 // PCM stays on disk; VAD timestamps and the current segment are loaded as needed.
                 val asrSignature = AsrTranscriptCheckpointPolicy.signature(pcmFile, segs) {

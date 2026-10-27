@@ -8,6 +8,11 @@ import java.io.BufferedInputStream
 import java.io.FileInputStream
 import java.io.InputStream
 
+/** Silero VAD 默认灵敏度。 */
+const val VAD_DEFAULT_THRESHOLD = 0.5f
+/** 默认灵敏度检测不到任何语音（说话声音很小的录音）时，用这个更灵敏的阈值重试一次。 */
+const val VAD_QUIET_AUDIO_THRESHOLD = 0.3f
+
 /** silero VAD 语音分段：全片 PCM → [(startMs, endMs)] */
 fun vadSegments(
     ctx: Context,
@@ -59,6 +64,7 @@ fun vadSegmentsFromFile(
     sr: Int = 16000,
     checkActive: () -> Unit = {},
     onProgressPercent: (Int) -> Unit = {},
+    threshold: Float = VAD_DEFAULT_THRESHOLD,
 ): List<Pair<Long, Long>> {
     VadSegmentMergePolicy.requireSupportedSampleRate(sr)
     require(pcmFile.sampleRate == sr) { "PCM 文件采样率与 VAD 配置不一致" }
@@ -66,7 +72,7 @@ fun vadSegmentsFromFile(
         "PCM 临时文件缺失、为空或长度与声明的采样数不匹配"
     }
     // Fail before initializing the native VAD model when the scratch file is already truncated.
-    val vad = newVad(ctx, sr)
+    val vad = newVad(ctx, sr, threshold)
     val segments = mutableListOf<Pair<Long, Long>>()
     val window = 512
     val windowBytes = ByteArray(window * 2)
@@ -128,11 +134,11 @@ fun vadSegmentsFromFile(
     return merged
 }
 
-private fun newVad(ctx: Context, sr: Int): Vad {
+private fun newVad(ctx: Context, sr: Int, threshold: Float = VAD_DEFAULT_THRESHOLD): Vad {
     val config = VadModelConfig(
         sileroVadModelConfig = SileroVadModelConfig(
             model = io.translatetube.local.data.ModelFiles.asrDir(ctx).absolutePath + "/silero_vad.onnx",
-            threshold = 0.5f,
+            threshold = threshold,
             minSilenceDuration = 0.3f,
             minSpeechDuration = 0.25f,
             windowSize = 512,

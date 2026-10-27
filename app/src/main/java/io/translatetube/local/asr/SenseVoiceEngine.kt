@@ -110,7 +110,15 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
                     decodedSegments++
                     val text = result.text.trim()
                     checkActive()
-                    if (text.isNotEmpty()) output += Triple(safeStartMs, safeEndMs, text)
+                    if (text.isNotEmpty()) {
+                        // SenseVoice 没有词级时间戳：一个语音段（最长 25 秒）按标点拆成短句行，
+                        // 并清掉幻觉/循环输出，字幕和配音才不会是一整行几十秒的长句。
+                        output.addAll(
+                            AsrCueSplitPolicy.finishSegmentRows(
+                                listOf(Triple(safeStartMs, safeEndMs, text)),
+                            ),
+                        )
+                    }
                 }
                 onProgress(index + 1, segs.size)
             }

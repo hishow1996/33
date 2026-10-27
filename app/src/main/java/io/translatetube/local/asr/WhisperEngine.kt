@@ -136,8 +136,12 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                         segmentEndMs = endMs,
                         expectedText = text,
                     )
-                    if (timedRows.isNotEmpty()) out.addAll(timedRows)
-                    else out += Triple(startMs, endMs, text)
+                    // 清掉幻觉/循环输出，并把过长的行拆成短句行（词级时间戳不可用时尤其需要）。
+                    out.addAll(
+                        AsrCueSplitPolicy.finishSegmentRows(
+                            timedRows.ifEmpty { listOf(Triple(startMs, endMs, text)) },
+                        ),
+                    )
                 }
             }
             onProgress(i + 1, segs.size)
@@ -199,8 +203,12 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                             segmentEndMs = safeEndMs,
                             expectedText = text,
                         )
-                        if (timedRows.isNotEmpty()) out.addAll(timedRows)
-                        else out += Triple(safeStartMs, safeEndMs, text)
+                        // 清掉幻觉/循环输出，并把过长的行拆成短句行（词级时间戳不可用时尤其需要）。
+                        out.addAll(
+                            AsrCueSplitPolicy.finishSegmentRows(
+                                timedRows.ifEmpty { listOf(Triple(safeStartMs, safeEndMs, text)) },
+                            ),
+                        )
                     }
                 }
                 onProgress(index + 1, segs.size)
