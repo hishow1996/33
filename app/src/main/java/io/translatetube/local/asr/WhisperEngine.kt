@@ -153,6 +153,7 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
         segs: List<Pair<Long, Long>>,
         checkActive: () -> Unit,
         onProgress: (done: Int, total: Int) -> Unit,
+        sharedPcmReader: AudioExtract.PcmFile.Reader?,
     ): List<Triple<Long, Long, String>> {
         check(!closed) { "Whisper 识别器已关闭" }
         val sr = pcmFile.sampleRate
@@ -164,7 +165,9 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
         var sampleReadMs = 0L
         var inferenceMs = 0L
         var decodedSegments = 0
-        pcmFile.openReader(checkActive).use { pcmReader ->
+        val ownsPcmReader = sharedPcmReader == null
+        val pcmReader = sharedPcmReader ?: pcmFile.openReader(checkActive)
+        try {
             segs.forEachIndexed { index, (startMs, endMs) ->
                 checkActive()
                 val safeStartMs = startMs.coerceIn(0L, durationMs)
@@ -202,6 +205,8 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
                 }
                 onProgress(index + 1, segs.size)
             }
+        } finally {
+            if (ownsPcmReader) pcmReader.close()
         }
         LocalAsrPerformanceLogger.log(
             modelId = "whisper",
