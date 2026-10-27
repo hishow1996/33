@@ -756,7 +756,8 @@ class OpenAiCompatEngine(
         var lastRejectedControl: Throwable? = null
         val ownerJob = currentCoroutineContext()[Job]
 
-        for (style in thinkingControlOrder(baseUrl, model)) {
+        val styles = thinkingControlOrder(baseUrl, model).toMutableList()
+        for (style in styles) {
             currentCoroutineContext().ensureActive()
             val requestPayload = payloadWithThinkingControl(payload, style)
             val startedAtNanos = System.nanoTime()
@@ -792,6 +793,10 @@ class OpenAiCompatEngine(
                 val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000L
                 if (style != ThinkingControlStyle.PLAIN && isThinkingControlRejected(error)) {
                     lastRejectedControl = error
+                    val styleIndex = styles.indexOf(style)
+                    if (styleIndex == 0 && styles.size > 1) {
+                        styles[1] = ThinkingControlStyle.PLAIN
+                    }
                     android.util.Log.w(
                         "TranslationAPI",
                         "Provider rejected thinking control: model=${model.take(100)}, " +
