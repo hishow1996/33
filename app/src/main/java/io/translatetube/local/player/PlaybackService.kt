@@ -5173,7 +5173,10 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                             while (processed < segs.size) {
                                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                                 val chunkStart = processed
-                                val chunkEnd = minOf(chunkStart + 3, segs.size)
+                                val chunkEnd = minOf(
+                                    chunkStart + AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
+                                    segs.size,
+                                )
                                 val chunkRows = engine.transcribeBySegments(
                                     pcmFile,
                                     segs.subList(chunkStart, chunkEnd),
