@@ -535,6 +535,90 @@ class MlKitEngine : TranslationEngine {
     }
 }
 
+/**
+ * Extract a final text answer from a non-streaming OpenAI-compatible Chat Completions response.
+ * Report provider errors and unexpected response shapes explicitly instead of leaking a raw
+ * JSONException such as "No value for content".
+ */
+private fun extractOpenAiCompatContent(body: String): String {
+    val root = try {
+        JSONObject(body)
+    } catch (error: Exception) {
+        throw IllegalStateException("API 响应不是有效的 JSON，无法读取翻译结果", error)
+    }
+
+    root.optJSONObject("error")?.let { apiError ->
+        val message = (apiError.opt("message") as? String)
+            ?.takeIf { it.isNotBlank() }
+            ?: "服务商未提供错误详情"
+        val code = (apiError.opt("code") as? String)
+            ?.takeIf { it.isNotBlank() && it != "null" }
+        throw IllegalStateException(
+            "API 返回错误" + (code?.let { " [$it]" } ?: "") + "：" + message.take(400)
+        )
+    }
+
+    val choices = root.optJSONArray("choices")
+        ?: throw IllegalStateException(
+            "API 响应格式不兼容：缺少 choices 字段（object=${root.optString("object", "未知")}）。" +
+                "请检查中转站的 Chat Completions 响应格式。"
+        )
+    if (choices.length() == 0) {
+        throw IllegalStateException("API 返回了空 choices，未生成翻译结果")
+    }
+
+    val choice = choices.optJSONObject(0)
+        ?: throw IllegalStateException("API 响应格式异常：choices[0] 不是 JSON 对象")
+    val message = choice.optJSONObject("message")
+        ?: throw IllegalStateException(
+            "API 响应格式不兼容：choices[0] 缺少 message 字段（finish_reason=" +
+                choice.optString("finish_reason", "未知") + "）"
+        )
+    val finishReason = choice.optString("finish_reason", "未知")
+    val rawContent = message.opt("content")
+
+    val text = when (rawContent) {
+        is String -> rawContent
+        is JSONArray -> {
+            val parts = mutableListOf<String>()
+            for (index in 0 until rawContent.length()) {
+                val item = rawContent.opt(index)
+                when (item) {
+                    is String -> if (item.isNotBlank()) parts += item
+                    is JSONObject -> {
+                        val partText = item.opt("text") as? String
+                        if (!partText.isNullOrBlank()) parts += partText
+                    }
+                }
+            }
+            parts.joinToString("")
+        }
+        else -> ""
+    }.trim()
+
+    if (text.isNotEmpty()) return text
+
+    val messageFields = mutableListOf<String>()
+    val keys = message.keys()
+    while (keys.hasNext()) messageFields += keys.next()
+    val hasReasoning = (message.opt("reasoning_content") as? String).orEmpty().isNotBlank()
+    val hasToolCalls = (message.optJSONArray("tool_calls")?.length() ?: 0) > 0
+    val detail = when {
+        hasReasoning ->
+            "模型只返回了 reasoning_content，没有返回最终翻译 content"
+        hasToolCalls ->
+            "模型返回了 tool_calls 工具调用，而不是字幕翻译文本"
+        message.has("content") ->
+            "message.content 为空或不是可识别的文本"
+        else ->
+            "message 缺少 content 字段"
+    }
+    throw IllegalStateException(
+        "API 未返回可用的翻译文本：$detail；message 字段=${messageFields.sorted().joinToString(",")}；" +
+            "finish_reason=$finishReason。请检查中转站响应格式和模型输出设置。"
+    )
+}
+
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
 class OpenAiCompatEngine(
     private val baseUrl: String,
@@ -619,14 +703,22 @@ class OpenAiCompatEngine(
                     .put(JSONObject().put("role", "system").put("content", sys))
                     .put(JSONObject().put("role", "user").put("content", user))
             )
+        // DeepSeek V4 Flash defaults to thinking mode. Subtitle translation needs the final
+        // translated text, not a reasoning-only response; disable thinking for this model family.
+        val normalizedModel = model.lowercase(java.util.Locale.ROOT)
+        if (normalizedModel.contains("deepseek") &&
+            (normalizedModel.contains("flash") || normalizedModel.contains("v4"))
+        ) {
+            payload.put("thinking", JSONObject().put("type", "disabled"))
+            payload.put("reasoning_effort", "none")
+        }
         val body = post(
             endpoint("/chat/completions"),
             mapOf("Authorization" to "Bearer $apiKey"),
             payload.toString(),
             currentCoroutineContext()[Job],
         )
-        val content = JSONObject(body).getJSONArray("choices")
-            .getJSONObject(0).getJSONObject("message").getString("content")
+        val content = extractOpenAiCompatContent(body)
         return parseNumbered(content, lines.size)
     }
 
