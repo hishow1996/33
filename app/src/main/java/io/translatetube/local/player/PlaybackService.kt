@@ -4186,7 +4186,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val sourceSubtitleCacheKey = when {
                 // YouTube rolling captions were normalized to one cue per line in v5.
                 // Keep the existing local-model cache where possible; isolate cloud ASR by provider.
-                videoId != null -> "$key|source|youtube-v5" + when (asrProvider) {
+                videoId != null -> "$key|source|youtube-v6-original-language" + when (asrProvider) {
                     "local" -> "|asr-$localAsrModelId"
                     else -> "|asr-$asrCacheIdentity-cloud-v1"
                 }
