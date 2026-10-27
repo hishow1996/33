@@ -227,3 +227,4 @@ jobs:
 # Explicit user-requested APK build after floating-window replay and shared dubbing playback synchronization fix (2026-10-27).
 # Explicit retry of user-requested APK build after fixing Canvas size name shadowing in floating resize handle (2026-10-27).
 # Explicit retry after fixing YouTube audio-language candidate typing (2026-10-28).
+# Explicit retry after fixing missing batchSize in translation fallback test (2026-10-28).
