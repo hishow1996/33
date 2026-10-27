@@ -152,6 +152,37 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun asrDoesNotGuessFromSecondaryTrackWhenSourceLanguageIsUnknown() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/secondary-en.m4a", "m4a", 32_000,
+                languageTag = "en", isSecondary = true,
+            ),
+        )
+        assertEquals(-1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio))
+        assertNull(YouTubeStreamSelector.chooseAudioStream(audio))
+    }
+
+    @Test
+    fun asrCanUseSecondaryTrackOnlyWhenItMatchesKnownSourceLanguage() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/secondary-ko.m4a", "m4a", 64_000,
+                languageTag = "ko", isSecondary = true,
+            ),
+            YouTubeAudioCandidate(
+                "https://cdn.test/secondary-en.m4a", "m4a", 32_000,
+                languageTag = "en", isSecondary = true,
+            ),
+        )
+        assertEquals(0, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio, "ko"))
+        assertEquals(
+            "https://cdn.test/secondary-ko.m4a",
+            YouTubeStreamSelector.chooseAudioStream(audio, "ko")?.url,
+        )
+    }
+
+    @Test
     fun asrRejectsDubbedOnlyAudioWhenNoOriginalTrackIsAvailable() {
         val audio = listOf(
             YouTubeAudioCandidate(
