@@ -93,8 +93,30 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
 }
 
 /**
+ * Upper bound shared by every retry/split derived from one original subtitle batch.
+ * Without a shared budget, a 30-row malformed response could trigger dozens of paid requests.
+ */
+internal const val MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH = 32
+
+private class TranslationRecoveryBudget {
+    private var attempts = 0
+
+    fun consumeAttempt() {
+        if (attempts >= MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH) {
+            throw IllegalStateException(
+                "翻译响应反复异常，拆分恢复已达到单批请求上限 " +
+                    MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH +
+                    " 次，已停止以避免过多 API 请求；请稍后重试或更换模型"
+            )
+        }
+        attempts++
+    }
+}
+
+/**
  * Retry malformed or truncated model output with smaller cue groups. Successfully translated
  * halves feed their last few cues into the next half so splitting does not discard continuity.
+ * All recursive calls share a fixed attempt budget for this original batch.
  */
 internal suspend fun translateBatchWithAdaptiveRecovery(
     lines: List<String>,
@@ -105,8 +127,20 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
 ): List<String> {
     if (lines.isEmpty()) return emptyList()
+    return translateBatchWithAdaptiveRecoveryInternal(
+        lines, context, isAcceptableTranslation, translate, TranslationRecoveryBudget(),
+    )
+}
 
+private suspend fun translateBatchWithAdaptiveRecoveryInternal(
+    lines: List<String>,
+    context: Pair<List<String>, List<String>>?,
+    isAcceptableTranslation: (source: String, translation: String) -> Boolean,
+    translate: suspend (List<String>, Pair<List<String>, List<String>>?) -> List<String>,
+    budget: TranslationRecoveryBudget,
+): List<String> {
     val response = try {
+        budget.consumeAttempt()
         translate(lines, context)
     } catch (error: IllegalStateException) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -164,11 +198,12 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
                 val retryContext = if (recentCues.isEmpty()) null else {
                     recentCues.map { it.first } to recentCues.map { it.second }
                 }
-                val retry = translateBatchWithAdaptiveRecovery(
+                val retry = translateBatchWithAdaptiveRecoveryInternal(
                     lines.subList(missingStart, cursor),
                     retryContext,
                     isAcceptableTranslation,
                     translate,
+                    budget,
                 )
                 retry.forEachIndexed { offset, value ->
                     output[missingStart + offset] = value
@@ -184,6 +219,7 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
         // Even an isolated cue gets one retry: source-echo validation happens inside this helper,
         // so otherwise a single echoed cue would fail before the caller can recover it.
         val retry = try {
+            budget.consumeAttempt()
             translate(lines, context)
         } catch (error: IllegalStateException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -203,14 +239,14 @@ internal suspend fun translateBatchWithAdaptiveRecovery(
     val midpoint = lines.size / 2
     val leftSource = lines.subList(0, midpoint)
     val rightSource = lines.subList(midpoint, lines.size)
-    val leftTranslation = translateBatchWithAdaptiveRecovery(
-        leftSource, context, isAcceptableTranslation, translate,
+    val leftTranslation = translateBatchWithAdaptiveRecoveryInternal(
+        leftSource, context, isAcceptableTranslation, translate, budget,
     )
     val mergedSource = (context?.first.orEmpty() + leftSource).takeLast(CONTEXT_LINES)
     val mergedTarget = (context?.second.orEmpty() + leftTranslation).takeLast(CONTEXT_LINES)
     val rightContext = if (mergedSource.isEmpty()) null else mergedSource to mergedTarget
-    val rightTranslation = translateBatchWithAdaptiveRecovery(
-        rightSource, rightContext, isAcceptableTranslation, translate,
+    val rightTranslation = translateBatchWithAdaptiveRecoveryInternal(
+        rightSource, rightContext, isAcceptableTranslation, translate, budget,
     )
     return leftTranslation + rightTranslation
 }
