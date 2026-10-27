@@ -1,0 +1,114 @@
+package io.translatetube.local.translate
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class OpenAiCompatResponseParserTest {
+    @Test
+    fun extractsStandardChatCompletionText() {
+        val response = """
+            {
+              "choices": [
+                {
+                  "message": { "role": "assistant", "content": "0|你好" },
+                  "finish_reason": "stop"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        assertEquals("0|你好", extractOpenAiCompatContent(response))
+    }
+
+    @Test
+    fun extractsStructuredContentBlocks() {
+        val response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": [
+                      { "type": "text", "text": "0|你好" }
+                    ]
+                  },
+                  "finish_reason": "stop"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        assertEquals("0|你好", extractOpenAiCompatContent(response))
+    }
+
+    @Test
+    fun extractsResponsesStyleFinalTextAndSkipsReasoningBlocks() {
+        val response = """
+            {
+              "object": "response",
+              "output": [
+                {
+                  "type": "reasoning",
+                  "content": [
+                    { "type": "reasoning_text", "text": "private reasoning" }
+                  ]
+                },
+                {
+                  "type": "message",
+                  "content": [
+                    { "type": "output_text", "text": "0|最终译文" }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        assertEquals("0|最终译文", extractOpenAiCompatContent(response))
+    }
+
+    @Test
+    fun reasoningOnlyResponsesAreReportedAsRecoverableThinkingResponses() {
+        val response = """
+            {
+              "object": "response",
+              "status": "incomplete",
+              "output": [
+                {
+                  "type": "reasoning",
+                  "content": [
+                    { "type": "reasoning_text", "text": "reasoning only" }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val error = runCatching { extractOpenAiCompatContent(response) }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("推理字段"))
+    }
+
+    @Test
+    fun providerErrorObjectIsNotMisreadAsMissingContent() {
+        val response = """
+            {
+              "error": {
+                "code": "insufficient_quota",
+                "message": "quota exceeded"
+              }
+            }
+        """.trimIndent()
+
+        val error = runCatching { extractOpenAiCompatContent(response) }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("insufficient_quota"))
+        assertTrue(error?.message.orEmpty().contains("quota exceeded"))
+    }
+
+    @Test
+    fun topLevelOutputTextIsSupported() {
+        val response = """{ "output_text": "0|简体中文" }"""
+
+        assertEquals("0|简体中文", extractOpenAiCompatContent(response))
+    }
+}
