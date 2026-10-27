@@ -90,6 +90,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import io.translatetube.local.floating.FloatingHostLayout
 import io.translatetube.local.floating.FloatingManager
 import io.translatetube.local.floating.FloatingOverlayLifecycleOwner
 import io.translatetube.local.player.PlaybackService
@@ -383,7 +384,10 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             }
             return
         }
-        val host = FrameLayout(ctx)
+        // 根容器把每个触摸事件的屏幕绝对坐标报给 FloatingManager，拖动/缩放全部基于它。
+        val host = FloatingHostLayout(ctx).apply {
+            onRawTouch = { event -> floating.onRawTouch(event) }
+        }
         moveTextureViewTo(host)
         // WindowManager overlays are detached from the Activity's decor view tree.
         // ComposeView requires both lifecycle and saved-state owners before it is attached.
@@ -398,8 +402,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         val controlsView = ComposeView(ctx).apply {
             setContent {
                 FloatingPlayerControls(
-                    onMoveWindow = { dx, dy -> floating.moveBy(dx, dy) },
-                    onResizeWindow = { dx, dy -> floating.resizeBy(dx, dy) },
+                    onBeginWindowDrag = { floating.beginPointerDrag() },
+                    onMoveWindow = { floating.moveToPointer() },
+                    onResizeWindow = { floating.resizeToPointer() },
                     onFullscreen = {
                         runCatching {
                             ctx.startActivity(
@@ -2569,10 +2574,68 @@ private fun FloatingIconControl(
     }
 }
 
+/** 右下角的缩放把手：按住拖动即可放大/缩小悬浮窗，左上角位置不变。 */
+@Composable
+private fun FloatingResizeHandle(
+    modifier: Modifier,
+    size: androidx.compose.ui.unit.Dp,
+    onBegin: () -> Unit,
+    onResize: () -> Unit,
+    onDraggingChange: (Boolean) -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // 先把这次按下据为己有：外层的"拖动窗口/点击显隐按钮"手势看到已被消费就不会处理。
+                    down.consume()
+                    onDraggingChange(true)
+                    // 以此刻手指的屏幕位置和窗口尺寸为锚点。
+                    onBegin()
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            change.consume()
+                            onResize()
+                            if (!change.pressed) break
+                        }
+                    } finally {
+                        onDraggingChange(false)
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+            val stroke = 1.6.dp.toPx()
+            val color = Color.White
+            // 右下角两条斜线，常见的缩放把手样式
+            drawLine(
+                color = color,
+                start = Offset(this.size.width, this.size.height * 0.30f),
+                end = Offset(this.size.width * 0.30f, this.size.height),
+                strokeWidth = stroke,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            )
+            drawLine(
+                color = color,
+                start = Offset(this.size.width, this.size.height * 0.65f),
+                end = Offset(this.size.width * 0.65f, this.size.height),
+                strokeWidth = stroke,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            )
+        }
+    }
+}
+
 @Composable
 private fun FloatingPlayerControls(
-    onMoveWindow: (Float, Float) -> Unit,
-    onResizeWindow: (Float, Float) -> Unit,
+    onBeginWindowDrag: () -> Unit,
+    onMoveWindow: () -> Unit,
+    onResizeWindow: () -> Unit,
     onFullscreen: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -2619,9 +2682,6 @@ private fun FloatingPlayerControls(
         0f
     }
 
-    val resizeTouchSizePx = with(androidx.compose.ui.platform.LocalDensity.current) {
-        24.dp.toPx()
-    }.coerceAtLeast(24f)
     // 手势协程不要随 controlsVisible 重启（重启会把正在进行的拖动打断），用最新值读取即可。
     val latestControlsVisible by rememberUpdatedState(controlsVisible)
     val overlayGestureModifier = Modifier.pointerInput(Unit) {
@@ -2633,8 +2693,6 @@ private fun FloatingPlayerControls(
 
             val start = down.position
             var draggingWindow = false
-            val resizing = down.position.x >= size.width - resizeTouchSizePx &&
-                down.position.y >= size.height - resizeTouchSizePx
 
             try {
                 while (true) {
@@ -2648,16 +2706,15 @@ private fun FloatingPlayerControls(
                     ) {
                         draggingWindow = true
                         windowDragging = true
+                        // 以此刻手指的屏幕位置为锚点，窗口不会突然跳一下。
+                        onBeginWindowDrag()
                     }
                     if (draggingWindow) {
-                        // 悬浮窗跟着手指移动，手势坐标是相对悬浮窗自身的，窗口一动坐标系也跟着动。
-                        // 所以必须相对"按下时抓住的那一点"算偏移：窗口已经跟上时偏移约为 0，
-                        // 手指跑在前面时偏移就是差距。若用相邻两次事件的差，窗口自己的位移会
-                        // 抵消手指的位移，表现为拖动迟钝、窗口来回跳动。
-                        val dx = change.position.x - start.x
-                        val dy = change.position.y - start.y
+                        // 手势坐标是相对悬浮窗自身的，窗口一动坐标系也跟着变，且系统落实窗口新位置有延迟，
+                        // 用它算位移会叠加、来回跳。这里只触发"按手指的屏幕绝对位置重新定位"，
+                        // 具体位置由 FloatingManager 用屏幕坐标算，同一个手指位置永远得到同一个窗口位置。
                         change.consume()
-                        if (resizing) onResizeWindow(dx, dy) else onMoveWindow(dx, dy)
+                        onMoveWindow()
                     }
 
                     if (!change.pressed) {
@@ -2774,10 +2831,20 @@ private fun FloatingPlayerControls(
                 )
             }
 
+            val resizeHandleSize = if (compact) 22.dp else 28.dp
+            FloatingResizeHandle(
+                modifier = Modifier.align(Alignment.BottomEnd),
+                size = resizeHandleSize,
+                onBegin = onBeginWindowDrag,
+                onResize = onResizeWindow,
+                onDraggingChange = { windowDragging = it },
+            )
             Column(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    // 右下角留给缩放把手，进度条和时间不要压在上面。
+                    .padding(end = resizeHandleSize + 2.dp),
             ) {
                 Row(
                     modifier = Modifier
