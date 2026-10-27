@@ -6685,6 +6685,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     isOriginal = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.ORIGINAL,
                     isDubbed = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DUBBED,
                     isDescriptive = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DESCRIPTIVE,
+                    isSecondary = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.SECONDARY,
                 )
             },
             preferredLanguageTag = NewPipeRepo.sourceAudioLanguageHint(info),
