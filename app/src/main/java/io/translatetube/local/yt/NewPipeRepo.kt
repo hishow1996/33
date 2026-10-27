@@ -445,20 +445,24 @@ object NewPipeRepo {
         // If no matching track is available (or all matching tracks fail), return null so the
         // existing audio extraction + ASR path can generate a transcript from the actual audio.
         val candidateTracks = if (sourceLanguageTag == null) {
-            ordered
+            emptyList()
         } else {
             ordered.filter { track ->
                 YouTubeSubtitleSelectionPolicy.matchesSourceLanguage(sourceLanguageTag, track.languageTag)
             }
         }
-        if (sourceLanguageTag != null && candidateTracks.isEmpty()) {
+        if (sourceLanguageTag == null || candidateTracks.isEmpty()) {
             logWarning(
-                "YouTube 没有与原声音轨语言匹配的字幕，改用音频转写",
+                if (sourceLanguageTag == null) {
+                    "YouTube 原声音轨语言无法确认，跳过语言不确定的字幕并改用自动语音转写"
+                } else {
+                    "YouTube 没有与原声音轨语言匹配的字幕，改用音频转写"
+                },
                 context = mapOf(
                     "YouTube 视频 ID" to videoId,
-                    "原声音频语言提示" to sourceLanguageTag,
+                    "原声音频语言提示" to sourceLanguageTag.orEmpty().ifBlank { "未知" },
                     "可用字幕语言" to ordered.map { it.languageTag }.distinct().take(20).joinToString(", "),
-                    "后续处理" to "忽略其他语言字幕，进入音轨提取与语音转写",
+                    "后续处理" to "不猜测英语或其他字幕作为原文，优先从视频音轨识别语言",
                 ),
             )
             return null
