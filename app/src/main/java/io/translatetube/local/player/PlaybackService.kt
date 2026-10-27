@@ -4320,9 +4320,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
                 val detectedCacheLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
                     .detectFromCues(restoredSourceLines.asSequence().map { cue -> cue.text }.asIterable())
-                val cachedContentLanguage =
+                val detectedCacheLanguageCode =
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(detectedCacheLanguage)
-                        ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(sourceCached.srcLang)
+                val cachedContentLanguage = detectedCacheLanguageCode
+                    ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(sourceCached.srcLang)
                 val expectedContentLanguage =
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(originalAudioLanguage)
                 if (expectedContentLanguage != null && cachedContentLanguage != null &&
@@ -4341,6 +4342,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         db.subtitleCacheDao().delete(translationCacheKey)
                         cached = null
                     }
+                } else if (expectedContentLanguage != null && detectedCacheLanguageCode == expectedContentLanguage) {
+                    // The old cache's language label may be stale even when its text is correct.
+                    // Use the verified text language for the next translation pass.
+                    restoredSourceLang = expectedContentLanguage
                 }
             }
 
