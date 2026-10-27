@@ -4448,7 +4448,41 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val asrApiKey = io.translatetube.local.asr.CloudTranscriptionSettings.apiKey(this, asrProvider)
                 val cartesiaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_cartesia_language", "en") ?: "en"
                 val kawaLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("asr_kawa_language", "auto") ?: "auto"
-                val cloudLanguage = if (asrProvider == "kawa") kawaLanguage else cartesiaLanguage
+                val youtubeAudioLanguage = if (videoId != null) {
+                    try {
+                        io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(videoId)
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Unable to read YouTube original audio language before ASR",
+                            failure,
+                        )
+                        null
+                    }
+                } else null
+                val cloudLanguage = if (videoId != null) {
+                    io.translatetube.local.asr.CloudTranscription.youtubeSourceLanguageHint(
+                        provider = asrProvider,
+                        audioLanguage = youtubeAudioLanguage,
+                    ) ?: "auto"
+                } else {
+                    if (asrProvider == "kawa") kawaLanguage else cartesiaLanguage
+                }
+                if (videoId != null) {
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "YouTube 音轨转写语言已按原声音频信息确定",
+                        diagnosticContext = mapOf(
+                            "原声音频语言提示" to youtubeAudioLanguage.orEmpty().ifBlank { "未知" },
+                            "最终云端转写语言参数" to cloudLanguage,
+                            "转写服务商" to asrProvider,
+                            "语言策略" to if (cloudLanguage == "auto") "自动检测，避免默认英语" else "优先使用原声音频语言",
+                        ),
+                    )
+                }
                 val missingLocalModel = asrProvider == "local" &&
                     !io.translatetube.local.data.ModelFiles.asrReady(this)
                 val missingCloudKey = asrProvider != "local" && asrApiKey.isBlank()
