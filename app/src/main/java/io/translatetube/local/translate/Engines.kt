@@ -632,6 +632,30 @@ internal fun isThinkingControlRejected(error: Throwable): Boolean {
         detail.contains("additional properties"))
 }
 
+internal fun isReasoningFieldName(name: String): Boolean {
+    val normalized = name.trim().lowercase(java.util.Locale.ROOT)
+    return listOf("reason", "think", "analysis", "thought").any(normalized::contains)
+}
+
+/** Read common final-text variants used by Chat Completions and Responses-style gateways. */
+private fun extractAlternativeResponseText(root: JSONObject): String {
+    val topLevel = (root.opt("output_text") as? String).orEmpty().trim()
+    if (topLevel.isNotEmpty()) return topLevel
+
+    val output = root.optJSONArray("output") ?: return ""
+    val parts = mutableListOf<String>()
+    for (index in 0 until output.length()) {
+        val item = output.optJSONObject(index) ?: continue
+        val content = item.optJSONArray("content") ?: continue
+        for (partIndex in 0 until content.length()) {
+            val part = content.optJSONObject(partIndex) ?: continue
+            val text = (part.opt("text") as? String).orEmpty()
+            if (text.isNotBlank()) parts += text
+        }
+    }
+    return parts.joinToString("\\n").trim()
+}
+
 /** Extract text from a non-streaming OpenAI-compatible chat-completion response. */
 private fun extractOpenAiCompatContent(body: String): String {
     val root = try {
@@ -651,10 +675,13 @@ private fun extractOpenAiCompatContent(body: String): String {
         )
     }
 
+    val alternativeResponseText = extractAlternativeResponseText(root)
+    if (alternativeResponseText.isNotBlank()) return alternativeResponseText
+
     val choices = root.optJSONArray("choices")
         ?: throw IllegalStateException(
-            "API 响应格式不兼容：缺少 choices 字段（object=${root.optString("object", "未知")}）。" +
-                "请检查中转站的 Chat Completions 响应格式。"
+            "API 响应格式不兼容：既没有 choices，也没有可识别的 output_text/output 内容。" +
+                "object=${root.optString("object", "未知")}；请检查中转站接口类型。"
         )
     if (choices.length() == 0) {
         throw IllegalStateException("API 返回了空 choices，未生成翻译结果")
@@ -663,8 +690,11 @@ private fun extractOpenAiCompatContent(body: String): String {
     val choice = choices.optJSONObject(0)
         ?: throw IllegalStateException("API 响应格式异常：choices[0] 不是 JSON 对象")
     val message = choice.optJSONObject("message")
+        ?: (choice.opt("text") as? String)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
         ?: throw IllegalStateException(
-            "API 响应格式不兼容：choices[0] 缺少 message 字段（finish_reason=" +
+            "API 响应格式不兼容：choices[0] 缺少 message/text 字段（finish_reason=" +
                 choice.optString("finish_reason", "未知") + "）"
         )
     val finishReason = choice.optString("finish_reason", "未知")
@@ -694,10 +724,8 @@ private fun extractOpenAiCompatContent(body: String): String {
     val messageFields = mutableListOf<String>()
     val keys = message.keys()
     while (keys.hasNext()) messageFields += keys.next()
-    val reasoningFields = listOf(
-        "reasoning_content", "reasoning", "reasoning_text", "thinking", "analysis",
-    ).filter { field ->
-        when (val value = message.opt(field)) {
+    val reasoningFields = messageFields.filter { field ->
+        isReasoningFieldName(field) && when (val value = message.opt(field)) {
             is String -> value.isNotBlank()
             is JSONObject -> value.length() > 0
             is JSONArray -> value.length() > 0
