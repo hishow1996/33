@@ -83,7 +83,8 @@ internal object YouTubeSubtitleSelectionPolicy {
         detectedTextLanguage: String?,
         savedSourceLanguage: String?,
     ): Boolean {
-        val expected = normalizeLanguageCode(expectedSourceLanguage) ?: return false
+        // A subtitle snapshot cannot be proved to match the audio when the audio language is unknown.
+        val expected = normalizeLanguageCode(expectedSourceLanguage) ?: return true
         val detected = normalizeLanguageCode(detectedTextLanguage)
         val saved = normalizeLanguageCode(savedSourceLanguage)
         return (detected != null && detected != expected) ||
