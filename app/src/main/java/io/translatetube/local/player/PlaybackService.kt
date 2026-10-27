@@ -4913,10 +4913,20 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 val storedPartialAsr = if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                     db.subtitleCacheDao().get(partialAsrCacheKey)
                 } else null
+                val asrChunkKeyPrefix = AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(partialAsrCacheKey)
+                if (storedPartialAsr == null &&
+                    (videoId != null || localUri != null || remoteMediaUrl != null) &&
+                    sourceImportedLines.isNullOrEmpty()
+                ) {
+                    // A shard written just before a crash may exist without a valid manifest.
+                    // When there is no manifest, none of the old shards can be trusted.
+                    db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
+                }
                 if (storedPartialAsr != null) {
                     val restored = try {
                         val checkpoint = org.json.JSONObject(storedPartialAsr.linesJson)
-                        if (checkpoint.optInt("version", -1) != 2) {
+                        val checkpointVersion = checkpoint.optInt("version", -1)
+                        if (checkpointVersion !in 2..3) {
                             throw IllegalStateException("ASR 检查点版本不兼容")
                         }
                         val processed = checkpoint.optInt("processedSegments", -1)
@@ -4932,30 +4942,141 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         ) {
                             throw IllegalStateException("ASR 分段检查点与当前音频不匹配")
                         }
-                        val savedRows = checkpoint.optJSONArray("rows")
-                            ?: throw IllegalStateException("ASR 检查点缺少字幕列表")
-                        // Token-aligned Whisper output can produce several captions per VAD segment.
-                        // Keep a generous cap against corrupt cache payloads without assuming 1 row/segment.
-                        val maxCheckpointRows = minOf(processed.toLong() * 64L, 100_000L).toInt()
-                        if (savedRows.length() > maxCheckpointRows) {
-                            throw IllegalStateException("ASR 检查点字幕数量异常")
+
+                        fun readCheckpointRows(
+                            savedRows: org.json.JSONArray,
+                            maxRows: Int,
+                        ): List<Triple<Long, Long, String>> {
+                            if (savedRows.length() > maxRows) {
+                                throw IllegalStateException("ASR 检查点字幕数量异常")
+                            }
+                            return (0 until savedRows.length()).map { index ->
+                                if ((index and 0xff) == 0) pcmOwnerJob?.ensureActive()
+                                val row = savedRows.optJSONObject(index)
+                                    ?: throw IllegalStateException("ASR 检查点第 ${index + 1} 行格式无效")
+                                Triple(
+                                    row.optLong("s", Long.MIN_VALUE),
+                                    row.optLong("e", Long.MIN_VALUE),
+                                    row.optString("t").trim(),
+                                )
+                            }
                         }
-                        val restoredRows = (0 until savedRows.length()).map { index ->
-                            if ((index and 0xff) == 0) pcmOwnerJob?.ensureActive()
-                            val row = savedRows.optJSONObject(index)
-                                ?: throw IllegalStateException("ASR 检查点第 ${index + 1} 行格式无效")
-                            Triple(
-                                row.optLong("s", Long.MIN_VALUE),
-                                row.optLong("e", Long.MIN_VALUE),
-                                row.optString("t").trim(),
-                            )
+
+                        val checkpointChunkSize = AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT
+                        val restoredRows = when (checkpointVersion) {
+                            2 -> {
+                                val savedRows = checkpoint.optJSONArray("rows")
+                                    ?: throw IllegalStateException("ASR 检查点缺少字幕列表")
+                                val maxRows = minOf(processed.toLong() * 64L, 100_000L).toInt()
+                                readCheckpointRows(savedRows, maxRows)
+                            }
+                            3 -> {
+                                if (checkpoint.optInt("chunkSize", -1) != checkpointChunkSize) {
+                                    throw IllegalStateException("ASR 分段检查点大小不兼容")
+                                }
+                                val combinedRows = ArrayList<Triple<Long, Long, String>>()
+                                var chunkStart = 0
+                                while (chunkStart < processed) {
+                                    pcmOwnerJob?.ensureActive()
+                                    val chunkEnd = minOf(chunkStart + checkpointChunkSize, processed)
+                                    val chunkEntity = db.subtitleCacheDao().get(
+                                        AsrTranscriptCheckpointPolicy.chunkCacheKey(
+                                            partialAsrCacheKey, chunkStart,
+                                        )
+                                    ) ?: throw IllegalStateException("ASR 分段检查点缺少第 ${chunkStart} 段的数据")
+                                    val chunk = org.json.JSONObject(chunkEntity.linesJson)
+                                    if (chunk.optInt("version", -1) != 1 ||
+                                        chunk.optString("signature") != savedSignature ||
+                                        chunk.optInt("startSegment", -1) != chunkStart ||
+                                        chunk.optInt("endSegment", -1) != chunkEnd
+                                    ) {
+                                        throw IllegalStateException("ASR 分段检查点元数据不匹配")
+                                    }
+                                    val savedRows = chunk.optJSONArray("rows")
+                                        ?: throw IllegalStateException("ASR 分段检查点缺少字幕列表")
+                                    val maxRows = minOf(
+                                        (chunkEnd - chunkStart).toLong() * 64L,
+                                        100_000L,
+                                    ).toInt()
+                                    combinedRows.addAll(readCheckpointRows(savedRows, maxRows))
+                                    chunkStart = chunkEnd
+                                }
+                                combinedRows
+                            }
+                            else -> throw IllegalStateException("ASR 检查点版本不兼容")
                         }
-                        // Previous builds checked every row against segs.take(processed), creating a
-                        // new list and rescanning completed segments for each row (quadratic on long
-                        // captions). Validate order, exact bounds and duplicates with one hash set.
+
+                        // Validate once after all shard payloads have been loaded. Chunked storage
+                        // keeps checkpoint writes small; this full check protects recovery from
+                        // missing, duplicated, out-of-order or cross-segment rows.
                         if (!AsrTranscriptCheckpointPolicy.areRowsValid(restoredRows, segs.take(processed))) {
                             throw IllegalStateException("ASR 检查点包含重复、无效或未完成的字幕行")
                         }
+
+                        if (checkpointVersion == 2) {
+                            // Migrate older all-in-one checkpoints once. Build each shard by the
+                            // same chronological segment cursor as the validator; leave the v2
+                            // manifest in place until every shard has been committed.
+                            val rowsByChunk = mutableMapOf<Int, MutableList<Triple<Long, Long, String>>>()
+                            var segmentCursor = 0
+                            for (row in restoredRows) {
+                                pcmOwnerJob?.ensureActive()
+                                while (segmentCursor < processed && row.second > segs[segmentCursor].second) {
+                                    segmentCursor++
+                                }
+                                if (segmentCursor >= processed) {
+                                    throw IllegalStateException("旧版 ASR 检查点字幕无法映射到已完成语音段")
+                                }
+                                val chunkStart =
+                                    (segmentCursor / checkpointChunkSize) * checkpointChunkSize
+                                rowsByChunk.getOrPut(chunkStart) { mutableListOf() }.add(row)
+                            }
+                            for (chunkStart in 0 until processed step checkpointChunkSize) {
+                                pcmOwnerJob?.ensureActive()
+                                val chunkEnd = minOf(chunkStart + checkpointChunkSize, processed)
+                                val chunkRowsJson = org.json.JSONArray()
+                                for ((rowIndex, row) in rowsByChunk[chunkStart].orEmpty().withIndex()) {
+                                    if ((rowIndex and 0xff) == 0) pcmOwnerJob?.ensureActive()
+                                    chunkRowsJson.put(
+                                        org.json.JSONObject()
+                                            .put("s", row.first)
+                                            .put("e", row.second)
+                                            .put("t", row.third)
+                                    )
+                                }
+                                db.subtitleCacheDao().put(
+                                    io.translatetube.local.data.SubtitleCacheEntity(
+                                        AsrTranscriptCheckpointPolicy.chunkCacheKey(
+                                            partialAsrCacheKey, chunkStart,
+                                        ),
+                                        storedPartialAsr.srcLang,
+                                        org.json.JSONObject()
+                                            .put("version", 1)
+                                            .put("signature", savedSignature)
+                                            .put("startSegment", chunkStart)
+                                            .put("endSegment", chunkEnd)
+                                            .put("rows", chunkRowsJson)
+                                            .toString(),
+                                        System.currentTimeMillis(),
+                                        videoKey = key,
+                                    )
+                                )
+                            }
+                            val migratedManifest = org.json.JSONObject()
+                                .put("version", 3)
+                                .put("signature", savedSignature)
+                                .put("totalSegments", total)
+                                .put("processedSegments", processed)
+                                .put("chunkSize", checkpointChunkSize)
+                            pcmOwnerJob?.ensureActive()
+                            db.subtitleCacheDao().put(
+                                storedPartialAsr.copy(
+                                    linesJson = migratedManifest.toString(),
+                                    updatedAt = System.currentTimeMillis(),
+                                )
+                            )
+                        }
+
                         PartialAsrTranscript(processed, restoredRows, storedPartialAsr.srcLang)
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         // Cancellation is control flow, not corrupt checkpoint data. Keep the
@@ -4967,6 +5088,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     if (restored == null) {
                         android.util.Log.w("PlaybackService", "Discarding incompatible partial ASR checkpoint for $key")
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
+                        db.subtitleCacheDao().deleteByCacheKeyPrefix(asrChunkKeyPrefix)
                     } else {
                         restoredProcessedSegments = restored.processedSegments
                         restoredAsrRows = restored.rows
