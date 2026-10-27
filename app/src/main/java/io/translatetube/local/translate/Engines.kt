@@ -716,12 +716,19 @@ private fun extractOpenAiCompatContent(body: String): String {
                     }
                 }
             }
-            parts.joinToString("")
+            parts.joinToString("\n")
         }
         else -> ""
     }.trim()
 
     if (text.isNotEmpty()) return text
+
+    val alternateMessageText = listOf(
+        "output_text", "final_answer", "final", "answer", "translated_text", "text",
+    ).firstNotNullOfOrNull { field ->
+        (message.opt(field) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+    }
+    if (!alternateMessageText.isNullOrBlank()) return alternateMessageText
 
     val messageFields = mutableListOf<String>()
     val keys = message.keys()
