@@ -126,7 +126,7 @@ internal object YouTubeStreamSelector {
                 if (preferredLanguage == null && knownLanguages.size > 1) return -1
                 safeNonDubbed
             }
-            else -> valid // No alternative exists; keep the best available stream and log the type.
+            else -> return -1 // Available streams are only dubbed/descriptive; never transcribe them as original.
         }
 
         // Keep the original bandwidth-saving behavior, but only inside the eligible language/track.
