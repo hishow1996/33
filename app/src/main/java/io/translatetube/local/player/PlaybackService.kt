@@ -6806,9 +6806,12 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     private fun asrAudioCacheDirectory(): File =
         File(cacheDir, "asr_audio_retry").apply { mkdirs() }
 
-    private fun asrAudioCacheFile(videoId: String): File {
+    private fun asrAudioCacheFile(identity: String, cacheNamespace: String? = null): File {
+        // YouTube's ASR cache namespace is versioned independently so audio fetched by the old
+        // bitrate-only selector (which could select a dubbed track) is never reused as original.
+        val cacheIdentity = cacheNamespace?.let { "$it|$identity" } ?: identity
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(videoId.toByteArray(Charsets.UTF_8))
+            .digest(cacheIdentity.toByteArray(Charsets.UTF_8))
         val safeId = digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
         return File(asrAudioCacheDirectory(), "$safeId.bin")
     }
@@ -6823,7 +6826,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         cacheHitProgress: String,
     ): File {
         return asrAudioDownloadLocks.withLock(videoId) {
-            reusableAsrAudioFile(videoId)?.let { cached ->
+            reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2")?.let { cached ->
                 updateUiForSession(sessionKey) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
@@ -6846,7 +6849,7 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                 } else state
             }
             awaitProcessingResumed(sessionKey)
-            val destination = asrAudioCacheFile(videoId)
+            val destination = asrAudioCacheFile(videoId, cacheNamespace = "youtube-original-track-v2")
             VideoHistoryCacheIndex.rememberAudioCacheFile(this@PlaybackService, sessionKey, destination.name)
             suspend fun downloadStream(url: String): File = try {
                 downloadAudio(url, destination, sessionKey, progressLabel = "YouTube · 独立音轨")
@@ -7541,8 +7544,8 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
     }
 
     /** Reuse only a complete, reasonably recent file; a failed ASR attempt keeps it for retry. */
-    private fun reusableAsrAudioFile(videoId: String): File? {
-        val file = asrAudioCacheFile(videoId)
+    private fun reusableAsrAudioFile(identity: String, cacheNamespace: String? = null): File? {
+        val file = asrAudioCacheFile(identity, cacheNamespace)
         val now = System.currentTimeMillis()
         // Protect the candidate before checking its metadata: a concurrent cache pruner must not
         // delete it in the gap between validation and handing the file to its reader.
