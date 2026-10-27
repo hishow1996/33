@@ -88,6 +88,16 @@ class ThinkingControlPolicyTest {
         assertTrue(
             !isThinkingControlRejected(IllegalStateException("HTTP 503: service unavailable"))
         )
+        assertTrue(
+            !isThinkingControlRejected(
+                IllegalStateException("HTTP 429: unsupported parameter 'reasoning_effort'")
+            )
+        )
+        assertTrue(
+            !isThinkingControlRejected(
+                IllegalStateException("HTTP 403: thinking is not supported for this account")
+            )
+        )
     }
 
     @Test
