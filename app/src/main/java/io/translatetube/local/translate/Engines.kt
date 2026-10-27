@@ -540,6 +540,44 @@ class MlKitEngine : TranslationEngine {
  * Report provider errors and unexpected response shapes explicitly instead of leaking a raw
  * JSONException such as "No value for content".
  */
+private class ReasoningOnlyResponseException(
+    val messageFields: List<String>,
+    val finishReason: String,
+) : IllegalStateException(
+    "模型只返回了 reasoning_content，没有返回最终翻译 content；message 字段=${messageFields.joinToString(",")}；finish_reason=$finishReason"
+)
+
+private enum class ThinkingControlStyle {
+    DEEPSEEK,
+    QWEN,
+    OPENROUTER,
+    REASONING_EFFORT,
+    PLAIN,
+}
+
+/**
+ * Detect provider errors caused by a thinking-control parameter that the provider/model does not
+ * support. Other HTTP errors must not trigger a series of repeated translation requests.
+ */
+private fun isThinkingControlRejected(error: Throwable): Boolean {
+    val detail = generateSequence(error) { it.cause }
+        .take(8)
+        .joinToString(" ") { it.message.orEmpty() }
+        .lowercase(java.util.Locale.ROOT)
+    val parameterName = listOf(
+        "thinking", "enable_thinking", "reasoning", "reasoning_effort", "effort",
+    ).any { detail.contains(it) }
+    val rejected = listOf(
+        "unknown parameter", "unsupported parameter", "unrecognized parameter",
+        "unknown field", "unsupported field", "unrecognized field",
+        "not supported", "does not support", "not allowed", "invalid parameter",
+        "unexpected keyword", "unknown key", "extra inputs are not permitted",
+        "additional properties are not allowed",
+    ).any { detail.contains(it) }
+    return rejected && (parameterName || detail.contains("extra inputs") ||
+        detail.contains("additional properties"))
+}
+
 private fun extractOpenAiCompatContent(body: String): String {
     val root = try {
         JSONObject(body)
@@ -603,9 +641,10 @@ private fun extractOpenAiCompatContent(body: String): String {
     while (keys.hasNext()) messageFields += keys.next()
     val hasReasoning = (message.opt("reasoning_content") as? String).orEmpty().isNotBlank()
     val hasToolCalls = (message.optJSONArray("tool_calls")?.length() ?: 0) > 0
+    if (hasReasoning) {
+        throw ReasoningOnlyResponseException(messageFields.sorted(), finishReason)
+    }
     val detail = when {
-        hasReasoning ->
-            "模型只返回了 reasoning_content，没有返回最终翻译 content"
         hasToolCalls ->
             "模型返回了 tool_calls 工具调用，而不是字幕翻译文本"
         message.has("content") ->
@@ -627,6 +666,108 @@ class OpenAiCompatEngine(
 ) : TranslationEngine {
     override val id = "openai"
     override val displayName = model.ifEmpty { "OpenAI 兼容" }
+
+    /**
+     * Thinking controls are not standardized across OpenAI-compatible services. Prefer the
+     * documented request shape for recognizable model/provider families, then try compatible
+     * alternatives only if the provider rejects the parameter or returns reasoning without a
+     * final answer. Unknown models use an unmodified request first.
+     */
+    private fun thinkingControlOrder(): List<ThinkingControlStyle> {
+        val normalizedBase = baseUrl.lowercase(java.util.Locale.ROOT)
+        val normalizedModel = model.lowercase(java.util.Locale.ROOT)
+        val preferred = when {
+            normalizedBase.contains("openrouter.ai") -> ThinkingControlStyle.OPENROUTER
+            normalizedBase.contains("api.deepseek.com") || normalizedModel.contains("deepseek") ->
+                ThinkingControlStyle.DEEPSEEK
+            normalizedBase.contains("dashscope") ||
+                normalizedBase.contains("qwencloud") ||
+                normalizedModel.contains("qwen") ->
+                ThinkingControlStyle.QWEN
+            normalizedModel.contains("kimi") ||
+                normalizedModel.contains("glm") ||
+                normalizedModel.contains("zhipu") ||
+                normalizedModel.contains("reasoner") ||
+                normalizedModel.contains("thinking") ||
+                normalizedModel.contains("qwq") ||
+                Regex("""(^|[-_/])(r1|r2|o1|o3|o4)([-_/]|$)""").containsMatchIn(normalizedModel) ||
+                normalizedModel.contains("gpt-5") || normalizedModel.contains("gpt5") ->
+                ThinkingControlStyle.REASONING_EFFORT
+            else -> ThinkingControlStyle.PLAIN
+        }
+        val candidates = listOf(
+            preferred,
+            ThinkingControlStyle.REASONING_EFFORT,
+            ThinkingControlStyle.DEEPSEEK,
+            ThinkingControlStyle.QWEN,
+            ThinkingControlStyle.OPENROUTER,
+        )
+        // Avoid resending the unmodified request after it already returned a reasoning-only answer.
+        return (candidates + if (preferred == ThinkingControlStyle.PLAIN) emptyList()
+            else listOf(ThinkingControlStyle.PLAIN)).distinct()
+    }
+
+    private fun payloadWithThinkingControl(
+        original: JSONObject,
+        style: ThinkingControlStyle,
+    ): JSONObject {
+        val payload = JSONObject(original.toString())
+        payload.remove("thinking")
+        payload.remove("enable_thinking")
+        payload.remove("reasoning")
+        payload.remove("reasoning_effort")
+        when (style) {
+            ThinkingControlStyle.DEEPSEEK ->
+                payload.put("thinking", JSONObject().put("type", "disabled"))
+            ThinkingControlStyle.QWEN ->
+                payload.put("enable_thinking", false)
+            ThinkingControlStyle.OPENROUTER ->
+                payload.put("reasoning", JSONObject().put("enabled", false))
+            ThinkingControlStyle.REASONING_EFFORT ->
+                payload.put("reasoning_effort", "none")
+            ThinkingControlStyle.PLAIN -> Unit
+        }
+        return payload
+    }
+
+    private suspend fun requestTranslationContent(payload: JSONObject): String {
+        var lastReasoningOnly: ReasoningOnlyResponseException? = null
+        var lastRejectedControl: Throwable? = null
+        val ownerJob = currentCoroutineContext()[Job]
+
+        for (style in thinkingControlOrder()) {
+            currentCoroutineContext().ensureActive()
+            val requestPayload = payloadWithThinkingControl(payload, style)
+            try {
+                val responseBody = post(
+                    endpoint("/chat/completions"),
+                    mapOf("Authorization" to "Bearer $apiKey"),
+                    requestPayload.toString(),
+                    ownerJob,
+                )
+                return extractOpenAiCompatContent(responseBody)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (reasoningOnly: ReasoningOnlyResponseException) {
+                lastReasoningOnly = reasoningOnly
+                // Try the next common disable-thinking request style.
+            } catch (error: Exception) {
+                if (style != ThinkingControlStyle.PLAIN && isThinkingControlRejected(error)) {
+                    lastRejectedControl = error
+                    // This gateway/model does not recognize this control field; try another shape.
+                } else {
+                    throw error
+                }
+            }
+        }
+
+        throw IllegalStateException(
+            "API 返回了思考内容但没有最终翻译文本，或服务商不接受常见的关闭思考模式参数。" +
+                "已尝试多种兼容格式仍未取得译文；该模型可能不支持关闭思考模式，或中转站未透传相关参数。" +
+                "请检查中转站的模型能力和思考模式设置。",
+            lastReasoningOnly ?: lastRejectedControl,
+        )
+    }
 
     private fun endpoint(path: String): String {
         val b = baseUrl.trimEnd('/')
@@ -703,22 +844,7 @@ class OpenAiCompatEngine(
                     .put(JSONObject().put("role", "system").put("content", sys))
                     .put(JSONObject().put("role", "user").put("content", user))
             )
-        // DeepSeek V4 Flash defaults to thinking mode. Subtitle translation needs the final
-        // translated text, not a reasoning-only response; disable thinking for this model family.
-        val normalizedModel = model.lowercase(java.util.Locale.ROOT)
-        if (normalizedModel.contains("deepseek") &&
-            (normalizedModel.contains("flash") || normalizedModel.contains("v4"))
-        ) {
-            payload.put("thinking", JSONObject().put("type", "disabled"))
-            payload.put("reasoning_effort", "none")
-        }
-        val body = post(
-            endpoint("/chat/completions"),
-            mapOf("Authorization" to "Bearer $apiKey"),
-            payload.toString(),
-            currentCoroutineContext()[Job],
-        )
-        val content = extractOpenAiCompatContent(body)
+        val content = requestTranslationContent(payload)
         return parseNumbered(content, lines.size)
     }
 
