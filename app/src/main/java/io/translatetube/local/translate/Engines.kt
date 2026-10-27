@@ -244,18 +244,25 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
     if (jsonTranslations != null) return jsonTranslations
 
     // Accepted examples: 0|text, 1 | text, 1. text, 1) text, 1：text, and Markdown bullets.
-    val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d{1,4})(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
+    val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d+)(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
     val indexed = linkedMapOf<Int, String>()
     var duplicateIndex = false
-    var outOfRangeIndex: Int? = null
+    var outOfRangeIndex: String? = null
+    val unexpectedLines = mutableListOf<String>()
     normalized.lines().forEach { raw ->
         val line = raw.trim().trim('`').trim()
-        val match = indexedLine.matchEntire(line) ?: return@forEach
-        val index = match.groupValues[1].toIntOrNull() ?: return@forEach
-        if (index !in 0..size) {
-            // Do not silently drop a numbered row: the remaining lines could still look complete
-            // while the model has actually returned a shifted or extra subtitle.
-            if (outOfRangeIndex == null) outOfRangeIndex = index
+        if (line.isEmpty() || translationHeaderRegex.matches(line)) return@forEach
+        val match = indexedLine.matchEntire(line)
+        if (match == null) {
+            unexpectedLines += line
+            return@forEach
+        }
+        val indexToken = match.groupValues[1]
+        val index = indexToken.toIntOrNull()
+        if (index == null || index !in 0..size) {
+            // Keep even excessively large numeric indexes: ignoring one could make a response
+            // with extra rows look complete and silently misalign subtitle cues.
+            if (outOfRangeIndex == null) outOfRangeIndex = indexToken
             return@forEach
         }
         val value = match.groupValues[2].trim().removePrefix("**").removeSuffix("**").trim()
@@ -272,6 +279,11 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
         )
     }
     if (indexed.isNotEmpty()) {
+        if (unexpectedLines.isNotEmpty()) {
+            throw IllegalStateException(
+                "翻译服务在编号译文中混入未编号内容，已拒绝可能错位的译文"
+            )
+        }
         if (duplicateIndex) {
             throw IllegalStateException("翻译服务重复返回字幕编号，已拒绝错位译文")
         }
