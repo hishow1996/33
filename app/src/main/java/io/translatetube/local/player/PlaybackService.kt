@@ -5189,10 +5189,13 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
 
                                 if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                                     ensureCurrentSession(key, pipelineGeneration)
-                                    val rowsJson = org.json.JSONArray()
-                                    for ((rowIndex, row) in rows.withIndex()) {
+                                    // Persist only the rows from this 3-segment group. The manifest
+                                    // is updated last, so a crash can never advertise a missing chunk
+                                    // as completed; on resume the unfinished chunk is recomputed.
+                                    val chunkRowsJson = org.json.JSONArray()
+                                    for ((rowIndex, row) in chunkRows.withIndex()) {
                                         if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
-                                        rowsJson.put(
+                                        chunkRowsJson.put(
                                             org.json.JSONObject()
                                                 .put("s", row.first)
                                                 .put("e", row.second)
@@ -5203,18 +5206,40 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                     ensureCurrentSession(key, pipelineGeneration)
                                     val language = engine.lastLang.takeIf { it.isNotBlank() }
                                         ?: restoredAsrLanguage
-                                    val checkpointJson = org.json.JSONObject()
-                                        .put("version", 2)
+                                    val chunkKey = AsrTranscriptCheckpointPolicy.chunkCacheKey(
+                                        partialAsrCacheKey, chunkStart,
+                                    )
+                                    val chunkJson = org.json.JSONObject()
+                                        .put("version", 1)
+                                        .put("signature", asrSignature)
+                                        .put("startSegment", chunkStart)
+                                        .put("endSegment", chunkEnd)
+                                        .put("rows", chunkRowsJson)
+                                    db.subtitleCacheDao().put(
+                                        io.translatetube.local.data.SubtitleCacheEntity(
+                                            chunkKey,
+                                            language,
+                                            chunkJson.toString(),
+                                            System.currentTimeMillis(),
+                                            videoKey = key,
+                                        )
+                                    )
+                                    ownerJob?.ensureActive()
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val manifestJson = org.json.JSONObject()
+                                        .put("version", 3)
                                         .put("signature", asrSignature)
                                         .put("totalSegments", segs.size)
                                         .put("processedSegments", processed)
-                                        .put("rows", rowsJson)
-                                    ownerJob?.ensureActive()
+                                        .put(
+                                            "chunkSize",
+                                            AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT,
+                                        )
                                     db.subtitleCacheDao().put(
                                         io.translatetube.local.data.SubtitleCacheEntity(
                                             partialAsrCacheKey,
                                             language,
-                                            checkpointJson.toString(),
+                                            manifestJson.toString(),
                                             System.currentTimeMillis(),
                                             videoKey = key,
                                         )
