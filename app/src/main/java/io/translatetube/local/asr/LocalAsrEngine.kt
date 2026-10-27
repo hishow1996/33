@@ -16,5 +16,7 @@ interface LocalAsrEngine : AutoCloseable {
         segs: List<Pair<Long, Long>>,
         checkActive: () -> Unit = {},
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+        /** Shared for the lifetime of a complete ASR pass, including checkpointed sub-batches. */
+        sharedPcmReader: AudioExtract.PcmFile.Reader? = null,
     ): List<Triple<Long, Long, String>>
 }
