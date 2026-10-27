@@ -4902,7 +4902,10 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                         val rows = restoredAsrRows.toMutableList()
                         var processed = restoredProcessedSegments
-                        while (processed < segs.size) {
+                        // Keep one file descriptor and byte buffer for the entire local-ASR pass.
+                        // Checkpoint writes still happen after every small segment group below.
+                        pcmFile.openReader { ownerJob?.ensureActive() }.use { sharedPcmReader ->
+                            while (processed < segs.size) {
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val chunkStart = processed
                             val chunkEnd = minOf(chunkStart + 3, segs.size)
@@ -4910,6 +4913,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                 pcmFile,
                                 segs.subList(chunkStart, chunkEnd),
                                 checkActive = { ownerJob?.ensureActive() },
+                                sharedPcmReader = sharedPcmReader,
                             ) { done, _ ->
                                 val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
                                 val progressTimeMs = completedSegment?.second ?: 0L
@@ -4957,6 +4961,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                                         videoKey = key,
                                     )
                                 )
+                            }
                             }
                         }
                         val language = if (restoredProcessedSegments >= segs.size) {
