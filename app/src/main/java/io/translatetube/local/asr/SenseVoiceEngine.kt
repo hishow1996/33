@@ -72,8 +72,8 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
         pcmFile: AudioExtract.PcmFile,
         segs: List<Pair<Long, Long>>,
         checkActive: () -> Unit,
-        onProgress: (done: Int, total: Int) -> Unit,
         sharedPcmReader: AudioExtract.PcmFile.Reader?,
+        onProgress: (done: Int, total: Int) -> Unit,
     ): List<Triple<Long, Long, String>> {
         check(!closed) { "SenseVoice 识别器已关闭" }
         require(pcmFile.sampleRate == 16_000) { "SenseVoice 只支持 16kHz PCM 输入" }
