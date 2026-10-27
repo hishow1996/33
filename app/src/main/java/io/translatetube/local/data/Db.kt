@@ -95,6 +95,10 @@ interface SubtitleCacheDao {
     @Query("DELETE FROM subtitle_cache WHERE cacheKey = :k")
     suspend fun delete(k: String)
 
+    /** Delete only the sharded ASR checkpoint payloads, not the manifest or completed subtitle cache. */
+    @Query("DELETE FROM subtitle_cache WHERE substr(cacheKey, 1, length(:keyPrefix)) = :keyPrefix")
+    suspend fun deleteByCacheKeyPrefix(keyPrefix: String): Int
+
     @Query("DELETE FROM subtitle_cache WHERE videoKey = :videoKey OR substr(cacheKey, 1, length(:keyPrefix)) = :keyPrefix")
     suspend fun deleteForVideo(videoKey: String, keyPrefix: String): Int
 
