@@ -73,4 +73,29 @@ class ThinkingControlPolicyTest {
             !isThinkingControlRejected(IllegalStateException("HTTP 503: service unavailable"))
         )
     }
+
+    @Test
+    fun rejectedProviderControlFallsBackToPlainRequest() {
+        assertEquals(
+            ThinkingControlStyle.PLAIN,
+            fallbackAfterThinkingControlRejection(
+                ThinkingControlStyle.DEEPSEEK,
+                ThinkingControlStyle.REASONING_EFFORT
+            )
+        )
+        assertEquals(
+            ThinkingControlStyle.PLAIN,
+            fallbackAfterThinkingControlRejection(
+                ThinkingControlStyle.QWEN,
+                ThinkingControlStyle.REASONING_EFFORT
+            )
+        )
+        assertEquals(
+            ThinkingControlStyle.REASONING_EFFORT,
+            fallbackAfterThinkingControlRejection(
+                ThinkingControlStyle.PLAIN,
+                ThinkingControlStyle.REASONING_EFFORT
+            )
+        )
+    }
 }
