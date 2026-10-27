@@ -84,7 +84,8 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
         var sampleReadMs = 0L
         var inferenceMs = 0L
         var decodedSegments = 0
-        segs.forEachIndexed { index, (startMs, endMs) ->
+        pcmFile.openReader(checkActive).use { pcmReader ->
+            segs.forEachIndexed { index, (startMs, endMs) ->
             checkActive()
             val safeStartMs = startMs.coerceIn(0L, durationMs)
             val safeEndMs = endMs.coerceIn(safeStartMs, durationMs)
@@ -97,7 +98,7 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
                 val count = endSample - startSample
                 require(count <= Int.MAX_VALUE.toLong()) { "单条语音段过长" }
                 val readStartedMs = android.os.SystemClock.elapsedRealtime()
-                val samples = pcmFile.readFloatSamples(startSample, count.toInt(), checkActive)
+                val samples = pcmReader.readFloatSamples(startSample, count.toInt())
                 sampleReadMs += android.os.SystemClock.elapsedRealtime() - readStartedMs
                 val decodeStartedMs = android.os.SystemClock.elapsedRealtime()
                 val result = decodeResult(samples)
@@ -109,6 +110,7 @@ class SenseVoiceEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsr
                 if (text.isNotEmpty()) output += Triple(safeStartMs, safeEndMs, text)
             }
             onProgress(index + 1, segs.size)
+            }
         }
         LocalAsrPerformanceLogger.log(
             modelId = "sensevoice",
