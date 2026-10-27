@@ -536,15 +536,16 @@ class MlKitEngine : TranslationEngine {
 }
 
 /**
- * Extract a final text answer from a non-streaming OpenAI-compatible Chat Completions response.
- * Report provider errors and unexpected response shapes explicitly instead of leaking a raw
- * JSONException such as "No value for content".
+ * Signals that a response contains reasoning/thinking fields but no final answer text, allowing
+ * the caller to retry using another provider-specific thinking-control parameter.
  */
 private class ReasoningOnlyResponseException(
     val messageFields: List<String>,
+    val reasoningFields: List<String>,
     val finishReason: String,
 ) : IllegalStateException(
-    "模型只返回了 reasoning_content，没有返回最终翻译 content；message 字段=${messageFields.joinToString(",")}；finish_reason=$finishReason"
+    "模型只返回了推理字段 ${reasoningFields.joinToString(",")}，没有最终翻译 content；" +
+        "message 字段=${messageFields.joinToString(",")}；finish_reason=$finishReason"
 )
 
 private enum class ThinkingControlStyle {
@@ -578,6 +579,7 @@ private fun isThinkingControlRejected(error: Throwable): Boolean {
         detail.contains("additional properties"))
 }
 
+/** Extract text from a non-streaming OpenAI-compatible chat-completion response. */
 private fun extractOpenAiCompatContent(body: String): String {
     val root = try {
         JSONObject(body)
@@ -639,10 +641,19 @@ private fun extractOpenAiCompatContent(body: String): String {
     val messageFields = mutableListOf<String>()
     val keys = message.keys()
     while (keys.hasNext()) messageFields += keys.next()
-    val hasReasoning = (message.opt("reasoning_content") as? String).orEmpty().isNotBlank()
+    val reasoningFields = listOf(
+        "reasoning_content", "reasoning", "reasoning_text", "thinking", "analysis",
+    ).filter { field ->
+        when (val value = message.opt(field)) {
+            is String -> value.isNotBlank()
+            is JSONObject -> value.length() > 0
+            is JSONArray -> value.length() > 0
+            else -> false
+        }
+    }
     val hasToolCalls = (message.optJSONArray("tool_calls")?.length() ?: 0) > 0
-    if (hasReasoning) {
-        throw ReasoningOnlyResponseException(messageFields.sorted(), finishReason)
+    if (reasoningFields.isNotEmpty()) {
+        throw ReasoningOnlyResponseException(messageFields.sorted(), reasoningFields, finishReason)
     }
     val detail = when {
         hasToolCalls ->
@@ -965,7 +976,12 @@ class GeminiEngine(
                 "Configured Gemini model $configured is no longer available; retrying with ${FreeModelDefaults.GEMINI_MODEL}",
                 error,
             )
-            generateContent(FreeModelDefaults.GEMINI_MODEL, payload.toString())
+            val fallbackModel = FreeModelDefaults.GEMINI_MODEL
+            val fallbackPayload = JSONObject(payload.toString()).also {
+                it.remove("generationConfig")
+                applyGeminiTranslationThinkingConfig(it, fallbackModel)
+            }
+            generateContent(fallbackModel, fallbackPayload.toString())
         }
         val response = JSONObject(body)
         val candidates = response.optJSONArray("candidates")
