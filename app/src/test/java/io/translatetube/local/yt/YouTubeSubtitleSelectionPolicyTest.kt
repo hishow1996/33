@@ -126,7 +126,7 @@ class YouTubeSubtitleSelectionPolicyTest {
         assertFalse(
             YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot("ko", "auto", "ko"),
         )
-        assertFalse(
+        assertTrue(
             YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(null, "en", "en"),
         )
     }
