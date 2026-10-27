@@ -70,16 +70,58 @@ internal object YouTubeStreamSelector {
             ?: -1
     }
 
-    /** Prefer M4A/AAC for broad decoder compatibility, then highest bitrate in that tier. */
-    fun chooseAudioStream(input: List<YouTubeAudioCandidate>): YouTubeAudioCandidate? =
-        input.asSequence()
-            .filter { isHttpUrl(it.url) }
-            .sortedWith(
-                compareBy<YouTubeAudioCandidate> { audioCompatibilityRank(it) }
-                    .thenByDescending { it.bitrate.coerceAtLeast(0) }
-                    .thenBy { it.url }
-            )
-            .firstOrNull()
+    /**
+     * Select playback audio from the original track/language first, then preserve the M4A
+     * compatibility and high-bitrate preference within that eligible track group.
+     */
+    fun chooseAudioStream(
+        input: List<YouTubeAudioCandidate>,
+        preferredLanguageTag: String? = null,
+    ): YouTubeAudioCandidate? {
+        val valid = input.filter { isHttpUrl(it.url) }
+        if (valid.isEmpty()) return null
+
+        val preferredLanguage = YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(preferredLanguageTag)
+        val original = valid.filter { it.isOriginal }
+        val originalLanguages = original.mapNotNull {
+            YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
+        }.distinct()
+        if (preferredLanguage == null && originalLanguages.size > 1) return null
+        if (preferredLanguage != null && originalLanguages.isNotEmpty() &&
+            preferredLanguage !in originalLanguages
+        ) return null
+
+        val matchingOriginal = if (preferredLanguage == null) emptyList() else original.filter {
+            YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag) == preferredLanguage
+        }
+        val safeNonDubbed = valid.filter { !it.isDubbed && !it.isDescriptive }
+        val matchingLanguage = if (preferredLanguage == null) emptyList() else safeNonDubbed.filter {
+            YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag) == preferredLanguage
+        }
+
+        val preferredTracks = when {
+            matchingOriginal.isNotEmpty() -> matchingOriginal
+            original.isNotEmpty() -> original
+            matchingLanguage.isNotEmpty() -> matchingLanguage
+            safeNonDubbed.isNotEmpty() -> {
+                val knownLanguages = safeNonDubbed.mapNotNull {
+                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
+                }.distinct()
+                if (preferredLanguage != null && knownLanguages.isNotEmpty() &&
+                    preferredLanguage !in knownLanguages
+                ) return null
+                if (preferredLanguage == null && knownLanguages.size > 1) return null
+                safeNonDubbed
+            }
+            else -> return null
+        }
+
+        return preferredTracks.minWithOrNull(
+            compareBy<YouTubeAudioCandidate> { audioCompatibilityRank(it) }
+                .thenByDescending { it.bitrate.coerceAtLeast(0) }
+                .thenBy { it.url }
+        )
+    }
 
     /**
      * ASR does not need the highest fidelity stream. Preserve M4A compatibility preference,
