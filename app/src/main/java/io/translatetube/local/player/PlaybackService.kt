@@ -6839,7 +6839,9 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             }
             awaitProcessingResumed(sessionKey)
             val stream = NewPipeRepo.audioForAsr(videoId)
-                ?: throw IllegalStateException("无法获取视频独立音轨")
+                ?: throw IllegalStateException(
+                    "无法安全确定与原声匹配的 YouTube 音轨。为避免误把其他语言的配音轨当作原声转写，本次已停止处理；请稍后重试。",
+                )
             updateUiForSession(sessionKey) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
