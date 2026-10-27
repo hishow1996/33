@@ -4186,7 +4186,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val sourceSubtitleCacheKey = when {
                 // YouTube rolling captions were normalized to one cue per line in v5.
                 // Keep the existing local-model cache where possible; isolate cloud ASR by provider.
-                videoId != null -> "$key|source|youtube-v6-original-language" + when (asrProvider) {
+                videoId != null -> "$key|source|youtube-v5" + when (asrProvider) {
                     "local" -> "|asr-$localAsrModelId"
                     else -> "|asr-$asrCacheIdentity-cloud-v1"
                 }
@@ -4272,7 +4272,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 return fetchedLines to lang
             }
 
-            val sourceCached = if (
+            var sourceCached = if (
                 resumeState == null && (videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()
             ) {
                 db.subtitleCacheDao().get(sourceSubtitleCacheKey)
@@ -4300,6 +4300,50 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 sourceCached?.srcLang?.takeIf { lang -> lang.isNotBlank() }
                     ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(it.asSequence().map { cue -> cue.text }.asIterable())
             }
+
+            // Older versions could cache English captions even when the actual YouTube audio was
+            // Korean (or another language). Validate populated YouTube source caches against the
+            // source-audio metadata, so valid ASR checkpoints remain reusable and are not
+            // invalidated merely because the caption-selection policy changed.
+            if (videoId != null && sourceCached != null && restoredSourceLines != null) {
+                val originalAudioLanguage = try {
+                    io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(videoId)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Could not validate cached YouTube source language; preserving cache",
+                        failure,
+                    )
+                    null
+                }
+                val detectedCacheLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
+                    .detectFromCues(restoredSourceLines.asSequence().map { cue -> cue.text }.asIterable())
+                val cachedContentLanguage =
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(detectedCacheLanguage)
+                        ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(sourceCached.srcLang)
+                val expectedContentLanguage =
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(originalAudioLanguage)
+                if (expectedContentLanguage != null && cachedContentLanguage != null &&
+                    expectedContentLanguage != cachedContentLanguage
+                ) {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Discarding cached YouTube source text because its language does not match original audio " +
+                            "(audio=$expectedContentLanguage, cache=$cachedContentLanguage)",
+                    )
+                    db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
+                    sourceCached = null
+                    restoredSourceLines = null
+                    restoredSourceLang = null
+                    if (cached != null) {
+                        db.subtitleCacheDao().delete(translationCacheKey)
+                        cached = null
+                    }
+                }
+            }
+
             if (sourceCached != null && restoredSourceLines != null) {
                 // The completed source cache is authoritative if a crash happened between its
                 // write and deletion of the partial-ASR checkpoint.
