@@ -44,6 +44,9 @@ internal object YouTubeSubtitleSelectionPolicy {
         originalAudioLanguageTags: Iterable<String?>,
         streamLanguageTag: String?,
         fallbackAudioLanguageTags: Iterable<String?>,
+        originalAudioTrackPresent: Boolean = originalAudioLanguageTags.any {
+            normalizeLanguageCode(it) != null
+        },
     ): String? {
         val originalLanguages = originalAudioLanguageTags
             .mapNotNull(::normalizeLanguageCode)
@@ -54,8 +57,11 @@ internal object YouTubeSubtitleSelectionPolicy {
 
         normalizeLanguageCode(streamLanguageTag)?.let { return it }
 
-        // A fallback is safe only if all non-dubbed primary/unknown-type audio tracks agree.
-        // Multi-language tracks without an ORIGINAL marker must be left for automatic ASR.
+        // If an ORIGINAL track exists but its locale is missing/undetermined, other tracks cannot
+        // safely stand in for it: YouTube may expose a localized dub beside the original stream.
+        if (originalAudioTrackPresent) return null
+
+        // A fallback is safe only if all non-dubbed/unknown-type audio tracks agree.
         val fallbackLanguages = fallbackAudioLanguageTags
             .mapNotNull(::normalizeLanguageCode)
             .distinct()
