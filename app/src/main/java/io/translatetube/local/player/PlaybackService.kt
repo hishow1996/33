@@ -4990,6 +4990,9 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         }
 
                         val checkpointChunkSize = AsrTranscriptCheckpointPolicy.SEGMENTS_PER_CHECKPOINT
+                        if (processed != total && processed % checkpointChunkSize != 0) {
+                            throw IllegalStateException("ASR 检查点进度未对齐分段边界")
+                        }
                         val restoredRows = when (checkpointVersion) {
                             2 -> {
                                 val savedRows = checkpoint.optJSONArray("rows")
