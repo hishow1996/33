@@ -24,16 +24,25 @@ class FloatingManager(private val ctx: Context) {
     private var wm: WindowManager? = null
     private var view: View? = null
     private var params: WindowManager.LayoutParams? = null
+    private var videoAspectRatio: Float = 16f / 9f
 
     fun canDraw(): Boolean = Settings.canDrawOverlays(ctx)
 
-    fun show(v: View, wPx: Int, hPx: Int): Boolean {
+    fun show(v: View, wPx: Int, hPx: Int, aspectRatio: Float = wPx.toFloat() / hPx.coerceAtLeast(1)): Boolean {
         if (view != null) return true
         val manager = ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
             ?: return false
         val (maxWidth, maxHeight) = screenSizePx(manager)
-        val windowWidth = FloatingWindowPolicy.boundedDimension(wPx, MIN_WIDTH_PX, maxWidth)
-        val windowHeight = FloatingWindowPolicy.boundedDimension(hPx, MIN_HEIGHT_PX, maxHeight)
+        videoAspectRatio = FloatingWindowPolicy.normalizeAspectRatio(aspectRatio, wPx, hPx)
+        val (windowWidth, windowHeight) = FloatingWindowPolicy.aspectLockedSize(
+            requestedWidth = wPx,
+            requestedHeight = hPx,
+            aspectRatio = videoAspectRatio,
+            minWidth = MIN_WIDTH_PX,
+            minHeight = MIN_HEIGHT_PX,
+            maxWidth = maxWidth,
+            maxHeight = maxHeight,
+        )
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
@@ -128,11 +137,16 @@ class FloatingManager(private val ctx: Context) {
         val currentView = view ?: return
         val currentParams = params ?: return
         val (maxWidth, maxHeight) = screenSizePx(manager)
-        val newWidth = FloatingWindowPolicy.resizedDimension(
-            anchorWidth, anchorRawX, pointerRawX, MIN_WIDTH_PX, maxWidth,
-        )
-        val newHeight = FloatingWindowPolicy.resizedDimension(
-            anchorHeight, anchorRawY, pointerRawY, MIN_HEIGHT_PX, maxHeight,
+        val (newWidth, newHeight) = FloatingWindowPolicy.aspectLockedResizedSize(
+            anchorWidth = anchorWidth,
+            anchorHeight = anchorHeight,
+            deltaX = pointerRawX - anchorRawX,
+            deltaY = pointerRawY - anchorRawY,
+            aspectRatio = videoAspectRatio,
+            minWidth = MIN_WIDTH_PX,
+            minHeight = MIN_HEIGHT_PX,
+            maxWidth = maxWidth,
+            maxHeight = maxHeight,
         )
         val newX = FloatingWindowPolicy.boundedOffset(currentParams.x, newWidth, maxWidth)
         val newY = FloatingWindowPolicy.boundedOffset(currentParams.y, newHeight, maxHeight)
