@@ -38,6 +38,28 @@ class AudioExtractPcmFileTest {
     }
 
     @Test
+    fun readerRejectsPcmFileChangedDuringTheSameTranscriptionPass() {
+        val pcmFile = File.createTempFile("pcm-reader-mutation-test", ".s16le")
+        try {
+            pcmFile.writeBytes(byteArrayOf(0, 0, 0, 64, 0, -128, -1, 127))
+            val pcm = AudioExtract.PcmFile(pcmFile, sampleCount = 4L)
+            pcm.openReader().use { reader ->
+                org.junit.Assert.assertEquals(listOf(0f), reader.readFloatSamples(0L, 1).toList())
+                java.io.RandomAccessFile(pcmFile, "rw").use { changed ->
+                    changed.setLength(2L)
+                }
+                val error = runCatching { reader.readFloatSamples(1L, 1) }.exceptionOrNull()
+                org.junit.Assert.assertTrue(error is IllegalArgumentException)
+                org.junit.Assert.assertTrue(
+                    error?.message.orEmpty().contains("PCM 临时文件长度"),
+                )
+            }
+        } finally {
+            pcmFile.delete()
+        }
+    }
+
+    @Test
     fun oneShotReadsKeepTheirExistingBehaviorWhenUsingTheReusableReader() {
         val pcmFile = File.createTempFile("pcm-reader-single-test", ".s16le")
         try {
