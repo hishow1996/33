@@ -256,7 +256,7 @@ object AppLogTitleResolver {
 
         val suffix = message.substring(separator + 3)
         val technical = Regex(
-            """(?i)(\\b[\\w.$]*(?:exception|error|throwable)\\b|\\bcaused by\\s*:|\\broot cause\\b|根因\\s*=|\\bhttp\\s+\\d{3}\\b|\\bat\\s+[\\w.$]+\\()""",
+            """(?i)(\b[\w.$]*(?:exception|error|throwable)\b|\bcaused by\s*:|\broot cause\b|根因\s*=|\bhttp\s+\d{3}\b|\bat\s+[\w.$]+\()""",
         )
         return if (technical.containsMatchIn(suffix)) {
             message.substring(0, separator).trimEnd() to suffix
