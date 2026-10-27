@@ -575,6 +575,10 @@ object NewPipeRepo {
     suspend fun sourceAudioLanguageHint(videoId: String): String? =
         sourceLanguageHint(info(videoId))
 
+    /** Reuse the exact source-language policy when selecting the playback audio for known metadata. */
+    internal fun sourceAudioLanguageHint(streamInfo: StreamInfo): String? =
+        sourceLanguageHint(streamInfo)
+
     /** 转写用音频流：优先 M4A 的最低有效码率，减少下载时间与缓存占用。 */
     suspend fun audioForAsr(videoId: String): AudioStream? {
         val streamInfo = info(videoId)
