@@ -47,4 +47,30 @@ class ThinkingControlPolicyTest {
         assertEquals(ThinkingControlStyle.PLAIN, controls.last())
         assertTrue(controls.size <= 2)
     }
+    @Test
+    fun unsupportedThinkingParameterIsRecognizedForFallback() {
+        assertTrue(
+            isThinkingControlRejected(
+                IllegalStateException("HTTP 400: unsupported parameter 'reasoning_effort'")
+            )
+        )
+        assertTrue(
+            isThinkingControlRejected(
+                IllegalStateException("HTTP 400: unknown field enable_thinking")
+            )
+        )
+    }
+
+    @Test
+    fun authenticationQuotaAndServerErrorsDoNotTriggerParameterFallback() {
+        assertTrue(
+            !isThinkingControlRejected(IllegalStateException("HTTP 401: invalid API key"))
+        )
+        assertTrue(
+            !isThinkingControlRejected(IllegalStateException("HTTP 429: rate limit exceeded"))
+        )
+        assertTrue(
+            !isThinkingControlRejected(IllegalStateException("HTTP 503: service unavailable"))
+        )
+    }
 }
