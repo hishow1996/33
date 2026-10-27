@@ -86,18 +86,8 @@ object Small100LanguagePolicy {
     )
     private val supportedCodes = languages.mapTo(linkedSetOf()) { it.first }
 
-    fun canonicalCode(languageTag: String): String {
-        val primary = SourceLanguagePolicy.normalizeTag(languageTag)
-            .substringBefore('-').lowercase(Locale.ROOT)
-        return when (primary) {
-            "iw" -> "he"
-            "in" -> "id"
-            "fil" -> "tl"
-            "nb", "nn" -> "no"
-            "cmn" -> "zh"
-            else -> primary
-        }
-    }
+    fun canonicalCode(languageTag: String): String =
+        SourceLanguagePolicy.canonicalPrimaryCode(languageTag)
 
     fun supportsSource(languageTag: String): Boolean =
         SourceLanguagePolicy.isUndetermined(languageTag) || canonicalCode(languageTag) in supportedCodes

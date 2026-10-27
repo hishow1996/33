@@ -46,8 +46,76 @@ internal object SourceLanguagePolicy {
             normalized.substringBefore('-').lowercase(Locale.ROOT) in undeterminedPrimaryTags
     }
 
+    /**
+     * Canonical ISO-639 primary language code shared by local translation engines.
+     *
+     * Subtitle providers and ASR engines do not all emit ISO-639-1 tags: some return
+     * ISO-639-2/3 codes (for example eng/jpn/kor/rus) or legacy bibliographic aliases
+     * (for example ger/fre/chi). Normalize these before validating model support.
+     */
+    private val languageCodeAliases = mapOf(
+        "alb" to "sq", "sqi" to "sq",
+        "ara" to "ar",
+        "ben" to "bn",
+        "bul" to "bg",
+        "cat" to "ca",
+        "ces" to "cs", "cze" to "cs",
+        "chi" to "zh", "zho" to "zh", "cmn" to "zh",
+        "cym" to "cy", "wel" to "cy",
+        "dan" to "da",
+        "deu" to "de", "ger" to "de",
+        "ell" to "el", "gre" to "el",
+        "eng" to "en",
+        "est" to "et",
+        "fas" to "fa", "per" to "fa",
+        "fin" to "fi",
+        "fra" to "fr", "fre" to "fr",
+        "glg" to "gl",
+        "guj" to "gu",
+        "heb" to "he", "iw" to "he",
+        "hin" to "hi",
+        "hrv" to "hr",
+        "hun" to "hu",
+        "ice" to "is", "isl" to "is",
+        "ind" to "id", "in" to "id",
+        "ita" to "it",
+        "jpn" to "ja",
+        "kan" to "kn",
+        "kor" to "ko",
+        "lav" to "lv",
+        "lit" to "lt",
+        "mal" to "ml",
+        "mar" to "mr",
+        "may" to "ms", "msa" to "ms",
+        "nld" to "nl", "dut" to "nl",
+        "nob" to "no", "nno" to "no", "nor" to "no", "nb" to "no", "nn" to "no",
+        "pol" to "pl",
+        "por" to "pt",
+        "ron" to "ro", "rum" to "ro",
+        "rus" to "ru",
+        "slk" to "sk", "slo" to "sk",
+        "slv" to "sl",
+        "spa" to "es",
+        "srp" to "sr",
+        "swe" to "sv",
+        "tam" to "ta",
+        "tel" to "te",
+        "tgl" to "tl", "fil" to "tl",
+        "tha" to "th",
+        "tur" to "tr",
+        "ukr" to "uk",
+        "urd" to "ur",
+        "vie" to "vi",
+        "yid" to "yi",
+    )
+
+    fun canonicalPrimaryCode(tag: String): String {
+        val primary = normalizeTag(tag).substringBefore('-').lowercase(Locale.ROOT)
+        return languageCodeAliases[primary] ?: primary
+    }
+
     fun isChinese(tag: String): Boolean =
-        normalizeTag(tag).substringBefore('-').lowercase(Locale.ROOT) in setOf("zh", "cmn", "yue")
+        canonicalPrimaryCode(tag) in setOf("zh", "yue")
 
     /** Empty string tells translation APIs to auto-detect instead of receiving a fake language ID. */
     fun sourceForTranslation(tag: String): String =

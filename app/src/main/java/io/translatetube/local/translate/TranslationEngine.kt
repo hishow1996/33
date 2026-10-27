@@ -41,21 +41,8 @@ object LocalTranslationEnginePolicy {
      * Canonical language code used to select an OPUS-MT model.
      * Some subtitle and ASR providers return ISO-639-2/3 codes instead of two-letter codes.
      */
-    fun canonicalOpusSource(languageTag: String): String {
-        val primary = SourceLanguagePolicy.normalizeTag(languageTag)
-            .substringBefore('-')
-            .lowercase(java.util.Locale.ROOT)
-        return when (primary) {
-            "eng" -> "en"
-            "deu", "ger" -> "de"
-            "fin" -> "fi"
-            "swe" -> "sv"
-            "jpn" -> "ja"
-            "kor" -> "ko"
-            "rus" -> "ru"
-            else -> primary
-        }
-    }
+    fun canonicalOpusSource(languageTag: String): String =
+        SourceLanguagePolicy.canonicalPrimaryCode(languageTag)
 
     /** Only list OPUS-MT source languages with a verified Android model that outputs Chinese directly. */
     fun supportsOpusSource(languageTag: String): Boolean =
@@ -86,16 +73,23 @@ object LangMap {
         if (normalized.isEmpty()) return ""
         val exact = mlkit.entries.firstOrNull { it.key.equals(normalized, ignoreCase = true) }
         if (exact != null) return exact.value
+
         val lower = normalized.lowercase(java.util.Locale.ROOT)
-        if (lower == "zh-hant" || lower.startsWith("zh-hant-")) return "zh-TW"
-        if (lower == "zh-hans" || lower.startsWith("zh-hans-")) return "zh"
-        return lower.substringBefore('-')
+        val primary = SourceLanguagePolicy.canonicalPrimaryCode(normalized)
+        if (primary == "zh") {
+            val subtags = lower.split('-').drop(1)
+            return when {
+                subtags.any { it == "hant" || it in setOf("tw", "hk", "mo") } -> "zh-TW"
+                else -> "zh"
+            }
+        }
+        return mlkit[primary] ?: primary
     }
 
     /** Unknown source language falls back to English; never pass UI sentinel "auto" to ML Kit. */
     fun mlkitSource(code: String): String {
         val normalized = code.trim().replace('_', '-')
-        val primary = normalized.substringBefore('-').lowercase(java.util.Locale.ROOT)
+        val primary = SourceLanguagePolicy.canonicalPrimaryCode(normalized)
         // Detection sentinels can carry script/region suffixes (for example und-Latn).
         return if (
             normalized.isEmpty() ||
