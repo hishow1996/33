@@ -63,6 +63,7 @@ internal fun isRecoverableTranslationFormatError(error: IllegalStateException): 
     val normalized = message.lowercase(java.util.Locale.ROOT)
     val malformedTranslation = message.contains("重复返回字幕编号") ||
         message.contains("超出本批范围的字幕编号") ||
+        message.contains("混入未编号内容") ||
         message.contains("编号不完整") ||
         message.contains("格式不完整")
     if (malformedTranslation) return true
