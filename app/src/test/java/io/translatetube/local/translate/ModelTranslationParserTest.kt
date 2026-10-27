@@ -63,6 +63,14 @@ class ModelTranslationParserTest {
     }
 
     @Test
+    fun keepsPositionalFallbackWhenEveryOutputRowIsUnnumbered() {
+        assertEquals(
+            listOf("First translation", "第二条译文"),
+            parseModelTranslations("First translation\\n第二条译文", 2),
+        )
+    }
+
+    @Test
     fun normalizesCaseAndUnderscoreLanguageTags() {
         assertEquals("en", LangMap.mlkit("EN-us"))
         assertEquals("zh", LangMap.mlkit("zh_CN"))
