@@ -152,8 +152,8 @@ class WhisperEngine(ctx: Context, private val numThreads: Int = 2) : LocalAsrEng
         pcmFile: AudioExtract.PcmFile,
         segs: List<Pair<Long, Long>>,
         checkActive: () -> Unit,
-        onProgress: (done: Int, total: Int) -> Unit,
         sharedPcmReader: AudioExtract.PcmFile.Reader?,
+        onProgress: (done: Int, total: Int) -> Unit,
     ): List<Triple<Long, Long, String>> {
         check(!closed) { "Whisper 识别器已关闭" }
         val sr = pcmFile.sampleRate
