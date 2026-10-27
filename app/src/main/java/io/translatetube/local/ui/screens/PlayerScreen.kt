@@ -435,6 +435,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
+        // 显式保持按钮 ComposeView 位于视频 TextureView 上方，确保全局悬浮层可接收点击。
+        controlsView.bringToFront()
         // 直接使用播放器回报的视频真实宽高比，悬浮窗初始化和后续缩放共用同一比例。
         val shown = floating.show(host, 640, 360, state.videoAspect)
         if (shown && floating.isShowing()) {
@@ -2585,7 +2587,8 @@ private fun FloatingResizeHandle(
 ) {
     Box(
         modifier = modifier
-            .size(size)
+            // requiredSize 强制此手柄保持 22–28dp，避免被全屏父容器拉伸。
+            .requiredSize(size)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -2609,21 +2612,23 @@ private fun FloatingResizeHandle(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
-            val stroke = 1.6.dp.toPx()
+        Canvas(modifier = Modifier.fillMaxSize().padding(5.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = 1.5.dp.toPx()
             val color = Color.White
-            // 右下角两条斜线，常见的缩放把手样式
+            // 两条短斜线只在右下角手柄范围内绘制，不会延伸覆盖视频画面。
             drawLine(
                 color = color,
-                start = Offset(this.size.width, this.size.height * 0.30f),
-                end = Offset(this.size.width * 0.30f, this.size.height),
+                start = Offset(w * 0.92f, h * 0.28f),
+                end = Offset(w * 0.28f, h * 0.92f),
                 strokeWidth = stroke,
                 cap = androidx.compose.ui.graphics.StrokeCap.Round,
             )
             drawLine(
                 color = color,
-                start = Offset(this.size.width, this.size.height * 0.65f),
-                end = Offset(this.size.width * 0.65f, this.size.height),
+                start = Offset(w * 0.92f, h * 0.62f),
+                end = Offset(w * 0.62f, h * 0.92f),
                 strokeWidth = stroke,
                 cap = androidx.compose.ui.graphics.StrokeCap.Round,
             )
@@ -2732,10 +2737,14 @@ private fun FloatingPlayerControls(
     }
 
     BoxWithConstraints(
-        modifier = Modifier.fillMaxSize().then(overlayGestureModifier),
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // 缩放把手独立于按钮层，按钮自动隐藏后仍可从右下角拖动调整尺寸。
+        // 固定缩放手柄尺寸。背景手势独立放在按钮层下方，按钮点击与进度条拖动
+        // 不再和窗口拖动/显隐手势争用同一触摸目标。
         val resizeHandleSize = if (maxWidth < 190.dp) 22.dp else 28.dp
+        Box(
+            modifier = Modifier.fillMaxSize().then(overlayGestureModifier),
+        )
         AnimatedVisibility(
             visible = controlsVisible,
             enter = fadeIn(animationSpec = tween(150)),
@@ -2935,7 +2944,8 @@ private fun FloatingPlayerControls(
                 }
             }
         }
-        // 常驻缩放把手位于 AnimatedVisibility 外部，不随播放按钮一起隐藏。
+        }
+        // 缩放手柄是独立的最上层控件，按钮隐藏时仍保持可见并可拖动。
         FloatingResizeHandle(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -2945,7 +2955,6 @@ private fun FloatingPlayerControls(
             onResize = onResizeWindow,
             onDraggingChange = { windowDragging = it },
         )
-        }
     }
 }
 
