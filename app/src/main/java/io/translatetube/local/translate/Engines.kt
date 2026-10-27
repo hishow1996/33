@@ -645,7 +645,26 @@ class MlKitEngine : TranslationEngine {
             val source = validateConfiguration(srcLang, tgtLang, lines)
             val target = LangMap.mlkit(tgtLang)
             val translator = translatorFor(source, target)
-            lines.map { if (it.isBlank()) "" else translator.translate(it).await() }
+            lines.mapIndexed { index, line ->
+                if (line.isBlank()) {
+                    ""
+                } else {
+                    try {
+                        translator.translate(line).await()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (lineError: Exception) {
+                        // One malformed/untranslatable cue should not discard good rows in the same
+                        // batch. Return an empty row so PlaybackService can retry it independently.
+                        android.util.Log.w(
+                            "MlKitEngine",
+                            "ML Kit translation failed for subtitle row ${index + 1} (chars=${line.length}); raw text omitted",
+                            lineError,
+                        )
+                        ""
+                    }
+                }
+            }
         }
     }
 }

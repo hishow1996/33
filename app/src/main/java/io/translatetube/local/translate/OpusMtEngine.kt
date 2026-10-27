@@ -199,10 +199,10 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
                         )
                         ""
                     } catch (lineError: Exception) {
-                        AppLogStore.error(
+                        AppLogStore.warning(
                             context.applicationContext,
                             "Translation",
-                            "OPUS-MT 单条字幕推理失败",
+                            "OPUS-MT 单条字幕推理失败，已隔离该行并继续处理其他字幕",
                             lineError,
                             diagnosticContext = mapOf(
                                 "字幕序号" to (index + 1).toString(),
@@ -213,10 +213,9 @@ class OpusMtEngine(private val context: Context) : TranslationEngine {
                                 "未记录字幕原文" to "true",
                             ),
                         )
-                        throw IllegalStateException(
-                            "第 ${index + 1} 条字幕翻译失败：${lineError.message ?: lineError.javaClass.simpleName}",
-                            lineError,
-                        )
+                        // Let the shared batch parser retry this cue without discarding successful
+                        // translations around it. A completely failed batch is still rejected there.
+                        ""
                     }
                     output += translated
                     if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
