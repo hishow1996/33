@@ -948,15 +948,17 @@ class GeminiEngine(
         }
         val user = buildContextUserPrompt(context, numbered)
             ?: numbered
+        val configuredModel = model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }
         val payload = JSONObject().put(
             "contents",
             JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "$sys\n\n$user"))))
         )
+        applyGeminiTranslationThinkingConfig(payload, configuredModel)
         val body = try {
-            generateContent(model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }, payload.toString())
+            generateContent(configuredModel, payload.toString())
         } catch (error: Exception) {
             currentCoroutineContext().ensureActive()
-            val configured = model.trim().removePrefix("models/").ifBlank { FreeModelDefaults.GEMINI_MODEL }
+            val configured = configuredModel
             if (!shouldFallbackToCurrentGeminiModel(configured, error)) throw error
             android.util.Log.w(
                 "GeminiEngine",
@@ -989,6 +991,24 @@ class GeminiEngine(
             )
         }
         return parseNumbered(text, lines.size)
+    }
+
+    /**
+     * Use each Gemini generation family's native thinking controls for subtitle translation.
+     * Gemini 2.5 Flash/Lite can disable thinking via budget 0; 2.5 Pro cannot, so use its
+     * minimum supported budget. Gemini 3+ uses thinkingLevel rather than thinkingBudget.
+     */
+    private fun applyGeminiTranslationThinkingConfig(payload: JSONObject, modelId: String) {
+        val normalized = modelId.lowercase(java.util.Locale.ROOT)
+        val thinkingConfig = when {
+            normalized.startsWith("gemini-2.5") &&
+                normalized.contains("pro") -> JSONObject().put("thinkingBudget", 128)
+            normalized.startsWith("gemini-2.5") -> JSONObject().put("thinkingBudget", 0)
+            normalized.startsWith("gemini-3") ||
+                normalized.startsWith("gemini-4") -> JSONObject().put("thinkingLevel", "low")
+            else -> null
+        } ?: return
+        payload.put("generationConfig", JSONObject().put("thinkingConfig", thinkingConfig))
     }
 
     private suspend fun generateContent(modelId: String, payload: String): String =
