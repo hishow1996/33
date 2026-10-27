@@ -601,11 +601,33 @@ object NewPipeRepo {
         )
         val selected = streams.getOrNull(selectedIndex)
         if (selected == null) {
+            val explicitOriginalLanguages = candidates.asSequence()
+                .filter { it.isOriginal }
+                .mapNotNull { YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag) }
+                .distinct()
+                .toList()
+            val candidateLanguages = candidates.mapNotNull {
+                YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
+            }.distinct()
+            val hasNonDubbedTrack = candidates.any { !it.isDubbed && !it.isDescriptive }
+            val failureReason = when {
+                explicitOriginalLanguages.size > 1 -> "原声音轨语言信息互相冲突"
+                !hasNonDubbedTrack && candidates.isNotEmpty() -> "只找到配音轨或描述音轨"
+                preferredLanguage == null && candidateLanguages.size > 1 ->
+                    "发现多种音轨语言，但未找到可靠的原声标记"
+                candidates.isEmpty() -> "没有有效的 HTTP 音轨地址"
+                else -> "无法确定安全的原声转写音轨"
+            }
             logWarning(
-                "YouTube 转写音轨选择失败：没有可用音轨候选",
+                "YouTube 转写音轨选择失败：拒绝猜选可能不是原声的音轨",
                 context = mapOf(
                     "YouTube 视频 ID" to videoId,
                     "识别到音轨候选数量" to streams.size.toString(),
+                    "原声音轨语言提示" to preferredLanguage.orEmpty().ifBlank { "未知" },
+                    "检测到的音轨语言" to candidateLanguages.joinToString(", ").ifBlank { "未知" },
+                    "明确标记的原声音轨语言" to explicitOriginalLanguages.joinToString(", ").ifBlank { "未知" },
+                    "是否存在非配音/非描述音轨" to hasNonDubbedTrack.toString(),
+                    "选择失败原因" to failureReason,
                 ),
             )
         } else {
