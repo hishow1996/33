@@ -63,6 +63,85 @@ class FloatingWindowPolicyTest {
     }
 
     @Test
+    fun initialWindowUsesActualVideoAspectRatio() {
+        val landscape = FloatingWindowPolicy.aspectLockedSize(
+            requestedWidth = 640,
+            requestedHeight = 360,
+            aspectRatio = 16f / 9f,
+            minWidth = 280,
+            minHeight = 200,
+            maxWidth = 1080,
+            maxHeight = 2400,
+        )
+        assertEquals(640, landscape.first)
+        assertEquals(360, landscape.second)
+
+        val portrait = FloatingWindowPolicy.aspectLockedSize(
+            requestedWidth = 640,
+            requestedHeight = 360,
+            aspectRatio = 9f / 16f,
+            minWidth = 280,
+            minHeight = 200,
+            maxWidth = 1080,
+            maxHeight = 2400,
+        )
+        assertEquals(360, portrait.first)
+        assertEquals(640, portrait.second)
+        assertEquals(9f / 16f, portrait.first.toFloat() / portrait.second, 0.01f)
+    }
+
+    @Test
+    fun resizingPreservesLandscapeAndPortraitVideoRatios() {
+        val landscapeRatio = 16f / 9f
+        val landscape = FloatingWindowPolicy.aspectLockedResizedSize(
+            anchorWidth = 640,
+            anchorHeight = 360,
+            deltaX = 200f,
+            deltaY = 40f,
+            aspectRatio = landscapeRatio,
+            minWidth = 280,
+            minHeight = 200,
+            maxWidth = 1080,
+            maxHeight = 2400,
+        )
+        assertEquals(true, landscape.first > 640 && landscape.second > 360)
+        assertEquals(landscapeRatio, landscape.first.toFloat() / landscape.second, 0.01f)
+
+        val portraitRatio = 9f / 16f
+        val portrait = FloatingWindowPolicy.aspectLockedResizedSize(
+            anchorWidth = 360,
+            anchorHeight = 640,
+            deltaX = 30f,
+            deltaY = 120f,
+            aspectRatio = portraitRatio,
+            minWidth = 280,
+            minHeight = 200,
+            maxWidth = 1080,
+            maxHeight = 2400,
+        )
+        assertEquals(true, portrait.first > 360 && portrait.second > 640)
+        assertEquals(portraitRatio, portrait.first.toFloat() / portrait.second, 0.01f)
+    }
+
+    @Test
+    fun aspectLockedResizeRespectsBothScreenDimensions() {
+        val ratio = 16f / 9f
+        val size = FloatingWindowPolicy.aspectLockedResizedSize(
+            anchorWidth = 640,
+            anchorHeight = 360,
+            deltaX = 10000f,
+            deltaY = 10000f,
+            aspectRatio = ratio,
+            minWidth = 280,
+            minHeight = 200,
+            maxWidth = 1080,
+            maxHeight = 2400,
+        )
+        assertEquals(true, size.first <= 1080 && size.second <= 2400)
+        assertEquals(ratio, size.first.toFloat() / size.second, 0.01f)
+    }
+
+    @Test
     fun resizeFollowsThePointerAndRespectsLimits() {
         assertEquals(740, FloatingWindowPolicy.resizedDimension(640, 900f, 1000f, 280, 1080))
         assertEquals(740, FloatingWindowPolicy.resizedDimension(640, 900f, 1000f, 280, 1080))
