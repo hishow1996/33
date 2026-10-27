@@ -187,6 +187,42 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun playbackAudioPrefersOriginalLanguageOverHigherBitrateDub() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/dub-en.m4a", "m4a", 256_000,
+                languageTag = "en", isDubbed = true,
+            ),
+            YouTubeAudioCandidate(
+                "https://cdn.test/original-ko.webm", "webm", 128_000,
+                languageTag = "ko", isOriginal = true,
+            ),
+        )
+        val selected = YouTubeStreamSelector.chooseAudioStream(audio, "ko")
+        assertEquals("https://cdn.test/original-ko.webm", selected?.url)
+    }
+
+    @Test
+    fun playbackAudioRejectsExplicitLanguageMismatchInsteadOfUsingDub() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/audio-en.m4a", "m4a", 256_000,
+                languageTag = "en",
+            ),
+        )
+        assertNull(YouTubeStreamSelector.chooseAudioStream(audio, "ko"))
+    }
+
+    @Test
+    fun playbackAudioRejectsConflictingUnmarkedAudioLanguages() {
+        val audio = listOf(
+            YouTubeAudioCandidate("https://cdn.test/audio-en.m4a", "m4a", 256_000, languageTag = "en"),
+            YouTubeAudioCandidate("https://cdn.test/audio-ko.m4a", "m4a", 128_000, languageTag = "ko"),
+        )
+        assertNull(YouTubeStreamSelector.chooseAudioStream(audio))
+    }
+
+    @Test
     fun choosesM4aBeforeHigherBitrateWebmWhenAvailable() {
         val audio = YouTubeStreamSelector.chooseAudioStream(
             listOf(
