@@ -653,6 +653,12 @@ internal fun isThinkingControlRejected(error: Throwable): Boolean {
         .take(8)
         .joinToString(" ") { it.message.orEmpty() }
         .lowercase(java.util.Locale.ROOT)
+    // Only retry explicit client-side parameter rejections. Never turn rate limits, auth,
+    // network timeout, missing routes, or upstream failures into a duplicate paid request.
+    val httpStatus = Regex("""\\bhttp\\s+(\\d{3})\\b""", RegexOption.IGNORE_CASE)
+        .find(detail)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    if (httpStatus != null && httpStatus !in setOf(400, 422)) return false
+
     val parameterName = listOf(
         "thinking", "enable_thinking", "reasoning", "reasoning_effort", "effort",
     ).any { detail.contains(it) }
