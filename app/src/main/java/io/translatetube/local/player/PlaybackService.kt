@@ -6676,13 +6676,18 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             )
         }
         val selectedAudio = YouTubeStreamSelector.chooseAudioStream(
-            info.audioStreams.map { stream ->
+            input = info.audioStreams.map { stream ->
                 YouTubeAudioCandidate(
                     url = stream.content,
                     formatSuffix = stream.format?.suffix,
                     bitrate = stream.averageBitrate,
+                    languageTag = stream.audioLocale?.toLanguageTag(),
+                    isOriginal = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.ORIGINAL,
+                    isDubbed = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DUBBED,
+                    isDescriptive = stream.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DESCRIPTIVE,
                 )
-            }
+            },
+            preferredLanguageTag = NewPipeRepo.sourceAudioLanguageHint(info),
         )
         val selected = YouTubeStreamSelector.chooseVideoStreams(
             normalized,
