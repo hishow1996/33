@@ -436,7 +436,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
-        val shown = floating.show(host, 640, 360)
+        // 直接使用播放器回报的视频真实宽高比，悬浮窗初始化和后续缩放共用同一比例。
+        val shown = floating.show(host, 640, 360, state.videoAspect)
         if (shown && floating.isShowing()) {
             isFloating = true
         } else {
