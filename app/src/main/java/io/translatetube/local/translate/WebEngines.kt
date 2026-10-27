@@ -52,7 +52,8 @@ private val webHttp: OkHttpClient = OkHttpClient.Builder()
 
 private suspend fun executeWebRequest(client: OkHttpClient, request: Request): String {
     val ownerJob = currentCoroutineContext()[Job]
-    return withBoundedTranslationRetries(ownerJob) {
+    // 免密钥网页接口：限流时不反复重试，如实报错（见 DeepL 说明）。
+    return withBoundedTranslationRetries(ownerJob, allowThrottleRetries = false) {
         io.translatetube.local.yt.executeCancellableHttpCall(client.newCall(request), ownerJob) { response ->
             readTranslationResponse(response, ownerJob)
         }

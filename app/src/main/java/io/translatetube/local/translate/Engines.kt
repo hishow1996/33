@@ -410,7 +410,6 @@ private fun responseRoute(response: okhttp3.Response): String {
 }
 
 /** Only retry transient transport failures and temporary provider throttling/server errors. */
-private const val MAX_TRANSLATION_REQUEST_RETRIES = 2
 private val retryableTranslationHttpStatusRegex =
     Regex("""\bHTTP\s+(408|425|429|500|502|503|504)\b""", RegexOption.IGNORE_CASE)
 
@@ -423,11 +422,12 @@ internal fun isRetryableTranslationFailure(error: Throwable): Boolean {
 }
 
 /**
- * Retry a small, fixed number of times on temporary network/provider failures. The backoff is
- * cancellable and permanent failures such as invalid API keys are surfaced immediately.
+ * Retry on temporary network/provider failures with a cancellable backoff (see
+ * [TranslationRetryBackoffPolicy]); permanent failures such as invalid API keys surface immediately.
  */
 internal suspend fun <T> withBoundedTranslationRetries(
     ownerJob: Job?,
+    allowThrottleRetries: Boolean = true,
     request: () -> T,
 ): T {
     var retries = 0
@@ -439,13 +439,10 @@ internal suspend fun <T> withBoundedTranslationRetries(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            if (retries >= MAX_TRANSLATION_REQUEST_RETRIES ||
-                !isRetryableTranslationFailure(error)
-            ) {
-                throw error
-            }
+            val waitMs = TranslationRetryBackoffPolicy.nextDelayMs(retries, error, allowThrottleRetries)
+                ?: throw error
             retries += 1
-            kotlinx.coroutines.delay(if (retries == 1) 400L else 900L)
+            kotlinx.coroutines.delay(waitMs)
         }
     }
 }
@@ -470,7 +467,10 @@ internal fun readTranslationResponse(
     }
     val text = String(bytes, Charsets.UTF_8)
     if (!response.isSuccessful) {
-        throw IllegalStateException("HTTP ${response.code} [${responseRoute(response)}]: ${text.take(500)}")
+        throw TranslationHttpException(
+            "HTTP ${response.code} [${responseRoute(response)}]: ${text.take(500)}",
+            TranslationRetryBackoffPolicy.parseRetryAfterMs(response.header("Retry-After")),
+        )
     }
     return text
 }
