@@ -571,6 +571,16 @@ internal fun fallbackAfterThinkingControlRejection(
 internal fun thinkingControlOrder(baseUrl: String, model: String): List<ThinkingControlStyle> {
     val normalizedBase = baseUrl.lowercase(java.util.Locale.ROOT)
     val normalizedModel = model.lowercase(java.util.Locale.ROOT)
+
+    // Thinking-only families cannot disable reasoning. Do not spend another paid request trying
+    // unsupported flags; ask for the final answer through their normal request shape.
+    val thinkingOnlyModel =
+        normalizedModel.contains("qwq") ||
+            normalizedModel.contains("deepseek-r1") ||
+            normalizedModel.contains("deepseek-reasoner") ||
+            Regex("""(^|[-_/])thinking($|[-_/])""").containsMatchIn(normalizedModel)
+    if (thinkingOnlyModel) return listOf(ThinkingControlStyle.PLAIN)
+
     val preferred = when {
         normalizedBase.contains("openrouter.ai") -> ThinkingControlStyle.OPENROUTER
         normalizedBase.contains("api.deepseek.com") || normalizedModel.contains("deepseek") ->
