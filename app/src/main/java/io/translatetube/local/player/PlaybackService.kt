@@ -2705,20 +2705,99 @@ class PlaybackService : MediaSessionService() {
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
                 ensureCurrentSession(key, pipelineGeneration)
+                var pipelineResumeState = effectiveResumeState
+                var pipelineRestoresCompleteSnapshot = restoreCompletedSnapshot
+                var pipelineMustRegenerateDubbing = regenerateDubbingThisRun
+
+                // A completed YouTube snapshot can bypass the normal subtitle-cache validation.
+                // Before trusting a subtitle-based (or legacy AUTO) snapshot, compare its source
+                // language and visible original text with the video's original audio language.
+                // This repairs snapshots produced by the former English-first caption policy.
+                if (
+                    videoId != null &&
+                    pipelineRestoresCompleteSnapshot &&
+                    pipelineResumeState != null &&
+                    pipelineResumeState.processingFlow != ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
+                ) {
+                    try {
+                        val originalAudioLanguage = io.translatetube.local.yt.NewPipeRepo
+                            .sourceAudioLanguageHint(videoId)
+                        val expectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                            .normalizeLanguageCode(originalAudioLanguage)
+                        if (expectedLanguage != null) {
+                            val detectedTextLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
+                                .detectFromCues(pipelineResumeState.lines.asSequence().map { it.text }.asIterable())
+                            val detectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                                .normalizeLanguageCode(detectedTextLanguage)
+                            val savedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                                .normalizeLanguageCode(pipelineResumeState.sourceLang)
+                            val textConflicts = detectedLanguage != null && detectedLanguage != expectedLanguage
+                            val labelConflicts = savedLanguage != null && savedLanguage != expectedLanguage
+                            val languageUnverifiable = detectedLanguage == null && savedLanguage == null
+                            if (textConflicts || labelConflicts || languageUnverifiable) {
+                                io.translatetube.local.util.AppLogStore.warning(
+                                    this@PlaybackService,
+                                    "PlaybackFlow",
+                                    "完整成功快照的原文语言与 YouTube 原声音轨不匹配或无法验证，丢弃快照并重新检查字幕",
+                                    diagnosticContext = mapOf(
+                                        "视频 ID" to videoId,
+                                        "原声音频语言" to expectedLanguage,
+                                        "快照原文检测语言" to detectedLanguage.orEmpty().ifBlank { "未知" },
+                                        "快照保存语言标签" to savedLanguage.orEmpty().ifBlank { "未知" },
+                                        "原处理流程" to pipelineResumeState.processingFlow.name,
+                                    ),
+                                )
+                                ReadySessionSnapshotStore.remove(this@PlaybackService, key)
+                                pipelineResumeState.translationCacheKey
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { AppDatabase.get(this@PlaybackService).subtitleCacheDao().delete(it) }
+                                pipelineResumeState = null
+                                pipelineRestoresCompleteSnapshot = false
+                                pipelineMustRegenerateDubbing = true
+                                updateUiForSession(key, pipelineGeneration) {
+                                    it.copy(
+                                        phase = Phase.PARSING,
+                                        progress = "原字幕语言与原声音轨不一致，正在重新检查字幕…",
+                                        lines = emptyList(),
+                                        translatedLineCount = 0,
+                                        totalLines = 0,
+                                        currentLine = -1,
+                                        activeDubbingLine = -1,
+                                        preparedUntil = 0,
+                                        preparedCount = 0,
+                                        sourceLang = "",
+                                        translationCacheKey = "",
+                                        processingFlow = ProcessingFlow.AUTO,
+                                        error = null,
+                                    )
+                                }
+                            }
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Could not validate restored YouTube subtitle snapshot; keep the existing successful result",
+                            failure,
+                        )
+                    }
+                }
+
                 runPipeline(
                     key = key,
                     pipelineGeneration = pipelineGeneration,
                     requestedVideoId = videoId,
                     localUri = localUri,
-                    resumeState = effectiveResumeState,
+                    resumeState = pipelineResumeState,
                     sourceImportedLines = importedLinesSnapshot,
                     requestedRemoteMediaUrl = remoteMediaUrl,
                     requestedRemoteMediaTitle = remoteMediaTitle,
                     requestedRemoteMediaReferrer = remoteMediaReferrer,
                     requestedRemoteMediaCookie = remoteMediaCookie,
                     reuseMountedMedia = reuseMountedMedia,
-                    restoreCompletedSnapshot = restoreCompletedSnapshot,
-                    forceRegenerateDubbing = regenerateDubbingThisRun,
+                    restoreCompletedSnapshot = pipelineRestoresCompleteSnapshot,
+                    forceRegenerateDubbing = pipelineMustRegenerateDubbing,
                 )
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
