@@ -135,6 +135,14 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun asrRejectsUnmarkedTracksThatConflictWithKnownOriginalLanguage() {
+        val audio = listOf(
+            YouTubeAudioCandidate("https://cdn.test/audio-en.m4a", "m4a", 32_000, languageTag = "en"),
+        )
+        assertEquals(-1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio, "ko"))
+    }
+
+    @Test
     fun asrRejectsAmbiguousUnmarkedLanguagesInsteadOfGuessingFromBitrate() {
         val audio = listOf(
             YouTubeAudioCandidate("https://cdn.test/audio-en.m4a", "m4a", 32_000, languageTag = "en"),
