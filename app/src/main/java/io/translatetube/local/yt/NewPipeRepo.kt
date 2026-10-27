@@ -577,7 +577,9 @@ object NewPipeRepo {
 
     /** 转写用音频流：优先 M4A 的最低有效码率，减少下载时间与缓存占用。 */
     suspend fun audioForAsr(videoId: String): AudioStream? {
-        val streams = info(videoId).audioStreams
+        val streamInfo = info(videoId)
+        val streams = streamInfo.audioStreams
+        val preferredLanguage = sourceLanguageHint(streamInfo)
         val candidates = streams.map { stream ->
             YouTubeAudioCandidate(
                 url = stream.content,
@@ -587,9 +589,16 @@ object NewPipeRepo {
                     stream.format?.suffix
                 },
                 bitrate = stream.averageBitrate,
+                languageTag = stream.audioLocale?.toLanguageTag(),
+                isOriginal = stream.audioTrackType == AudioTrackType.ORIGINAL,
+                isDubbed = stream.audioTrackType == AudioTrackType.DUBBED,
+                isDescriptive = stream.audioTrackType == AudioTrackType.DESCRIPTIVE,
             )
         }
-        val selectedIndex = YouTubeStreamSelector.chooseAudioStreamForAsrIndex(candidates)
+        val selectedIndex = YouTubeStreamSelector.chooseAudioStreamForAsrIndex(
+            input = candidates,
+            preferredLanguageTag = preferredLanguage,
+        )
         val selected = streams.getOrNull(selectedIndex)
         if (selected == null) {
             logWarning(
@@ -608,7 +617,11 @@ object NewPipeRepo {
                     "最终选中音轨序号" to (selectedIndex + 1).toString(),
                     "最终选中音轨格式" to (selected.format?.suffix ?: "未知"),
                     "最终选中音轨码率 kbps" to selected.averageBitrate.toString(),
-                    "选择策略" to "优先选择有效的低码率 M4A，减少下载量与缓存占用",
+                    "原声音轨语言" to preferredLanguage.orEmpty().ifBlank { "未知" },
+                    "选中音轨语言" to selected.audioLocale?.toLanguageTag().orEmpty().ifBlank { "未知" },
+                    "选中音轨是否原声" to (selected.audioTrackType == AudioTrackType.ORIGINAL).toString(),
+                    "选中音轨是否配音" to (selected.audioTrackType == AudioTrackType.DUBBED).toString(),
+                    "选择策略" to "先匹配明确原声音轨/语言，再在候选中优先低码率 M4A",
                 ),
             )
         }
