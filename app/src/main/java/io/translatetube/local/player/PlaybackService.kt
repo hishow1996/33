@@ -6707,7 +6707,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         if (candidates.isEmpty()) {
             throw IllegalStateException(
                 if (selectedAudio == null)
-                    "YouTube 没有可用的合并音视频流，也没有独立音频轨"
+                    "YouTube 没有可安全使用的独立原声音轨，且没有带声音的合并视频流。为避免误用其他语言的配音，请稍后重试。"
                 else
                     "YouTube 未提供可播放的视频流。请检查网络/VPN 后重试"
             )
