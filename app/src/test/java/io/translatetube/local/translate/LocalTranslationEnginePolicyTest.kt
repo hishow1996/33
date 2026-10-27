@@ -37,5 +37,11 @@ class LocalTranslationEnginePolicyTest {
         assertTrue(Small100LanguagePolicy.supportsSource("jpn"))
         assertTrue(Small100LanguagePolicy.supportsSource("kor"))
         assertTrue(Small100LanguagePolicy.supportsSource("rus"))
+        assertEquals("am", Small100LanguagePolicy.canonicalCode("amh"))
+        assertEquals("az", Small100LanguagePolicy.canonicalCode("aze"))
+        assertEquals("be", Small100LanguagePolicy.canonicalCode("bel"))
+        assertEquals("my", Small100LanguagePolicy.canonicalCode("mya"))
+        assertEquals("zu", Small100LanguagePolicy.canonicalCode("zul"))
+        assertTrue(Small100LanguagePolicy.supportsSource("amh"))
     }
 }
