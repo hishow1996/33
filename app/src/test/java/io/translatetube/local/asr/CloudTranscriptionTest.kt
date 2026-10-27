@@ -37,6 +37,8 @@ class CloudTranscriptionTest {
         assertEquals("ko", CloudTranscription.youtubeSourceLanguageHint("cartesia", "ko-KR"))
         assertEquals("ja", CloudTranscription.youtubeSourceLanguageHint("kawa", "ja-JP"))
         assertEquals("ko", CloudTranscription.youtubeSourceLanguageHint("elevenlabs", "ko-KR"))
+        assertEquals("ko", CloudTranscription.youtubeSourceLanguageHint("cartesia", "kor"))
+        assertEquals("ko", CloudTranscription.youtubeSourceLanguageHint("kawa", "kor"))
         assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("cartesia", "be"))
         assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("kawa", "nn"))
         assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("kawa", "auto"))
