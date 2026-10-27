@@ -707,12 +707,9 @@ internal fun thinkingControlOrder(baseUrl: String, model: String): List<Thinking
 
     // Thinking-only families cannot disable reasoning. Do not spend another paid request trying
     // unsupported flags; ask for the final answer through their normal request shape.
-    val thinkingOnlyModel =
-        normalizedModel.contains("qwq") ||
-            normalizedModel.contains("deepseek-r1") ||
-            normalizedModel.contains("deepseek-reasoner") ||
-            Regex("""(^|[-_/])thinking($|[-_/])""").containsMatchIn(normalizedModel)
-    if (thinkingOnlyModel) return listOf(ThinkingControlStyle.PLAIN)
+    if (ChatCompletionParamsPolicy.isThinkingOnlyModel(normalizedModel)) {
+        return listOf(ThinkingControlStyle.PLAIN)
+    }
 
     val preferred = when {
         normalizedBase.contains("openrouter.ai") -> ThinkingControlStyle.OPENROUTER
@@ -1215,15 +1212,16 @@ class OpenAiCompatEngine(
         }
         val user = buildContextUserPrompt(context, numbered)
             ?: numbered
+        val params = ChatCompletionParamsPolicy.forModel(baseUrl, model)
         val payload = JSONObject()
             .put("model", model)
-            .put("temperature", 0.2)
-            .put("max_tokens", 2048)
             .put(
                 "messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content", sys))
                     .put(JSONObject().put("role", "user").put("content", user))
             )
+        params.temperature?.let { payload.put("temperature", it) }
+        payload.put(if (params.useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", params.maxTokens)
         val content = requestTranslationContent(payload)
         return parseNumbered(content, lines.size)
     }
