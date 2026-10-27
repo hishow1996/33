@@ -20,6 +20,7 @@ internal data class YouTubeAudioCandidate(
     val isOriginal: Boolean = false,
     val isDubbed: Boolean = false,
     val isDescriptive: Boolean = false,
+    val isSecondary: Boolean = false,
 )
 
 internal object YouTubeStreamSelector {
@@ -94,8 +95,14 @@ internal object YouTubeStreamSelector {
         val matchingOriginal = if (preferredLanguage == null) emptyList() else original.filter {
             YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag) == preferredLanguage
         }
-        val safeNonDubbed = valid.filter { !it.isDubbed && !it.isDescriptive }
-        val matchingLanguage = if (preferredLanguage == null) emptyList() else safeNonDubbed.filter {
+        // SECONDARY can be a different-language alternate track, so do not select it by
+        // bitrate when the source language is unknown. It remains eligible when its locale
+        // explicitly matches the known source language.
+        val safeNonDubbed = valid.filter {
+            !it.isDubbed && !it.isDescriptive && !it.isSecondary
+        }
+        val languageEligible = valid.filter { !it.isDubbed && !it.isDescriptive }
+        val matchingLanguage = if (preferredLanguage == null) emptyList() else languageEligible.filter {
             YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag) == preferredLanguage
         }
 
@@ -153,11 +160,16 @@ internal object YouTubeStreamSelector {
                 YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(input[it].languageTag) == preferredLanguage
             }
         }
-        val safeNonDubbed = valid.filter { !input[it].isDubbed && !input[it].isDescriptive }
+        // A SECONDARY track may be an alternate-language stream. Only prefer it when
+        // the metadata says that it matches the source language; unknown-source selection excludes it.
+        val safeNonDubbed = valid.filter {
+            !input[it].isDubbed && !input[it].isDescriptive && !input[it].isSecondary
+        }
+        val languageEligible = valid.filter { !input[it].isDubbed && !input[it].isDescriptive }
         val matchingLanguage = if (preferredLanguage == null) {
             emptyList()
         } else {
-            safeNonDubbed.filter {
+            languageEligible.filter {
                 YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(input[it].languageTag) == preferredLanguage
             }
         }
