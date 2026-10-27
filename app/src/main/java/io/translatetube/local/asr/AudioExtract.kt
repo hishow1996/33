@@ -116,26 +116,23 @@ object AudioExtract {
                 val endSample = startSample + count.toLong()
                 val endByte = endSample * 2L
                 val expectedFileBytes = sampleCount * 2L
-                var reader = input
-                if (reader == null) {
+                val activeReader = input ?: run {
                     require(file.isFile && file.length() == expectedFileBytes && endByte <= expectedFileBytes) {
                         "PCM 临时文件长度与声明的采样数不一致"
                     }
-                    reader = RandomAccessFile(file, "r")
-                    input = reader
-                } else {
-                    require(endByte <= expectedFileBytes) { "PCM 读取范围超出文件长度" }
+                    RandomAccessFile(file, "r").also { input = it }
                 }
+                require(endByte <= expectedFileBytes) { "PCM 读取范围超出文件长度" }
 
                 val result = FloatArray(count)
                 val bytes = byteBuffer ?: ByteArray(64 * 1024).also { byteBuffer = it }
-                reader.seek(startSample * 2L)
+                activeReader.seek(startSample * 2L)
                 var written = 0
                 while (written < count) {
                     checkActive()
                     val samplesInChunk = minOf(bytes.size / 2, count - written)
                     val byteCount = samplesInChunk * 2
-                    reader.readFully(bytes, 0, byteCount)
+                    activeReader.readFully(bytes, 0, byteCount)
                     var byteIndex = 0
                     repeat(samplesInChunk) {
                         val raw = (bytes[byteIndex].toInt() and 0xff) or
