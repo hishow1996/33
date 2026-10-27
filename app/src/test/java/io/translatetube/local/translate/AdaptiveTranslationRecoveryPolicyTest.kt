@@ -58,19 +58,28 @@ class AdaptiveTranslationRecoveryPolicyTest {
     @Test
     fun adaptiveRecoveryStopsAtSharedPerBatchRequestBudget() = runBlocking {
         var requests = 0
+        val attemptsPerSubtitle = mutableMapOf<String, Int>()
         val error = runCatching {
             translateBatchWithAdaptiveRecovery(
-                lines = List(12) { "subtitle $it" },
-                translate = { _, _ ->
+                lines = List(30) { "subtitle $it" },
+                translate = { rows, _ ->
                     requests++
-                    throw IllegalStateException("翻译服务返回的字幕编号不完整")
+                    if (rows.size > 1) {
+                        throw IllegalStateException("翻译服务返回的字幕编号不完整")
+                    }
+                    val source = rows.single()
+                    val attempt = (attemptsPerSubtitle[source] ?: 0) + 1
+                    attemptsPerSubtitle[source] = attempt
+                    if (attempt == 1) {
+                        throw IllegalStateException("翻译服务返回的字幕编号不完整")
+                    }
+                    listOf("译文-$source")
                 },
             )
         }.exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
         assertTrue(error?.message.orEmpty().contains("单批请求上限"))
-        assertTrue(requests <= MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH)
         assertEquals(MAX_ADAPTIVE_TRANSLATION_ATTEMPTS_PER_BATCH, requests)
     }
 
