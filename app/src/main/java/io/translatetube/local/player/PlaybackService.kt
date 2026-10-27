@@ -4570,7 +4570,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         audioLanguage = youtubeAudioLanguage,
                     ) ?: "auto"
                 } else {
-                    if (asrProvider == "kawa") kawaLanguage else cartesiaLanguage
+                    when (asrProvider) {
+                        "kawa" -> kawaLanguage
+                        "cartesia" -> cartesiaLanguage
+                        else -> "auto" // ElevenLabs has no separate language setting in this UI.
+                    }
                 }
                 if (videoId != null) {
                     io.translatetube.local.util.AppLogStore.info(
