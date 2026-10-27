@@ -26,6 +26,7 @@ internal object WhisperSubtitleTimelinePolicy {
         val endMs: Long,
         /** End inferred from the model before capping it at the next token boundary. */
         val inferredEndMs: Long,
+        val hasDeclaredDuration: Boolean,
     )
 
     fun fromTokenTimestamps(
@@ -136,7 +137,7 @@ internal object WhisperSubtitleTimelinePolicy {
             val endMs = startMs + safeDurationMs
             val inferredEndMs = startMs + inferredDurationMs
             if (endMs <= startMs) continue
-            timedTokens += TimedToken(token, startMs, endMs, inferredEndMs)
+            timedTokens += TimedToken(token, startMs, endMs, inferredEndMs, declaredDuration != null)
         }
         if (timedTokens.isEmpty()) return emptyList()
 
@@ -147,6 +148,8 @@ internal object WhisperSubtitleTimelinePolicy {
         var cueCodePointCount = 0
         var cueHasCjk = false
         var previousTokenInferredEndMs: Long? = null
+        var previousTokenStartMs: Long? = null
+        var previousTokenHasDeclaredDuration: Boolean? = null
 
         fun flushCue() {
             // Token text can carry tokenizer-specific repeated boundary spaces. Keep the
@@ -197,8 +200,12 @@ internal object WhisperSubtitleTimelinePolicy {
                 cueCodePointCount + incomingCodePoints > maxChars
             val tooLongInTime = text.isNotBlank() &&
                 token.startMs - cueStartMs >= MAX_CUE_DURATION_MS
+            val longPauseByDeclaredEnd = previousTokenInferredEndMs
+                ?.let { token.startMs - it >= MAX_INTER_TOKEN_GAP_MS } == true
+            val longPauseWithoutDuration = previousTokenHasDeclaredDuration == false &&
+                previousTokenStartMs?.let { token.startMs - it >= MAX_INTER_TOKEN_GAP_MS } == true
             val longPauseBefore = text.isNotBlank() &&
-                previousTokenInferredEndMs?.let { token.startMs - it >= MAX_INTER_TOKEN_GAP_MS } == true
+                (longPauseByDeclaredEnd || longPauseWithoutDuration)
 
             if (tooLong || tooLongInTime || longPauseBefore) flushCue()
 
@@ -220,6 +227,8 @@ internal object WhisperSubtitleTimelinePolicy {
 
             if (text.isNotBlank() && endsSentence(token.text)) flushCue()
             previousTokenInferredEndMs = token.inferredEndMs
+            previousTokenStartMs = token.startMs
+            previousTokenHasDeclaredDuration = token.hasDeclaredDuration
         }
         flushCue()
 
