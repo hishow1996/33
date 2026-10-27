@@ -111,4 +111,48 @@ class OpenAiCompatResponseParserTest {
 
         assertEquals("0|简体中文", extractOpenAiCompatContent(response))
     }
+
+    @Test
+    fun extractsObjectStyleMessageContent() {
+        val response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": {
+                      "type": "text",
+                      "text": "0|对象格式译文"
+                    }
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        assertEquals("0|对象格式译文", extractOpenAiCompatContent(response))
+    }
+
+    @Test
+    fun extractsLegacyChoiceText() {
+        val response = """{ "choices": [ { "text": "0|旧格式译文" } ] }"""
+
+        assertEquals("0|旧格式译文", extractOpenAiCompatContent(response))
+    }
+
+    @Test
+    fun recognizesStringStyleProviderErrors() {
+        val response = """{ "error": "upstream model unavailable" }"""
+
+        val error = runCatching { extractOpenAiCompatContent(response) }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("upstream model unavailable"))
+    }
+
+    @Test
+    fun malformedJsonGetsClearParserError() {
+        val error = runCatching { extractOpenAiCompatContent("{broken json") }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("不是有效的 JSON"))
+    }
 }
