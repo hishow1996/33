@@ -113,6 +113,45 @@ class OpenAiCompatResponseParserTest {
     }
 
     @Test
+    fun topLevelFinalTextAliasesAreSupported() {
+        val variants = listOf(
+            """{ "final_answer": "0|最终答案" }""",
+            """{ "final": "0|最终文本" }""",
+            """{ "answer": "0|答案字段" }""",
+            """{ "translated_text": "0|翻译字段" }""",
+            """{ "translation": "0|translation 字段" }""",
+            """{ "text": "0|text 字段" }""",
+        )
+
+        assertEquals("0|最终答案", extractOpenAiCompatContent(variants[0]))
+        assertEquals("0|最终文本", extractOpenAiCompatContent(variants[1]))
+        assertEquals("0|答案字段", extractOpenAiCompatContent(variants[2]))
+        assertEquals("0|翻译字段", extractOpenAiCompatContent(variants[3]))
+        assertEquals("0|translation 字段", extractOpenAiCompatContent(variants[4]))
+        assertEquals("0|text 字段", extractOpenAiCompatContent(variants[5]))
+    }
+
+    @Test
+    fun extractsNestedContentValueFromGatewayObjects() {
+        val response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": {
+                      "type": "text",
+                      "content": { "value": "0|多层嵌套译文" }
+                    }
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        assertEquals("0|多层嵌套译文", extractOpenAiCompatContent(response))
+    }
+
+    @Test
     fun extractsObjectStyleMessageContent() {
         val response = """
             {
@@ -146,6 +185,27 @@ class OpenAiCompatResponseParserTest {
         val error = runCatching { extractOpenAiCompatContent(response) }.exceptionOrNull()
         assertTrue(error is IllegalStateException)
         assertTrue(error?.message.orEmpty().contains("upstream model unavailable"))
+    }
+
+    @Test
+    fun providerErrorIncludesNumericCodeTypeAndParameter() {
+        val response = """
+            {
+              "error": {
+                "code": 12345,
+                "type": "invalid_request_error",
+                "param": "reasoning_effort",
+                "message": "unsupported value"
+              }
+            }
+        """.trimIndent()
+
+        val error = runCatching { extractOpenAiCompatContent(response) }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("[12345]"))
+        assertTrue(error?.message.orEmpty().contains("type=invalid_request_error"))
+        assertTrue(error?.message.orEmpty().contains("param=reasoning_effort"))
+        assertTrue(error?.message.orEmpty().contains("unsupported value"))
     }
 
     @Test
