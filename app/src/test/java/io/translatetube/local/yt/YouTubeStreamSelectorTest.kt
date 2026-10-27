@@ -111,6 +111,21 @@ class YouTubeStreamSelectorTest {
     }
 
     @Test
+    fun asrRejectsConflictingExplicitOriginalLanguagesWithoutAUniqueHint() {
+        val audio = listOf(
+            YouTubeAudioCandidate(
+                "https://cdn.test/original-en.m4a", "m4a", 32_000,
+                languageTag = "en", isOriginal = true,
+            ),
+            YouTubeAudioCandidate(
+                "https://cdn.test/original-ko.m4a", "m4a", 96_000,
+                languageTag = "ko", isOriginal = true,
+            ),
+        )
+        assertEquals(-1, YouTubeStreamSelector.chooseAudioStreamForAsrIndex(audio))
+    }
+
+    @Test
     fun asrUsesKnownOriginalLanguageWhenTrackTypeIsMissing() {
         val audio = listOf(
             YouTubeAudioCandidate("https://cdn.test/audio-en.m4a", "m4a", 64_000, languageTag = "en"),
