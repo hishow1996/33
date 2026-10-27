@@ -97,6 +97,13 @@ internal object YouTubeStreamSelector {
         // localized dub from winning merely because ASR prefers small M4A files.
         val original = valid.filter { input[it].isOriginal }
         val preferredLanguage = YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(preferredLanguageTag)
+        val originalLanguages = original.mapNotNull {
+            YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(input[it].languageTag)
+        }.distinct()
+        if (preferredLanguage == null && originalLanguages.size > 1) {
+            // Conflicting ORIGINAL language metadata is not safe to resolve by bitrate alone.
+            return -1
+        }
         val matchingOriginal = if (preferredLanguage == null) {
             emptyList()
         } else {
