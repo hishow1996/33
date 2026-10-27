@@ -27,6 +27,11 @@ class AdaptiveTranslationRecoveryPolicyTest {
                 IllegalStateException("Request body too large for selected model")
             )
         )
+        assertTrue(
+            isRecoverableTranslationFormatError(
+                IllegalStateException("API 未返回可用翻译文本；finish_reason=length")
+            )
+        )
     }
 
     @Test
