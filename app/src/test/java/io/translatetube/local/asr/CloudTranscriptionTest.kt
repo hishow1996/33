@@ -33,6 +33,26 @@ class CloudTranscriptionTest {
     }
 
     @Test
+    fun youtubeOriginalAudioLanguageOverridesProviderDefaultsAndUnknownUsesAutoDetection() {
+        assertEquals("ko", CloudTranscription.youtubeSourceLanguageHint("cartesia", "ko-KR"))
+        assertEquals("ja", CloudTranscription.youtubeSourceLanguageHint("kawa", "ja-JP"))
+        assertEquals("ko", CloudTranscription.youtubeSourceLanguageHint("elevenlabs", "ko-KR"))
+        assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("cartesia", "be"))
+        assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("kawa", "nn"))
+        assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("kawa", "auto"))
+        assertEquals(null, CloudTranscription.youtubeSourceLanguageHint("cartesia", null))
+    }
+
+    @Test
+    fun elevenLabsLanguageHintOmitsAutoAndNormalizesRegionTags() {
+        assertEquals("ko", CloudTranscription.elevenLabsLanguageCode("ko-KR"))
+        assertEquals("zh", CloudTranscription.elevenLabsLanguageCode("zh-Hans"))
+        assertEquals(null, CloudTranscription.elevenLabsLanguageCode("auto"))
+        assertEquals(null, CloudTranscription.elevenLabsLanguageCode("und-Latn"))
+        assertEquals(null, CloudTranscription.elevenLabsLanguageCode("unknown"))
+    }
+
+    @Test
     fun retriesTransientKawaStatusErrorsButNotAuthOrCancellation() {
         assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 429）")))
         assertTrue(CloudTranscription.shouldRetryKawaPoll(IOException("Kawa 查询转写状态失败（HTTP 503）")))
