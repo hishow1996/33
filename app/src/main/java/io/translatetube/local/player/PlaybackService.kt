@@ -4906,62 +4906,62 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         // Checkpoint writes still happen after every small segment group below.
                         pcmFile.openReader { ownerJob?.ensureActive() }.use { sharedPcmReader ->
                             while (processed < segs.size) {
-                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            val chunkStart = processed
-                            val chunkEnd = minOf(chunkStart + 3, segs.size)
-                            val chunkRows = engine.transcribeBySegments(
-                                pcmFile,
-                                segs.subList(chunkStart, chunkEnd),
-                                checkActive = { ownerJob?.ensureActive() },
-                                sharedPcmReader = sharedPcmReader,
-                            ) { done, _ ->
-                                val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
-                                val progressTimeMs = completedSegment?.second ?: 0L
-                                val progressMinutes = progressTimeMs / 60_000L
-                                val progressSeconds = (progressTimeMs / 1_000L) % 60L
-                                val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
-                                updateUiForSession(key, pipelineGeneration) { state ->
-                                    if (state.key == key && state.phase == Phase.TRANSCRIBING) {
-                                        state.copy(progress = progressLabel)
-                                    } else state
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                val chunkStart = processed
+                                val chunkEnd = minOf(chunkStart + 3, segs.size)
+                                val chunkRows = engine.transcribeBySegments(
+                                    pcmFile,
+                                    segs.subList(chunkStart, chunkEnd),
+                                    checkActive = { ownerJob?.ensureActive() },
+                                    sharedPcmReader = sharedPcmReader,
+                                ) { done, _ ->
+                                    val completedSegment = segs.getOrNull((chunkStart + done - 1).coerceAtLeast(0))
+                                    val progressTimeMs = completedSegment?.second ?: 0L
+                                    val progressMinutes = progressTimeMs / 60_000L
+                                    val progressSeconds = (progressTimeMs / 1_000L) % 60L
+                                    val progressLabel = "转写中 ${chunkStart + done}/${segs.size} 段（音频进度 ${progressMinutes}分${progressSeconds}秒）"
+                                    updateUiForSession(key, pipelineGeneration) { state ->
+                                        if (state.key == key && state.phase == Phase.TRANSCRIBING) {
+                                            state.copy(progress = progressLabel)
+                                        } else state
+                                    }
                                 }
-                            }
-                            rows.addAll(chunkRows)
-                            processed = chunkEnd
+                                rows.addAll(chunkRows)
+                                processed = chunkEnd
 
-                            if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
-                                ensureCurrentSession(key, pipelineGeneration)
-                                val rowsJson = org.json.JSONArray()
-                                for ((rowIndex, row) in rows.withIndex()) {
-                                    if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
-                                    rowsJson.put(
-                                        org.json.JSONObject()
-                                            .put("s", row.first)
-                                            .put("e", row.second)
-                                            .put("t", row.third)
+                                if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val rowsJson = org.json.JSONArray()
+                                    for ((rowIndex, row) in rows.withIndex()) {
+                                        if ((rowIndex and 0xff) == 0) ownerJob?.ensureActive()
+                                        rowsJson.put(
+                                            org.json.JSONObject()
+                                                .put("s", row.first)
+                                                .put("e", row.second)
+                                                .put("t", row.third)
+                                        )
+                                    }
+                                    ownerJob?.ensureActive()
+                                    ensureCurrentSession(key, pipelineGeneration)
+                                    val language = engine.lastLang.takeIf { it.isNotBlank() }
+                                        ?: restoredAsrLanguage
+                                    val checkpointJson = org.json.JSONObject()
+                                        .put("version", 2)
+                                        .put("signature", asrSignature)
+                                        .put("totalSegments", segs.size)
+                                        .put("processedSegments", processed)
+                                        .put("rows", rowsJson)
+                                    ownerJob?.ensureActive()
+                                    db.subtitleCacheDao().put(
+                                        io.translatetube.local.data.SubtitleCacheEntity(
+                                            partialAsrCacheKey,
+                                            language,
+                                            checkpointJson.toString(),
+                                            System.currentTimeMillis(),
+                                            videoKey = key,
+                                        )
                                     )
                                 }
-                                ownerJob?.ensureActive()
-                                ensureCurrentSession(key, pipelineGeneration)
-                                val language = engine.lastLang.takeIf { it.isNotBlank() }
-                                    ?: restoredAsrLanguage
-                                val checkpointJson = org.json.JSONObject()
-                                    .put("version", 2)
-                                    .put("signature", asrSignature)
-                                    .put("totalSegments", segs.size)
-                                    .put("processedSegments", processed)
-                                    .put("rows", rowsJson)
-                                ownerJob?.ensureActive()
-                                db.subtitleCacheDao().put(
-                                    io.translatetube.local.data.SubtitleCacheEntity(
-                                        partialAsrCacheKey,
-                                        language,
-                                        checkpointJson.toString(),
-                                        System.currentTimeMillis(),
-                                        videoKey = key,
-                                    )
-                                )
-                            }
                             }
                         }
                         val language = if (restoredProcessedSegments >= segs.size) {
