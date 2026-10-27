@@ -2725,16 +2725,39 @@ class PlaybackService : MediaSessionService() {
                         val expectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
                             .normalizeLanguageCode(originalAudioLanguage)
                         if (expectedLanguage != null) {
-                            val detectedTextLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
-                                .detectFromCues(pipelineResumeState.lines.asSequence().map { it.text }.asIterable())
-                            val detectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
-                                .normalizeLanguageCode(detectedTextLanguage)
+                            val sourceCues = pipelineResumeState.lines.asSequence().map { it.text }.asIterable()
+                            val scriptDetectedLanguage = io.translatetube.local.subs.SubtitleLanguageDetector
+                                .detectFromCues(sourceCues)
+                            val scriptLanguageCode = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                                .normalizeLanguageCode(scriptDetectedLanguage)
                             val savedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
                                 .normalizeLanguageCode(pipelineResumeState.sourceLang)
-                            val textConflicts = detectedLanguage != null && detectedLanguage != expectedLanguage
-                            val labelConflicts = savedLanguage != null && savedLanguage != expectedLanguage
-                            val languageUnverifiable = detectedLanguage == null && savedLanguage == null
-                            if (textConflicts || labelConflicts || languageUnverifiable) {
+                            // For Latin-script captions, the conservative detector often returns
+                            // auto. Run on-device ML Kit only if the saved label agrees with the
+                            // audio metadata; a known label conflict already proves this snapshot
+                            // must be rebuilt and does not need a slower extra detector call.
+                            val detectedTextLanguage = if (
+                                scriptLanguageCode == null && savedLanguage == expectedLanguage
+                            ) {
+                                try {
+                                    io.translatetube.local.subs.MlKitSourceLanguageIdentifier.detect(sourceCues)
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    scriptDetectedLanguage
+                                }
+                            } else {
+                                scriptDetectedLanguage
+                            }
+                            val detectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
+                                .normalizeLanguageCode(detectedTextLanguage)
+                            if (
+                                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
+                                    expectedSourceLanguage = expectedLanguage,
+                                    detectedTextLanguage = detectedLanguage,
+                                    savedSourceLanguage = savedLanguage,
+                                )
+                            ) {
                                 io.translatetube.local.util.AppLogStore.warning(
                                     this@PlaybackService,
                                     "PlaybackFlow",
