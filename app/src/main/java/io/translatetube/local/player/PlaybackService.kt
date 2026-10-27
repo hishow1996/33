@@ -6500,15 +6500,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     }
                 }
 
-                val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() } ||
-                    updatedLines.any { line ->
-                        line.text.isNotBlank() &&
-                            !needsSubtitleTranslation(line, src) &&
-                            !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
-                    }
+                // Judge fallback eligibility using this batch only. Earlier successful batches
+                // must not turn a completely failed current batch into an apparent partial success.
+                val hasUsableTranslation = resolvedBatch.values.any { it.isNotBlank() }
                 if (
                     TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
                         unresolvedCount = unresolvedIndices.size,
+                        batchSize = batchIndices.size,
                         hasUsableTranslation = hasUsableTranslation,
                         sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
                         isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),

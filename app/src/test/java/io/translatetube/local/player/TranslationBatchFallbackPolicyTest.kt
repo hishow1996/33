@@ -10,6 +10,7 @@ class TranslationBatchFallbackPolicyTest {
         assertTrue(
             TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
                 unresolvedCount = 1,
+                batchSize = 10,
                 hasUsableTranslation = true,
                 sourceEchoAsUntranslatedFallback = false,
                 isLocalTranslationEngine = true,
@@ -22,7 +23,34 @@ class TranslationBatchFallbackPolicyTest {
         assertFalse(
             TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
                 unresolvedCount = 10,
+                batchSize = 10,
                 hasUsableTranslation = false,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = true,
+            )
+        )
+    }
+
+    @Test
+    fun rejectsFallbackWhenTheWholeCurrentBatchFailedEvenIfEarlierBatchesSucceeded() {
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 10,
+                batchSize = 10,
+                hasUsableTranslation = false,
+                sourceEchoAsUntranslatedFallback = false,
+                isLocalTranslationEngine = true,
+            )
+        )
+    }
+
+    @Test
+    fun rejectsFallbackWhenTooManyRowsInTheCurrentBatchAreMissing() {
+        assertFalse(
+            TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                unresolvedCount = 4,
+                batchSize = 10,
+                hasUsableTranslation = true,
                 sourceEchoAsUntranslatedFallback = false,
                 isLocalTranslationEngine = true,
             )
@@ -34,6 +62,7 @@ class TranslationBatchFallbackPolicyTest {
         assertFalse(
             TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
                 unresolvedCount = 1,
+                batchSize = 10,
                 hasUsableTranslation = true,
                 sourceEchoAsUntranslatedFallback = false,
                 isLocalTranslationEngine = false,
