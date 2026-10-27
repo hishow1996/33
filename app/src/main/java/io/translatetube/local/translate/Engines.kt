@@ -58,12 +58,33 @@ internal fun buildContextUserPrompt(
  * Recognize only parser/alignment failures that can improve by lowering the LLM request size.
  * Authentication, quota, transport and server errors must keep their normal error path.
  */
-private fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
+internal fun isRecoverableTranslationFormatError(error: IllegalStateException): Boolean {
     val message = error.message.orEmpty()
-    return message.contains("重复返回字幕编号") ||
+    val normalized = message.lowercase(java.util.Locale.ROOT)
+    val malformedTranslation = message.contains("重复返回字幕编号") ||
         message.contains("超出本批范围的字幕编号") ||
         message.contains("编号不完整") ||
         message.contains("格式不完整")
+    if (malformedTranslation) return true
+
+    // A batch that exceeds context/request limits may succeed when split. Do not include generic
+    // token/max-token errors, authentication failures, rate limits, or temporary server errors.
+    val requestTooLarge = normalized.contains("http 413") ||
+        listOf(
+            "context length exceeded",
+            "maximum context length",
+            "context_length_exceeded",
+            "too many tokens",
+            "maximum number of tokens",
+            "input is too long",
+            "prompt is too long",
+            "request too large",
+            "request entity too large",
+            "payload too large",
+            "request body too large",
+            "maximum context window",
+        ).any(normalized::contains)
+    return requestTooLarge
 }
 
 /**
