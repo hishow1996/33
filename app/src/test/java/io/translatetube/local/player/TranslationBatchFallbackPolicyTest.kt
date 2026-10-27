@@ -71,6 +71,7 @@ class TranslationBatchFallbackPolicyTest {
         assertTrue(
             TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
                 unresolvedCount = 1,
+                batchSize = 10,
                 hasUsableTranslation = true,
                 sourceEchoAsUntranslatedFallback = true,
                 isLocalTranslationEngine = false,
