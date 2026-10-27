@@ -50,6 +50,33 @@ class YouTubeSubtitleSelectionPolicyTest {
     }
 
     @Test
+    fun iso639ThreeLetterAudioTagsMatchTwoLetterCaptionTags() {
+        assertEquals("ko", YouTubeSubtitleSelectionPolicy.normalizeLanguageCode("kor"))
+        assertEquals("ko", YouTubeSubtitleSelectionPolicy.normalizeLanguageCode("ko-KR"))
+        assertEquals("zh", YouTubeSubtitleSelectionPolicy.normalizeLanguageCode("cmn-Hans"))
+        assertEquals(true, YouTubeSubtitleSelectionPolicy.matchesSourceLanguage("kor", "ko"))
+        assertEquals(true, YouTubeSubtitleSelectionPolicy.matchesSourceLanguage("eng", "en"))
+    }
+
+    @Test
+    fun conflictingAudioLanguagesWithoutOriginalTrackMarkerStayUnknown() {
+        assertNull(
+            YouTubeSubtitleSelectionPolicy.sourceLanguageHint(
+                originalAudioLanguageTags = emptyList(),
+                streamLanguageTag = null,
+                fallbackAudioLanguageTags = listOf("en-US", "ko-KR", "ko"),
+            ),
+        )
+        assertNull(
+            YouTubeSubtitleSelectionPolicy.sourceLanguageHint(
+                originalAudioLanguageTags = listOf("en-US", "ko-KR"),
+                streamLanguageTag = "en-US",
+                fallbackAudioLanguageTags = listOf("en-US"),
+            ),
+        )
+    }
+
+    @Test
     fun streamLanguageIsUsedWhenOriginalAudioMetadataIsUnavailable() {
         assertEquals(
             "ja",
