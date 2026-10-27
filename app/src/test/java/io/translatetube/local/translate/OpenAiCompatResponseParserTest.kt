@@ -209,6 +209,25 @@ class OpenAiCompatResponseParserTest {
     }
 
     @Test
+    fun recognizesAssistantMessagesMissingFinalContentForOneAlternateAttempt() {
+        val response = """{ "choices": [ { "message": { "role": "assistant" } } ] }"""
+        val error = runCatching { extractOpenAiCompatContent(response) }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(isEmptyAssistantContentResponse(error!!))
+    }
+
+    @Test
+    fun doesNotTreatQuotaErrorsAsMissingAssistantContent() {
+        val error = runCatching {
+            extractOpenAiCompatContent("""{ "error": { "message": "quota exceeded" } }""")
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(!isEmptyAssistantContentResponse(error!!))
+    }
+
+    @Test
     fun malformedJsonGetsClearParserError() {
         val error = runCatching { extractOpenAiCompatContent("{broken json") }.exceptionOrNull()
 
