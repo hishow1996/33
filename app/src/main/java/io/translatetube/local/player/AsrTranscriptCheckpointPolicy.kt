@@ -4,6 +4,21 @@ import java.security.MessageDigest
 
 /** Stable identity and bounds for partial Whisper transcripts tied to a PCM/VAD layout. */
 internal object AsrTranscriptCheckpointPolicy {
+    /** Checkpoint groups align with the pipeline's periodic progress-save boundary. */
+    const val SEGMENTS_PER_CHECKPOINT = 3
+
+    fun chunkCacheKeyPrefix(partialCacheKey: String): String {
+        require(partialCacheKey.isNotBlank()) { "ASR 检查点缓存键不能为空" }
+        return "$partialCacheKey|chunk:"
+    }
+
+    fun chunkCacheKey(partialCacheKey: String, startSegment: Int): String {
+        require(startSegment >= 0 && startSegment % SEGMENTS_PER_CHECKPOINT == 0) {
+            "ASR 检查点分段起点无效"
+        }
+        return chunkCacheKeyPrefix(partialCacheKey) + startSegment
+    }
+
     private const val MAX_CHECKPOINT_ROWS = 100_000
     private const val MAX_PROCESSED_SEGMENTS = 100_000
     private val signaturePattern = Regex("^[0-9a-f]{32}$")
