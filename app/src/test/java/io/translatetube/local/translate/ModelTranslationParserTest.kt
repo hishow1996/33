@@ -32,6 +32,16 @@ class ModelTranslationParserTest {
 
         assertTrue(error is IllegalStateException)
     }
+
+    @Test
+    fun rejectsOutOfRangeIndexedRowsEvenWhenOtherRowsLookComplete() {
+        val error = runCatching {
+            parseModelTranslations("0|first\n1|second\n3|unexpected", 2)
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("超出本批范围"))
+    }
     @Test
     fun normalizesCaseAndUnderscoreLanguageTags() {
         assertEquals("en", LangMap.mlkit("EN-us"))
