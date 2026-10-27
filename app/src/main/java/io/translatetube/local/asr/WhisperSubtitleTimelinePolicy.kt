@@ -11,6 +11,8 @@ import kotlin.math.roundToLong
  */
 internal object WhisperSubtitleTimelinePolicy {
     private const val MAX_CUE_DURATION_MS = 3_600L
+    /** Split a displayed cue when token starts indicate a meaningful pause in speech. */
+    private const val MAX_INTER_TOKEN_GAP_MS = 900L
     /** Bound token/timestamp arrays before joining text or allocating timeline stacks. */
     private const val MAX_TOKEN_COUNT = 200_000
     private const val MAX_CJK_CODE_POINTS = 24
@@ -112,12 +114,21 @@ internal object WhisperSubtitleTimelinePolicy {
                     ((nextStartSeconds - startSeconds) * 1_000.0).roundToLong().coerceAtLeast(1L)
                 else -> MIN_LAST_TOKEN_DURATION_MS
             }
+            // A token's declared duration can drift through a later token or a silence gap.
+            // Do not let its visible interval extend beyond the next distinct token start.
+            val untilNextTokenMs = nextStartSeconds
+                ?.let { ((it - startSeconds) * 1_000.0).roundToLong().coerceAtLeast(1L) }
+            val boundedDurationMs = if (untilNextTokenMs == null) {
+                durationMs
+            } else {
+                minOf(durationMs, untilNextTokenMs)
+            }
 
             val startMs = segmentStartMs + startRelativeMs
             // Clamp the duration before addition. Finite-but-hostile model durations can round
             // to Long.MAX_VALUE; adding the segment's non-zero base time first would overflow,
             // wrap negative and silently discard a token that should be clamped to the crop end.
-            val safeDurationMs = durationMs.coerceAtMost(segmentEndMs - startMs)
+            val safeDurationMs = boundedDurationMs.coerceAtMost(segmentEndMs - startMs)
             val endMs = startMs + safeDurationMs
             if (endMs <= startMs) continue
             timedTokens += TimedToken(token, startMs, endMs)
@@ -130,6 +141,7 @@ internal object WhisperSubtitleTimelinePolicy {
         var cueEndMs = -1L
         var cueCodePointCount = 0
         var cueHasCjk = false
+        var previousTokenStartMs: Long? = null
 
         fun flushCue() {
             // Token text can carry tokenizer-specific repeated boundary spaces. Keep the
@@ -180,8 +192,10 @@ internal object WhisperSubtitleTimelinePolicy {
                 cueCodePointCount + incomingCodePoints > maxChars
             val tooLongInTime = text.isNotBlank() &&
                 token.startMs - cueStartMs >= MAX_CUE_DURATION_MS
+            val longPauseBefore = text.isNotBlank() &&
+                previousTokenStartMs?.let { token.startMs - it >= MAX_INTER_TOKEN_GAP_MS } == true
 
-            if (tooLong || tooLongInTime) flushCue()
+            if (tooLong || tooLongInTime || longPauseBefore) flushCue()
 
             if (text.isEmpty()) {
                 val cleanToken = token.text.trimStart()
@@ -200,6 +214,7 @@ internal object WhisperSubtitleTimelinePolicy {
             }
 
             if (text.isNotBlank() && endsSentence(token.text)) flushCue()
+            previousTokenStartMs = token.startMs
         }
         flushCue()
 
