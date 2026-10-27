@@ -138,6 +138,22 @@ class WhisperSubtitleTimelinePolicyTest {
     }
 
     @Test
+    fun keepsTokensTogetherWhenDeclaredDurationCoversTheStartGap() {
+        val tokens = listOf("Long", " word.")
+        val cues = WhisperSubtitleTimelinePolicy.fromTokenTimestamps(
+            tokens = tokens,
+            timestampsSeconds = listOf(0.0f, 1.0f),
+            durationsSeconds = listOf(1.2f, 0.2f),
+            segmentStartMs = 1_000L,
+            segmentEndMs = 3_000L,
+            expectedText = "Long word.",
+        )
+
+        assertEquals(1, cues.size)
+        assertEquals("Long word.", cues.single().third)
+    }
+
+    @Test
     fun capsTokenDurationAtTheNextDistinctTokenStart() {
         val tokens = listOf("alpha", " beta", ".")
         val timestamps = listOf(0.0f, 0.3f, 0.6f)
