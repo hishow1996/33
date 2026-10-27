@@ -15,12 +15,28 @@ class ThinkingControlPolicyTest {
     }
 
     @Test
-    fun qwenModelUsesQwenControlAndOneFallback() {
-        val controls = thinkingControlOrder("https://gateway.example/v1", "qwen3-thinking")
+    fun qwenHybridModelUsesQwenControlAndOneFallback() {
+        val controls = thinkingControlOrder("https://gateway.example/v1", "qwen3.8-flash")
 
         assertEquals(ThinkingControlStyle.QWEN, controls.first())
         assertEquals(2, controls.size)
         assertEquals(ThinkingControlStyle.REASONING_EFFORT, controls.last())
+    }
+
+    @Test
+    fun thinkingOnlyModelsUsePlainRequestWithoutUnsupportedToggle() {
+        assertEquals(
+            listOf(ThinkingControlStyle.PLAIN),
+            thinkingControlOrder("https://gateway.example/v1", "qwen3-thinking")
+        )
+        assertEquals(
+            listOf(ThinkingControlStyle.PLAIN),
+            thinkingControlOrder("https://gateway.example/v1", "QwQ")
+        )
+        assertEquals(
+            listOf(ThinkingControlStyle.PLAIN),
+            thinkingControlOrder("https://gateway.example/v1", "deepseek-r1")
+        )
     }
 
     @Test
