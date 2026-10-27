@@ -112,7 +112,7 @@ internal object YouTubeStreamSelector {
             matchingLanguage.isNotEmpty() -> matchingLanguage
             safeNonDubbed.isNotEmpty() -> {
                 val knownLanguages = safeNonDubbed.mapNotNull {
-                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag)
+                    YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(input[it].languageTag)
                 }.distinct()
                 if (preferredLanguage != null && knownLanguages.isNotEmpty() &&
                     preferredLanguage !in knownLanguages
