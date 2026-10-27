@@ -10,9 +10,12 @@ import android.app.ActivityManager
 import android.content.Context
 import io.translatetube.local.util.AppLogStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -473,7 +476,10 @@ class Small100Engine(private val context: Context) : TranslationEngine {
     }
 
     override fun close() {
-        Small100Runtime.closeLoadedModelNow()
+        // TranslationEngine.close() is non-suspending. Never close ONNX sessions directly here:
+        // another playback session may still be inside inference. The runtime serializes release
+        // with inference and model loading through the same mutex.
+        Small100Runtime.requestCloseLoadedModel()
     }
 }
 
@@ -486,6 +492,7 @@ private object Small100Runtime {
     private const val MAX_OUTPUT_TOKENS = Small100GenerationPolicy.MAX_OUTPUT_TOKENS
     private val inferenceMutex = Mutex()
     private val loadedLock = Any()
+    private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var loaded: Loaded? = null
 
     private data class Loaded(
@@ -604,14 +611,18 @@ private object Small100Runtime {
         )
     }
 
-    suspend fun closeLoadedModel() = inferenceMutex.withLock {
-        synchronized(loadedLock) {
-            loaded?.close()
-            loaded = null
+    /**
+     * Release model memory safely after the current inference completes. The engine interface's
+     * close() method cannot suspend, so schedule the same mutex-protected close used by model
+     * deletion instead of closing native ONNX sessions while another playback session uses them.
+     */
+    fun requestCloseLoadedModel() {
+        closeScope.launch {
+            closeLoadedModel()
         }
     }
 
-    fun closeLoadedModelNow() {
+    suspend fun closeLoadedModel() = inferenceMutex.withLock {
         synchronized(loadedLock) {
             loaded?.close()
             loaded = null
