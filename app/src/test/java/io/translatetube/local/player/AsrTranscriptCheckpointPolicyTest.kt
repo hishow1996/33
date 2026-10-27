@@ -10,6 +10,33 @@ import org.junit.Test
 
 class AsrTranscriptCheckpointPolicyTest {
     @Test
+    fun chunkKeysAreDeterministicAndNamespacedToThePartialCheckpoint() {
+        val key = "local:video|source|local-asr-sensevoice|asr-progress-v2"
+
+        assertEquals(
+            "$key|chunk:",
+            AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(key),
+        )
+        assertEquals(
+            "$key|chunk:0",
+            AsrTranscriptCheckpointPolicy.chunkCacheKey(key, 0),
+        )
+        assertEquals(
+            "$key|chunk:3",
+            AsrTranscriptCheckpointPolicy.chunkCacheKey(key, 3),
+        )
+        assertTrue(
+            AsrTranscriptCheckpointPolicy.chunkCacheKey(key, 0) !=
+                AsrTranscriptCheckpointPolicy.chunkCacheKey("another-video", 0),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun chunkKeysRejectMisalignedSegmentStarts() {
+        AsrTranscriptCheckpointPolicy.chunkCacheKey("checkpoint", 2)
+    }
+
+    @Test
     fun signatureIsStableForSamePcmAndVadSegments() {
         val segments = listOf(0L to 900L, 1_200L to 2_400L, 3_100L to 4_000L)
         val pcm = FloatArray(64_000) { index -> ((index % 97) - 48) / 48f }
