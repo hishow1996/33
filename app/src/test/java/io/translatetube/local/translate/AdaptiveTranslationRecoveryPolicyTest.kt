@@ -46,6 +46,11 @@ class AdaptiveTranslationRecoveryPolicyTest {
                 IllegalStateException("翻译服务重复返回字幕编号")
             )
         )
+        assertTrue(
+            isRecoverableTranslationFormatError(
+                IllegalStateException("翻译服务在编号译文中混入未编号内容")
+            )
+        )
     }
 
     @Test
