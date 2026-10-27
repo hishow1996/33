@@ -6507,13 +6507,16 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             !SubtitleParsers.cleanTranslatedText(line.zh).isNullOrBlank()
                     }
                 if (
-                    unresolvedIndices.isNotEmpty() &&
-                    sourceEchoAsUntranslatedFallback &&
-                    hasUsableTranslation
+                    TranslationBatchFallbackPolicy.shouldKeepUnresolvedOnOriginalAudio(
+                        unresolvedCount = unresolvedIndices.size,
+                        hasUsableTranslation = hasUsableTranslation,
+                        sourceEchoAsUntranslatedFallback = sourceEchoAsUntranslatedFallback,
+                        isLocalTranslationEngine = EngineFactory.isLocalTranslationEngine(activeId),
+                    )
                 ) {
-                    // Google/ML Kit returned useful Chinese for this batch, but a small number of
-                    // cues stayed empty/status-only after retry. Preserve those source subtitles
-                    // without Chinese speech instead of failing the whole video over one bad row.
+                    // If a batch contains useful translations but a small number of rows remain
+                    // invalid after retry, preserve only those rows on original audio. A completely
+                    // failed local model or a remote API failure still fails the batch.
                     android.util.Log.w(
                         "PlaybackService",
                         "Keeping ${unresolvedIndices.size} unresolved Google subtitle cues on original audio",

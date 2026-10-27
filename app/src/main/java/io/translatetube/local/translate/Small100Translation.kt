@@ -435,7 +435,27 @@ class Small100Engine(private val context: Context) : TranslationEngine {
             val taskContext = currentCoroutineContext()
             lines.mapIndexed { index, line ->
                 taskContext.ensureActive()
-                val translated = if (line.isBlank()) "" else Small100Runtime.translateOne(appContext, line, "zh")
+                val translated = if (line.isBlank()) "" else try {
+                    Small100Runtime.translateOne(appContext, line, "zh")
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (lineLimit: Small100InputTooLongException) {
+                    AppLogStore.warning(
+                        appContext,
+                        "Translation",
+                        "SMaLL-100 单条字幕超过输入长度上限，已隔离该行并继续处理其他字幕",
+                        lineLimit,
+                        diagnosticContext = mapOf(
+                            "字幕序号" to (index + 1).toString(),
+                            "字幕总数" to lines.size.toString(),
+                            "字幕字符数" to line.length.toString(),
+                            "输入 token 数" to lineLimit.actualTokens.toString(),
+                            "模型上限" to lineLimit.maxTokens.toString(),
+                            "未记录字幕原文" to "true",
+                        ),
+                    )
+                    ""
+                }
                 if ((index + 1) % 10 == 0 || index == lines.lastIndex) {
                     AppLogStore.info(
                         appContext, "Translation", "SMaLL-100 本地翻译进度",
@@ -489,8 +509,9 @@ private object Small100Runtime {
             sourceIds[0] = targetId
             encoded.copyInto(sourceIds, destinationOffset = 1)
             if (sourceIds.size > MAX_SOURCE_TOKENS) {
-                throw IllegalArgumentException(
-                    "字幕过长：分词后 " + sourceIds.size + " tokens，模型上限为 " + MAX_SOURCE_TOKENS + "。"
+                throw Small100InputTooLongException(
+                    actualTokens = sourceIds.size,
+                    maxTokens = MAX_SOURCE_TOKENS,
                 )
             }
             val mask = LongArray(sourceIds.size) { 1L }

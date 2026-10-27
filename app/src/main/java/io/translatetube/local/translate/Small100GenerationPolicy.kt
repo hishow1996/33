@@ -6,6 +6,15 @@ package io.translatetube.local.translate
  * Reaching the token budget is not a successful translation unless EOS was generated.
  * Keeping this policy independent makes truncated-output handling regression-testable.
  */
+
+/** One subtitle exceeds the encoder's input-token limit; sibling rows can still be translated. */
+internal class Small100InputTooLongException(
+    val actualTokens: Int,
+    val maxTokens: Int,
+) : IllegalArgumentException(
+    "字幕过长：分词后 " + actualTokens + " tokens，模型上限为 " + maxTokens + "。"
+)
+
 internal object Small100GenerationPolicy {
     const val MAX_OUTPUT_TOKENS = 256
 
