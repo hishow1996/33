@@ -5360,6 +5360,9 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 if (transcribedLines.isEmpty()) {
                     if ((videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()) {
                         db.subtitleCacheDao().delete(partialAsrCacheKey)
+                        db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                            AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(partialAsrCacheKey),
+                        )
                     }
                     throw IllegalStateException(
                         when {
@@ -5435,6 +5438,9 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         )
                     )
                     db.subtitleCacheDao().delete(partialAsrCacheKey)
+                    db.subtitleCacheDao().deleteByCacheKeyPrefix(
+                        AsrTranscriptCheckpointPolicy.chunkCacheKeyPrefix(partialAsrCacheKey),
+                    )
                     // Keep the bounded source-audio cache after ASR as well: user-triggered
                     // speaker diarization can reuse it without downloading the same media again.
                     if (videoId != null && audioFile is File) {
