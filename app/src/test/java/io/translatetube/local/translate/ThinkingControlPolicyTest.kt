@@ -98,4 +98,14 @@ class ThinkingControlPolicyTest {
             )
         )
     }
+
+    @Test
+    fun recognizesVendorSpecificReasoningFieldNames() {
+        assertTrue(isReasoningFieldName("reasoning_content"))
+        assertTrue(isReasoningFieldName("analysis_text"))
+        assertTrue(isReasoningFieldName("thinking"))
+        assertTrue(isReasoningFieldName("thought_summary"))
+        assertTrue(!isReasoningFieldName("content"))
+        assertTrue(!isReasoningFieldName("tool_calls"))
+    }
 }
