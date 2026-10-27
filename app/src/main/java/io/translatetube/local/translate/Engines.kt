@@ -247,19 +247,29 @@ internal fun parseModelTranslations(content: String, size: Int): List<String> {
     val indexedLine = Regex("""^\s*(?:[-*•]\s*)?(?:\*\*)?(\d{1,4})(?:\*\*)?\s*(?:[|｜:：.、)]\s*|-\s+)(.*?)\s*$""")
     val indexed = linkedMapOf<Int, String>()
     var duplicateIndex = false
+    var outOfRangeIndex: Int? = null
     normalized.lines().forEach { raw ->
         val line = raw.trim().trim('`').trim()
         val match = indexedLine.matchEntire(line) ?: return@forEach
         val index = match.groupValues[1].toIntOrNull() ?: return@forEach
-        if (index in 0..size) {
-            val value = match.groupValues[2].trim().removePrefix("**").removeSuffix("**").trim()
-            if (indexed.containsKey(index)) {
-                duplicateIndex = true
-            } else {
-                // Empty numbered rows are valid for empty subtitle cues; keep their index.
-                indexed[index] = value
-            }
+        if (index !in 0..size) {
+            // Do not silently drop a numbered row: the remaining lines could still look complete
+            // while the model has actually returned a shifted or extra subtitle.
+            if (outOfRangeIndex == null) outOfRangeIndex = index
+            return@forEach
         }
+        val value = match.groupValues[2].trim().removePrefix("**").removeSuffix("**").trim()
+        if (indexed.containsKey(index)) {
+            duplicateIndex = true
+        } else {
+            // Empty numbered rows are valid for empty subtitle cues; keep their index.
+            indexed[index] = value
+        }
+    }
+    if (outOfRangeIndex != null) {
+        throw IllegalStateException(
+            "翻译服务返回了超出本批范围的字幕编号 " + outOfRangeIndex + "，已拒绝可能错位的译文"
+        )
     }
     if (indexed.isNotEmpty()) {
         if (duplicateIndex) {
