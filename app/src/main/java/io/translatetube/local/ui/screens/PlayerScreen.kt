@@ -297,19 +297,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     var isFloating by remember { mutableStateOf(false) }
     // 悬浮窗自己的生命周期：不能借用 Activity 的，否则切到桌面后 Compose 会暂停刷新悬浮窗里的按钮层。
     val overlayOwnerHolder = remember { arrayOfNulls<FloatingOverlayLifecycleOwner>(1) }
-    var floatingGranted by remember { mutableStateOf(floating.canDraw()) }
-    // 从系统授权页返回时刷新悬浮窗权限状态
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-    val savedStateRegistryOwner = LocalSavedStateRegistryOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
-            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                floatingGranted = floating.canDraw()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(obs)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
-    }
     val tv = remember { TextureView(ctx) }
     val frame = remember { FrameLayout(ctx) }
 
@@ -372,15 +359,28 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     }
 
     fun startFloatingWindow() {
+        // 全局悬浮窗使用 TYPE_APPLICATION_OVERLAY：未授权时打开系统悬浮窗权限页；
+        // 已授权则直接创建窗口，不再跳转设置。
         if (!floating.canDraw()) {
-            floatingGranted = false
-            runCatching {
+            val permissionUri = android.net.Uri.parse("package:${ctx.packageName}")
+            val permissionPageOpened = runCatching {
                 ctx.startActivity(
                     android.content.Intent(
                         android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        android.net.Uri.parse("package:${ctx.packageName}")
+                        permissionUri,
                     )
                 )
+            }.isSuccess
+            if (!permissionPageOpened) {
+                // 少数系统版本不提供专用入口时，退回应用详情页供用户开启权限。
+                runCatching {
+                    ctx.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            permissionUri,
+                        )
+                    )
+                }
             }
             return
         }
