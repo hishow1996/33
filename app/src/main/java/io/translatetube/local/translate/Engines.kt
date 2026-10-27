@@ -742,13 +742,6 @@ internal fun thinkingControlOrder(baseUrl: String, model: String): List<Thinking
 }
 
 
-    DEEPSEEK,
-    QWEN,
-    OPENROUTER,
-    REASONING_EFFORT,
-    PLAIN,
-}
-
 /**
  * Detect provider errors caused by a thinking-control parameter that the provider/model does not
  * support. Other HTTP errors must not trigger a series of repeated translation requests.
