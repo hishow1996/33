@@ -627,6 +627,7 @@ Section(
             }
         }
     }
+    ParallelDecodeOption()
 }
 
 Section(
@@ -1408,6 +1409,42 @@ private fun formatYtDlpBytes(bytes: Long): String {
         unitIndex++
     }
     return String.format(java.util.Locale.ROOT, "%.2f %s", value, units[unitIndex])
+}
+
+/** 本地长音频分段并行解码的开关（默认关闭）；打开后拼缝校验不通过会自动退回整段解码。 */
+@Composable
+private fun ParallelDecodeOption() {
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences("settings", 0) }
+    var enabled by remember {
+        mutableStateOf(prefs.getBoolean(io.translatetube.local.asr.ParallelPcmDecoder.PREF_KEY, false))
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("分段并行解码（实验）", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "长音频（90 秒以上）切成几段同时解码，更快；每次都会校验拼缝是否对齐，" +
+                    "量不准就自动改用整段解码。若发现字幕时间不准，请关闭。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF6B7280),
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = { value ->
+                enabled = value
+                prefs.edit().putBoolean(io.translatetube.local.asr.ParallelPcmDecoder.PREF_KEY, value).apply()
+                io.translatetube.local.util.AppLogStore.info(
+                    ctx,
+                    "Settings",
+                    if (value) "开启分段并行解码" else "关闭分段并行解码",
+                )
+            },
+        )
+    }
 }
 
 @Composable
