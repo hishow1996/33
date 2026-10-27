@@ -249,6 +249,22 @@ object AppLogTitleResolver {
         return message
     }
 
+    /** Separate appended exception diagnostics from the user-facing event summary. */
+    private fun splitTechnicalSuffix(message: String): Pair<String, String?> {
+        val separator = message.indexOf(" | ")
+        if (separator < 0) return message to null
+
+        val suffix = message.substring(separator + 3)
+        val technical = Regex(
+            """(?i)(\\b[\\w.$]*(?:exception|error|throwable)\\b|\\bcaused by\\s*:|\\broot cause\\b|根因\\s*=|\\bhttp\\s+\\d{3}\\b|\\bat\\s+[\\w.$]+\\()""",
+        )
+        return if (technical.containsMatchIn(suffix)) {
+            message.substring(0, separator).trimEnd() to suffix
+        } else {
+            message to null
+        }
+    }
+
     private fun normalizeMessage(message: String): String =
         message.replace(Regex("[\\r\\n\\t]+"), " ")
             .replace(Regex("\\s{2,}"), " ")
