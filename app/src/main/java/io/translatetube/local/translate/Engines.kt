@@ -679,50 +679,55 @@ internal fun isReasoningFieldName(name: String): Boolean {
 }
 
 /** Read text from string, array-of-content-blocks, or object-style provider content. */
-private fun extractTextFromContentValue(value: Any?): String = when (value) {
-    is String -> value
-    is JSONArray -> {
-        val parts = mutableListOf<String>()
-        for (index in 0 until value.length()) {
-            val item = value.opt(index)
-            if (item is JSONObject) {
-                val type = item.optString("type", "").lowercase(java.util.Locale.ROOT)
-                if (type.isNotBlank() && isReasoningFieldName(type)) continue
+private fun extractTextFromContentValue(value: Any?, depth: Int = 0): String {
+    // Treat provider JSON as untrusted input: bound recursion across nested content wrappers.
+    if (depth > 32) return ""
+    return when (value) {
+        is String -> value
+        is JSONArray -> {
+            val parts = mutableListOf<String>()
+            for (index in 0 until value.length()) {
+                val item = value.opt(index)
+                if (item is JSONObject) {
+                    val type = item.optString("type", "").lowercase(java.util.Locale.ROOT)
+                    if (type.isNotBlank() && isReasoningFieldName(type)) continue
+                }
+                val text = extractTextFromContentValue(item, depth + 1)
+                if (text.isNotBlank()) parts += text
             }
-            val text = extractTextFromContentValue(item)
-            if (text.isNotBlank()) parts += text
+            parts.joinToString("\n")
         }
-        parts.joinToString("\n")
-    }
-    is JSONObject -> {
-        val type = value.optString("type", "").lowercase(java.util.Locale.ROOT)
-        if (type.isNotBlank() && isReasoningFieldName(type)) {
-            ""
-        } else {
-            val directText = listOf(
-                "text", "output_text", "final_answer", "answer", "translated_text",
-                "translation", "content", "value",
-            ).firstNotNullOfOrNull { key ->
-                (value.opt(key) as? String)?.takeIf { it.isNotBlank() }
-            }
-            if (directText != null) {
-                directText
+        is JSONObject -> {
+            val type = value.optString("type", "").lowercase(java.util.Locale.ROOT)
+            if (type.isNotBlank() && isReasoningFieldName(type)) {
+                ""
             } else {
-                // Some gateways nest the actual text one level deeper (e.g. content.value,
-                // message.content, or result.parts) instead of using a standard text field.
-                listOf("parts", "content", "output", "data", "result", "message")
-                    .firstNotNullOfOrNull { key ->
-                        when (val nested = value.opt(key)) {
-                            is JSONObject, is JSONArray ->
-                                extractTextFromContentValue(nested).takeIf { it.isNotBlank() }
-                            is String -> nested.takeIf { it.isNotBlank() }
-                            else -> null
-                        }
-                    }.orEmpty()
+                val directText = listOf(
+                    "text", "output_text", "final_answer", "answer", "translated_text",
+                    "translation", "content", "value",
+                ).firstNotNullOfOrNull { key ->
+                    (value.opt(key) as? String)?.takeIf { it.isNotBlank() }
+                }
+                if (directText != null) {
+                    directText
+                } else {
+                    // Some gateways nest the actual text one level deeper (e.g. content.value,
+                    // message.content, or result.parts) instead of using a standard text field.
+                    listOf("parts", "content", "output", "data", "result", "message")
+                        .firstNotNullOfOrNull { key ->
+                            when (val nested = value.opt(key)) {
+                                is JSONObject, is JSONArray ->
+                                    extractTextFromContentValue(nested, depth + 1)
+                                        .takeIf { it.isNotBlank() }
+                                is String -> nested.takeIf { it.isNotBlank() }
+                                else -> null
+                            }
+                        }.orEmpty()
+                }
             }
         }
+        else -> ""
     }
-    else -> ""
 }
 
 /** Read common final-text variants used by Chat Completions and Responses-style gateways. */
@@ -826,10 +831,10 @@ internal fun extractOpenAiCompatContent(body: String): String {
                 ?.takeIf { it.isNotBlank() }
             val param = (rawError.opt("param") as? String)
                 ?.takeIf { it.isNotBlank() }
-            val errorContext = buildList {
-                type?.let { add("type=$it") }
-                param?.let { add("param=$it") }
-            }.joinToString(", ").let { if (it.isBlank()) "" else " ($it)" }
+            val errorContext = listOfNotNull(
+                type?.let { "type=$it" },
+                param?.let { "param=$it" },
+            ).joinToString(", ").let { if (it.isBlank()) "" else " ($it)" }
             throw IllegalStateException(
                 "API 返回错误" + (code?.let { " [$it]" } ?: "") +
                     errorContext + "：" + message.take(400)
