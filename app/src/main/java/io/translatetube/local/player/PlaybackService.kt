@@ -9355,6 +9355,22 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
         }
         if (!playerReady || !::pm.isInitialized) return
         cancelPendingSeekResume()
+
+        val player = pm.player
+        if (player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
+            // The floating-window and in-app controls share this service/player. Restart centrally
+            // so either surface resumes the same video, timeline, subtitles and dubbed audio from 0.
+            // Clear any post-video dubbing drain before the first cue is scheduled again.
+            val sessionKey = videoKey
+            cancelDubbingDrainAfterVideoEnd()
+            clearDubbingCatchUpQueue(sessionKey = sessionKey, positionMs = 0L)
+            seekAndResumeInternal(
+                ms = 0L,
+                reason = "replay after video ended",
+                failureMessage = "视频结束后重新播放失败",
+            )
+            return
+        }
         pm.play()
     }
 
