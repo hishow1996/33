@@ -549,6 +549,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var playerReady = false
     // Keep only the latest requested video output. A weak reference avoids retaining an old Activity view.
     @Volatile private var requestedVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
+    // Accessed only on the main thread. Media3 already listens for SurfaceTexture
+    // creation/destruction on the currently bound TextureView, so do not reset the same output.
+    private var boundVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
     private var session: MediaSession? = null
     @Volatile private var dubbing: DubbingEngine? = null
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
@@ -1320,9 +1323,24 @@ class PlaybackService : MediaSessionService() {
         requestedVideoSurface = java.lang.ref.WeakReference(tv)
         val attach = Runnable {
             // A queued request from an older screen must never replace the current surface.
-            if (requestedVideoSurface?.get() === tv && playerReady && ::pm.isInitialized) {
-                runCatching { pm.player.setVideoTextureView(tv) }
-                    .onFailure { android.util.Log.w("PlaybackService", "Attach video surface failed", it) }
+            if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) {
+                return@Runnable
+            }
+            // Do not bind before TextureView owns a valid, laid-out SurfaceTexture. The screen
+            // retries when the texture and non-zero dimensions become available.
+            if (!tv.isAttachedToWindow || !tv.isAvailable || tv.width <= 0 || tv.height <= 0) {
+                return@Runnable
+            }
+            // Repeated lifecycle/Compose callbacks must not clear and recreate an already-bound
+            // Media3 output. Media3 itself tracks SurfaceTexture availability for this view.
+            if (boundVideoSurface?.get() === tv) return@Runnable
+
+            runCatching {
+                pm.player.setVideoTextureView(tv)
+                boundVideoSurface = java.lang.ref.WeakReference(tv)
+            }.onFailure {
+                if (boundVideoSurface?.get() === tv) boundVideoSurface = null
+                android.util.Log.w("PlaybackService", "Attach video surface failed", it)
             }
         }
         // Avoid an unnecessary main-loop delay when called from Compose/View lifecycle callbacks.
@@ -2549,6 +2567,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        // Drop queued surface work before the player is released; no stale view may be rebound.
+        surfaceAttachHandler.removeCallbacksAndMessages(null)
+        requestedVideoSurface = null
+        boundVideoSurface = null
         processingNotificationShuttingDown = true
         releaseProcessingWakeLock()
         latestProcessingNotification = null
