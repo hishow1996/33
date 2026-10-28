@@ -729,7 +729,7 @@ class PlaybackService : MediaSessionService() {
         const val ACTION_CANCEL_PROCESSING = "io.translatetube.local.action.CANCEL_PROCESSING"
         const val EXTRA_PROCESSING_SESSION_KEY = "io.translatetube.local.extra.PROCESSING_SESSION_KEY"
 
-        /** True only when this history item was previously completed with the currently selected engines. */
+        /** True when history has a candidate saved result; PlaybackService still verifies it before reuse. */
         fun hasCompatibleHistorySnapshot(
             context: Context,
             key: String,
@@ -745,9 +745,11 @@ class PlaybackService : MediaSessionService() {
             val effectiveLocalUri = localMediaUri ?: key
                 .takeIf { it.startsWith("local:", ignoreCase = true) }
                 ?.removePrefix("local:")
-            // This synchronous routing hint must not query a document provider on the caller thread.
-            // PlaybackService.open() resolves the identity on IO and performs the actual snapshot match.
-            if (effectiveLocalUri != null) return false
+            // A local entry can show the temporary restore veil when any saved result exists.
+            // open() verifies the file identity asynchronously before it reuses that result.
+            if (effectiveLocalUri != null) {
+                return ReadySessionSnapshotStore.hasAnySnapshotForVideo(context, key)
+            }
             val localIdentity: String? = null
             val snapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
                 videoKey = key,

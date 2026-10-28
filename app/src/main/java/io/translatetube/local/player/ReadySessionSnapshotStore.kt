@@ -86,6 +86,20 @@ internal object ReadySessionSnapshotStore {
     }
 
     /**
+     * A routing hint only. The final restore still verifies both media identity and engine settings.
+     * This deliberately checks filenames/size only so it stays cheap on the caller thread.
+     */
+    fun hasAnySnapshotForVideo(context: Context, videoKey: String): Boolean {
+        if (!isSupportedVideoKey(videoKey)) return false
+        val prefix = filePrefix(videoKey)
+        return directory(context).listFiles { _, name ->
+            name.startsWith(prefix) && name.endsWith(".json")
+        }?.any { file ->
+            file.isFile && file.length() in 1L..MAX_SNAPSHOT_BYTES
+        } == true
+    }
+
+    /**
      * Finds the latest successful result even when the currently selected engines no longer
      * match it. The caller compares the fingerprints stored with this snapshot and resumes from
      * the earliest affected stage instead of throwing away valid upstream work.

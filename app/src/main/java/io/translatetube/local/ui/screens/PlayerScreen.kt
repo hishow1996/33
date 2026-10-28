@@ -983,9 +983,19 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 // is being restored, show a compact loading veil instead of the five-stage pipeline
                 // card. Once its own state is published, the player and subtitles become interactive.
                 val phase = state.phase
+                val checkingLocalMediaIdentity = localUri != null &&
+                    state.key == requestKey &&
+                    phase == Phase.PARSING &&
+                    state.progress == "正在检查本地视频…"
                 val restoringHistorySession = showPlayerWhileRestoringHistory && (
                     state.key != requestKey ||
-                        (phase != Phase.READY && phase != Phase.SYNTHESIZING && phase != Phase.ERROR)
+                        if (localUri != null) {
+                            // For local history, keep the veil only during the asynchronous identity check.
+                            // If the file/config no longer matches, let the five-stage progress show normally.
+                            checkingLocalMediaIdentity
+                        } else {
+                            phase != Phase.READY && phase != Phase.SYNTHESIZING && phase != Phase.ERROR
+                        }
                     )
                 if (restoringHistorySession) {
                     Box(
