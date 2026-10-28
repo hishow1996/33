@@ -3712,6 +3712,60 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         sourceLang = "zh",
                     )
                 }
+
+                // This import path does not return through open()'s normal pipeline completion
+                // handler. Persist its successful result here as well, otherwise re-entering the
+                // same video cannot find the imported translated subtitles and starts auto-translation.
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                val finishedState = ui.value
+                if (
+                    finishedState.key == sessionKey &&
+                    finishedState.phase == Phase.READY &&
+                    finishedState.lines.isNotEmpty() &&
+                    !finishedState.dubbingHasErrors &&
+                    !finishedState.waitingForTranscriptionEngine &&
+                    !finishedState.waitingForDubbingEngine
+                ) {
+                    val completedFingerprint = processingEnginePreferenceFingerprint(
+                        forVideoKey = sessionKey,
+                    )
+                    val completedDomainFingerprints =
+                        ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    val snapshotSaved = ReadySessionSnapshotStore.save(
+                        context = this@PlaybackService,
+                        videoKey = sessionKey,
+                        fingerprint = completedFingerprint,
+                        // Imported translated subtitles do not depend on the selected ASR engine.
+                        ignoreTranscription = true,
+                        state = finishedState,
+                        transcriptionFingerprint = completedDomainFingerprints.transcription,
+                        translationFingerprint = completedDomainFingerprints.translation,
+                        dubbingFingerprint = completedDomainFingerprints.dubbing,
+                    )
+                    completedReadySessionKey = sessionKey
+                    completedReadySessionIgnoresTranscription = true
+                    completedReadySessionEngineFingerprint = completedFingerprint
+                    ReadyHistorySessionConfigStore.save(
+                        this@PlaybackService,
+                        sessionKey,
+                        completedFingerprint,
+                        true,
+                        completedDomainFingerprints,
+                        finishedState.processingFlow,
+                    )
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "导入已翻译字幕的成功结果已保存",
+                        diagnosticContext = mapOf(
+                            "处理流程" to finishedState.processingFlow.name,
+                            "字幕行数" to finishedState.lines.size.toString(),
+                            "快照是否保存成功" to snapshotSaved.toString(),
+                            "恢复时是否跳过转写" to "true",
+                            "恢复时是否跳过应用内翻译" to "true（复用已导入译文）",
+                        ),
+                    )
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
