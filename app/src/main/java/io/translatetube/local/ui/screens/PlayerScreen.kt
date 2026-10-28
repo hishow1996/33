@@ -175,6 +175,23 @@ fun PlayerScreen(
         else -> "local:${localUri ?: ""}"
     }
     var dismissedNoModelHint by remember(requestKey) { mutableStateOf<String?>(null) }
+    // "这句配音还在合成"的提示只短暂出现：显示 4 秒自动消失，20 秒内不重复弹，避免合成慢时一直占着画面。
+    var pendingDubbingHintVisible by remember(requestKey) { mutableStateOf(false) }
+    var lastPendingDubbingHintAtMs by remember(requestKey) { mutableStateOf(0L) }
+    LaunchedEffect(requestKey, state.dubbingCuePending) {
+        if (state.dubbingCuePending) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val cooledDown = lastPendingDubbingHintAtMs == 0L || now - lastPendingDubbingHintAtMs >= 20_000L
+            if (cooledDown) {
+                lastPendingDubbingHintAtMs = now
+                pendingDubbingHintVisible = true
+                delay(4_000)
+                pendingDubbingHintVisible = false
+            }
+        } else {
+            pendingDubbingHintVisible = false
+        }
+    }
 
     // Keep this sticky for the current video. A subtitle seek can briefly set isPlaying=false
     // while the stream buffers; that is not a reason to return to the parsing page.
@@ -1083,6 +1100,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
 
             // 当前这句的中文配音还没合成好：如实告诉用户为什么此刻听到的是原声（来自配音引擎的逐句就绪状态）。
             if (state.key == requestKey && state.dubbingOn && state.dubbingCuePending &&
+                pendingDubbingHintVisible &&
                 (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING)
             ) {
                 Surface(
