@@ -25,16 +25,26 @@ class SubtitleCacheRestorePolicyTest {
 
     @Test
     fun localAndWebTranslationCachesAreInvalidatedWhenSourceTimelineIsMissing() {
-        for (isYouTube in listOf(false)) {
-            assertTrue(
-                SubtitleCacheRestorePolicy.shouldInvalidateUnverifiedMediaTranslationCache(
-                    hasImportedSource = false,
-                    isYouTube = isYouTube,
-                    hasMediaSource = true,
-                    hasValidatedSourceTimeline = false,
-                ),
-            )
-        }
+        assertTrue(
+            SubtitleCacheRestorePolicy.shouldInvalidateUnverifiedMediaTranslationCache(
+                hasImportedSource = false,
+                isYouTube = false,
+                hasMediaSource = true,
+                hasValidatedSourceTimeline = false,
+            ),
+        )
+    }
+
+    @Test
+    fun cacheIsNotInvalidatedWhenThereIsNoMediaSourceToValidate() {
+        assertFalse(
+            SubtitleCacheRestorePolicy.shouldInvalidateUnverifiedMediaTranslationCache(
+                hasImportedSource = false,
+                isYouTube = false,
+                hasMediaSource = false,
+                hasValidatedSourceTimeline = false,
+            ),
+        )
     }
 
     @Test
