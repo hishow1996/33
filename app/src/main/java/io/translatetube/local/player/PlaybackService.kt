@@ -86,6 +86,7 @@ private enum class EngineConfigDomain {
 private object ReadyHistorySessionConfigStore {
     private const val PREFS_NAME = "ready_history_session_config"
     private const val KEY_PREFIX = "video_"
+    private const val ACTIVE_API_PROFILE_FINGERPRINT_KEY = "translation_active_api_profile_fingerprint"
 
     fun isRelevantPreferenceKey(key: String): Boolean =
         key == "active_api_id" ||
@@ -157,6 +158,15 @@ private object ReadyHistorySessionConfigStore {
                 "${entry.key}=$value"
             }
             .toMutableList()
+        // Older app versions did not mirror active Room API-profile configuration into settings.
+        // Treat such snapshots as unknown instead of reusing a potentially stale translation result.
+        val activeApiId = settings.getLong("active_api_id", -1L)
+        if (
+            activeApiId >= 0L &&
+            settings.getString(ACTIVE_API_PROFILE_FINGERPRINT_KEY, null).isNullOrBlank()
+        ) {
+            relevant.add("$ACTIVE_API_PROFILE_FINGERPRINT_KEY=legacy-uninitialized:$activeApiId")
+        }
         youtubeSubtitleModeEntry?.let(relevant::add)
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(relevant.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
@@ -236,7 +246,8 @@ private object ReadyHistorySessionConfigStore {
     }
 
     private fun domainFingerprint(context: Context, domain: EngineConfigDomain): String {
-        val entries = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
+        val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val entries = settings.all.entries
             .filter { belongsToDomain(it.key, domain) }
             .sortedBy { it.key }
             .joinToString("\n") { entry ->
@@ -246,8 +257,17 @@ private object ReadyHistorySessionConfigStore {
                 }
                 "${entry.key}=$value"
             }
+        val activeApiId = settings.getLong("active_api_id", -1L)
+        val hasUninitializedActiveApiProfile = domain == EngineConfigDomain.TRANSLATION &&
+            activeApiId >= 0L &&
+            settings.getString(ACTIVE_API_PROFILE_FINGERPRINT_KEY, null).isNullOrBlank()
+        val canonicalEntries = if (hasUninitializedActiveApiProfile) {
+            "$entries\n$ACTIVE_API_PROFILE_FINGERPRINT_KEY=legacy-uninitialized:$activeApiId"
+        } else {
+            entries
+        }
         return MessageDigest.getInstance("SHA-256")
-            .digest(entries.toByteArray(Charsets.UTF_8))
+            .digest(canonicalEntries.toByteArray(Charsets.UTF_8))
             .take(12)
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
