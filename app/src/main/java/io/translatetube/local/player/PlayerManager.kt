@@ -153,6 +153,9 @@ class PlayerManager(private val ctx: Context) {
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
+    /** 播放器正在加载/缓冲（含首次加载、拖动进度后的重新加载）：界面据此显示转圈，而不是黑屏。 */
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering: StateFlow<Boolean> = _isBuffering
     val errorSink = MutableStateFlow<String?>(null)
 
     var onTick: ((ms: Long) -> Unit)? = null
@@ -313,6 +316,7 @@ class PlayerManager(private val ctx: Context) {
             }
             override fun onPlaybackStateChanged(state: Int) {
                 // 记录缓冲耗时：黑屏时能看出是一直在缓冲（网络慢/域名不通）还是根本没开始加载。
+                _isBuffering.value = state == Player.STATE_BUFFERING
                 val nowMs = android.os.SystemClock.elapsedRealtime()
                 when (state) {
                     Player.STATE_BUFFERING -> bufferingStartedAtMs = nowMs

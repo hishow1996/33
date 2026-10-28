@@ -3004,10 +3004,36 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    if (!state.isPlaying) {
+    // 网络慢/首次加载时显示转圈，而不是一块黑屏加播放按钮；加载超过 8 秒再补一句提示。
+    if (state.isBuffering) {
+        var slowLoading by remember(state.key) { mutableStateOf(false) }
+        LaunchedEffect(state.key) {
+            delay(8_000)
+            slowLoading = true
+        }
+        Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(40.dp),
+                    color = Color.White,
+                    strokeWidth = 3.dp,
+                )
+                if (slowLoading) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "网络较慢，视频加载中…",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    }
+
+    if (!state.isPlaying && !state.isBuffering) {
         Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
             Surface(
-                // This control is only shown while isPlaying=false; issue an explicit play
+                // This control is only shown while isPlaying=false and the player is not loading; issue an explicit play
                 // rather than toggling based on playWhenReady during buffering.
                 onClick = { svc?.playPlayback() },
                 shape = CircleShape,

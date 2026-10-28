@@ -411,6 +411,8 @@ data class PlayerUiState(
     val ttsEngineName: String = "",
     val dubbingStatus: String = "",
     val isPlaying: Boolean = false,
+    /** 播放器正在加载/缓冲视频；网络慢或首次加载时界面显示转圈。 */
+    val isBuffering: Boolean = false,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
     val noModelHint: String? = null,     // 模型/引擎问题的用户提示
     /** Subtitle generation is blocked because the selected ASR engine is not ready. */
@@ -1436,6 +1438,9 @@ class PlaybackService : MediaSessionService() {
 
             scope.launch {
                 pm.isPlaying.collect { playing -> ui.update { it.copy(isPlaying = playing) } }
+            }
+            scope.launch {
+                pm.isBuffering.collect { buffering -> ui.update { it.copy(isBuffering = buffering) } }
             }
             // Processing belongs to the foreground service, not the visible Activity.
             // Keep the ongoing notification current so users can switch apps and return later.
