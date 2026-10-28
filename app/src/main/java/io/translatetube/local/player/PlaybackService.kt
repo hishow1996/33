@@ -586,6 +586,12 @@ class PlaybackService : MediaSessionService() {
     private val manualTranslationWaiters =
         java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<List<SubLine>?>>()
     private val manualTranslationSources = java.util.concurrent.ConcurrentHashMap<String, List<SubLine>>()
+    /**
+     * 用户点"启用外部翻译模式"时完成：正在进行的应用内翻译请求据此立即放弃等待，
+     * 马上进入"等待外部译文"，导出/导入按钮不用等当前这批翻完才亮。
+     */
+    private val manualTranslationInterrupts =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Unit>>()
     private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
     @Volatile private var processingPaused = false
     @Volatile private var videoKey = ""
@@ -2828,6 +2834,9 @@ class PlaybackService : MediaSessionService() {
         for (oldKey in manualTranslationRequestedKeys.toList()) {
             if (oldKey != key) manualTranslationRequestedKeys.remove(oldKey)
         }
+        for (oldKey in manualTranslationInterrupts.keys.toList()) {
+            if (oldKey != key) manualTranslationInterrupts.remove(oldKey)
+        }
         for (oldKey in manualTranslationWaiters.keys.toList()) {
             if (oldKey != key) {
                 manualTranslationWaiters.remove(oldKey)?.cancel()
@@ -3467,6 +3476,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             return
         }
         manualTranslationRequestedKeys.add(key)
+        manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() }.complete(Unit)
         ui.update { state ->
             if (state.key == key) state.copy(
                 manualTranslationModeEnabled = true,
@@ -3500,6 +3510,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         val waiter = manualTranslationWaiters[key]
         val savedSourceLines = manualTranslationSources[key]
         val requested = manualTranslationRequestedKeys.remove(key)
+        manualTranslationInterrupts.remove(key)
         val wasEnabled = current.manualTranslationModeEnabled || current.manualTranslationWaiting
         if (!requested && !wasEnabled) return
 
@@ -3757,6 +3768,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         } finally {
             manualTranslationWaiters.remove(sessionKey, waiter)
             manualTranslationSources.remove(sessionKey)
+            manualTranslationInterrupts.remove(sessionKey)
             if (!waiter.isCompleted) manualTranslationRequestedKeys.remove(sessionKey)
         }
     }
@@ -7247,10 +7259,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 while (unresolvedIndices.isNotEmpty() && attempt < 2) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     val batch = unresolvedIndices.map { plain[it] }
-                    val batchTranslations = try {
-                        engine!!.translateWithContext(batch, src, tgt, previousContext).also {
-                            translationJob?.ensureActive()
-                        }
+                    // 请求可能要几十秒：用户这时启用外部翻译，就放弃等待这一批，立刻进入"等待外部译文"。
+                    val racedBatch = try {
+                        runUntilInterrupted(
+                            manualTranslationInterrupts.getOrPut(key) { kotlinx.coroutines.CompletableDeferred() },
+                        ) {
+                            engine!!.translateWithContext(batch, src, tgt, previousContext)
+                        }.also { translationJob?.ensureActive() }
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
                         io.translatetube.local.util.AppLogStore.warning(
@@ -7320,6 +7335,13 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         }
                         throw TranslationFailureException(message, e)
                     }
+                    if (racedBatch is InterruptibleResult.Interrupted) {
+                        // 进入等待外部译文；若用户随后又取消外部模式，则回到应用内翻译，重新翻译这一批。
+                        awaitManualSubtitleTranslation(key, lines, src.ifBlank { srcLang }, pipelineGeneration)
+                            ?.let { return it }
+                        continue
+                    }
+                    val batchTranslations = (racedBatch as InterruptibleResult.Done).value
 
                     val parsedBatch = io.translatetube.local.translate.TranslationBatchResult.from(
                         indices = unresolvedIndices,

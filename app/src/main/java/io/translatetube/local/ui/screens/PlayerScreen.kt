@@ -1754,6 +1754,18 @@ private fun VideoParsingPage(
                         color = Color(0xFF20324B),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     )
+                    // 按钮灰着时说明原因：原文字幕还没生成，或正在结束手头的翻译请求（马上可用）。
+                    if (!state.manualTranslationWaiting) {
+                        Text(
+                            if (state.lines.isEmpty()) {
+                                "原文字幕还在生成，生成后即可导出原文、导入译文。"
+                            } else {
+                                "正在停止当前翻译，马上就可以导入译文。"
+                            },
+                            color = Color(0xFF5B6B84),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1761,8 +1773,8 @@ private fun VideoParsingPage(
                     ) {
                         FilledTonalButton(
                             onClick = onExportOriginalSubtitle,
-                            enabled = state.manualTranslationWaiting &&
-                                state.lines.isNotEmpty(),
+                            // 原文字幕一旦生成就能导出，不必等进入"等待外部译文"状态。
+                            enabled = state.lines.isNotEmpty(),
                             modifier = Modifier.weight(1f),
                         ) {
                             Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
