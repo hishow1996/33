@@ -202,4 +202,49 @@ class EngineRestartStagePolicyTest {
         )
     }
 
+    @Test
+    fun importedSubtitleFlowsIgnoreAsrForEverySourceType() {
+        for (flow in listOf(
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )) {
+            assertEquals(
+                true,
+                EngineRestartStagePolicy.ignoresTranscriptionConfig(
+                    processingFlow = flow,
+                    isYouTube = false,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun youtubeCaptionFlowIgnoresAsrOnlyForYoutubeSources() {
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.ignoresTranscriptionConfig(
+                processingFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                isYouTube = true,
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.ignoresTranscriptionConfig(
+                processingFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                isYouTube = false,
+            ),
+        )
+    }
+
+    @Test
+    fun speechRecognitionFlowDependsOnTranscriptionConfig() {
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.ignoresTranscriptionConfig(
+                processingFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                isYouTube = false,
+            ),
+        )
+    }
+
 }
