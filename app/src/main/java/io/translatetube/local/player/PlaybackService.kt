@@ -3549,6 +3549,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
     fun importTranslatedSubtitles(uri: Uri) {
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        // This operation replaces any previous imported-source workflow. The translated rows are
+        // persisted with IMPORTED_TRANSLATED_SUBTITLES in the ready snapshot, not in importedLines.
+        this.importedLines = null
         val resumePlaybackAfterImport = ::pm.isInitialized &&
             runCatching { pm.player.playWhenReady }.getOrDefault(false)
         if (::pm.isInitialized) pm.pause()
