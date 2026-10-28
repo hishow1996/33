@@ -22,6 +22,10 @@ internal object YouTubeSubtitleSelectionPolicy {
 
     fun modeFromPreference(value: String?): YouTubeSubtitleLanguageMode =
         YouTubeSubtitleLanguageMode.fromPreference(value)
+
+    fun modeAppliesToVideo(videoKey: String?): Boolean =
+        videoKey?.startsWith("youtube:", ignoreCase = true) == true
+
     private val undeterminedTags = setOf("und", "mul", "zxx", "auto", "unknown", "undefined")
     private val iso6393To6391 = mapOf(
         "eng" to "en", "kor" to "ko", "jpn" to "ja",

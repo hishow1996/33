@@ -126,10 +126,18 @@ private object ReadyHistorySessionConfigStore {
             key.startsWith("kokoro_") ||
             key.startsWith("system_tts_")
 
-    fun fingerprint(context: Context, ignoreTranscription: Boolean = false): String {
+    fun fingerprint(
+        context: Context,
+        ignoreTranscription: Boolean = false,
+        videoKey: String? = null,
+    ): String {
+        val includeYouTubeSubtitleMode =
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeAppliesToVideo(videoKey)
         val relevant = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
             .filter { entry ->
                 isRelevantPreferenceKey(entry.key) &&
+                    (entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
+                        includeYouTubeSubtitleMode) &&
                     !(ignoreTranscription && belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION))
             }
             .sortedBy { it.key }
@@ -658,7 +666,7 @@ class PlaybackService : MediaSessionService() {
         ) return false
 
         val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
-            ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
+            ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
         }
         if (
             currentConfigSnapshot != null &&
@@ -711,7 +719,10 @@ class PlaybackService : MediaSessionService() {
 
         val ignoreTranscription = completedReadySessionIgnoresTranscription
         if (ignoreTranscription && !isYouTube) return false
-        val currentFingerprint = processingEnginePreferenceFingerprint(ignoreTranscription = ignoreTranscription)
+        val currentFingerprint = processingEnginePreferenceFingerprint(
+            ignoreTranscription = ignoreTranscription,
+            forVideoKey = key,
+        )
         val previousDomains = ReadyHistorySessionConfigStore.savedFingerprints(this, key)
         val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this)
         val restartStage = previousDomains?.let { previous ->
@@ -888,8 +899,10 @@ class PlaybackService : MediaSessionService() {
      * Hash only the settings that influence transcription, translation or synthesis.
      * The fingerprint is diagnostic-safe: API keys and other preference values are never logged.
      */
-    private fun processingEnginePreferenceFingerprint(ignoreTranscription: Boolean = false): String =
-        ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription)
+    private fun processingEnginePreferenceFingerprint(
+        ignoreTranscription: Boolean = false,
+        forVideoKey: String = videoKey,
+    ): String = ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription, forVideoKey)
 
     /**
      * Restart the active pipeline when an output-affecting engine setting changes.
@@ -965,6 +978,7 @@ class PlaybackService : MediaSessionService() {
                                 ReadyHistorySessionConfigStore.fingerprint(
                                     this@PlaybackService,
                                     ignoreTranscription = ignore,
+                                    videoKey = sessionKey,
                                 )
                             }
                         if (matchingSuccessfulSnapshot != null) {
@@ -2510,7 +2524,7 @@ class PlaybackService : MediaSessionService() {
         // reusable when the user switches back to that exact successful engine combination.
         val reusableSnapshot = if (canRestoreStoredResult) {
             ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
-                ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore)
+                ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
             }
         } else null
         val fallbackSnapshot = if (canRestoreStoredResult && reusableSnapshot == null) {
@@ -2588,7 +2602,7 @@ class PlaybackService : MediaSessionService() {
                 manualTranslationSources.remove(oldKey)
             }
         }
-        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = key)
         processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
@@ -2896,6 +2910,7 @@ class PlaybackService : MediaSessionService() {
                             finishedState.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
                     val completedFingerprint = processingEnginePreferenceFingerprint(
                         ignoreTranscription = ignoreTranscription,
+                        forVideoKey = key,
                     )
                     val completedDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                     val translationsComplete = isChineseLanguage(finishedState.sourceLang) ||

@@ -132,6 +132,15 @@ class YouTubeSubtitleSelectionPolicyTest {
     }
 
     @Test
+    fun subtitleModePreferenceOnlyAppliesToYouTubeVideoKeys() {
+        assertTrue(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("youtube:abc123"))
+        assertTrue(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("YouTube:abc123"))
+        assertFalse(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("remote:https://example.com/video"))
+        assertFalse(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("local:content://video"))
+        assertFalse(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo(null))
+    }
+
+    @Test
     fun englishFirstModeRanksEnglishCaptionsBeforeOriginalLanguage() {
         assertEquals(
             0,
