@@ -415,15 +415,16 @@ Section("YouTube 解析") {
             RadioButton(selected = selected, onClick = selectMode)
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "默认用英语字幕翻译" else "用视频原声语言字幕翻译",
+                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "默认用英语字幕翻译" else "优先用视频原声语言字幕翻译",
                     color = OnBg,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
                     if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH)
-                        "只使用英语字幕；没有可用英语字幕时，转写原声音频。"
+                        "优先英语字幕，其次原声语言字幕，再尝试其他字幕。"
                     else
-                        "只使用与原声音轨语言一致的字幕；找不到则转写原声音频。",
+                        "优先原声语言字幕，其次英语字幕，再尝试其他字幕。"
+                        + "只有没有可用字幕时才转写原声音频。",
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
