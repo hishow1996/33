@@ -332,15 +332,36 @@ private object ReadyHistorySessionConfigStore {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
         val saved = prefs.getString(key, null) ?: return false
-        // Only a YouTube run that actually used YouTube captions may ignore ASR settings.
-        // A YouTube video without captions uses ASR, so its chosen transcription engine matters.
         val ignoreTranscription = prefs.getBoolean("$key-ignore-transcription", false)
-        if (ignoreTranscription && !isYouTube) return false
-        return saved.isNotBlank() && saved == fingerprint(
-            context,
-            ignoreTranscription = ignoreTranscription,
-            videoKey = videoKey,
-        )
+        val savedFlow = savedProcessingFlow(context, videoKey)
+        if (
+            ignoreTranscription &&
+            !EngineRestartStagePolicy.ignoresTranscriptionConfig(savedFlow, isYouTube)
+        ) return false
+        if (saved.isBlank()) return false
+
+        if (saved == fingerprint(
+                context,
+                ignoreTranscription = ignoreTranscription,
+                videoKey = videoKey,
+            )
+        ) return true
+
+        // Older imported-subtitle sessions may have stored a fingerprint that included ASR
+        // settings. Compare engine domains for those sessions so an unrelated ASR change does not
+        // make the completed imported subtitle result disappear from history.
+        val importedSubtitleFlow = savedFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+            savedFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+        if (importedSubtitleFlow) {
+            val previous = savedFingerprints(context, videoKey) ?: return false
+            return !EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = previous,
+                current = fingerprints(context),
+                processingFlow = savedFlow,
+                ignoreTranscription = false,
+            )
+        }
+        return false
     }
 
     fun remove(context: Context, videoKey: String) {
@@ -744,7 +765,10 @@ class PlaybackService : MediaSessionService() {
         }
 
         val ignoreTranscription = completedReadySessionIgnoresTranscription
-        if (ignoreTranscription && !isYouTube) return false
+        if (
+            ignoreTranscription &&
+            !EngineRestartStagePolicy.ignoresTranscriptionConfig(state.processingFlow, isYouTube)
+        ) return false
         val currentFingerprint = processingEnginePreferenceFingerprint(
             ignoreTranscription = ignoreTranscription,
             forVideoKey = key,
@@ -2943,12 +2967,12 @@ class PlaybackService : MediaSessionService() {
                     !finishedState.waitingForTranscriptionEngine &&
                     !finishedState.waitingForDubbingEngine
                 ) {
-                    // Only a YouTube subtitle-based run is independent of the ASR configuration.
-                    // No-caption YouTube runs are marked YOUTUBE_SPEECH_RECOGNITION and must
-                    // include the selected transcription engine in history compatibility checks.
-                    val ignoreTranscription =
-                        key.startsWith("youtube:", ignoreCase = true) &&
-                            finishedState.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+                    // Imported subtitles never depend on ASR. YouTube captions are also
+                    // independent of ASR, but YouTube speech-recognition runs are not.
+                    val ignoreTranscription = EngineRestartStagePolicy.ignoresTranscriptionConfig(
+                        processingFlow = finishedState.processingFlow,
+                        isYouTube = key.startsWith("youtube:", ignoreCase = true),
+                    )
                     val completedFingerprint = processingEnginePreferenceFingerprint(
                         ignoreTranscription = ignoreTranscription,
                         forVideoKey = key,
