@@ -3245,11 +3245,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 .background(Color(0xB8172033))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
-            val seekThumbRadiusPx = with(LocalDensity.current) { 5.dp.toPx() }
+            val seekThumbRadiusPx = with(LocalDensity.current) { 6.dp.toPx() }
             Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(12.dp)
+                .height(24.dp)
                 .pointerInput(state.key, state.durationMs) {
                     detectTapGestures { offset ->
                         val duration = (PlaybackService.instance?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
