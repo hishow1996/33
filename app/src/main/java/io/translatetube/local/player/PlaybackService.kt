@@ -131,25 +131,35 @@ private object ReadyHistorySessionConfigStore {
         ignoreTranscription: Boolean = false,
         videoKey: String? = null,
     ): String {
-        val includeYouTubeSubtitleMode =
-            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeAppliesToVideo(videoKey)
-        val relevant = context.getSharedPreferences("settings", Context.MODE_PRIVATE).all.entries
+        val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        // Persisted settings are sparse: older installs can still use the default English mode
+        // without having a preference row. Add one canonical token for every YouTube fingerprint
+        // so such sessions cannot match snapshots produced before the language mode existed.
+        val youtubeSubtitleModeEntry =
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeFingerprintEntry(
+                videoKey = videoKey,
+                storedValue = settings.getString(
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                ),
+            )
+        val relevant = settings.all.entries
             .filter { entry ->
                 isRelevantPreferenceKey(entry.key) &&
-                    (entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
-                        includeYouTubeSubtitleMode) &&
+                    entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
                     !(ignoreTranscription && belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION))
             }
-            .sortedBy { it.key }
-            .joinToString("\n") { entry ->
+            .map { entry ->
                 val value = when (val raw = entry.value) {
                     is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
                     else -> raw?.toString().orEmpty()
                 }
                 "${entry.key}=$value"
             }
+            .toMutableList()
+        youtubeSubtitleModeEntry?.let(relevant::add)
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest(relevant.toByteArray(Charsets.UTF_8))
+            .digest(relevant.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
         return digest.take(12).joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
@@ -308,7 +318,11 @@ private object ReadyHistorySessionConfigStore {
     fun matches(context: Context, videoKey: String, isYouTube: Boolean): Boolean {
         if (videoKey.isBlank()) return false
         if (ReadySessionSnapshotStore.findForCurrentConfig(context, videoKey) { ignoreTranscription ->
-                fingerprint(context, ignoreTranscription = ignoreTranscription)
+                fingerprint(
+                    context,
+                    ignoreTranscription = ignoreTranscription,
+                    videoKey = videoKey,
+                )
             } != null
         ) return true
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -318,7 +332,11 @@ private object ReadyHistorySessionConfigStore {
         // A YouTube video without captions uses ASR, so its chosen transcription engine matters.
         val ignoreTranscription = prefs.getBoolean("$key-ignore-transcription", false)
         if (ignoreTranscription && !isYouTube) return false
-        return saved.isNotBlank() && saved == fingerprint(context, ignoreTranscription)
+        return saved.isNotBlank() && saved == fingerprint(
+            context,
+            ignoreTranscription = ignoreTranscription,
+            videoKey = videoKey,
+        )
     }
 
     fun remove(context: Context, videoKey: String) {
