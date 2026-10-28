@@ -6774,7 +6774,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         ensureCurrentSession(key, pipelineGeneration)
                     }
                 }
-                if (forceRegenerateDubbing) {
+                if (forceFreshDubbingForThisRun) {
                     val actualStartPositionMs = runCatching { pm.position() }.getOrDefault(-1L)
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
