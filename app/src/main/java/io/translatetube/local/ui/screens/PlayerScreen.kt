@@ -1269,6 +1269,15 @@ private fun VideoParsingPage(
     val source = VideoProcessingFlowPolicy.sourceKind(state.key)
     val flow = state.processingFlow
     val steps = VideoProcessingFlowPolicy.steps(source, flow)
+    // Optimistic UI state makes the external-translation card react to the menu tap immediately,
+    // while still syncing with the service as the pipeline advances or the mode is cancelled.
+    var externalTranslationCardVisible by remember(state.key) {
+        mutableStateOf(state.manualTranslationModeEnabled || state.manualTranslationWaiting)
+    }
+    LaunchedEffect(state.key, state.manualTranslationModeEnabled, state.manualTranslationWaiting) {
+        externalTranslationCardVisible =
+            state.manualTranslationModeEnabled || state.manualTranslationWaiting
+    }
     val context = LocalContext.current
     val translationPrefs = remember(context) {
         context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
@@ -1461,7 +1470,7 @@ private fun VideoParsingPage(
                         color = Color(0xFF7A8495),
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                    if (externalTranslationCardVisible || state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
                         DropdownMenuItem(
                             text = {
                                 Text(
@@ -1475,6 +1484,7 @@ private fun VideoParsingPage(
                             },
                             onClick = {
                                 processingSettingsOpen = false
+                                externalTranslationCardVisible = false
                                 onCancelManualTranslation()
                             },
                             contentPadding = PaddingValues(horizontal = 14.dp),
@@ -1499,6 +1509,7 @@ private fun VideoParsingPage(
                             ),
                             onClick = {
                                 processingSettingsOpen = false
+                                externalTranslationCardVisible = true
                                 onEnableManualTranslation()
                             },
                             contentPadding = PaddingValues(horizontal = 14.dp),
@@ -1578,7 +1589,7 @@ private fun VideoParsingPage(
         // Keep the external-translation waiting card visible only while the mode itself is active.
         // When the user cancels, clearing manualTranslationModeEnabled closes this card immediately,
         // even if a stale waiting flag is briefly observed during pipeline resumption.
-        if (state.manualTranslationModeEnabled) {
+        if (externalTranslationCardVisible) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 shape = RoundedCornerShape(18.dp),
@@ -1600,7 +1611,8 @@ private fun VideoParsingPage(
                     ) {
                         FilledTonalButton(
                             onClick = onExportOriginalSubtitle,
-                            enabled = state.lines.isNotEmpty(),
+                            enabled = state.manualTranslationWaiting &&
+                                state.lines.isNotEmpty(),
                             modifier = Modifier.weight(1f),
                         ) {
                             Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
