@@ -5502,11 +5502,18 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 "kawa" -> settingsPrefs.getString("asr_kawa_language", "auto") ?: "auto"
                 else -> "auto"
             }.replace(Regex("[^A-Za-z0-9_-]"), "_")
-            val asrCacheIdentity = if (asrProvider == "local") {
-                "local-$localAsrModelId"
-            } else {
-                "$asrProvider-$cloudAsrLanguageIdentity"
-            }
+            // Transcript cache keys must include the complete effective ASR preference fingerprint,
+            // not only the provider/model label. Endpoint, credentials, language and decoding-related
+            // settings can change output while the displayed provider name stays the same. This is
+            // still separate from the extracted-audio cache so a configuration switch can reuse audio.
+            val transcriptionConfigFingerprint =
+                ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService).transcription
+            val asrCacheIdentity = AsrTranscriptCacheIdentity.key(
+                provider = asrProvider,
+                localModelId = localAsrModelId,
+                language = cloudAsrLanguageIdentity,
+                configFingerprint = transcriptionConfigFingerprint,
+            )
             val baseTranslationCacheKey = TranslationCacheIdentity.forProvider(
                 baseKey = cacheKeyBase,
                 activeId = selectedTranslationId,
@@ -5524,8 +5531,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             )
             val baseModeAwareTranslationCacheKey = when {
                 !sourceImportedLines.isNullOrEmpty() -> baseTranslationCacheKey
-                asrProvider == "local" -> "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
-                else -> "$baseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
+                else -> "$baseTranslationCacheKey|asr-$asrCacheIdentity-timeline-v5"
             }
             var translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
                 "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
@@ -5533,20 +5539,16 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 baseModeAwareTranslationCacheKey
             }
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
+            // Downloaded captions live in their own mode-specific cache. These keys are for ASR
+            // transcripts, so every ASR-based source cache must use the same full config identity.
             val sourceSubtitleCacheKey = when {
-                // Isolate YouTube source caches by selected caption language mode.
-                videoId != null -> "$key|source|youtube-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION}-subtitle-${youtubeSubtitleMode.preferenceValue}" + when (asrProvider) {
-                    "local" -> "|asr-$localAsrModelId"
-                    else -> "|asr-$asrCacheIdentity-cloud-v1"
-                }
-                remoteMediaUrl != null && asrProvider == "local" ->
-                    "$cacheKeyBase|source|remote-asr-$localAsrModelId-timed-v3"
-                remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-$asrCacheIdentity-timed-v4"
-                localUri != null && asrProvider == "local" ->
-                    "$cacheKeyBase|source|local-asr-$localAsrModelId-timed-v3"
+                videoId != null ->
+                    "$key|source|youtube-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION}-subtitle-${youtubeSubtitleMode.preferenceValue}|asr-$asrCacheIdentity"
+                remoteMediaUrl != null ->
+                    "$cacheKeyBase|source|remote-asr-$asrCacheIdentity-timed-v5"
                 localUri != null ->
-                    "$cacheKeyBase|source|local-asr-$asrCacheIdentity-timed-v4"
-                else -> "$key|source|local-asr-$asrCacheIdentity-timed-v4"
+                    "$cacheKeyBase|source|local-asr-$asrCacheIdentity-timed-v5"
+                else -> "$key|source|asr-$asrCacheIdentity-timed-v5"
             }
             // Keep downloaded YouTube caption tracks separate from ASR transcripts. Fallback
             // captions may legitimately differ from the spoken language, while ASR caches must
