@@ -415,7 +415,7 @@ Section("YouTube 解析") {
             RadioButton(selected = selected, onClick = selectMode)
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "默认用英语字幕翻译" else "优先用视频原声语言字幕翻译",
+                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "英语字幕优先" else "原声字幕优先",
                     color = OnBg,
                     style = MaterialTheme.typography.bodyMedium,
                 )
