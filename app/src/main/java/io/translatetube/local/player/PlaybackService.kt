@@ -5022,7 +5022,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
 
             // ---- 2. 字幕行 ----
             val db = AppDatabase.get(this)
-            val selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
+            var selectedTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
             // Keep signed media URLs out of subtitle-cache keys. The playback/history identity
             // remains unchanged so the original page can still be resumed from local history.
             // Match the session isolation used by the downloaded-audio cache. A signed URL can
@@ -5067,7 +5067,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 asrProvider == "local" -> "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
                 else -> "$baseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
             }
-            val translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+            var translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
                 "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
             } else {
                 baseModeAwareTranslationCacheKey
@@ -5336,6 +5336,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             }
 
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
+            var sourceTranscriptProducedInThisRun = false
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
             if (resumeState == null && cached == null && sourceImportedLines.isNullOrEmpty() &&
                 (videoId != null || localUri != null || remoteMediaUrl != null)) {
@@ -6238,6 +6239,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     )
                 }
                 lines = transcribedLines
+                sourceTranscriptProducedInThisRun = true
                 srcLang = io.translatetube.local.subs.SubtitleLanguageDetector
                     .resolveTranscriptionLanguageFromCues(
                         detectedAsrLang,
@@ -6323,6 +6325,49 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 srcLang = io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
                     sourceImportedLines!!.asSequence().map { it.text }.asIterable()
                 )
+            }
+
+            if (sourceTranscriptProducedInThisRun) {
+                // Translation settings are normally snapshotted while the source stage is being
+                // prepared. If only a downstream setting changed during ASR, honor the latest
+                // translator here rather than using the old API/model and cache identity captured
+                // before transcription started.
+                val latestTranslationId = settingsPrefs.getLong("active_api_id", -1L)
+                val latestProviderFingerprint = translationProviderFingerprint(latestTranslationId)
+                val latestBaseTranslationCacheKey = TranslationCacheIdentity.forProvider(
+                    baseKey = cacheKeyBase,
+                    activeId = latestTranslationId,
+                    importedLines = sourceImportedLines,
+                    previousKey = resumeState?.translationCacheKey,
+                    providerFingerprint = latestProviderFingerprint,
+                )
+                val latestBaseModeAwareTranslationCacheKey = when {
+                    !sourceImportedLines.isNullOrEmpty() -> latestBaseTranslationCacheKey
+                    asrProvider == "local" -> "$latestBaseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
+                    else -> "$latestBaseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
+                }
+                val latestTranslationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                    "$latestBaseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+                } else {
+                    latestBaseModeAwareTranslationCacheKey
+                }
+                selectedTranslationId = latestTranslationId
+                if (latestTranslationCacheKey != translationCacheKey) {
+                    translationCacheKey = latestTranslationCacheKey
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(translationCacheKey = latestTranslationCacheKey)
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "转写期间翻译配置已变更，翻译阶段应用最新配置",
+                        diagnosticContext = mapOf(
+                            "处理流程" to ui.value.processingFlow.name,
+                            "翻译配置身份已刷新" to "是",
+                            "原文时间轴" to "复用当前转写结果",
+                        ),
+                    )
+                }
             }
 
             val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
