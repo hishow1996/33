@@ -3005,7 +3005,15 @@ class PlaybackService : MediaSessionService() {
             cookie = remoteMediaCookie,
             localMediaIdentityKey = localMediaIdentityKey,
         )
-        val canRestoreStoredResult = resumeState == null && importedLines == null && key.isNotBlank()
+        val localMediaChangedForActiveSession =
+            localUri != null &&
+                key == videoKey &&
+                activeLocalMediaIdentityKey != null &&
+                activeLocalMediaIdentityKey != localMediaIdentityKey
+        // Engine-setting restarts may carry a subtitle snapshot from the mounted local file.
+        // If the URI now resolves to different metadata, that snapshot belongs to the prior file.
+        val requestedResumeState = if (localMediaChangedForActiveSession) null else resumeState
+        val canRestoreStoredResult = requestedResumeState == null && importedLines == null && key.isNotBlank()
         // A matching snapshot may belong to an older run of the current configuration. Compare
         // against the latest successful run first; if any engine domain changed, restart from the
         // latest successful snapshot instead of treating that older matching snapshot as "unchanged".
@@ -3068,8 +3076,8 @@ class PlaybackService : MediaSessionService() {
                 stateForEngineRestart(fallbackSnapshot.state, fallbackRestartStage)
             else -> fallbackSnapshot.state
         }
-        val effectiveResumeState = resumeState ?: reusableSnapshot?.state ?: fallbackResumeState
-        val restoreCompletedSnapshot = restoreReadySnapshot ||
+        val effectiveResumeState = requestedResumeState ?: reusableSnapshot?.state ?: fallbackResumeState
+        val restoreCompletedSnapshot = (restoreReadySnapshot && !localMediaChangedForActiveSession) ||
             reusableSnapshot != null ||
             (!engineConfigChangedSinceLastSuccess &&
                 fallbackSnapshot != null && fallbackCanBeCompared && fallbackRestartStage == null)
@@ -3084,7 +3092,8 @@ class PlaybackService : MediaSessionService() {
                 ))
         // Keep the current source mounted during a same-video stage restart. In particular,
         // do not reopen a time-limited webpage HLS URL merely to regenerate subtitles or speech.
-        val reuseMountedMedia = (effectiveResumeState != null || reuseMountedMediaForRestart) &&
+        val reuseMountedMedia = !localMediaChangedForActiveSession &&
+            (effectiveResumeState != null || reuseMountedMediaForRestart) &&
             key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
