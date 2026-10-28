@@ -1079,6 +1079,29 @@ internal fun openAiCompatEndpoint(baseUrl: String, path: String): String {
     }
 }
 
+/**
+ * The official Zhipu model catalog can omit a published model even though the documented
+ * model ID remains callable. Keep GLM-4.7-Flash selectable for the official mainland endpoint;
+ * the normal connection test still determines whether the current key can invoke it.
+ */
+internal fun mergeKnownZhipuModels(baseUrl: String, serverModels: List<String>): List<String> {
+    val host = runCatching {
+        java.net.URI(baseUrl.trim()).host.orEmpty().lowercase(java.util.Locale.ROOT).trimEnd('.')
+    }.getOrDefault("")
+    val result = serverModels
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinctBy { it.lowercase(java.util.Locale.ROOT) }
+        .toMutableList()
+
+    if (host == "open.bigmodel.cn" &&
+        result.none { it.equals("glm-4.7-flash", ignoreCase = true) }
+    ) {
+        result += "glm-4.7-flash"
+    }
+    return result.sorted()
+}
+
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
 class OpenAiCompatEngine(
     private val baseUrl: String,
@@ -1224,8 +1247,15 @@ class OpenAiCompatEngine(
 
     override suspend fun listModels(): List<String> {
         val body = get(endpoint("/models"), mapOf("Authorization" to "Bearer $apiKey"), currentCoroutineContext()[Job])
-        val arr = JSONObject(body).optJSONArray("data") ?: return emptyList()
-        return (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.sorted()
+        val arr = JSONObject(body).optJSONArray("data")
+        val serverModels = if (arr == null) {
+            emptyList()
+        } else {
+            (0 until arr.length())
+                .map { arr.getJSONObject(it).optString("id").trim() }
+                .filter { it.isNotEmpty() }
+        }
+        return mergeKnownZhipuModels(baseUrl, serverModels)
     }
 
     override suspend fun translate(lines: List<String>, srcLang: String, tgtLang: String): List<String> =
