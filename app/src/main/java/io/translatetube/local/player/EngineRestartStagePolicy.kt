@@ -18,6 +18,21 @@ internal data class EngineConfigFingerprints(
 )
 
 internal object EngineRestartStagePolicy {
+    fun hasRelevantConfigChange(
+        previous: EngineConfigFingerprints,
+        current: EngineConfigFingerprints,
+        processingFlow: ProcessingFlow?,
+        ignoreTranscription: Boolean,
+    ): Boolean {
+        val importedFlow = processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+            processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+        val transcriptionChanged = !ignoreTranscription && !importedFlow &&
+            previous.transcription != current.transcription
+        return transcriptionChanged ||
+            previous.translation != current.translation ||
+            previous.dubbing != current.dubbing
+    }
+
     fun choose(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,
