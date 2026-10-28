@@ -19,6 +19,9 @@ internal enum class YouTubeSubtitleLanguageMode(val preferenceValue: String) {
 internal object YouTubeSubtitleSelectionPolicy {
     const val PREF_KEY = "youtube_subtitle_language_mode"
     const val DEFAULT_MODE = "english"
+    const val SESSION_POLICY_VERSION = 2
+    const val SOURCE_CACHE_VERSION = 8
+    const val TRANSLATION_CACHE_VERSION = 2
 
     fun modeFromPreference(value: String?): YouTubeSubtitleLanguageMode =
         YouTubeSubtitleLanguageMode.fromPreference(value)
@@ -32,7 +35,7 @@ internal object YouTubeSubtitleSelectionPolicy {
      */
     fun modeFingerprintEntry(videoKey: String?, storedValue: String?): String? {
         if (!modeAppliesToVideo(videoKey)) return null
-        return "$PREF_KEY=${modeFromPreference(storedValue).preferenceValue}"
+        return "$PREF_KEY=${modeFromPreference(storedValue).preferenceValue};policy=$SESSION_POLICY_VERSION"
     }
 
     private val undeterminedTags = setOf("und", "mul", "zxx", "auto", "unknown", "undefined")
@@ -98,6 +101,23 @@ internal object YouTubeSubtitleSelectionPolicy {
     fun matchesSourceLanguage(sourceLanguageTag: String?, subtitleLanguageTag: String?): Boolean {
         val source = normalizeLanguageCode(sourceLanguageTag) ?: return false
         return normalizeLanguageCode(subtitleLanguageTag) == source
+    }
+
+    /**
+     * Eligibility is intentionally stricter than display ranking:
+     * English mode must never silently consume an original-language caption, and original mode
+     * must never silently consume an English/translated caption when the source is another language.
+     * A missing eligible caption is handled by the caller through audio transcription.
+     */
+    fun isEligibleSubtitleTrack(
+        mode: YouTubeSubtitleLanguageMode,
+        sourceLanguageTag: String?,
+        subtitleLanguageTag: String?,
+    ): Boolean = when (mode) {
+        YouTubeSubtitleLanguageMode.PREFER_ENGLISH ->
+            normalizeLanguageCode(subtitleLanguageTag) == "en"
+        YouTubeSubtitleLanguageMode.MATCH_ORIGINAL ->
+            matchesSourceLanguage(sourceLanguageTag, subtitleLanguageTag)
     }
 
     /**
