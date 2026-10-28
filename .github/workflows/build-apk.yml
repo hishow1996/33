@@ -232,3 +232,5 @@ jobs:
 # Explicit retry after fixing missing batchSize in translation fallback test (2026-10-28).
 
 # Explicit user-requested APK build trigger (2026-10-28 18:30 Asia/Tokyo).
+
+# Retry APK build after fixing PlaybackService stale-handler returns (2026-10-28).
