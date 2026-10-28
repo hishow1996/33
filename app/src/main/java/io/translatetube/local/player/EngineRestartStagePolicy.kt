@@ -71,10 +71,11 @@ internal object EngineRestartStagePolicy {
             previous.translation != current.translation
         ) {
             if (!hasLines) return null
-            return if (
-                sourceLanguageIsChinese ||
-                processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-            ) EngineRestartStage.DUBBING else EngineRestartStage.TRANSLATION
+            return if (sourceLanguageIsChinese) {
+                EngineRestartStage.DUBBING
+            } else {
+                EngineRestartStage.TRANSLATION
+            }
         }
 
         if (previous.dubbing != current.dubbing) {
