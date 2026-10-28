@@ -2816,6 +2816,9 @@ class PlaybackService : MediaSessionService() {
             key == videoKey && ui.value.key == key && playerReady && ::pm.isInitialized
         // Invalidate prior work even when the same History row reopens the same video key.
         val pipelineGeneration = beginPipelineGeneration()
+        // A delayed resume from an earlier seek must not restart the previous playback while this
+        // request is rebuilding the subtitle/dubbing pipeline.
+        cancelPendingSeekResume()
         if (!playerReady || !::pm.isInitialized) {
             ui.update {
                 it.copy(phase = Phase.ERROR, progress = "", error = it.error ?: "播放器服务未初始化成功，请返回主页后重试")
@@ -3599,6 +3602,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             return
         }
 
+        // Keep a pending playback-resume retry from waking the old timeline while the imported
+        // external translation is matched and fresh dubbing is prepared.
+        cancelPendingSeekResume()
         scope.launch {
             try {
                 val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -3772,6 +3778,8 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             )
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        // Prevent a previously queued seek-resume callback from restarting playback during import.
+        cancelPendingSeekResume()
         // An explicit subtitle import starts a new synthesis run, even when its content matches
         // the previous import. Remove the ready snapshot first so an interrupted import cannot
         // silently restore the old imported result.
@@ -4148,6 +4156,8 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
     fun importSubtitles(uri: Uri) {
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        // Prevent a delayed resume callback from restarting source playback during fresh translation/synthesis.
+        cancelPendingSeekResume()
         // Explicit subtitle import replaces the previous ready result for this video.
         if (sessionKey.isNotBlank()) {
             ReadyHistorySessionConfigStore.remove(this, sessionKey)
