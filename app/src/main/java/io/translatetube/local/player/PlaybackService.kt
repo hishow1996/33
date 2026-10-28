@@ -6567,46 +6567,79 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         )
                     } else state
                 }
-                // Translation settings are normally snapshotted while the source stage is being
-                // prepared. If only a downstream setting changed during ASR, honor the latest
-                // translator here rather than using the old API/model and cache identity captured
-                // before transcription started.
-                val latestTranslationId = settingsPrefs.getLong("active_api_id", -1L)
-                val latestProviderFingerprint = translationProviderFingerprint(latestTranslationId)
-                val latestBaseTranslationCacheKey = TranslationCacheIdentity.forProvider(
-                    baseKey = cacheKeyBase,
-                    activeId = latestTranslationId,
-                    importedLines = sourceImportedLines,
-                    previousKey = resumeState?.translationCacheKey,
-                    providerFingerprint = latestProviderFingerprint,
-                )
-                val latestBaseModeAwareTranslationCacheKey = when {
-                    !sourceImportedLines.isNullOrEmpty() -> latestBaseTranslationCacheKey
-                    asrProvider == "local" -> "$latestBaseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
-                    else -> "$latestBaseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
+            }
+
+            // The engine may change while subtitles are being discovered, fetched, or transcribed.
+            // Refresh the provider identity for every source path, not only the ASR path: otherwise
+            // an already-loaded translation cache from the previous engine can survive a deferred
+            // settings change and be shown as if it came from the newly selected engine.
+            val latestTranslationId = settingsPrefs.getLong("active_api_id", -1L)
+            val latestProviderFingerprint = translationProviderFingerprint(latestTranslationId)
+            val latestBaseTranslationCacheKey = TranslationCacheIdentity.forProvider(
+                baseKey = cacheKeyBase,
+                activeId = latestTranslationId,
+                importedLines = sourceImportedLines,
+                previousKey = resumeState?.translationCacheKey,
+                providerFingerprint = latestProviderFingerprint,
+            )
+            val latestBaseModeAwareTranslationCacheKey = when {
+                !sourceImportedLines.isNullOrEmpty() -> latestBaseTranslationCacheKey
+                asrProvider == "local" -> "$latestBaseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
+                else -> "$latestBaseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
+            }
+            val latestTranslationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                "$latestBaseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
+            } else {
+                latestBaseModeAwareTranslationCacheKey
+            }
+            val translationIdentityChanged = latestTranslationId != selectedTranslationId ||
+                latestProviderFingerprint != providerFingerprint ||
+                latestTranslationCacheKey != translationCacheKey
+            selectedTranslationId = latestTranslationId
+            if (translationIdentityChanged) {
+                val previousTranslationCacheKey = translationCacheKey
+                translationCacheKey = latestTranslationCacheKey
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(translationCacheKey = latestTranslationCacheKey)
                 }
-                val latestTranslationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
-                    "$latestBaseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
-                } else {
-                    latestBaseModeAwareTranslationCacheKey
-                }
-                selectedTranslationId = latestTranslationId
-                if (latestTranslationCacheKey != translationCacheKey) {
-                    translationCacheKey = latestTranslationCacheKey
-                    updateUiForSession(key, pipelineGeneration) {
-                        it.copy(translationCacheKey = latestTranslationCacheKey)
+
+                // A cache queried under the old provider identity is never eligible after a switch.
+                // Check only the new provider's cache; if it is missing, continue from source rows.
+                if (resumeState == null && previousTranslationCacheKey != latestTranslationCacheKey) {
+                    val latestStoredTranslationCache = db.subtitleCacheDao().get(latestTranslationCacheKey)
+                    cached = latestStoredTranslationCache?.takeIf { isUsableTranslationCache(it.linesJson) }
+                    if (latestStoredTranslationCache != null && cached == null) {
+                        db.subtitleCacheDao().delete(latestTranslationCacheKey)
                     }
-                    io.translatetube.local.util.AppLogStore.info(
-                        this@PlaybackService,
-                        "PlaybackFlow",
-                        "转写期间翻译配置已变更，翻译阶段应用最新配置",
-                        diagnosticContext = mapOf(
-                            "处理流程" to ui.value.processingFlow.name,
-                            "翻译配置身份已刷新" to "是",
-                            "原文时间轴" to "复用当前转写结果",
-                        ),
-                    )
+                    if (
+                        cached == null &&
+                        lines == null &&
+                        sourceImportedLines.isNullOrEmpty() &&
+                        !restoredSourceLines.isNullOrEmpty()
+                    ) {
+                        lines = restoredSourceLines
+                        srcLang = restoredSourceLang
+                            ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                                restoredSourceLines.asSequence().map { it.text }.asIterable()
+                            )
+                    }
                 }
+                io.translatetube.local.util.AppLogStore.info(
+                    this@PlaybackService,
+                    "PlaybackFlow",
+                    if (sourceTranscriptProducedInThisRun) {
+                        "转写期间翻译配置已变更，翻译阶段应用最新配置"
+                    } else {
+                        "字幕准备期间翻译配置已变更，缓存已按新配置重新校验"
+                    },
+                    diagnosticContext = mapOf(
+                        "处理流程" to ui.value.processingFlow.name,
+                        "翻译配置身份已刷新" to "是",
+                        "原文时间轴" to if (lines != null) "已保留" else "未生成新的原文行",
+                        "是否沿用旧翻译缓存" to "否",
+                        "是否命中新配置缓存" to (cached != null).toString(),
+                    ),
+                )
             }
 
             val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
