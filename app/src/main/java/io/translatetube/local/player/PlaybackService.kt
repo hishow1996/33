@@ -6332,6 +6332,24 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             }
 
             if (sourceTranscriptProducedInThisRun) {
+                // The ASR result and its source cache are now durable. Publish the timeline and
+                // move the UI into TRANSLATING before reading downstream settings. Otherwise a
+                // translator change in this narrow gap is mistaken for an in-flight ASR change,
+                // and the watcher may defer it even though the translator/cache key was already read.
+                val completedSourceLines = lines.orEmpty()
+                updateUiForSession(key, pipelineGeneration) { state ->
+                    if (state.key == key) {
+                        state.copy(
+                            phase = Phase.TRANSLATING,
+                            lines = completedSourceLines,
+                            totalLines = completedSourceLines.size,
+                            translatedLineCount = completedSourceLines.count { !it.zh.isNullOrBlank() },
+                            sourceLang = srcLang,
+                            progress = "原文字幕已就绪，正在准备中文翻译…",
+                            error = null,
+                        )
+                    } else state
+                }
                 // Translation settings are normally snapshotted while the source stage is being
                 // prepared. If only a downstream setting changed during ASR, honor the latest
                 // translator here rather than using the old API/model and cache identity captured
