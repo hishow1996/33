@@ -438,6 +438,11 @@ data class PlayerUiState(
     val isPlaying: Boolean = false,
     /** 播放器正在加载/缓冲视频；网络慢或首次加载时界面显示转圈。 */
     val isBuffering: Boolean = false,
+    /**
+     * 配音已开启，但当前正在播放的这句字幕的中文配音还没合成好（既没就绪也没判定失败），
+     * 此时播放的是原声；界面据此告诉用户原因，而不是让用户对着没有中文声音的字幕干等。
+     */
+    val dubbingCuePending: Boolean = false,
     /** 本次加载中播放器因网络错误自动重试的次数（真实的加载错误回调计数）。 */
     val loadRetryCount: Int = 0,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
@@ -9034,6 +9039,16 @@ android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
                     } else it
                 }
             }
+        }
+
+        // 与上面"配音尚未就绪"分支同一判定：这句配音既没就绪也没失败，正在播放的只有原声。
+        val dubbingCuePending = d != null && st.dubbingOn &&
+            !keepingPreviousDubbingCue && queuedHead == null &&
+            dubLine >= 0 && !d.isPrepared(dubLine) && !d.isSilent(dubLine)
+        ui.update { state ->
+            if (state.key == st.key && state.dubbingCuePending != dubbingCuePending) {
+                state.copy(dubbingCuePending = dubbingCuePending)
+            } else state
         }
 
         // A pause or dubbing toggle can race with a tick that already captured the previous UI
