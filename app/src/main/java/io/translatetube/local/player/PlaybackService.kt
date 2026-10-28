@@ -1021,6 +1021,26 @@ class PlaybackService : MediaSessionService() {
                         }
                         if (stableFingerprint == processingEngineConfigFingerprint) return@launch
 
+                        // An imported already-translated subtitle file is authoritative input.
+                        // A translator or ASR preference change must not cancel/reopen this flow,
+                        // because there is no translation/ASR stage to rerun. A TTS fingerprint
+                        // change remains relevant and continues through the normal dubbing restart.
+                        val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        val previousDomains = processingEngineDomainFingerprints
+                        if (
+                            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+                            !EngineRestartStagePolicy.hasRelevantConfigChange(
+                                previous = previousDomains,
+                                current = currentDomains,
+                                processingFlow = state.processingFlow,
+                                ignoreTranscription = true,
+                            )
+                        ) {
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = currentDomains
+                            return@launch
+                        }
+
                         val sessionKey = changedSessionKey
                         val restartLocalUri = localUri
                         val restartRemoteUrl = remoteMediaUrl
