@@ -100,6 +100,21 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun importedTranslatedSubtitlesIgnoreTranscriptionChanges() {
+        assertNull(
+            EngineRestartStagePolicy.choose(
+                previous = oldConfig,
+                current = changed(transcription = "asr-b"),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ignoreTranscription = true,
+                hasLines = true,
+                sourceLanguageIsChinese = false,
+                hasMissingTranslation = false,
+            ),
+        )
+    }
+
+    @Test
     fun youtubeCaptionFlowDoesNotRestartTranscriptionForAsrOnlyChange() {
         assertNull(
             EngineRestartStagePolicy.choose(
