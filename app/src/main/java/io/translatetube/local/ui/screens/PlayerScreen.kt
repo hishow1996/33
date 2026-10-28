@@ -1595,13 +1595,18 @@ private fun VideoParsingPage(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    "取消外部翻译并继续应用内翻译",
+                                    "取消外部翻译",
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             },
                             leadingIcon = {
-                                Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
+                                Text(
+                                    "✕",
+                                    color = Color(0xFFE53935),
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
                             },
                             onClick = {
                                 processingSettingsOpen = false
