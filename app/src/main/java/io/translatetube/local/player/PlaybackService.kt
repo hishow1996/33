@@ -523,6 +523,8 @@ class PlaybackService : MediaSessionService() {
     private var dubbingMutationGenerationCounter = 0L
     @Volatile private var activeDubbingMutationGeneration = 0L
     @Volatile private var processingEngineConfigFingerprint = ""
+    // Track the engine domains that produced the current pipeline, even before a first successful snapshot exists.
+    @Volatile private var processingEngineDomainFingerprints = EngineConfigFingerprints("", "", "")
     // Snapshot the configuration that produced the currently completed session. Unlike the
     // preference-listener baseline above, this value must not change just because settings are
     // edited while the READY player is idle on the Home screen.
@@ -899,12 +901,14 @@ class PlaybackService : MediaSessionService() {
     private fun registerProcessingEnginePreferenceWatcher() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
             if (changedKey != null && isProcessingEnginePreferenceKey(changedKey)) {
                 val latestFingerprint = processingEnginePreferenceFingerprint()
                 val current = ui.value
                 if (!shouldRestartForEnginePreferenceChange(current)) {
                     processingEngineConfigFingerprint = latestFingerprint
+                    processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                 } else if (latestFingerprint != processingEngineConfigFingerprint) {
                     // Debounce rapid preference writes so a single settings change restarts the
                     // pipeline once, using the final selected ASR/translation/TTS configuration.
@@ -924,6 +928,7 @@ class PlaybackService : MediaSessionService() {
                             state.key != changedSessionKey
                         ) {
                             processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                             return@launch
                         }
                         if (stableFingerprint == processingEngineConfigFingerprint) return@launch
@@ -998,25 +1003,37 @@ class PlaybackService : MediaSessionService() {
                         // restart at the earliest affected stage. A translation-engine switch
                         // reuses the source transcript/timestamps but clears old Chinese text;
                         // a TTS-only switch keeps the validated translation and rebuilds speech.
-                        val canResumeFailedOrReadyState =
-                            state.phase in setOf(Phase.READY, Phase.ERROR) &&
+                        // A model can change while translation or synthesis is still running.
+                        // Reuse the source timeline in those phases too; relying only on a successful
+                        // history snapshot forced first-time/in-progress videos back to stage 1.
+                        val canResumeWithTimeline =
+                            state.phase in setOf(
+                                Phase.READY,
+                                Phase.ERROR,
+                                Phase.TRANSLATING,
+                                Phase.SYNTHESIZING,
+                            ) &&
                                 state.lines.isNotEmpty() &&
                                 state.sourceLang.isNotBlank()
-                        val previousDomains = if (canResumeFailedOrReadyState) {
-                            ReadyHistorySessionConfigStore.savedFingerprints(this@PlaybackService, sessionKey)
+                        // This baseline belongs to the active pipeline, not just the last successful
+                        // run. It enables stage-specific resume even on the first run of this video.
+                        val previousDomains = if (canResumeWithTimeline) {
+                            processingEngineDomainFingerprints
                         } else null
                         val currentDomains = if (previousDomains != null) {
                             ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                         } else null
                         val readyRestartStage = if (previousDomains != null && currentDomains != null) {
-                            val ignoreTranscription = completedReadySessionKey == sessionKey &&
-                                completedReadySessionIgnoresTranscription
+                            val ignoreTranscription =
+                                state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                                    (completedReadySessionKey == sessionKey &&
+                                        completedReadySessionIgnoresTranscription)
                             chooseEngineRestartStage(previousDomains, currentDomains, state, ignoreTranscription)
                         } else null
                         val readyRestartState = readyRestartStage?.let { stage ->
                             stateForEngineRestart(state, stage)
                         }
-                        val canResumeAtStage = canResumeFailedOrReadyState &&
+                        val canResumeAtStage = canResumeWithTimeline &&
                             readyRestartStage != null &&
                             readyRestartState != null
                         val importedRestartLines = if (canResumeAtStage && this@PlaybackService.importedLines != null) {
@@ -1032,6 +1049,10 @@ class PlaybackService : MediaSessionService() {
                                     "播放完成后检测到引擎设置变化，按最早受影响阶段重新处理当前视频"
                                 canResumeAtStage && state.phase == Phase.ERROR ->
                                     "处理失败后检测到引擎设置变化，恢复最早受影响阶段并按新配置重试"
+                                canResumeAtStage && state.phase == Phase.TRANSLATING ->
+                                    "翻译处理中检测到引擎设置变化，复用原文时间轴继续处理"
+                                canResumeAtStage && state.phase == Phase.SYNTHESIZING ->
+                                    "配音处理中检测到引擎设置变化，恢复最早受影响阶段继续处理"
                                 else ->
                                     "处理期间检测到引擎设置变化，按新配置重新处理当前视频"
                             },
@@ -2551,6 +2572,7 @@ class PlaybackService : MediaSessionService() {
             }
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
