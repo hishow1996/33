@@ -640,6 +640,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 onImportSubtitles = { subPicker.launch(arrayOf("*/*")) },
                 onImportTranslatedSubtitles = { translatedSubPicker.launch(arrayOf("*/*")) },
                 onEnableManualTranslation = { PlaybackService.instance?.enableManualSubtitleTranslation() },
+                onCancelManualTranslation = { PlaybackService.instance?.cancelManualSubtitleTranslation() },
                 onExportOriginalSubtitle = { requestOriginalSubtitleExport() },
                 onImportManualTranslatedSubtitle = { manualTranslatedSubPicker.launch(arrayOf("*/*")) },
                 onDownloadSubtitle = { track -> requestSubtitleDownload(track) },
@@ -1266,6 +1267,7 @@ private fun VideoParsingPage(
     onImportSubtitles: () -> Unit,
     onImportTranslatedSubtitles: () -> Unit,
     onEnableManualTranslation: () -> Unit,
+    onCancelManualTranslation: () -> Unit,
     onExportOriginalSubtitle: () -> Unit,
     onImportManualTranslatedSubtitle: () -> Unit,
     onDownloadSubtitle: (SubtitleTrackOption) -> Unit,
@@ -1469,7 +1471,11 @@ private fun VideoParsingPage(
                     DropdownMenuItem(
                         text = {
                             Text(
-                                if (state.manualTranslationModeEnabled) "外部翻译模式已启用" else "启用外部翻译模式",
+                                if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                                    "取消外部翻译并继续应用内翻译"
+                                } else {
+                                    "启用外部翻译模式"
+                                },
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -1477,11 +1483,18 @@ private fun VideoParsingPage(
                         leadingIcon = {
                             Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
                         },
-                        enabled = !state.manualTranslationModeEnabled &&
-                            state.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING),
+                        enabled = if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                            true
+                        } else {
+                            state.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING)
+                        },
                         onClick = {
                             processingSettingsOpen = false
-                            onEnableManualTranslation()
+                            if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                                onCancelManualTranslation()
+                            } else {
+                                onEnableManualTranslation()
+                            }
                         },
                         contentPadding = PaddingValues(horizontal = 14.dp),
                     )
