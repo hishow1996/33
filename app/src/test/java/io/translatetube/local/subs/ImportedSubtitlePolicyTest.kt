@@ -42,4 +42,42 @@ OK""")
         assertEquals("这是中文字幕", cue.translationText)
     }
 
+    @Test
+    fun preservesImportedTranslationWhenRestoringAnAlreadyTranslatedSession() {
+        val restored = ImportedSubtitlePolicy.preserveImportedTranslations(
+            listOf(
+                SubLine(
+                    index = 12,
+                    startMs = 1_200L,
+                    endMs = 1_800L,
+                    text = "Hello there",
+                    zh = "你好",
+                ),
+            ),
+        )
+
+        assertEquals(0, restored.single().index)
+        assertEquals(1_200L, restored.single().startMs)
+        assertEquals(1_800L, restored.single().endMs)
+        assertEquals("Hello there", restored.single().text)
+        assertEquals("你好", restored.single().zh)
+    }
+
+    @Test
+    fun fillsMissingImportedTranslationWithoutRequestingAutomaticTranslation() {
+        val restored = ImportedSubtitlePolicy.preserveImportedTranslations(
+            listOf(
+                SubLine(
+                    index = 9,
+                    startMs = 0L,
+                    endMs = 900L,
+                    text = "你好",
+                    zh = null,
+                ),
+            ),
+        )
+
+        assertEquals("你好", restored.single().zh)
+    }
+
 }
