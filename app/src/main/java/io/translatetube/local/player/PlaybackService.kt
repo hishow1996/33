@@ -1321,7 +1321,9 @@ class PlaybackService : MediaSessionService() {
         // Remember the newest view even if the service/player is still initializing. The
         // successful initialization path will attach it, so an early call cannot be lost.
         requestedVideoSurface = java.lang.ref.WeakReference(tv)
-        val attach = Runnable {
+        var bindAttempts = 0
+        lateinit var attach: Runnable
+        attach = Runnable {
             // A queued request from an older screen must never replace the current surface.
             if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) {
                 return@Runnable
@@ -1335,12 +1337,21 @@ class PlaybackService : MediaSessionService() {
             // Media3 output. Media3 itself tracks SurfaceTexture availability for this view.
             if (boundVideoSurface?.get() === tv) return@Runnable
 
-            runCatching {
+            try {
                 pm.player.setVideoTextureView(tv)
                 boundVideoSurface = java.lang.ref.WeakReference(tv)
-            }.onFailure {
+            } catch (error: Throwable) {
+                if (error is VirtualMachineError || error is ThreadDeath) throw error
                 if (boundVideoSurface?.get() === tv) boundVideoSurface = null
-                android.util.Log.w("PlaybackService", "Attach video surface failed", it)
+                android.util.Log.w("PlaybackService", "Attach video surface failed", error)
+                // A transient renderer/view race should not require leaving and reopening the page.
+                // Retry only the failed bind, at most twice, and only while this remains the latest view.
+                if (bindAttempts < 2 && requestedVideoSurface?.get() === tv &&
+                    tv.isAttachedToWindow && tv.isAvailable
+                ) {
+                    bindAttempts++
+                    surfaceAttachHandler.postDelayed(attach, 200L)
+                }
             }
         }
         // Avoid an unnecessary main-loop delay when called from Compose/View lifecycle callbacks.
