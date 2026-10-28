@@ -4133,9 +4133,17 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
     fun importSubtitles(uri: Uri) {
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        // Explicit subtitle import replaces the previous ready result for this video.
+        if (sessionKey.isNotBlank()) {
+            ReadyHistorySessionConfigStore.remove(this, sessionKey)
+        }
+        this.importedLines = null
         val resumePlaybackAfterImport = ::pm.isInitialized &&
             runCatching { pm.player.playWhenReady }.getOrDefault(false)
-        if (::pm.isInitialized) pm.pause()
+        if (::pm.isInitialized) {
+            pm.pause()
+            runCatching { pm.seekTo(0L) }
+        }
         subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
         prepJob?.cancel()
         prepJob = null
@@ -4155,6 +4163,15 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
             try {
+                if (sessionKey.isNotBlank()) {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            AppDatabase.get(this@PlaybackService).videoDao().setWatched(sessionKey, 0L)
+                        }
+                    }.onFailure {
+                        android.util.Log.w("PlaybackService", "Unable to reset watch position before subtitle import", it)
+                    }
+                }
                 updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         phase = Phase.PARSING,
@@ -4164,6 +4181,8 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         noModelHint = null,
                         dubbingHasErrors = false,
                         translatedLineCount = 0,
+                        preparedUntil = 0,
+                        preparedCount = 0,
                         activeDubbingLine = -1,
                         currentLine = -1,
                         waitingForTranscriptionEngine = false,
@@ -4389,7 +4408,12 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
-                    d.attach(tts, translatedLines, sourceLanguage = srcLang)
+                    d.attach(
+                        tts,
+                        translatedLines,
+                        sourceLanguage = srcLang,
+                        forceRegenerateDubbing = true,
+                    )
                 } catch (e: Exception) {
                     retireDubbing(d)
                     runCatching { tts.close() }
@@ -4463,7 +4487,7 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 if (resumePlaybackAfterImport) {
                     withContext(Dispatchers.Main) {
                         ensureCurrentSession(sessionKey, pipelineGeneration)
-                        startPlaybackWithMountedDubbing(null) {
+                        startPlaybackWithMountedDubbing(0L) {
                             ensureCurrentSession(sessionKey, pipelineGeneration)
                         }
                     }
