@@ -3687,13 +3687,10 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         }
         retireCurrentDubbing()
         prepJob = scope.launch {
-            pipelineExecutionMutex.withLock {
             try {
-                if (::pm.isInitialized) {
-                    // Update the mixer as well as UI state; the bus may still be disabled from
-                    // the previously playing session and would otherwise silence synthesized PCM.
-                    pm.dubbingBus.setDubbingEnabled(true)
-                }
+                // Parsing user-provided subtitle text is independent of the shared TTS runtime.
+                // Do it before taking the pipeline mutex so a canceled translation/native
+                // inference can unwind in parallel instead of making the import appear stuck.
                 val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val text = withContext(Dispatchers.IO) {
                     val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -3744,9 +3741,19 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         subtitleTrackStatus = "已导入已翻译字幕；此流程会跳过自动翻译。",
                     )
                 }
-                awaitRetiredDubbingEngines()
-                ensureCurrentSession(sessionKey, pipelineGeneration)
-                val tts = makeTtsOffMainThread()
+
+                // Serialize only engine replacement and synthesis. The translated cues and their
+                // timestamps are already validated, so the UI can leave the old translation stage
+                // while a previous native inference finishes unwinding.
+                pipelineExecutionMutex.withLock {
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    if (::pm.isInitialized) {
+                        // The bus may still be disabled from the previously playing session.
+                        pm.dubbingBus.setDubbingEnabled(true)
+                    }
+                    awaitRetiredDubbingEngines()
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
+                    val tts = makeTtsOffMainThread()
                 try {
                     ensureCurrentSession(sessionKey, pipelineGeneration)
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -3877,6 +3884,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         ),
                     )
                 }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -3900,7 +3908,6 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                         if (videoKey == sessionKey && ui.value.key == sessionKey) pm.play()
                     }
                 }
-            }
             }
         }
     }
