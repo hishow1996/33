@@ -359,7 +359,10 @@ private object ReadyHistorySessionConfigStore {
         // The history row keeps only the media URL, not the page-origin or cookie scope. Without
         // a matching scoped snapshot, settings-only metadata cannot prove this is the same media
         // session, so never advertise an immediate READY restore for a remote URL.
-        if (videoKey.startsWith("remote:", ignoreCase = true)) return false
+        if (
+            videoKey.startsWith("remote:", ignoreCase = true) ||
+            videoKey.startsWith("local:", ignoreCase = true)
+        ) return false
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
         val saved = prefs.getString(key, null) ?: return false
@@ -628,6 +631,7 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var videoKey = ""
     private var videoId: String? = null
     private var localUri: Uri? = null
+    @Volatile private var activeLocalMediaIdentityKey: String? = null
     private var remoteMediaUrl: String? = null
     private var remoteMediaTitle: String = ""
     private var remoteMediaReferrer: String = ""
@@ -731,15 +735,23 @@ class PlaybackService : MediaSessionService() {
             remoteMediaUrl: String? = null,
             remoteMediaReferrer: String? = null,
             remoteMediaCookie: String? = null,
+            localMediaUri: String? = null,
         ): Boolean {
             val effectiveRemoteUrl = remoteMediaUrl ?: key
                 .takeIf { it.startsWith("remote:", ignoreCase = true) }
                 ?.removePrefix("remote:")
+            val effectiveLocalUri = localMediaUri ?: key
+                .takeIf { it.startsWith("local:", ignoreCase = true) }
+                ?.removePrefix("local:")
+            val localIdentity = effectiveLocalUri?.let { raw ->
+                runCatching { LocalMediaCacheIdentity.identityKey(context, Uri.parse(raw)) }.getOrNull()
+            }
             val snapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
                 videoKey = key,
                 remoteMediaUrl = effectiveRemoteUrl,
                 referrer = remoteMediaReferrer.orEmpty(),
                 cookie = remoteMediaCookie,
+                localMediaIdentityKey = localIdentity,
             )
             return ReadyHistorySessionConfigStore.matches(
                 context,
@@ -794,11 +806,14 @@ class PlaybackService : MediaSessionService() {
             state.dubbingHasErrors
         ) return false
 
+        val currentLocalIdentity = localUri?.let { LocalMediaCacheIdentity.identityKey(this, it) }
+        if (localUri != null && currentLocalIdentity != activeLocalMediaIdentityKey) return false
         val currentRemoteSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
             videoKey = key,
             remoteMediaUrl = remoteMediaUrl,
             referrer = remoteMediaReferrer,
             cookie = remoteMediaCookie,
+            localMediaIdentityKey = currentLocalIdentity,
         )
         val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(
             this, key, identityKey = currentRemoteSnapshotIdentityKey,
@@ -1211,11 +1226,15 @@ class PlaybackService : MediaSessionService() {
                         // If this exact engine combination has completed successfully before, restore
                         // that result directly. A subtitle-mode change is the exception: it requires
                         // rediscovering YouTube captions, even if an older successful snapshot exists.
+                        val restartLocalMediaIdentity = restartLocalUri?.let {
+                            LocalMediaCacheIdentity.identityKey(this@PlaybackService, it)
+                        }
                         val liveSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
                             videoKey = sessionKey,
                             remoteMediaUrl = restartRemoteUrl,
                             referrer = restartRemoteReferrer,
                             cookie = restartRemoteCookie,
+                            localMediaIdentityKey = restartLocalMediaIdentity,
                         )
                         val matchingSuccessfulSnapshot =
                             ReadySessionSnapshotStore.findForCurrentConfig(
@@ -2978,11 +2997,13 @@ class PlaybackService : MediaSessionService() {
         forceRegenerateDubbing: Boolean = false,
         forceYouTubeSubtitleRefresh: Boolean = false,
     ) {
+        val localMediaIdentityKey = localUri?.let { LocalMediaCacheIdentity.identityKey(this, it) }
         val readySnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
             videoKey = key,
             remoteMediaUrl = remoteMediaUrl,
             referrer = remoteMediaReferrer,
             cookie = remoteMediaCookie,
+            localMediaIdentityKey = localMediaIdentityKey,
         )
         val canRestoreStoredResult = resumeState == null && importedLines == null && key.isNotBlank()
         // A matching snapshot may belong to an older run of the current configuration. Compare
@@ -3102,6 +3123,7 @@ class PlaybackService : MediaSessionService() {
         qualityRecoveryAttempted = false
         retireCurrentDubbing()
         this.videoKey = key; this.videoId = videoId; this.localUri = localUri
+        this.activeLocalMediaIdentityKey = localMediaIdentityKey
         this.remoteMediaUrl = remoteMediaUrl
         this.remoteMediaTitle = remoteMediaTitle
         this.remoteMediaReferrer = remoteMediaReferrer
@@ -3138,9 +3160,12 @@ class PlaybackService : MediaSessionService() {
         val activeTranslationId = getSharedPreferences("settings", MODE_PRIVATE).getLong("active_api_id", -1L)
         // Match the session isolation used by the downloaded-audio cache. A signed URL can
         // serve different private media to different cookie sessions or page origins.
-        val cacheKeyBase = remoteMediaUrl?.let {
-            MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
-        } ?: key
+        val cacheKeyBase = when {
+            remoteMediaUrl != null ->
+                MediaUrlCacheIdentity.remoteSessionKey(remoteMediaUrl, remoteMediaReferrer, remoteMediaCookie)
+            localMediaIdentityKey != null -> localMediaIdentityKey
+            else -> key
+        }
         val effectiveTranslationCacheKey = TranslationCacheIdentity.forProvider(
             baseKey = cacheKeyBase,
             activeId = activeTranslationId,
@@ -3368,6 +3393,7 @@ class PlaybackService : MediaSessionService() {
                     pipelineGeneration = pipelineGeneration,
                     requestedVideoId = videoId,
                     localUri = localUri,
+                    requestedLocalMediaIdentityKey = localMediaIdentityKey,
                     resumeState = pipelineResumeState,
                     sourceImportedLines = importedLinesSnapshot,
                     requestedRemoteMediaUrl = remoteMediaUrl,
@@ -4390,6 +4416,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                             remoteMediaUrl = this@PlaybackService.remoteMediaUrl,
                             referrer = this@PlaybackService.remoteMediaReferrer,
                             cookie = this@PlaybackService.remoteMediaCookie,
+                            localMediaIdentityKey = this@PlaybackService.activeLocalMediaIdentityKey,
                         ),
                     )
                     completedReadySessionKey = sessionKey
@@ -5109,6 +5136,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         pipelineGeneration: Long,
         requestedVideoId: String?,
         localUri: Uri?,
+        requestedLocalMediaIdentityKey: String? = null,
         resumeState: PlayerUiState? = null,
         sourceImportedLines: List<SubLine>? = null,
         requestedRemoteMediaUrl: String? = null,
@@ -5346,9 +5374,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // remains unchanged so the original page can still be resumed from local history.
             // Match the session isolation used by the downloaded-audio cache. A signed URL can
             // serve different private media to different cookie sessions or page origins.
-            val cacheKeyBase = remoteMediaUrl?.let {
-                MediaUrlCacheIdentity.remoteSessionKey(it, remoteMediaReferrer, remoteMediaCookie)
-            } ?: key
+            val cacheKeyBase = when {
+                remoteMediaUrl != null ->
+                    MediaUrlCacheIdentity.remoteSessionKey(remoteMediaUrl, remoteMediaReferrer, remoteMediaCookie)
+                localUri != null ->
+                    requestedLocalMediaIdentityKey
+                        ?: LocalMediaCacheIdentity.identityKey(this@PlaybackService, localUri)
+                else -> key
+            }
             val providerFingerprint = translationProviderFingerprint(selectedTranslationId)
             val settingsPrefs = getSharedPreferences("settings", MODE_PRIVATE)
             val storedAsrProvider = settingsPrefs.getString("asr_provider", "local") ?: "local"
@@ -5402,7 +5435,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     "$cacheKeyBase|source|remote-asr-$localAsrModelId-timed-v3"
                 remoteMediaUrl != null -> "$cacheKeyBase|source|remote-asr-$asrCacheIdentity-timed-v4"
                 localUri != null && asrProvider == "local" ->
-                    "$key|source|local-asr-$localAsrModelId-timed-v3"
+                    "$cacheKeyBase|source|local-asr-$localAsrModelId-timed-v3"
+                localUri != null ->
+                    "$cacheKeyBase|source|local-asr-$asrCacheIdentity-timed-v4"
                 else -> "$key|source|local-asr-$asrCacheIdentity-timed-v4"
             }
             // Keep downloaded YouTube caption tracks separate from ASR transcripts. Fallback

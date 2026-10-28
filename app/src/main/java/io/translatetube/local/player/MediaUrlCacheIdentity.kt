@@ -156,8 +156,11 @@ internal object MediaUrlCacheIdentity {
         remoteMediaUrl: String?,
         referrer: String,
         cookie: String?,
+        localMediaIdentityKey: String? = null,
     ): String = remoteMediaUrl?.takeIf { it.isNotBlank() }?.let {
         "remote-snapshot:${remoteSessionKey(it, referrer, cookie)}"
+    } ?: localMediaIdentityKey?.takeIf { it.isNotBlank() }?.let {
+        "local-snapshot:$it"
     } ?: videoKey
 
     /** Downloaded-audio identity uses the same scope but a separate namespace. */

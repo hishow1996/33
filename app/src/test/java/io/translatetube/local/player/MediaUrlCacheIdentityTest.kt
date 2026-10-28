@@ -161,6 +161,23 @@ class MediaUrlCacheIdentityTest {
     }
 
     @Test
+    fun readySnapshotIdentityUsesLocalMediaMetadataIdentity() {
+        val videoKey = "local:content://media/external/video/media/99"
+        val first = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, null, "", null, "local-media-v1:abc",
+        )
+        val same = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, null, "", null, "local-media-v1:abc",
+        )
+        val changedFile = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, null, "", null, "local-media-v1:def",
+        )
+        assertEquals(first, same)
+        assertNotEquals(first, changedFile)
+        assertTrue(first.startsWith("local-snapshot:"))
+    }
+
+    @Test
     fun audioCacheIsStableForRotatingSignaturesButScopedToCookieSessionAndPageOrigin() {
         val urlA = "https://cdn.example/video.mp4?token=old"
         val urlB = "https://cdn.example/video.mp4?token=new"

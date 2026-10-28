@@ -402,6 +402,7 @@ class MainActivity : ComponentActivity() {
                                                     remoteMediaUrl = cleanRequest.mediaUrl,
                                                     remoteMediaReferrer = cleanRequest.mediaReferrer,
                                                     remoteMediaCookie = cleanRequest.mediaCookie,
+                                                    localMediaUri = cleanRequest.localUri,
                                                 )
                                         rememberPlayRequest(
                                             cleanRequest.copy(
@@ -587,6 +588,7 @@ class MainActivity : ComponentActivity() {
                                                 remoteMediaUrl = cleanRequest.mediaUrl,
                                                 remoteMediaReferrer = cleanRequest.mediaReferrer,
                                                 remoteMediaCookie = cleanRequest.mediaCookie,
+                                                localMediaUri = cleanRequest.localUri,
                                             )
                                         rememberPlayRequest(
                                             cleanRequest.copy(showPlayerWhileRestoringHistory = showPlayerWhileRestoringHistory),
