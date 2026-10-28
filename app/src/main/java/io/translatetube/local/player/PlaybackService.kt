@@ -3286,38 +3286,104 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
     }
 
     /**
-     * Cancel external-translation waiting and continue with the configured in-app translator.
-     * Complete the waiter with null instead of cancelling the processing job, so the five-stage
-     * pipeline can fall through to its normal translation path.
+     * Leave external-translation waiting and continue with the configured in-app translator.
+     * Prefer releasing the live waiter so the existing pipeline resumes without reparsing.
+     * If the UI says it is waiting but the waiter/pipeline is gone, reopen at TRANSLATING with
+     * the original cues and the already-mounted media instead of leaving the task permanently stuck.
      */
     fun cancelManualSubtitleTranslation() {
         val current = ui.value
         val key = current.key
         if (key.isBlank()) return
 
+        val waiter = manualTranslationWaiters[key]
+        val savedSourceLines = manualTranslationSources[key]
         val requested = manualTranslationRequestedKeys.remove(key)
         val wasEnabled = current.manualTranslationModeEnabled || current.manualTranslationWaiting
         if (!requested && !wasEnabled) return
 
-        // A null result releases awaitManualSubtitleTranslation without treating source-only
-        // subtitles as a successful external translation.
-        manualTranslationWaiters[key]?.complete(null)
+        // Completing with null means "continue through the in-app translation branch", not
+        // "external translation succeeded". Do not cancel a live prepJob: it owns the full pipeline.
+        waiter?.complete(null)
         manualTranslationSources.remove(key)
+
+        val waitingForExternalResult = current.manualTranslationWaiting
+        val pipelineAlive = prepJob?.isActive == true
+        val shouldRestartTranslationStage = waitingForExternalResult &&
+            (waiter == null || !pipelineAlive) &&
+            videoKey == key &&
+            ui.value.key == key
 
         updateUiForSession(key) {
             it.copy(
                 manualTranslationModeEnabled = false,
                 manualTranslationWaiting = false,
-                subtitleTrackStatus = "已取消外部翻译模式，继续使用应用内翻译。",
-                progress = if (current.manualTranslationWaiting) "正在恢复应用内翻译…" else it.progress,
-                translatedLineCount = if (current.manualTranslationWaiting) 0 else it.translatedLineCount,
+                subtitleTrackStatus = "已切回应用内翻译",
+                progress = if (waitingForExternalResult) "正在恢复应用内翻译…" else it.progress,
+                translatedLineCount = if (waitingForExternalResult) 0 else it.translatedLineCount,
             )
         }
+
+        if (shouldRestartTranslationStage) {
+            // The waiter may be stale if its owning pipeline already ended. Remove only that
+            // exact instance, then restart from the source cues; never keep the old completed
+            // deferred around for a later attempt on the same video key.
+            if (waiter != null) manualTranslationWaiters.remove(key, waiter)
+            val sourceLines = (savedSourceLines ?: current.lines).mapIndexed { index, line ->
+                line.copy(index = index, zh = null)
+            }
+            val resumeState = current.copy(
+                phase = Phase.TRANSLATING,
+                lines = sourceLines,
+                totalLines = sourceLines.size,
+                translatedLineCount = 0,
+                manualTranslationModeEnabled = false,
+                manualTranslationWaiting = false,
+                progress = "正在启动应用内翻译…",
+                subtitleTrackStatus = "已切回应用内翻译",
+                error = null,
+            )
+            io.translatetube.local.util.AppLogStore.warning(
+                this,
+                "Translation",
+                "外部翻译等待任务已失效，重新启动应用内翻译阶段",
+                diagnosticContext = mapOf(
+                    "视频来源" to when {
+                        key.startsWith("youtube:") -> "YouTube"
+                        key.startsWith("remote:") -> "网页视频/远程媒体"
+                        key.startsWith("local:") -> "本地视频"
+                        else -> "其他"
+                    },
+                    "原文字幕行数" to sourceLines.size.toString(),
+                    "是否复用当前媒体" to "true",
+                ),
+            )
+            open(
+                key = key,
+                videoId = videoId,
+                localUri = localUri,
+                resumeState = resumeState,
+                remoteMediaUrl = remoteMediaUrl,
+                remoteMediaTitle = remoteMediaTitle,
+                remoteMediaReferrer = remoteMediaReferrer,
+                remoteMediaCookie = remoteMediaCookie,
+                remoteMediaUserAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
+                requestToken = activeOpenRequestToken,
+                reuseMountedMediaForRestart = true,
+                forceRegenerateDubbing = true,
+            )
+        }
+
         io.translatetube.local.util.AppLogStore.info(
             this,
             "Subtitles",
             "已取消外部翻译并恢复应用内翻译",
-            diagnosticContext = mapOf("字幕任务键" to key),
+            diagnosticContext = mapOf(
+                "字幕任务键" to key,
+                "原翻译任务是否仍在运行" to pipelineAlive.toString(),
+                "是否重新启动翻译阶段" to shouldRestartTranslationStage.toString(),
+                "是否释放外部等待任务" to (waiter != null).toString(),
+            ),
         )
     }
 
