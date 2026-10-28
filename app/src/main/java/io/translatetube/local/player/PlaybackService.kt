@@ -3252,38 +3252,61 @@ class PlaybackService : MediaSessionService() {
                         forVideoKey = key,
                     )
                     val completedDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                    val translationsComplete = isChineseLanguage(finishedState.sourceLang) ||
-                        finishedState.lines.none { needsSubtitleTranslation(it, finishedState.sourceLang) }
-                    if (
-                        finishedState.lines.isNotEmpty() &&
-                        finishedState.dubbingOn &&
-                        !finishedState.dubbingHasErrors &&
-                        !finishedState.waitingForTranscriptionEngine &&
-                        !finishedState.waitingForDubbingEngine &&
-                        translationsComplete
-                    ) {
-                        ReadySessionSnapshotStore.save(
-                            context = this@PlaybackService,
-                            videoKey = key,
-                            fingerprint = completedFingerprint,
-                            ignoreTranscription = ignoreTranscription,
-                            state = finishedState,
-                            transcriptionFingerprint = completedDomainFingerprints.transcription,
-                            translationFingerprint = completedDomainFingerprints.translation,
-                            dubbingFingerprint = completedDomainFingerprints.dubbing,
+                    val pipelineConfigurationChanged = EngineRestartStagePolicy.hasRelevantConfigChange(
+                        previous = processingEngineDomainFingerprints,
+                        current = completedDomainFingerprints,
+                        processingFlow = finishedState.processingFlow,
+                        ignoreTranscription = ignoreTranscription,
+                    )
+                    if (pipelineConfigurationChanged) {
+                        // An engine preference can change after the stage selected its engine but
+                        // before the 850 ms watcher restarts it. Never store this output as a success
+                        // produced by the newly selected configuration.
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "处理期间引擎配置发生变化，未登记当前配置成功快照",
+                            diagnosticContext = mapOf(
+                                "处理流程" to finishedState.processingFlow.name,
+                                "转写配置是否忽略" to ignoreTranscription.toString(),
+                                "本次结果是否登记为当前配置成功结果" to "否",
+                                "恢复策略" to "配置变更监听按最早受影响阶段继续处理",
+                            ),
+                        )
+                    } else {
+                        val translationsComplete = isChineseLanguage(finishedState.sourceLang) ||
+                            finishedState.lines.none { needsSubtitleTranslation(it, finishedState.sourceLang) }
+                        if (
+                            finishedState.lines.isNotEmpty() &&
+                            finishedState.dubbingOn &&
+                            !finishedState.dubbingHasErrors &&
+                            !finishedState.waitingForTranscriptionEngine &&
+                            !finishedState.waitingForDubbingEngine &&
+                            translationsComplete
+                        ) {
+                            ReadySessionSnapshotStore.save(
+                                context = this@PlaybackService,
+                                videoKey = key,
+                                fingerprint = completedFingerprint,
+                                ignoreTranscription = ignoreTranscription,
+                                state = finishedState,
+                                transcriptionFingerprint = completedDomainFingerprints.transcription,
+                                translationFingerprint = completedDomainFingerprints.translation,
+                                dubbingFingerprint = completedDomainFingerprints.dubbing,
+                            )
+                        }
+                        completedReadySessionKey = key
+                        completedReadySessionIgnoresTranscription = ignoreTranscription
+                        completedReadySessionEngineFingerprint = completedFingerprint
+                        ReadyHistorySessionConfigStore.save(
+                            this@PlaybackService,
+                            key,
+                            completedFingerprint,
+                            ignoreTranscription,
+                            completedDomainFingerprints,
+                            finishedState.processingFlow,
                         )
                     }
-                    completedReadySessionKey = key
-                    completedReadySessionIgnoresTranscription = ignoreTranscription
-                    completedReadySessionEngineFingerprint = completedFingerprint
-                    ReadyHistorySessionConfigStore.save(
-                        this@PlaybackService,
-                        key,
-                        completedFingerprint,
-                        ignoreTranscription,
-                        completedDomainFingerprints,
-                        finishedState.processingFlow,
-                    )
                 }
             }
         }
@@ -3931,6 +3954,12 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             )
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        // Explicit imports bypass open(); reset the watcher baseline to this request's selected engines.
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = sessionKey)
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        completedReadySessionKey = ""
+        completedReadySessionEngineFingerprint = ""
+        completedReadySessionIgnoresTranscription = false
         // Prevent a previously queued seek-resume callback from restarting playback during import.
         cancelPendingSeekResume()
         // An explicit subtitle import starts a new synthesis run, even when its content matches
@@ -4180,6 +4209,27 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     )
                     val completedDomainFingerprints =
                         ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    val pipelineConfigurationChanged = EngineRestartStagePolicy.hasRelevantConfigChange(
+                        previous = processingEngineDomainFingerprints,
+                        current = completedDomainFingerprints,
+                        processingFlow = finishedState.processingFlow,
+                        ignoreTranscription = true,
+                    )
+                    if (pipelineConfigurationChanged) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            this@PlaybackService,
+                            "PlaybackFlow",
+                            "导入字幕合成期间配音配置发生变化，未登记当前配置成功快照",
+                            diagnosticContext = mapOf(
+                                "处理流程" to finishedState.processingFlow.name,
+                                "处理代数" to pipelineGeneration.toString(),
+                                "本次结果是否登记为当前配置成功结果" to "否",
+                                "恢复策略" to "配置变更监听按配音阶段重新合成",
+                            ),
+                        )
+                    } else {
+                    val completedDomainFingerprints =
+                        ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                     val snapshotSaved = ReadySessionSnapshotStore.save(
                         context = this@PlaybackService,
                         videoKey = sessionKey,
@@ -4214,6 +4264,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                             "恢复时是否跳过应用内翻译" to "true（复用已导入译文）",
                         ),
                     )
+                    }
                 }
                 } finally {
                     if (pipelineLockAcquired) pipelineExecutionMutex.unlock()
@@ -4331,6 +4382,12 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
     fun importSubtitles(uri: Uri) {
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
+        // Explicit imports bypass open(); make engine-change decisions relative to this new task.
+        processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = sessionKey)
+        processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        completedReadySessionKey = ""
+        completedReadySessionEngineFingerprint = ""
+        completedReadySessionIgnoresTranscription = false
         // Prevent a delayed resume callback from restarting source playback during fresh translation/synthesis.
         cancelPendingSeekResume()
         // Explicit subtitle import replaces the previous ready result for this video.
