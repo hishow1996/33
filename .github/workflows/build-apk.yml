@@ -1,3 +1,4 @@
+# Explicitly requested APK build after GLM API endpoint and thinking-control fixes (2026-10-28).
 # Trigger one-time APK build requested by user
 # Explicit user-requested APK build for latest main after webpage stage-resume/navigation fixes (2026-10-26).
 # Explicit one-time APK build requested by user on 2026-10-26 for five-stage translation-engine integration.
