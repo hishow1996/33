@@ -26,6 +26,15 @@ internal object YouTubeSubtitleSelectionPolicy {
     fun modeAppliesToVideo(videoKey: String?): Boolean =
         videoKey?.startsWith("youtube:", ignoreCase = true) == true
 
+    /**
+     * Stable, canonical config token for history/cache fingerprints.
+     * Include the default even when older installations have never persisted the preference.
+     */
+    fun modeFingerprintEntry(videoKey: String?, storedValue: String?): String? {
+        if (!modeAppliesToVideo(videoKey)) return null
+        return "$PREF_KEY=${modeFromPreference(storedValue).preferenceValue}"
+    }
+
     private val undeterminedTags = setOf("und", "mul", "zxx", "auto", "unknown", "undefined")
     private val iso6393To6391 = mapOf(
         "eng" to "en", "kor" to "ko", "jpn" to "ja",
@@ -72,11 +81,12 @@ internal object YouTubeSubtitleSelectionPolicy {
         // Conflicting explicit ORIGINAL markers are ambiguous. Do not guess from stream order.
         if (originalLanguages.size > 1) return null
 
-        normalizeLanguageCode(streamLanguageTag)?.let { return it }
-
-        // If an ORIGINAL track exists but its locale is missing/undetermined, other tracks cannot
-        // safely stand in for it: YouTube may expose a localized dub beside the original stream.
+        // An explicitly marked ORIGINAL track with a missing/undetermined locale is authoritative
+        // evidence that the source language is unknown. Do not borrow the video-level locale here:
+        // it can describe a localized dub rather than the actual original audio.
         if (originalAudioTrackPresent) return null
+
+        normalizeLanguageCode(streamLanguageTag)?.let { return it }
 
         // A fallback is safe only if all non-dubbed/unknown-type audio tracks agree.
         val fallbackLanguages = fallbackAudioLanguageTags
