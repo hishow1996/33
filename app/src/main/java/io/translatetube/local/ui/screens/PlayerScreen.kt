@@ -1461,36 +1461,49 @@ private fun VideoParsingPage(
                         color = Color(0xFF7A8495),
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
-                                    "取消外部翻译并继续应用内翻译"
-                                } else {
-                                    "启用外部翻译模式"
-                                },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
-                        },
-                        enabled = if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
-                            true
-                        } else {
-                            state.phase in setOf(Phase.PARSING, Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING, Phase.TRANSLATING)
-                        },
-                        onClick = {
-                            processingSettingsOpen = false
-                            if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                    if (state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "取消外部翻译并继续应用内翻译",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
+                            },
+                            onClick = {
+                                processingSettingsOpen = false
                                 onCancelManualTranslation()
-                            } else {
+                            },
+                            contentPadding = PaddingValues(horizontal = 14.dp),
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "启用外部翻译模式",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF3268F5))
+                            },
+                            enabled = state.phase in setOf(
+                                Phase.PARSING,
+                                Phase.DOWNLOADING_AUDIO,
+                                Phase.TRANSCRIBING,
+                                Phase.TRANSLATING,
+                            ),
+                            onClick = {
+                                processingSettingsOpen = false
                                 onEnableManualTranslation()
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 14.dp),
-                    )
+                            },
+                            contentPadding = PaddingValues(horizontal = 14.dp),
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("导出原文字幕（SRT）", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingIcon = {
