@@ -109,8 +109,14 @@ class DubbingEngine(
     private val mem = DubbingPcmMemoryCache(maxBytes = pcmMemoryBudgetBytes, maxEntries = 48)
 
     @Volatile private var tts: TtsEngine? = null
-    /** True only for an attach pass that must synthesize fresh speech after an engine change. */
+    /** True only for an attach pass that must synthesize fresh speech after an import/restart. */
     @Volatile private var forceRegeneratePcmForAttach: Boolean = false
+    /**
+     * A forced run may share a video cache directory with earlier attempts. Only cache files
+     * atomically written by this engine are readable until the forced run finishes.
+     */
+    private val freshlySynthesizedCacheFiles =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     // PCM generation can use a separate System TTS instance when live playback mode is selected.
     // This keeps background synthesizeToFile work independent from audible timeline speech.
     @Volatile private var synthesisTts: TtsEngine? = null
@@ -308,6 +314,7 @@ class DubbingEngine(
         forceRegenerateDubbing: Boolean = false,
     ) {
         forceRegeneratePcmForAttach = forceRegenerateDubbing
+        freshlySynthesizedCacheFiles.clear()
         // Keep a diagnostic reason only for rows that cannot become speech; this avoids allocating
         // a second per-line object for every valid cue while preserving the original translation.
         val translationDiagnostics = HashMap<Int, DubbingTranslationResolution>()
@@ -1891,7 +1898,12 @@ class DubbingEngine(
         idx: Int,
         checkActive: () -> Unit = {},
     ): Boolean? {
-        if (forceRegeneratePcmForAttach) {
+        val file = cacheFile(idx)
+        if (!DubbingCacheFreshnessPolicy.canReadCache(
+                forceFreshSynthesis = forceRegeneratePcmForAttach,
+                wasWrittenByCurrentRun = file.name in freshlySynthesizedCacheFiles,
+            )
+        ) {
             checkActive()
             return null
         }
@@ -1899,7 +1911,6 @@ class DubbingEngine(
             checkActive()
             return true
         }
-        val file = cacheFile(idx)
         val inspection = inspectCache(file, checkActive)
         val translatedText = lines.getOrNull(idx)?.zh
         val reusable = DubbingCacheAudioPolicy.reusableState(
@@ -2007,6 +2018,9 @@ class DubbingEngine(
                     if (!temp.renameTo(target)) {
                         throw java.io.IOException("无法原子替换 PCM 缓存；旧缓存已保留")
                     }
+                    if (forceRegeneratePcmForAttach) {
+                        freshlySynthesizedCacheFiles.add(target.name)
+                    }
                 }
             }
         } catch (error: Exception) {
@@ -2026,6 +2040,18 @@ class DubbingEngine(
         if (!isCurrent()) return null
         val playIdx = resolveChunkIndex(idx)
         val f = cacheFile(playIdx)
+        // load() is also called directly from playback and can race with a cache-init pass.
+        // Do not let an undeleted or late old cache bypass the forced-synthesis queue.
+        if (!DubbingCacheFreshnessPolicy.canReadCache(
+                forceFreshSynthesis = forceRegeneratePcmForAttach,
+                wasWrittenByCurrentRun = f.name in freshlySynthesizedCacheFiles,
+            )
+        ) {
+            if (!isCurrent()) return null
+            markCuePending(playIdx)
+            queueSynthesisRetry(playIdx)
+            return null
+        }
         val inMemory = memoryAudio(playIdx)
         if (inMemory != null) {
             if (!isCurrent()) return null
