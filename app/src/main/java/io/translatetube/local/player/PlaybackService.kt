@@ -2824,17 +2824,14 @@ class PlaybackService : MediaSessionService() {
                         }
                         val detectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
                             .normalizeLanguageCode(detectedTextLanguage)
-                        val allowEnglishCaption = getSharedPreferences("settings", MODE_PRIVATE)
-                            .getString(
-                                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
-                                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
-                            ) == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH.preferenceValue
                         if (
                             io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
                                 expectedSourceLanguage = expectedLanguage,
                                 detectedTextLanguage = detectedLanguage,
                                 savedSourceLanguage = savedLanguage,
-                                allowEnglishCaption = allowEnglishCaption,
+                                // This branch only validates YouTube subtitle/AUTO resume states;
+                                // fallback tracks can legitimately use a non-original language.
+                                allowSubtitleLanguageFallback = true,
                             )
                         ) {
                             val restoredFlow = pipelineResumeState.processingFlow.name
@@ -4400,6 +4397,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     "$key|source|local-asr-$localAsrModelId-timed-v3"
                 else -> "$key|source|local-asr-$asrCacheIdentity-timed-v4"
             }
+            // Keep downloaded YouTube caption tracks separate from ASR transcripts. Fallback
+            // captions may legitimately differ from the spoken language, while ASR caches must
+            // still match the original audio language during validation.
+            val youtubeCaptionCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                "$sourceSubtitleCacheKey|captions-v1"
+            } else {
+                null
+            }
             // 首次处理显示字幕读取阶段；完整成功快照恢复时不再展示解析、转写和翻译阶段。
             if (restoreCompletedSnapshot) {
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.READY, progress = "") }
@@ -4466,7 +4471,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 ensureCurrentSession(key, pipelineGeneration)
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
-                        sourceSubtitleCacheKey, lang, sourceArr.toString(), System.currentTimeMillis(),
+                        youtubeCaptionCacheKey ?: sourceSubtitleCacheKey,
+                        lang,
+                        sourceArr.toString(),
+                        System.currentTimeMillis(),
                         videoKey = key,
                     )
                 )
@@ -4475,10 +4483,19 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 return fetchedLines to lang
             }
 
+            var sourceCachedKey: String? = null
             var sourceCached = if (
                 resumeState == null && (videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()
             ) {
-                db.subtitleCacheDao().get(sourceSubtitleCacheKey)
+                val captionCache = youtubeCaptionCacheKey?.let { db.subtitleCacheDao().get(it) }
+                if (captionCache != null) {
+                    sourceCachedKey = youtubeCaptionCacheKey
+                    captionCache
+                } else {
+                    db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
+                        sourceCachedKey = sourceSubtitleCacheKey
+                    }
+                }
             } else null
             var restoredSourceLines: List<SubLine>? = sourceCached?.let { source ->
                 runCatching {
@@ -4534,7 +4551,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         expectedSourceLanguage = expectedContentLanguage,
                         detectedTextLanguage = detectedCacheLanguageCode,
                         savedSourceLanguage = sourceCached.srcLang,
-                        allowEnglishCaption = youtubeSubtitleMode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+                        allowSubtitleLanguageFallback = sourceCachedKey != null &&
+                            sourceCachedKey == youtubeCaptionCacheKey,
                     )
                 ) {
                     android.util.Log.w(
@@ -4542,8 +4560,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         "Discarding cached YouTube source text because its language does not match original audio " +
                             "(audio=$expectedContentLanguage, cache=$cachedContentLanguage)",
                     )
-                    db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
+                    db.subtitleCacheDao().delete(sourceCachedKey ?: sourceSubtitleCacheKey)
                     sourceCached = null
+                    sourceCachedKey = null
                     restoredSourceLines = null
                     restoredSourceLang = null
                     if (cached != null) {
@@ -4572,7 +4591,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     "PlaybackService",
                     "Ignoring malformed source subtitle cache for $videoId; fetching subtitles/ASR again"
                 )
-                db.subtitleCacheDao().delete(sourceSubtitleCacheKey)
+                db.subtitleCacheDao().delete(sourceCachedKey ?: sourceSubtitleCacheKey)
+                sourceCachedKey = null
                 // A legacy video-level translation cache cannot be proven to belong to this source.
                 if (sourceImportedLines.isNullOrEmpty()) {
                     if (cached != null) db.subtitleCacheDao().delete(translationCacheKey)
