@@ -712,6 +712,20 @@ class PlayerManager(private val ctx: Context) {
      */
     @Volatile var playbackAllowed: (() -> Boolean)? = null
 
+    /** 点播放被上面的门拦住时回调（主线程），由 PlaybackService 在页面上显示具体原因。 */
+    @Volatile var onPlayBlocked: (() -> Unit)? = null
+
+    /**
+     * 播放器处于空闲（IDLE，例如后台期间被停止或出错后）但还挂着视频时，play() 本身不会重新加载，
+     * 表现就是"点了没反应、一直黑屏"。点播放前先重新 prepare()，让它真正开始加载。
+     */
+    private fun ensurePreparedForPlay() {
+        if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
+            errorSink.value = null
+            player.prepare()
+        }
+    }
+
     private fun isPlaybackAllowed(): Boolean = try {
         playbackAllowed?.invoke() ?: true
     } catch (error: Exception) {
@@ -724,8 +738,10 @@ class PlayerManager(private val ctx: Context) {
         try {
             if (!isPlaybackAllowed()) {
                 player.pause()
+                runCatching { onPlayBlocked?.invoke() }
                 return
             }
+            ensurePreparedForPlay()
             player.play()
         } catch (error: Exception) {
             if (!released) android.util.Log.e("PlayerManager", "Unable to start playback", error)

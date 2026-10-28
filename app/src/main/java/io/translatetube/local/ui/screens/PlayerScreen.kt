@@ -339,6 +339,19 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         PlaybackService.instance?.attachSurface(tv)
     }
 
+    // 从后台回到播放页时重新绑定画面：后台期间 TextureView 的画面表面会被系统销毁，
+    // 不重新绑定就会一直黑屏。
+    val resumeLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                PlaybackService.instance?.attachSurface(tv)
+            }
+        }
+        resumeLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { resumeLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // 播放页屏幕常亮
     val keepView = androidx.compose.ui.platform.LocalView.current
     androidx.compose.runtime.DisposableEffect(Unit) {
@@ -1001,6 +1014,64 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                             Icon(
                                 imageVector = Icons.Filled.Close,
                                 contentDescription = "关闭问题提示",
+                                tint = Color(0xFF7A6A45),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(5.dp))
+            }
+
+            // 点了播放却被拦住（配音/转写引擎没就绪、配音出错等）：显示真实原因，不再是"点了没反应"。
+            (state.playBlockedHint?.takeIf { state.key == requestKey && !state.isPlaying })?.let { blockedHint ->
+                Surface(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(0.dp)),
+                    color = Color(0xFFFFF8E1),
+                ) {
+                    Box(Modifier.fillMaxWidth()) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(start = 10.dp, end = 42.dp, top = 10.dp, bottom = 10.dp),
+                        ) {
+                            Row(verticalAlignment = androidx.compose.ui.Alignment.Top) {
+                                Text("⚠️", color = WarnYellow)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    blockedHint,
+                                    color = Color(0xFF5D4037),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            Row(
+                                Modifier.padding(top = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            ) {
+                                if (state.playBlockedOffersOriginalOnly) {
+                                    Text(
+                                        "仅播放原声",
+                                        color = AccentBlue,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        modifier = Modifier.clickable {
+                                            PlaybackService.instance?.playOriginalOnly()
+                                        },
+                                    )
+                                }
+                                Text(
+                                    "去设置 →",
+                                    color = AccentBlue,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.clickable(onClick = onGoSettings),
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { PlaybackService.instance?.dismissPlayBlockedHint() },
+                            modifier = Modifier.align(Alignment.TopEnd).size(34.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "关闭提示",
                                 tint = Color(0xFF7A6A45),
                                 modifier = Modifier.size(18.dp),
                             )

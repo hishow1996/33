@@ -443,6 +443,10 @@ data class PlayerUiState(
      * 此时播放的是原声；界面据此告诉用户原因，而不是让用户对着没有中文声音的字幕干等。
      */
     val dubbingCuePending: Boolean = false,
+    /** 点播放被拦住（配音/转写引擎没就绪、配音出错等）时显示给用户的原因；开始播放后清除。 */
+    val playBlockedHint: String? = null,
+    /** 该提示是否同时提供"仅播放原声"按钮。 */
+    val playBlockedOffersOriginalOnly: Boolean = false,
     /** 本次加载中播放器因网络错误自动重试的次数（真实的加载错误回调计数）。 */
     val loadRetryCount: Int = 0,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
@@ -1350,6 +1354,7 @@ class PlaybackService : MediaSessionService() {
 
             pm = PlayerManager(this)
             pm.playbackAllowed = { !isDubbingPlaybackBlocked(ui.value) }
+            pm.onPlayBlocked = { publishPlayBlockedHint() }
             pm.originalVolume = ui.value.originalVolume
             pm.dubbingVolume = ui.value.dubbingVolume
             // Match the new mix bus to the currently visible mode before any timeline tick runs.
@@ -1484,7 +1489,14 @@ class PlaybackService : MediaSessionService() {
                 .build()
 
             scope.launch {
-                pm.isPlaying.collect { playing -> ui.update { it.copy(isPlaying = playing) } }
+                pm.isPlaying.collect { playing ->
+                    ui.update {
+                        it.copy(
+                            isPlaying = playing,
+                            playBlockedHint = if (playing) null else it.playBlockedHint,
+                        )
+                    }
+                }
             }
             scope.launch {
                 pm.isBuffering.collect { buffering -> ui.update { it.copy(isBuffering = buffering) } }
@@ -1659,6 +1671,39 @@ class PlaybackService : MediaSessionService() {
                     state.dubbingHasErrors ||
                     state.phase == Phase.ERROR
                 ))
+
+    /** 点播放被拦住时，把真实原因写到界面状态，页面显示提示；不再静默忽略。 */
+    private fun publishPlayBlockedHint() {
+        val st = ui.value
+        val hint = PlaybackBlockedHintPolicy.hintFor(
+            waitingForTranscriptionEngine = st.waitingForTranscriptionEngine,
+            dubbingOn = st.dubbingOn,
+            waitingForDubbingEngine = st.waitingForDubbingEngine,
+            dubbingHasErrors = st.dubbingHasErrors,
+            phaseIsError = st.phase == Phase.ERROR,
+            ttsEngineName = st.ttsEngineName,
+            failureDetail = if (st.phase == Phase.ERROR) st.error else (st.noModelHint ?: st.dubbingStatus),
+        ) ?: return
+        ui.update { state ->
+            if (state.key == st.key) {
+                state.copy(
+                    playBlockedHint = hint.message,
+                    playBlockedOffersOriginalOnly = hint.offersOriginalOnly,
+                )
+            } else state
+        }
+    }
+
+    fun dismissPlayBlockedHint() {
+        ui.update { it.copy(playBlockedHint = null, playBlockedOffersOriginalOnly = false) }
+    }
+
+    /** 用户明确选择"仅播放原声"：关闭中文配音并直接开始播放，不再被配音问题拦住。 */
+    fun playOriginalOnly() {
+        if (ui.value.dubbingOn) toggleDub()
+        dismissPlayBlockedHint()
+        playPlayback()
+    }
 
     private suspend fun startPlaybackWithMountedDubbing(
         seekToMs: Long?,
