@@ -175,23 +175,6 @@ fun PlayerScreen(
         else -> "local:${localUri ?: ""}"
     }
     var dismissedNoModelHint by remember(requestKey) { mutableStateOf<String?>(null) }
-    // "这句配音还在合成"的提示只短暂出现：显示 4 秒自动消失，20 秒内不重复弹，避免合成慢时一直占着画面。
-    var pendingDubbingHintVisible by remember(requestKey) { mutableStateOf(false) }
-    var lastPendingDubbingHintAtMs by remember(requestKey) { mutableStateOf(0L) }
-    LaunchedEffect(requestKey, state.dubbingCuePending) {
-        if (state.dubbingCuePending) {
-            val now = android.os.SystemClock.elapsedRealtime()
-            val cooledDown = lastPendingDubbingHintAtMs == 0L || now - lastPendingDubbingHintAtMs >= 20_000L
-            if (cooledDown) {
-                lastPendingDubbingHintAtMs = now
-                pendingDubbingHintVisible = true
-                delay(4_000)
-                pendingDubbingHintVisible = false
-            }
-        } else {
-            pendingDubbingHintVisible = false
-        }
-    }
 
     // Keep this sticky for the current video. A subtitle seek can briefly set isPlaying=false
     // while the stream buffers; that is not a reason to return to the parsing page.
@@ -1098,35 +1081,25 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                 Spacer(Modifier.height(5.dp))
             }
 
-            // 当前这句的中文配音还没合成好：如实告诉用户为什么此刻听到的是原声（来自配音引擎的逐句就绪状态）。
+            // 当前这句的中文配音还没合成好：红字提示，这句一合成好（或字幕换到别的句子）就立刻消失。
+            // 判定来自配音引擎的逐句就绪状态，不用计时。
             if (state.key == requestKey && state.dubbingOn && state.dubbingCuePending &&
-                pendingDubbingHintVisible &&
                 (state.phase == Phase.READY || state.phase == Phase.SYNTHESIZING)
             ) {
                 Surface(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(0.dp)),
-                    color = Color(0xFFEAF2FF),
+                    color = Color(0xFFFFEBEE),
                 ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            color = BrandBright,
-                            strokeWidth = 2.dp,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "这句中文配音还在合成中，暂时播放原声" +
-                                if (state.totalLines > 0) {
-                                    "（已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行）"
-                                } else "",
-                            color = Color(0xFF1F3A5F),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                    Text(
+                        "这句中文配音还没合成好，暂时播放原声" +
+                            if (state.totalLines > 0) {
+                                "（已准备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines} 行）"
+                            } else "",
+                        color = Color(0xFFD32F2F),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
                 }
                 Spacer(Modifier.height(5.dp))
             }
