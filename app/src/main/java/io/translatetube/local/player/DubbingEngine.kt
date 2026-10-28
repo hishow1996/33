@@ -520,6 +520,12 @@ class DubbingEngine(
                             val cue = this@DubbingEngine.lines[i]
                             val hasSpeech = DubbingTimeline.isPlayableCue(cue) &&
                                 !cue.zh.isNullOrBlank()
+                            // An explicit re-import must not leave old PCM available as a fallback
+                            // if live TTS or optional background synthesis later fails.
+                            if (forceRegeneratePcmForAttach) {
+                                val file = cacheFile(i)
+                                deleteCacheIfUnchanged(file, DubbingCacheFileStamp.capture(file))
+                            }
                             // Direct playback is immediately available; queued indexes separately
                             // track which cues still need reusable generated PCM.
                             markCuePrepared(i, hasAudio = hasSpeech)
@@ -587,6 +593,11 @@ class DubbingEngine(
                         // PCM when processing is explicitly restarted after an engine change.
                         // Queue a fresh synthesis; writeCache atomically replaces this canonical file.
                         val cacheInspection = if (forceRegeneratePcmForAttach) {
+                            // Bypass and remove the active identity before queueing fresh synthesis.
+                            // Otherwise a failed replacement could still let load() play the old
+                            // PCM because playback reads the canonical cache path independently.
+                            val oldStamp = DubbingCacheFileStamp.capture(file)
+                            deleteCacheIfUnchanged(file, oldStamp)
                             DubbingCacheInspection(null, DubbingCacheFileStamp.capture(file))
                         } else {
                             inspectCache(file, ::checkCacheInitActive)
