@@ -1545,7 +1545,20 @@ class PlaybackService : MediaSessionService() {
             // Match the new mix bus to the currently visible mode before any timeline tick runs.
             pm.dubbingBus.setDubbingEnabled(ui.value.dubbingOn)
             pm.onTick = { ms -> tickFromPlayerCallback(ms, "player ticker") }
-            pm.onEnded = {
+            pm.onEnded = ended@{
+                // Player callbacks may be delivered after a new media item has replaced the old
+                // one. Only drain/stop dubbing if the player itself is still actually ENDED.
+                if (
+                    !::pm.isInitialized ||
+                    pm.player.playbackState != androidx.media3.common.Player.STATE_ENDED
+                ) {
+                    android.util.Log.d(
+                        "PlaybackService",
+                        "Ignoring stale playback-ended callback; current state=" +
+                            if (::pm.isInitialized) pm.player.playbackState.toString() else "released",
+                    )
+                    return@ended
+                }
                 val sessionKey = ui.value.key
                 val engine = dubbing
                 val activeIndex = engine?.currentLineIdx() ?: -1

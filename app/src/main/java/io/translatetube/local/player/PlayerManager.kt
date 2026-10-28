@@ -349,7 +349,9 @@ class PlayerManager(private val ctx: Context) {
                     }
                     Player.STATE_IDLE, Player.STATE_ENDED -> bufferingStartedAtMs = 0L
                 }
-                if (state == Player.STATE_ENDED) {
+                if (state == Player.STATE_ENDED && player.playbackState == Player.STATE_ENDED) {
+                    // Ignore an ENDED notification from a replaced media item if the player has
+                    // already transitioned into the next source's IDLE/BUFFERING/READY state.
                     try {
                         onEnded?.invoke()
                     } catch (error: Exception) {
