@@ -39,11 +39,13 @@ internal object ReadySessionSnapshotStore {
     fun findForCurrentConfig(
         context: Context,
         videoKey: String,
+        identityKey: String = videoKey,
         fingerprintFor: (ignoreTranscription: Boolean) -> String,
     ): ReadyPlaybackSessionSnapshot? {
         if (!isSupportedVideoKey(videoKey)) return null
         val directory = directory(context)
         val expectedKeyHash = keyHash(videoKey)
+        val expectedIdentityHash = keyHash(identityKey)
         // The fingerprint and transcription-ignore flag are part of the file name; probe no more
         // than two exact candidates instead of parsing all prior snapshots on the calling thread.
         for (ignoreTranscription in listOf(true, false)) {
@@ -51,8 +53,10 @@ internal object ReadySessionSnapshotStore {
                 fingerprintFor(ignoreTranscription)
             }.getOrDefault("")
             if (!fingerprintPattern.matches(currentFingerprint)) continue
-            val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
-            val file = File(directory, "ready_" + expectedKeyHash + "_" + currentFingerprint + suffix)
+            val file = File(
+                directory,
+                snapshotFileName(expectedKeyHash, expectedIdentityHash, currentFingerprint, ignoreTranscription),
+            )
             if (!file.isFile || file.length() < 1L || file.length() > MAX_SNAPSHOT_BYTES) {
                 if (file.exists() && file.length() > MAX_SNAPSHOT_BYTES) file.delete()
                 continue
@@ -60,6 +64,7 @@ internal object ReadySessionSnapshotStore {
             val root = readRoot(file) ?: continue
             if (root.optInt("version", -1) != SNAPSHOT_VERSION) continue
             if (root.optString("keyHash") != expectedKeyHash) continue
+            if (root.optString("identityHash", expectedKeyHash) != expectedIdentityHash) continue
             if (root.optString("fingerprint") != currentFingerprint) continue
             if (root.optBoolean("ignoreTranscription", false) != ignoreTranscription) continue
 
@@ -88,9 +93,11 @@ internal object ReadySessionSnapshotStore {
     fun findLatestForVideo(
         context: Context,
         videoKey: String,
+        identityKey: String = videoKey,
     ): ReadyPlaybackSessionSnapshot? {
         if (!isSupportedVideoKey(videoKey)) return null
         val expectedKeyHash = keyHash(videoKey)
+        val expectedIdentityHash = keyHash(identityKey)
         val candidates = directory(context).listFiles { _, name ->
             name.startsWith(filePrefix(videoKey)) && name.endsWith(".json")
         }?.filter { file ->
@@ -100,14 +107,14 @@ internal object ReadySessionSnapshotStore {
         return candidates.mapNotNull { file ->
             val root = readRoot(file) ?: return@mapNotNull null
             if (root.optInt("version", -1) != SNAPSHOT_VERSION ||
-                root.optString("keyHash") != expectedKeyHash
+                root.optString("keyHash") != expectedKeyHash ||
+                root.optString("identityHash", expectedKeyHash) != expectedIdentityHash
             ) return@mapNotNull null
 
             val fingerprint = root.optString("fingerprint")
             if (!fingerprintPattern.matches(fingerprint)) return@mapNotNull null
             val ignoreTranscription = root.optBoolean("ignoreTranscription", false)
-            val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
-            if (file.name != "ready_${expectedKeyHash}_${fingerprint}${suffix}") {
+            if (file.name != snapshotFileName(expectedKeyHash, expectedIdentityHash, fingerprint, ignoreTranscription)) {
                 return@mapNotNull null
             }
 
@@ -134,6 +141,7 @@ internal object ReadySessionSnapshotStore {
         transcriptionFingerprint: String = "",
         translationFingerprint: String = "",
         dubbingFingerprint: String = "",
+        identityKey: String = videoKey,
     ): Boolean {
         if (!isSupportedVideoKey(videoKey) ||
             !fingerprintPattern.matches(fingerprint) ||
@@ -148,9 +156,12 @@ internal object ReadySessionSnapshotStore {
 
         return runCatching {
             val now = System.currentTimeMillis()
+            val ownerKeyHash = keyHash(videoKey)
+            val identityHash = keyHash(identityKey)
             val root = JSONObject()
                 .put("version", SNAPSHOT_VERSION)
-                .put("keyHash", keyHash(videoKey))
+                .put("keyHash", ownerKeyHash)
+                .put("identityHash", identityHash)
                 .put("fingerprint", fingerprint)
                 .put("ignoreTranscription", ignoreTranscription)
                 .put("savedAt", now)
@@ -161,8 +172,10 @@ internal object ReadySessionSnapshotStore {
             val bytes = root.toString().toByteArray(Charsets.UTF_8)
             if (bytes.isEmpty() || bytes.size.toLong() > MAX_SNAPSHOT_BYTES) return@runCatching false
 
-            val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
-            val destination = File(directory(context), "ready_" + keyHash(videoKey) + "_" + fingerprint + suffix)
+            val destination = File(
+                directory(context),
+                snapshotFileName(ownerKeyHash, identityHash, fingerprint, ignoreTranscription),
+            )
             val atomic = AtomicFile(destination)
             var stream: FileOutputStream? = null
             try {
@@ -394,6 +407,17 @@ internal object ReadySessionSnapshotStore {
     }
 
     private fun filePrefix(videoKey: String): String = "ready_" + keyHash(videoKey) + "_"
+
+    private fun snapshotFileName(
+        ownerKeyHash: String,
+        identityHash: String,
+        fingerprint: String,
+        ignoreTranscription: Boolean,
+    ): String {
+        val identityPart = if (identityHash == ownerKeyHash) "" else "${identityHash}_"
+        val suffix = if (ignoreTranscription) "_ignore_asr.json" else "_include_asr.json"
+        return "ready_${ownerKeyHash}_${identityPart}${fingerprint}${suffix}"
+    }
 
     private fun keyHash(videoKey: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(videoKey.toByteArray(Charsets.UTF_8))

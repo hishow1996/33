@@ -399,6 +399,9 @@ class MainActivity : ComponentActivity() {
                                                     this@MainActivity,
                                                     cleanRequest.key,
                                                     isYouTube = cleanRequest.videoId != null,
+                                                    remoteMediaUrl = cleanRequest.mediaUrl,
+                                                    remoteMediaReferrer = cleanRequest.mediaReferrer,
+                                                    remoteMediaCookie = cleanRequest.mediaCookie,
                                                 )
                                         rememberPlayRequest(
                                             cleanRequest.copy(
@@ -581,6 +584,9 @@ class MainActivity : ComponentActivity() {
                                                 this@MainActivity,
                                                 cleanRequest.key,
                                                 isYouTube = cleanRequest.videoId != null,
+                                                remoteMediaUrl = cleanRequest.mediaUrl,
+                                                remoteMediaReferrer = cleanRequest.mediaReferrer,
+                                                remoteMediaCookie = cleanRequest.mediaCookie,
                                             )
                                         rememberPlayRequest(
                                             cleanRequest.copy(showPlayerWhileRestoringHistory = showPlayerWhileRestoringHistory),

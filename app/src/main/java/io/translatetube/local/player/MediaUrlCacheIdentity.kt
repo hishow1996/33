@@ -147,6 +147,19 @@ internal object MediaUrlCacheIdentity {
     fun remoteSessionKey(url: String, referrer: String, cookie: String?): String =
         "remote-session-sha256:${sha256(sessionScopeMaterial(url, referrer, cookie))}"
 
+    /**
+     * Persistent success snapshots must use the same isolation as source/translation caches.
+     * Keep the public video key separate because restored PlayerUiState still belongs to that key.
+     */
+    fun readySnapshotIdentityKey(
+        videoKey: String,
+        remoteMediaUrl: String?,
+        referrer: String,
+        cookie: String?,
+    ): String = remoteMediaUrl?.takeIf { it.isNotBlank() }?.let {
+        "remote-snapshot:${remoteSessionKey(it, referrer, cookie)}"
+    } ?: videoKey
+
     /** Downloaded-audio identity uses the same scope but a separate namespace. */
     fun audioKey(url: String, referrer: String, cookie: String?): String =
         "remote-audio-sha256:${sha256(sessionScopeMaterial(url, referrer, cookie))}"

@@ -339,9 +339,16 @@ private object ReadyHistorySessionConfigStore {
             .apply()
     }
 
-    fun matches(context: Context, videoKey: String, isYouTube: Boolean): Boolean {
+    fun matches(
+        context: Context,
+        videoKey: String,
+        isYouTube: Boolean,
+        snapshotIdentityKey: String = videoKey,
+    ): Boolean {
         if (videoKey.isBlank()) return false
-        if (ReadySessionSnapshotStore.findForCurrentConfig(context, videoKey) { ignoreTranscription ->
+        if (ReadySessionSnapshotStore.findForCurrentConfig(
+                context, videoKey, identityKey = snapshotIdentityKey,
+            ) { ignoreTranscription ->
                 fingerprint(
                     context,
                     ignoreTranscription = ignoreTranscription,
@@ -349,6 +356,10 @@ private object ReadyHistorySessionConfigStore {
                 )
             } != null
         ) return true
+        // The history row keeps only the media URL, not the page-origin or cookie scope. Without
+        // a matching scoped snapshot, settings-only metadata cannot prove this is the same media
+        // session, so never advertise an immediate READY restore for a remote URL.
+        if (videoKey.startsWith("remote:", ignoreCase = true)) return false
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = storageKey(videoKey)
         val saved = prefs.getString(key, null) ?: return false
@@ -713,8 +724,30 @@ class PlaybackService : MediaSessionService() {
         const val EXTRA_PROCESSING_SESSION_KEY = "io.translatetube.local.extra.PROCESSING_SESSION_KEY"
 
         /** True only when this history item was previously completed with the currently selected engines. */
-        fun hasCompatibleHistorySnapshot(context: Context, key: String, isYouTube: Boolean): Boolean =
-            ReadyHistorySessionConfigStore.matches(context, key, isYouTube = isYouTube)
+        fun hasCompatibleHistorySnapshot(
+            context: Context,
+            key: String,
+            isYouTube: Boolean,
+            remoteMediaUrl: String? = null,
+            remoteMediaReferrer: String? = null,
+            remoteMediaCookie: String? = null,
+        ): Boolean {
+            val effectiveRemoteUrl = remoteMediaUrl ?: key
+                .takeIf { it.startsWith("remote:", ignoreCase = true) }
+                ?.removePrefix("remote:")
+            val snapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+                videoKey = key,
+                remoteMediaUrl = effectiveRemoteUrl,
+                referrer = remoteMediaReferrer.orEmpty(),
+                cookie = remoteMediaCookie,
+            )
+            return ReadyHistorySessionConfigStore.matches(
+                context,
+                key,
+                isYouTube = isYouTube,
+                snapshotIdentityKey = snapshotIdentityKey,
+            )
+        }
 
         fun clearHistorySessionConfig(context: Context, key: String) =
             ReadyHistorySessionConfigStore.remove(context, key)
@@ -761,7 +794,15 @@ class PlaybackService : MediaSessionService() {
             state.dubbingHasErrors
         ) return false
 
-        val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
+        val currentRemoteSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey = key,
+            remoteMediaUrl = remoteMediaUrl,
+            referrer = remoteMediaReferrer,
+            cookie = remoteMediaCookie,
+        )
+        val currentConfigSnapshot = ReadySessionSnapshotStore.findForCurrentConfig(
+            this, key, identityKey = currentRemoteSnapshotIdentityKey,
+        ) { ignore ->
             ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
         }
         if (
@@ -1170,8 +1211,18 @@ class PlaybackService : MediaSessionService() {
                         // If this exact engine combination has completed successfully before, restore
                         // that result directly. A subtitle-mode change is the exception: it requires
                         // rediscovering YouTube captions, even if an older successful snapshot exists.
+                        val liveSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+                            videoKey = sessionKey,
+                            remoteMediaUrl = restartRemoteUrl,
+                            referrer = restartRemoteReferrer,
+                            cookie = restartRemoteCookie,
+                        )
                         val matchingSuccessfulSnapshot =
-                            ReadySessionSnapshotStore.findForCurrentConfig(this@PlaybackService, sessionKey) { ignore ->
+                            ReadySessionSnapshotStore.findForCurrentConfig(
+                                this@PlaybackService,
+                                sessionKey,
+                                identityKey = liveSnapshotIdentityKey,
+                            ) { ignore ->
                                 ReadyHistorySessionConfigStore.fingerprint(
                                     this@PlaybackService,
                                     ignoreTranscription = ignore,
@@ -2927,6 +2978,12 @@ class PlaybackService : MediaSessionService() {
         forceRegenerateDubbing: Boolean = false,
         forceYouTubeSubtitleRefresh: Boolean = false,
     ) {
+        val readySnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey = key,
+            remoteMediaUrl = remoteMediaUrl,
+            referrer = remoteMediaReferrer,
+            cookie = remoteMediaCookie,
+        )
         val canRestoreStoredResult = resumeState == null && importedLines == null && key.isNotBlank()
         // A matching snapshot may belong to an older run of the current configuration. Compare
         // against the latest successful run first; if any engine domain changed, restart from the
@@ -2936,7 +2993,9 @@ class PlaybackService : MediaSessionService() {
         // A matching snapshot may be from a configuration used before the latest run. It is still
         // reusable when the user switches back to that exact successful engine combination.
         val reusableSnapshot = if (canRestoreStoredResult) {
-            ReadySessionSnapshotStore.findForCurrentConfig(this, key) { ignore ->
+            ReadySessionSnapshotStore.findForCurrentConfig(
+                this, key, identityKey = readySnapshotIdentityKey,
+            ) { ignore ->
                 ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
             }
         } else null
@@ -2947,7 +3006,9 @@ class PlaybackService : MediaSessionService() {
         ) {
             // A successful snapshot from the previous subtitle mode is not a valid fallback:
             // the caller intentionally needs to discover/download the newly preferred caption track.
-            ReadySessionSnapshotStore.findLatestForVideo(this, key)
+            ReadySessionSnapshotStore.findLatestForVideo(
+                this, key, identityKey = readySnapshotIdentityKey,
+            )
         } else null
         val fallbackPreviousDomains = fallbackSnapshot?.let { snapshot ->
             val hasSnapshotFingerprints = snapshot.transcriptionFingerprint.isNotBlank() &&
@@ -3378,6 +3439,7 @@ class PlaybackService : MediaSessionService() {
                                 transcriptionFingerprint = completedDomainFingerprints.transcription,
                                 translationFingerprint = completedDomainFingerprints.translation,
                                 dubbingFingerprint = completedDomainFingerprints.dubbing,
+                                identityKey = readySnapshotIdentityKey,
                             )
                         }
                         completedReadySessionKey = key
@@ -4323,6 +4385,12 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         transcriptionFingerprint = completedDomainFingerprints.transcription,
                         translationFingerprint = completedDomainFingerprints.translation,
                         dubbingFingerprint = completedDomainFingerprints.dubbing,
+                        identityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+                            videoKey = sessionKey,
+                            remoteMediaUrl = requestedRemoteMediaUrl,
+                            referrer = requestedRemoteMediaReferrer,
+                            cookie = requestedRemoteMediaCookie,
+                        ),
                     )
                     completedReadySessionKey = sessionKey
                     completedReadySessionIgnoresTranscription = true

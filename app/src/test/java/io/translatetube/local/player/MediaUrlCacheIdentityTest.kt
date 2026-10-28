@@ -124,6 +124,43 @@ class MediaUrlCacheIdentityTest {
     }
 
     @Test
+    fun readySnapshotIdentitySeparatesRemoteCookieAndOriginSessionsWithoutStoringCredentials() {
+        val videoKey = "remote:https://cdn.example/video.mp4?token=asset-secret"
+        val url = "https://cdn.example/video.mp4?token=asset-secret"
+        val first = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, url, "https://site.example/watch", "session=alpha",
+        )
+        val sameSession = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, "https://CDN.example:443/video.mp4?token=rotated",
+            "https://site.example/other", "session=alpha",
+        )
+        val otherCookie = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, url, "https://site.example/watch", "session=beta",
+        )
+        val otherOrigin = MediaUrlCacheIdentity.readySnapshotIdentityKey(
+            videoKey, url, "https://other.example/watch", "session=alpha",
+        )
+        assertEquals(first, sameSession)
+        assertNotEquals(first, otherCookie)
+        assertNotEquals(first, otherOrigin)
+        assertTrue(first.startsWith("remote-snapshot:"))
+        assertFalse(first.contains("session=alpha"))
+        assertFalse(first.contains("asset-secret"))
+    }
+
+    @Test
+    fun localAndYoutubeSnapshotsKeepTheirOriginalIdentity() {
+        assertEquals(
+            "youtube:abc",
+            MediaUrlCacheIdentity.readySnapshotIdentityKey("youtube:abc", null, "", null),
+        )
+        assertEquals(
+            "local:content://library/video",
+            MediaUrlCacheIdentity.readySnapshotIdentityKey("local:content://library/video", null, "", null),
+        )
+    }
+
+    @Test
     fun audioCacheIsStableForRotatingSignaturesButScopedToCookieSessionAndPageOrigin() {
         val urlA = "https://cdn.example/video.mp4?token=old"
         val urlB = "https://cdn.example/video.mp4?token=new"
