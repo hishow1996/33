@@ -500,6 +500,25 @@ object NewPipeRepo {
             throw failure
         }
 
+    /**
+     * The video has caption tracks but a network failure or rate limit stopped us from reading
+     * them. That is not "no captions": transcribing the audio instead would silently replace
+     * good captions with a slower, less accurate result (and usually fails on the same network),
+     * so report it and let the user retry.
+     */
+    private fun throwIfCaptionsUnreachable(videoId: String, budget: SubtitleFallbackBudget) {
+        val cause = budget.networkFailure() ?: return
+        logError(
+            "YouTube 有字幕但因网络问题无法读取，已停止处理（不改用音频转写）",
+            cause,
+            mapOf("YouTube 视频 ID" to videoId, "失败类型" to cause.javaClass.name),
+        )
+        throw java.io.IOException(
+            "这个视频有字幕，但字幕下载失败（网络不通或被 YouTube 限流）。有字幕的视频不会改用音频转写，请检查网络后重试。",
+            cause,
+        )
+    }
+
     /** 字幕轨优先请求 WebVTT；NewPipe 默认 URL 常为 TTML，需兼容两种格式。 */
     suspend fun subtitles(
         videoId: String,
@@ -639,19 +658,20 @@ object NewPipeRepo {
             }
             if (fallbackBudget.recordTrackFailure(trackFailure)) {
                 logWarning(
-                    "YouTube 字幕轨连续失败，不再逐条尝试剩余字幕轨，改用音频转写",
+                    "YouTube 字幕轨请求连续失败，不再逐条尝试剩余字幕轨",
                     trackFailure,
                     mapOf(
                         "YouTube 视频 ID" to videoId,
                         "检测到字幕轨数量" to tracks.size.toString(),
                         "已尝试字幕轨数量" to (candidateTracks.indexOf(track) + 1).toString(),
                         "最后一次失败类型" to (trackFailure?.javaClass?.name ?: "字幕内容无法识别"),
-                        "后续处理" to "跳过剩余低优先级字幕轨，直接转写原声音轨",
                     ),
                 )
+                throwIfCaptionsUnreachable(videoId, fallbackBudget)
                 return null
             }
         }
+        throwIfCaptionsUnreachable(videoId, fallbackBudget)
         android.util.Log.w(
             "NewPipeRepo",
             "Found ${candidateTracks.size} eligible subtitle tracks but none could be downloaded or parsed for video=$videoId"

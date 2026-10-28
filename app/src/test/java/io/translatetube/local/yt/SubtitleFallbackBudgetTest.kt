@@ -4,6 +4,8 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -49,5 +51,33 @@ class SubtitleFallbackBudgetTest {
     @Test
     fun subtitleHttpExceptionKeepsOriginalMessage() {
         assertTrue(SubtitleHttpException(403).message!!.contains("HTTP 403"))
+    }
+
+    @Test
+    fun remembersNetworkFailureSoCaptionsAreNotSilentlyReplacedByTranscription() {
+        val budget = SubtitleFallbackBudget()
+        assertNull(budget.networkFailure())
+        budget.recordTrackFailure(null)
+        assertNull(budget.networkFailure())
+        val timeout = SocketTimeoutException("timeout")
+        budget.recordTrackFailure(timeout)
+        // A later empty track does not clear it: the earlier track could not be checked.
+        budget.recordTrackFailure(null)
+        assertSame(timeout, budget.networkFailure())
+    }
+
+    @Test
+    fun rateLimitIsRememberedAsNetworkFailure() {
+        val budget = SubtitleFallbackBudget()
+        val limited = SubtitleHttpException(429)
+        assertTrue(budget.recordTrackFailure(limited))
+        assertSame(limited, budget.networkFailure())
+    }
+
+    @Test
+    fun plainHttpErrorsAreNotNetworkFailures() {
+        val budget = SubtitleFallbackBudget()
+        budget.recordTrackFailure(SubtitleHttpException(404))
+        assertNull(budget.networkFailure())
     }
 }

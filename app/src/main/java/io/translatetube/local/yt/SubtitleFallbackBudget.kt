@@ -25,6 +25,14 @@ internal class SubtitleFallbackBudget(
     private val maxConnectivityFailures: Int = 2,
 ) {
     private var connectivityFailures = 0
+    private var networkError: Throwable? = null
+
+    /**
+     * The first network / rate-limit error seen while trying tracks, or null. While this is set
+     * the video may well have captions we simply could not fetch, so the caller must report the
+     * failure instead of silently switching to audio transcription.
+     */
+    fun networkFailure(): Throwable? = networkError
 
     fun recordSuccess() {
         connectivityFailures = 0
@@ -37,6 +45,11 @@ internal class SubtitleFallbackBudget(
     fun recordTrackFailure(error: Throwable?): Boolean {
         // Tracks that answered but had no usable cues never end the search: a later track in
         // another language may still work, and captions are preferred over audio transcription.
+        if (error != null && networkError == null &&
+            (isRateLimited(error) || isConnectivityFailure(error))
+        ) {
+            networkError = error
+        }
         if (error != null && isRateLimited(error)) return true
         if (error != null && isConnectivityFailure(error)) {
             connectivityFailures += 1
