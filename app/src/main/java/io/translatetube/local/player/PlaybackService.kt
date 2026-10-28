@@ -3309,10 +3309,11 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
 
         val waitingForExternalResult = current.manualTranslationWaiting
         val pipelineAlive = prepJob?.isActive == true
-        val shouldRestartTranslationStage = waitingForExternalResult &&
-            (waiter == null || !pipelineAlive) &&
-            videoKey == key &&
-            ui.value.key == key
+        val shouldRestartTranslationStage =
+            (waitingForExternalResult || (current.phase == Phase.TRANSLATING && !pipelineAlive)) &&
+                (waiter == null || !pipelineAlive) &&
+                videoKey == key &&
+                ui.value.key == key
 
         updateUiForSession(key) {
             it.copy(
