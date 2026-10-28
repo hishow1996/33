@@ -5891,68 +5891,124 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
-                // Validate the selected/source-cache language against the actual transcript before
-                // deciding that translation can be skipped.
-                srcLang = resolveSourceLanguageForCues(
-                    translatedLines.map { it.text },
-                    io.translatetube.local.subs.SubtitleLanguageDetector
-                        .resolveTranscriptionLanguageFromCues(
-                            srcLang,
-                            translatedLines.asSequence().map { it.text }.asIterable(),
-                        ),
-                )
-                val externalTranslatedLines = awaitManualSubtitleTranslation(
-                    key, translatedLines, srcLang, pipelineGeneration,
-                )
-                if (externalTranslatedLines != null) {
-                    translatedLines = externalTranslatedLines
-                } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
-                    val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
-                    if (needsTranslation) {
-                        updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.TRANSLATING, progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…") }
-                        translatedLines = translateLines(key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration)
-                    }
-                } else if (translatedLines.isNotEmpty()) {
-                    // Source captions are not translator output: preserve repeated words and text that
-                    // happens to resemble a progress label instead of running translation cleanup on it.
-                    translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
-                }
-                lines = translatedLines
-                // 仅在译文填充率 >50% 时写缓存（避免失败结果被永久缓存）
-                ensureCurrentSession(key, pipelineGeneration)
-                var translatedRowCount = 0
-                for ((index, line) in translatedLines.withIndex()) {
-                    if ((index and 0xff) == 0) {
-                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    }
-                    if (!line.zh.isNullOrEmpty()) translatedRowCount++
-                }
-                if (translatedRowCount > translatedLines.size / 2) {
-                    val arr = org.json.JSONArray()
-                    for ((rowIndex, line) in translatedLines.withIndex()) {
-                        if ((rowIndex and 0xff) == 0) {
-                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        }
-                        arr.put(
-                            org.json.JSONObject()
-                                .put("s", line.startMs)
-                                .put("e", line.endMs)
-                                .put("t", line.text)
-                                .put("zh", line.zh ?: "")
+                val isImportedTranslatedSnapshot =
+                    resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+
+                if (isImportedTranslatedSnapshot) {
+                    // "导入已翻译字幕并配音" is an authoritative translated input. Do not infer
+                    // the source language from its original-language display row and send it to the
+                    // active translation engine again. Keep the imported zh text and timestamps.
+                    translatedLines = translatedLines.mapIndexed { index, line ->
+                        line.copy(
+                            index = index,
+                            zh = line.zh?.takeIf { it.isNotBlank() } ?: line.text,
                         )
                     }
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    ensureCurrentSession(key, pipelineGeneration)
-                    db.subtitleCacheDao().put(
-                        io.translatetube.local.data.SubtitleCacheEntity(translationCacheKey, srcLang, arr.toString(), System.currentTimeMillis(), videoKey = key)
+                    srcLang = "zh"
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(
+                            phase = if (restoreCompletedSnapshot) Phase.READY else Phase.SYNTHESIZING,
+                            sourceLang = "zh",
+                            translatedLineCount = translatedLines.count { line -> !line.zh.isNullOrBlank() },
+                            progress = if (restoreCompletedSnapshot) "" else "复用已导入译文，正在准备配音…",
+                        )
+                    }
+                    io.translatetube.local.util.AppLogStore.info(
+                        this@PlaybackService,
+                        "PlaybackFlow",
+                        "恢复已导入译文，跳过应用内翻译",
+                        diagnosticContext = mapOf(
+                            "字幕行数" to translatedLines.size.toString(),
+                            "复用导入译文行数" to translatedLines.count { !it.zh.isNullOrBlank() }.toString(),
+                            "恢复成功快照" to restoreCompletedSnapshot.toString(),
+                            "处理流程" to ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES.name,
+                        ),
                     )
+                } else {
+                    // Validate the selected/source-cache language against the actual transcript before
+                    // deciding that translation can be skipped.
+                    srcLang = resolveSourceLanguageForCues(
+                        translatedLines.map { it.text },
+                        io.translatetube.local.subs.SubtitleLanguageDetector
+                            .resolveTranscriptionLanguageFromCues(
+                                srcLang,
+                                translatedLines.asSequence().map { it.text }.asIterable(),
+                            ),
+                    )
+                    val externalTranslatedLines = awaitManualSubtitleTranslation(
+                        key, translatedLines, srcLang, pipelineGeneration,
+                    )
+                    if (externalTranslatedLines != null) {
+                        translatedLines = externalTranslatedLines
+                    } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
+                        val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
+                        if (needsTranslation) {
+                            updateUiForSession(key, pipelineGeneration) {
+                                it.copy(
+                                    phase = Phase.TRANSLATING,
+                                    progress = "原文字幕已准备，正在翻译成中文（${translatedLines.size} 行）…",
+                                )
+                            }
+                            translatedLines = translateLines(
+                                key, translatedLines, srcLang, translationCacheKey, selectedTranslationId, pipelineGeneration,
+                            )
+                        }
+                    } else if (translatedLines.isNotEmpty()) {
+                        // Source captions are not translator output: preserve repeated words and text that
+                        // happens to resemble a progress label instead of running translation cleanup on it.
+                        translatedLines = SubtitleCacheValidationPolicy.restoreChineseSourceTranslations(translatedLines)
+                    }
+                }
+                lines = translatedLines
+
+                // An imported translated file is persisted as a ready-session snapshot instead of
+                // being written under the currently selected translator's cache identity.
+                if (!isImportedTranslatedSnapshot) {
+                    // Persist only when more than half of rows have usable Chinese output.
+                    ensureCurrentSession(key, pipelineGeneration)
+                    var translatedRowCount = 0
+                    for ((index, line) in translatedLines.withIndex()) {
+                        if ((index and 0xff) == 0) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        }
+                        if (!line.zh.isNullOrEmpty()) translatedRowCount++
+                    }
+                    if (translatedRowCount > translatedLines.size / 2) {
+                        val arr = org.json.JSONArray()
+                        for ((rowIndex, line) in translatedLines.withIndex()) {
+                            if ((rowIndex and 0xff) == 0) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            }
+                            arr.put(
+                                org.json.JSONObject()
+                                    .put("s", line.startMs)
+                                    .put("e", line.endMs)
+                                    .put("t", line.text)
+                                    .put("zh", line.zh ?: "")
+                            )
+                        }
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        ensureCurrentSession(key, pipelineGeneration)
+                        db.subtitleCacheDao().put(
+                            io.translatetube.local.data.SubtitleCacheEntity(
+                                translationCacheKey, srcLang, arr.toString(),
+                                System.currentTimeMillis(), videoKey = key,
+                            )
+                        )
+                    }
                 }
             }
 
             ensureCurrentSession(key, pipelineGeneration)
             // 仅 YouTube：把第一句起点校准到人声真正开口的时间（网页/本地不走这里）。
             val baseLines = lines ?: emptyList()
-            val calibratedLines = if (videoId != null) calibrateYouTubeFirstCue(videoId, baseLines) else baseLines
+            val importedTranslatedFlow =
+                resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+            val calibratedLines = if (videoId != null && !importedTranslatedFlow) {
+                calibrateYouTubeFirstCue(videoId, baseLines)
+            } else {
+                baseLines
+            }
             ensureCurrentSession(key, pipelineGeneration)
             val finalLines = applySavedLineOverrides(calibratedLines, key)
             updateUiForSession(key, pipelineGeneration) {
