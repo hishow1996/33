@@ -3642,9 +3642,17 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         val resumePlaybackAfterImport = ::pm.isInitialized &&
             runCatching { pm.player.playWhenReady }.getOrDefault(false)
         if (::pm.isInitialized) pm.pause()
-        subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
-        prepJob?.cancel()
+        processingPaused = false
+        if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
+        enginePreferenceRestartJob?.cancel()
+        enginePreferenceRestartJob = null
+        subtitleDownloadJob?.cancel()
+        subtitleDownloadJob = null
+        prepJob?.cancel(kotlinx.coroutines.CancellationException("切换到导入已翻译字幕配音"))
         prepJob = null
+        manualTranslationWaiters.remove(sessionKey)?.cancel()
+        manualTranslationSources.remove(sessionKey)
+        manualTranslationRequestedKeys.remove(sessionKey)
         speakerJob?.cancel()
         speakerJob = null
         qualityJob?.cancel()
@@ -3654,29 +3662,33 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         qualityRecoveryAttempted = false
         dubCollectJob?.cancel()
         dubCollectJob = null
-        retireCurrentDubbing()
         lastLineIdx = Int.MIN_VALUE
+        updateUiForSession(sessionKey, pipelineGeneration) {
+            it.copy(
+                phase = Phase.PARSING,
+                progress = "正在读取已翻译字幕文件…",
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                dubbingOn = true,
+                error = null,
+                noModelHint = null,
+                dubbingHasErrors = false,
+                translatedLineCount = 0,
+                preparedUntil = 0,
+                preparedCount = 0,
+                activeDubbingLine = -1,
+                currentLine = -1,
+                waitingForTranscriptionEngine = false,
+                waitingForDubbingEngine = false,
+                manualTranslationModeEnabled = false,
+                manualTranslationWaiting = false,
+                isProcessingPaused = false,
+                subtitleTrackStatus = "正在导入已翻译字幕",
+            )
+        }
+        retireCurrentDubbing()
         prepJob = scope.launch {
             pipelineExecutionMutex.withLock {
             try {
-                updateUiForSession(sessionKey, pipelineGeneration) {
-                    it.copy(
-                        phase = Phase.PARSING,
-                        progress = "正在读取已翻译字幕文件…",
-                        processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
-                        // This entry point always prepares Chinese dubbing, regardless of the
-                        // playback mode selected for the previously active video.
-                        dubbingOn = true,
-                        error = null,
-                        noModelHint = null,
-                        dubbingHasErrors = false,
-                        translatedLineCount = 0,
-                        activeDubbingLine = -1,
-                        currentLine = -1,
-                        waitingForTranscriptionEngine = false,
-                        waitingForDubbingEngine = false,
-                    )
-                }
                 if (::pm.isInitialized) {
                     // Update the mixer as well as UI state; the bus may still be disabled from
                     // the previously playing session and would otherwise silence synthesized PCM.
