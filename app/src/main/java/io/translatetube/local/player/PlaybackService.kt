@@ -4387,9 +4387,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         dubbingFingerprint = completedDomainFingerprints.dubbing,
                         identityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
                             videoKey = sessionKey,
-                            remoteMediaUrl = requestedRemoteMediaUrl,
-                            referrer = requestedRemoteMediaReferrer,
-                            cookie = requestedRemoteMediaCookie,
+                            remoteMediaUrl = this@PlaybackService.remoteMediaUrl,
+                            referrer = this@PlaybackService.remoteMediaReferrer,
+                            cookie = this@PlaybackService.remoteMediaCookie,
                         ),
                     )
                     completedReadySessionKey = sessionKey
