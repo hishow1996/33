@@ -1096,7 +1096,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                                 "（已备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines}）"
                             } else "",
                         color = Color(0xFFD32F2F),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         softWrap = false,
