@@ -4683,6 +4683,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         var remoteMediaReferrer = requestedRemoteMediaReferrer
         var remoteMediaCookie = requestedRemoteMediaCookie
 
+        // A newly imported external translation is a new synthesis request even when its text
+        // matches an older cache. Keep this flag through attach and initial playback.
+        var forceFreshDubbingForThisRun = forceRegenerateDubbing
         // 记录仅供转写使用的临时网络音频，任何异常/取消路径都清理。
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
@@ -6241,6 +6244,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 )
                 if (manualRestoredLines != null) {
                     lines = manualRestoredLines
+                    forceFreshDubbingForThisRun = true
                 } else if (!isChineseLanguage(srcLang) && restored.any { line ->
                     needsSubtitleTranslation(line, srcLang)
                 }) {
@@ -6298,6 +6302,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     )
                     if (externalTranslatedLines != null) {
                         translatedLines = externalTranslatedLines
+                        forceFreshDubbingForThisRun = true
                     } else if (translatedLines.isNotEmpty() && !isChineseLanguage(srcLang)) {
                         val needsTranslation = translatedLines.any { line -> needsSubtitleTranslation(line, srcLang) }
                         if (needsTranslation) {
@@ -6485,7 +6490,12 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                         }
                         registerDubbingFailureHandler(d, tts, key)
                         try {
-                            d.attach(tts, finalLines, sourceLanguage = srcLang, forceRegenerateDubbing = forceRegenerateDubbing)
+                            d.attach(
+                        tts,
+                        finalLines,
+                        sourceLanguage = srcLang,
+                        forceRegenerateDubbing = forceFreshDubbingForThisRun,
+                    )
                         } catch (e: Exception) {
                             retireDubbing(d)
                             runCatching { tts.close() }
@@ -6690,9 +6700,10 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                 db.videoDao().byKey(key)?.watchedSec ?: 0L
             } catch (_: Exception) { 0L }
             val totalMs = meta.durationSec * 1000
-            if (forceRegenerateDubbing) {
+            if (forceFreshDubbingForThisRun) {
                 // Do not leave the prior run's watch position as the history resume point after
-                // changing engines. The new subtitle/voice timeline is about to start at zero.
+                // changing engines or importing an external translation. The new subtitle/voice
+                // timeline is about to start at zero.
                 try {
                     db.videoDao().setWatched(key, 0L)
                 } catch (error: Exception) {
@@ -6710,7 +6721,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                 }
             }
             if (
-                !forceRegenerateDubbing &&
+                !forceFreshDubbingForThisRun &&
                 resumeSec > 10 &&
                 (totalMs <= 0 || resumeSec * 1000 < totalMs - 30_000)
             ) {
@@ -6722,8 +6733,8 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                     }
                 }
             } else {
-                val startPositionMs = if (forceRegenerateDubbing) 0L else null
-                if (forceRegenerateDubbing) {
+                val startPositionMs = if (forceFreshDubbingForThisRun) 0L else null
+                if (forceFreshDubbingForThisRun) {
                     io.translatetube.local.util.AppLogStore.info(
                         this@PlaybackService,
                         "PlaybackFlow",
