@@ -1025,19 +1025,19 @@ class PlaybackService : MediaSessionService() {
                         // A translator or ASR preference change must not cancel/reopen this flow,
                         // because there is no translation/ASR stage to rerun. A TTS fingerprint
                         // change remains relevant and continues through the normal dubbing restart.
-                        val currentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                        val previousDomains = processingEngineDomainFingerprints
+                        val currentDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        val previousDomainFingerprints = processingEngineDomainFingerprints
                         if (
                             state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
                             !EngineRestartStagePolicy.hasRelevantConfigChange(
-                                previous = previousDomains,
-                                current = currentDomains,
+                                previous = previousDomainFingerprints,
+                                current = currentDomainFingerprints,
                                 processingFlow = state.processingFlow,
                                 ignoreTranscription = true,
                             )
                         ) {
                             processingEngineConfigFingerprint = stableFingerprint
-                            processingEngineDomainFingerprints = currentDomains
+                            processingEngineDomainFingerprints = currentDomainFingerprints
                             return@launch
                         }
 
