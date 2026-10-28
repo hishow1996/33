@@ -1091,7 +1091,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     color = Color(0xFFFFEBEE),
                 ) {
                     Text(
-                        "这句配音未就绪，暂播原声" +
+                        "配音合成未就绪，暂播原声" +
                             if (state.totalLines > 0) {
                                 "（已备 ${state.preparedCount.coerceIn(0, state.totalLines)}/${state.totalLines}）"
                             } else "",
