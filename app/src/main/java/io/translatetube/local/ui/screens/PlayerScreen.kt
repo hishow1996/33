@@ -324,6 +324,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
+            // Reparenting may recreate TextureView's SurfaceTexture; ask Media3 to bind again.
+            PlaybackService.instance?.attachSurface(tv)
         } else {
             android.util.Log.w(
                 "PlayerScreen",
@@ -332,12 +334,8 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
         }
     }
 
-    // 服务就绪后挂画面（等 instance 出现，时序安全）
-    LaunchedEffect(Unit) {
-        var tries = 0
-        while (PlaybackService.instance == null && tries < 100) { delay(100); tries++ }
-        PlaybackService.instance?.attachSurface(tv)
-    }
+    // Bind when the player view enters composition, not while the parsing page still owns
+    // the TextureView. PlaybackService retains the latest request if initialization is ongoing.
 
     // 从后台回到播放页时重新绑定画面：后台期间 TextureView 的画面表面会被系统销毁，
     // 不重新绑定就会一直黑屏。
