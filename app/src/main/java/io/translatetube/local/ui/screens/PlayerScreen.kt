@@ -989,13 +989,13 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     state.progress == "正在检查本地视频…"
                 val restoringHistorySession = showPlayerWhileRestoringHistory && (
                     state.key != requestKey ||
-                        if (localUri != null) {
+                        (if (localUri != null) {
                             // For local history, keep the veil only during the asynchronous identity check.
                             // If the file/config no longer matches, let the five-stage progress show normally.
                             checkingLocalMediaIdentity
                         } else {
                             phase != Phase.READY && phase != Phase.SYNTHESIZING && phase != Phase.ERROR
-                        }
+                        })
                     )
                 if (restoringHistorySession) {
                     Box(
