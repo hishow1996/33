@@ -87,7 +87,7 @@ class YouTubeSubtitleSelectionPolicyTest {
             ),
         )
         assertEquals(
-            "ko",
+            null,
             YouTubeSubtitleSelectionPolicy.sourceLanguageHint(
                 originalAudioLanguageTags = emptyList(),
                 streamLanguageTag = "ko-KR",
@@ -155,11 +155,11 @@ class YouTubeSubtitleSelectionPolicyTest {
     @Test
     fun youtubeHistoryFingerprintIncludesCanonicalDefaultModeEvenWhenNotPersisted() {
         assertEquals(
-            "youtube_subtitle_language_mode=english",
+            "youtube_subtitle_language_mode=english;policy=2",
             YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", null),
         )
         assertEquals(
-            "youtube_subtitle_language_mode=original",
+            "youtube_subtitle_language_mode=original;policy=2",
             YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", "original"),
         )
         assertEquals(
@@ -171,6 +171,63 @@ class YouTubeSubtitleSelectionPolicyTest {
         )
         assertNull(
             YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("local:content://video", "original"),
+        )
+    }
+
+    @Test
+    fun englishModeOnlyAcceptsEnglishCaptions() {
+        assertTrue(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+                sourceLanguageTag = "ko",
+                subtitleLanguageTag = "en",
+            ),
+        )
+        assertTrue(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+                sourceLanguageTag = "ko",
+                subtitleLanguageTag = "en-US",
+            ),
+        )
+        assertFalse(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+                sourceLanguageTag = "ko",
+                subtitleLanguageTag = "ko",
+            ),
+        )
+        assertFalse(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+                sourceLanguageTag = "ko",
+                subtitleLanguageTag = "zh-Hans",
+            ),
+        )
+    }
+
+    @Test
+    fun originalModeOnlyAcceptsCaptionsMatchingTheOriginalLanguage() {
+        assertTrue(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.MATCH_ORIGINAL,
+                sourceLanguageTag = "ko-KR",
+                subtitleLanguageTag = "ko",
+            ),
+        )
+        assertFalse(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.MATCH_ORIGINAL,
+                sourceLanguageTag = "ko",
+                subtitleLanguageTag = "en",
+            ),
+        )
+        assertFalse(
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = YouTubeSubtitleLanguageMode.MATCH_ORIGINAL,
+                sourceLanguageTag = null,
+                subtitleLanguageTag = "ko",
+            ),
         )
     }
 
