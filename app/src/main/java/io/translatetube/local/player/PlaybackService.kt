@@ -3757,12 +3757,21 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             )
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
-        // This operation replaces any previous imported-source workflow. The translated rows are
-        // persisted with IMPORTED_TRANSLATED_SUBTITLES in the ready snapshot, not in importedLines.
+        // An explicit subtitle import starts a new synthesis run, even when its content matches
+        // the previous import. Remove the ready snapshot first so an interrupted import cannot
+        // silently restore the old imported result.
+        if (sessionKey.isNotBlank()) {
+            ReadyHistorySessionConfigStore.remove(this, sessionKey)
+        }
         this.importedLines = null
         val resumePlaybackAfterImport = ::pm.isInitialized &&
             runCatching { pm.player.playWhenReady }.getOrDefault(false)
-        if (::pm.isInitialized) pm.pause()
+        if (::pm.isInitialized) {
+            pm.pause()
+            // Re-imported subtitles are a fresh full synthesis, not a continuation at the old
+            // playhead. Reset before attaching the new engine so queue prioritization starts at row 1.
+            runCatching { pm.seekTo(0L) }
+        }
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         enginePreferenceRestartJob?.cancel()
@@ -3809,6 +3818,19 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         retireCurrentDubbing()
         prepJob = scope.launch {
             try {
+                if (sessionKey.isNotBlank()) {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            AppDatabase.get(this@PlaybackService).videoDao().setWatched(sessionKey, 0L)
+                        }
+                    } catch (positionResetError: Exception) {
+                        android.util.Log.w(
+                            "PlaybackService",
+                            "Could not reset stored watch position before imported-subtitle regeneration",
+                            positionResetError,
+                        )
+                    }
+                }
                 // Parsing user-provided subtitle text is independent of the shared TTS runtime.
                 // Do it before taking the pipeline mutex so a canceled translation/native
                 // inference can unwind in parallel instead of making the import appear stuck.
@@ -3903,7 +3925,11 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
-                    d.attach(tts, translatedLines)
+                    d.attach(
+                        tts,
+                        translatedLines,
+                        forceRegenerateDubbing = true,
+                    )
                 } catch (e: Throwable) {
                     // A failed attach may be an allocation error, not just an Exception.
                     retireDubbing(d)
@@ -3943,7 +3969,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 )
                 withContext(Dispatchers.Main) {
                     ensureCurrentSession(sessionKey, pipelineGeneration)
-                    startPlaybackWithMountedDubbing(null) {
+                    startPlaybackWithMountedDubbing(0L) {
                         ensureCurrentSession(sessionKey, pipelineGeneration)
                     }
                 }
