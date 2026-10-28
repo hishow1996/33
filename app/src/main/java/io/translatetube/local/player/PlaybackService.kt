@@ -3619,6 +3619,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         phase = Phase.PARSING,
                         progress = "正在读取已翻译字幕文件…",
                         processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                        // This entry point always prepares Chinese dubbing, regardless of the
+                        // playback mode selected for the previously active video.
+                        dubbingOn = true,
                         error = null,
                         noModelHint = null,
                         dubbingHasErrors = false,
@@ -3628,6 +3631,11 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         waitingForTranscriptionEngine = false,
                         waitingForDubbingEngine = false,
                     )
+                }
+                if (::pm.isInitialized) {
+                    // Update the mixer as well as UI state; the bus may still be disabled from
+                    // the previously playing session and would otherwise silence synthesized PCM.
+                    pm.dubbingBus.setDubbingEnabled(true)
                 }
                 val importOwnerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                 val text = withContext(Dispatchers.IO) {
