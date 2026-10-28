@@ -5,8 +5,7 @@ package io.translatetube.local.player
  * Other flows retain their existing cache-first behavior.
  */
 internal object SubtitleCacheRestorePolicy {
-    fun shouldRestoreCachedRows(
-        cacheAvailable: Boolean,
+    fun shouldUseCachedRows(
         hasAuthoritativeImportedTranslation: Boolean,
-    ): Boolean = cacheAvailable && !hasAuthoritativeImportedTranslation
+    ): Boolean = !hasAuthoritativeImportedTranslation
 }
