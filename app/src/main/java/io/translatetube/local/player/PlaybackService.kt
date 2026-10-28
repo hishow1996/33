@@ -1340,6 +1340,23 @@ class PlaybackService : MediaSessionService() {
             try {
                 pm.player.setVideoTextureView(tv)
                 boundVideoSurface = java.lang.ref.WeakReference(tv)
+                val bindDetails = mapOf(
+                    "视频视图宽度" to tv.width.toString(),
+                    "视频视图高度" to tv.height.toString(),
+                    "纹理可用" to tv.isAvailable.toString(),
+                    "播放器状态" to pm.player.playbackState.toString(),
+                    "是否正在播放" to pm.player.isPlaying.toString(),
+                )
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        io.translatetube.local.util.AppLogStore.info(
+                            applicationContext,
+                            "PlayerManager",
+                            "视频画面已绑定",
+                            diagnosticContext = bindDetails,
+                        )
+                    }
+                }
             } catch (error: Throwable) {
                 if (error is VirtualMachineError || error is ThreadDeath) throw error
                 if (boundVideoSurface?.get() === tv) boundVideoSurface = null
