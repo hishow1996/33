@@ -10933,10 +10933,37 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
     /** 记录观看进度（退出播放页时调用，历史列表续看用） */
     fun saveProgress() {
         val key = videoKey
-        if (key.isEmpty()) return
+        if (key.isEmpty() || !playerReady || !::pm.isInitialized) return
+
+        // Capture the playhead synchronously with the key/generation. Reading pm.position() only
+        // inside the launched coroutine can pair the old video's key with the next video's playhead
+        // if Home opens another item before this coroutine is scheduled.
+        val savePipelineGeneration = activePipelineGeneration
+        val savedPositionSeconds = runCatching {
+            (pm.position().coerceAtLeast(0L) / 1000L)
+        }.getOrElse { error ->
+            io.translatetube.local.util.AppLogStore.warning(
+                this@PlaybackService,
+                "PlaybackProgress",
+                "读取观看位置失败，未保存历史进度",
+                error,
+                diagnosticContext = mapOf(
+                    "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
+                    "视频会话标识长度" to key.length.toString(),
+                    "播放器初始化状态" to ::pm.isInitialized.toString(),
+                ),
+            )
+            return
+        }
+
         scope.launch {
             try {
-                AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, pm.position() / 1000)
+                // If the same history row has already been reopened, an older queued save must
+                // not overwrite progress belonging to the newer processing/playback generation.
+                if (videoKey == key && activePipelineGeneration != savePipelineGeneration) {
+                    return@launch
+                }
+                AppDatabase.get(this@PlaybackService).videoDao().setWatched(key, savedPositionSeconds)
             } catch (error: Exception) {
                 io.translatetube.local.util.AppLogStore.warning(
                     this@PlaybackService,
@@ -10947,12 +10974,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "视频会话指纹" to safeDiagnosticSessionFingerprint(key),
                         "视频会话标识长度" to key.length.toString(),
                         "播放器初始化状态" to ::pm.isInitialized.toString(),
-                        "保存位置秒" to runCatching { if (::pm.isInitialized) (pm.position() / 1000).toString() else "不可用" }.getOrDefault("读取失败"),
+                        "保存位置秒" to savedPositionSeconds.toString(),
+                        "保存时处理代数" to savePipelineGeneration.toString(),
                     ),
                 )
             }
         }
     }
+
     fun setSpeed(s: Float) { pm.speed(s) }
     fun position(): Long = pm.position()
     fun duration(): Long = pm.duration()
