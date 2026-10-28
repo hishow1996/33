@@ -3727,6 +3727,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     !finishedState.waitingForDubbingEngine
                 ) {
                     val completedFingerprint = processingEnginePreferenceFingerprint(
+                        ignoreTranscription = true,
                         forVideoKey = sessionKey,
                     )
                     val completedDomainFingerprints =
