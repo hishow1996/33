@@ -3,7 +3,7 @@ package io.translatetube.local.player
 /**
  * Engine configuration domains used to decide which processing stage must be resumed.
  * The policy is source-independent: YouTube, webpage and local video share translation/dubbing
- * restart rules; only YouTube-caption flow can ignore ASR changes.
+ * restart rules; imported subtitle flows and actual YouTube-caption flow ignore ASR changes.
  */
 internal enum class EngineRestartStage {
     TRANSCRIPTION,
