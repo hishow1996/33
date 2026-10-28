@@ -218,6 +218,61 @@ class PlayerManager(private val ctx: Context) {
         }
     }
 
+    /** 播放器诊断日志写磁盘，放到后台线程，避免卡住主线程/渲染。不记录带签名的完整地址，只记录域名。 */
+    private fun logPlayerDiagnostic(isWarning: Boolean, message: String, details: Map<String, String>) {
+        runCatching {
+            mixerLogExecutor.execute {
+                runCatching {
+                    if (isWarning) {
+                        io.translatetube.local.util.AppLogStore.warning(
+                            ctx, "PlayerDiagnostics", message, diagnosticContext = details,
+                        )
+                    } else {
+                        io.translatetube.local.util.AppLogStore.info(
+                            ctx, "PlayerDiagnostics", message, diagnosticContext = details,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun playerStateName(state: Int): String = when (state) {
+        Player.STATE_IDLE -> "IDLE（空闲/未准备）"
+        Player.STATE_BUFFERING -> "BUFFERING（缓冲中）"
+        Player.STATE_READY -> "READY（可播放）"
+        Player.STATE_ENDED -> "ENDED（播放结束）"
+        else -> state.toString()
+    }
+
+    /** 当前视频流的域名（YouTube 为 googlevideo.com 一类），用于判断是不是某个域名访问不通。 */
+    private fun currentMediaHost(): String = runCatching {
+        player.currentMediaItem?.localConfiguration?.uri?.host
+    }.getOrNull().orEmpty().ifBlank { "未知（合并音视频流）" }
+
+    private fun logPlayerError(error: PlaybackException) {
+        val chain = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
+        val httpStatus = chain.firstNotNullOfOrNull {
+            (it as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
+        }
+        logPlayerDiagnostic(
+            isWarning = true,
+            message = "播放器报告错误",
+            details = mapOf(
+                "错误码" to error.errorCodeName,
+                "HTTP 状态码" to (httpStatus?.toString() ?: "无"),
+                "视频流域名" to currentMediaHost(),
+                "播放位置 ms" to runCatching { player.currentPosition.toString() }.getOrDefault("未知"),
+                "播放器状态" to runCatching { playerStateName(player.playbackState) }.getOrDefault("未知"),
+                "异常链" to chain.joinToString(" <- ") {
+                    it.javaClass.simpleName + (it.message?.take(120)?.let { m -> ": $m" } ?: "")
+                },
+            ),
+        )
+    }
+
+    private var bufferingStartedAtMs = 0L
+
     init {
         player.volume = 1f
         // 音频焦点：耳机拔出/来电/其他应用播放时自动暂停或压低
@@ -243,6 +298,26 @@ class PlayerManager(private val ctx: Context) {
                 notifyTick()
             }
             override fun onPlaybackStateChanged(state: Int) {
+                // 记录缓冲耗时：黑屏时能看出是一直在缓冲（网络慢/域名不通）还是根本没开始加载。
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                when (state) {
+                    Player.STATE_BUFFERING -> bufferingStartedAtMs = nowMs
+                    Player.STATE_READY -> if (bufferingStartedAtMs > 0L) {
+                        val waitedMs = nowMs - bufferingStartedAtMs
+                        bufferingStartedAtMs = 0L
+                        if (waitedMs >= 3_000L) {
+                            logPlayerDiagnostic(
+                                isWarning = false,
+                                message = "视频缓冲较慢",
+                                details = mapOf(
+                                    "缓冲耗时 ms" to waitedMs.toString(),
+                                    "视频流域名" to currentMediaHost(),
+                                ),
+                            )
+                        }
+                    }
+                    Player.STATE_IDLE, Player.STATE_ENDED -> bufferingStartedAtMs = 0L
+                }
                 if (state == Player.STATE_ENDED) {
                     try {
                         onEnded?.invoke()
@@ -251,7 +326,15 @@ class PlayerManager(private val ctx: Context) {
                     }
                 }
             }
+            override fun onRenderedFirstFrame() {
+                logPlayerDiagnostic(
+                    isWarning = false,
+                    message = "视频首帧已渲染",
+                    details = mapOf("视频流域名" to currentMediaHost()),
+                )
+            }
             override fun onPlayerError(error: PlaybackException) {
+                logPlayerError(error)
                 var cause: Throwable? = error
                 var detail: String? = null
                 while (cause != null) {
