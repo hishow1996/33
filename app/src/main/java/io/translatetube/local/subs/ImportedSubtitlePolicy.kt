@@ -30,4 +30,16 @@ internal object ImportedSubtitlePolicy {
             .ifBlank { translation }
         return ImportedSubtitleText(original, translation)
     }
+
+    /**
+     * Restores rows from "import already translated subtitles" snapshots. These rows are trusted
+     * user-provided output; do not detect their source language or route them back through an engine.
+     */
+    fun preserveImportedTranslations(lines: List<SubLine>): List<SubLine> =
+        lines.mapIndexed { index, line ->
+            line.copy(
+                index = index,
+                zh = line.zh?.takeIf { it.isNotBlank() } ?: line.text,
+            )
+        }
 }
