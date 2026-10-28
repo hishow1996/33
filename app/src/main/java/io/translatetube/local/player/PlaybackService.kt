@@ -82,17 +82,6 @@ private enum class EngineConfigDomain {
     DUBBING,
 }
 
-private data class EngineConfigFingerprints(
-    val transcription: String,
-    val translation: String,
-    val dubbing: String,
-)
-
-private enum class EngineRestartStage {
-    TRANSCRIPTION,
-    TRANSLATION,
-    DUBBING,
-}
 
 private object ReadyHistorySessionConfigStore {
     private const val PREFS_NAME = "ready_history_session_config"
@@ -774,26 +763,19 @@ class PlaybackService : MediaSessionService() {
         state: PlayerUiState,
         ignoreTranscription: Boolean,
     ): EngineRestartStage? {
-        val importedFlow = state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
-            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-        if (!ignoreTranscription && !importedFlow && previous.transcription != current.transcription) {
-            return EngineRestartStage.TRANSCRIPTION
-        }
-        if (previous.translation != current.translation) {
-            if (state.lines.isEmpty()) return null
-            return if (
-                isChineseLanguage(state.sourceLang) ||
-                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-            ) EngineRestartStage.DUBBING else EngineRestartStage.TRANSLATION
-        }
-        if (previous.dubbing != current.dubbing) {
-            if (state.lines.isEmpty()) return null
-            val hasMissingTranslation = !isChineseLanguage(state.sourceLang) &&
-                state.processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
-                state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
-            return if (hasMissingTranslation) null else EngineRestartStage.DUBBING
-        }
-        return null
+        val sourceIsChinese = isChineseLanguage(state.sourceLang)
+        val hasMissingTranslation = !sourceIsChinese &&
+            state.processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
+        return EngineRestartStagePolicy.choose(
+            previous = previous,
+            current = current,
+            processingFlow = state.processingFlow,
+            ignoreTranscription = ignoreTranscription,
+            hasLines = state.lines.isNotEmpty(),
+            sourceLanguageIsChinese = sourceIsChinese,
+            hasMissingTranslation = hasMissingTranslation,
+        )
     }
 
     private fun stateForEngineRestart(
@@ -1000,9 +982,8 @@ class PlaybackService : MediaSessionService() {
                         }
 
                         // On a completed session, compare the saved per-domain fingerprints and
-                        // restart at the earliest affected stage. A translation-engine switch
-                        // reuses the source transcript/timestamps but clears old Chinese text;
-                        // a TTS-only switch keeps the validated translation and rebuilds speech.
+                        // restart at the earliest affected stage using the shared, source-independent policy.
+                        // Translation changes reuse source text/timestamps and regenerate Chinese speech.
                         // A model can change while translation or synthesis is still running.
                         // Reuse the source timeline in those phases too; relying only on a successful
                         // history snapshot forced first-time/in-progress videos back to stage 1.
