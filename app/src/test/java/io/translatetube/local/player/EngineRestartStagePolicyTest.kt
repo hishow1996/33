@@ -106,7 +106,7 @@ class EngineRestartStagePolicyTest {
                 previous = oldConfig,
                 current = changed(transcription = "asr-b"),
                 processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
-                ignoreTranscription = true,
+                ignoreTranscription = false,
                 hasLines = true,
                 sourceLanguageIsChinese = false,
                 hasMissingTranslation = false,
