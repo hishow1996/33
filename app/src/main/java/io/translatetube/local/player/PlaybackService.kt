@@ -647,6 +647,10 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var enginePreferenceRestartJob: Job? = null
     // Preserve a YouTube subtitle-mode change across the preference debounce if another engine setting changes too.
     @Volatile private var pendingYouTubeSubtitleRefreshKey: String? = null
+    // Track the caption mode used by the active pipeline so a rapid change-and-revert
+    // doesn't leave a stale request that forces a later, unrelated engine restart to redownload captions.
+    @Volatile private var activeProcessingYouTubeSubtitleMode =
+        io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE
     // Serialize every flow that creates/replaces a DubbingEngine. YouTube, remote web media,
     // local video and imported subtitles must not initialize a new TTS engine while a cancelled
     // pipeline is still unwinding a blocking Android TTS/JNI call.
@@ -1004,6 +1008,12 @@ class PlaybackService : MediaSessionService() {
         forVideoKey: String = videoKey,
     ): String = ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription, forVideoKey)
 
+    private fun selectedYouTubeSubtitleMode(): String =
+        getSharedPreferences("settings", MODE_PRIVATE).getString(
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+        ) ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE
+
     /**
      * Restart the active pipeline when an output-affecting engine setting changes.
      * A completed READY session is eligible too: changing translation engines while the player
@@ -1026,16 +1036,23 @@ class PlaybackService : MediaSessionService() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint()
         processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
             if (changedKey != null && isProcessingEnginePreferenceKey(changedKey)) {
                 if (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY && videoKey.isNotBlank()) {
-                    pendingYouTubeSubtitleRefreshKey = videoKey
+                    pendingYouTubeSubtitleRefreshKey =
+                        if (selectedYouTubeSubtitleMode() != activeProcessingYouTubeSubtitleMode) videoKey
+                        else null
                 }
                 val latestFingerprint = processingEnginePreferenceFingerprint()
                 val current = ui.value
                 if (!shouldRestartForEnginePreferenceChange(current)) {
                     processingEngineConfigFingerprint = latestFingerprint
                     processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                    activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+                    if (pendingYouTubeSubtitleRefreshKey == videoKey) {
+                        pendingYouTubeSubtitleRefreshKey = null
+                    }
                 } else if (latestFingerprint != processingEngineConfigFingerprint) {
                     // Debounce rapid preference writes so a single settings change restarts the
                     // pipeline once, using the final selected ASR/translation/TTS configuration.
@@ -1088,6 +1105,10 @@ class PlaybackService : MediaSessionService() {
                             // should restart this authoritative translated-subtitle flow.
                             processingEngineConfigFingerprint = stableFingerprint
                             processingEngineDomainFingerprints = currentDomainFingerprints
+                            activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+                            if (pendingYouTubeSubtitleRefreshKey == sessionKey) {
+                                pendingYouTubeSubtitleRefreshKey = null
+                            }
                             return@launch
                         }
 
@@ -1323,6 +1344,16 @@ class PlaybackService : MediaSessionService() {
                                 forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             )
                         }
+                    }
+                } else {
+                    // The user may switch an engine away and back before the debounce expires.
+                    // The active task already matches the final settings; cancel the obsolete restart.
+                    enginePreferenceRestartJob?.cancel()
+                    enginePreferenceRestartJob = null
+                    if (pendingYouTubeSubtitleRefreshKey == videoKey &&
+                        selectedYouTubeSubtitleMode() == activeProcessingYouTubeSubtitleMode
+                    ) {
+                        pendingYouTubeSubtitleRefreshKey = null
                     }
                 }
             }
@@ -2966,6 +2997,7 @@ class PlaybackService : MediaSessionService() {
         }
         processingEngineConfigFingerprint = processingEnginePreferenceFingerprint(forVideoKey = key)
         processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
+        activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
         processingPaused = false
         if (processingPauseGate.isLocked) runCatching { processingPauseGate.unlock() }
         val previousPrepJob = prepJob
