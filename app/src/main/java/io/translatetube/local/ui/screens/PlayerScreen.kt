@@ -298,22 +298,55 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     val overlayOwnerHolder = remember { arrayOfNulls<FloatingOverlayLifecycleOwner>(1) }
     val tv = remember { TextureView(ctx) }
     val frame = remember { FrameLayout(ctx) }
+    val surfaceAttachScope = rememberCoroutineScope()
+    val surfaceAttachJob = remember(tv) { arrayOfNulls<kotlinx.coroutines.Job>(1) }
 
-    // Bind only once TextureView is actually attached to a window. This avoids the first-frame
-    // race when the processing page is replaced by the player page or when the view is reparented.
+    // The view may attach before the foreground service publishes its instance. Retry briefly
+    // while this view remains attached, then bind once the live player is actually ready.
+    fun attachSurfaceWhenReady() {
+        if (!tv.isAttachedToWindow) return
+        surfaceAttachJob[0]?.cancel()
+        surfaceAttachJob[0] = surfaceAttachScope.launch {
+            var tries = 0
+            while (tries < 100 && tv.isAttachedToWindow) {
+                val service = PlaybackService.instance
+                if (service?.isReady == true) {
+                    service.attachSurface(tv)
+                    return@launch
+                }
+                tries++
+                delay(100)
+            }
+            if (tv.isAttachedToWindow && PlaybackService.instance?.isReady != true) {
+                android.util.Log.w(
+                    "PlayerScreen",
+                    "Video surface stayed attached but playback service did not become ready",
+                )
+            }
+        }
+    }
+
+    // Bind only after TextureView is attached, and do not lose the request if service startup lags.
     val surfaceAttachListener = remember(tv) {
         object : android.view.View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(view: android.view.View) {
-                PlaybackService.instance?.attachSurface(tv)
+                attachSurfaceWhenReady()
             }
 
-            override fun onViewDetachedFromWindow(view: android.view.View) = Unit
+            override fun onViewDetachedFromWindow(view: android.view.View) {
+                surfaceAttachJob[0]?.cancel()
+                surfaceAttachJob[0] = null
+            }
         }
     }
     androidx.compose.runtime.DisposableEffect(tv) {
         tv.addOnAttachStateChangeListener(surfaceAttachListener)
-        if (tv.isAttachedToWindow) PlaybackService.instance?.attachSurface(tv)
-        onDispose { tv.removeOnAttachStateChangeListener(surfaceAttachListener) }
+        if (tv.isAttachedToWindow) attachSurfaceWhenReady()
+        onDispose {
+            tv.removeOnAttachStateChangeListener(surfaceAttachListener)
+            surfaceAttachJob[0]?.cancel()
+            surfaceAttachJob[0] = null
+        }
     }
 
     // Reparse switches between the processing UI and player UI. AndroidView can be
@@ -355,7 +388,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     androidx.compose.runtime.DisposableEffect(resumeLifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                PlaybackService.instance?.attachSurface(tv)
+                attachSurfaceWhenReady()
             }
         }
         resumeLifecycleOwner.lifecycle.addObserver(observer)
@@ -928,6 +961,7 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         // Otherwise the player may have just returned from the processing page,
                         // where this remembered frame can still contain tv.
                         if (!isFloating) moveTextureViewTo(frame)
+                        attachSurfaceWhenReady()
                         frame
                     },
                     modifier = Modifier.fillMaxSize(),
