@@ -1109,8 +1109,7 @@ class PlaybackService : MediaSessionService() {
                             null
                         }
                         val forceYouTubeSubtitleRefresh = !usesUserImportedSubtitles &&
-                            (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
-                                pendingSubtitleModeRefresh) &&
+                            pendingSubtitleModeRefresh &&
                             restartVideoIdCandidate != null
                         val ignoreTranscriptionForCurrentFlow =
                             state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
@@ -3317,6 +3316,7 @@ class PlaybackService : MediaSessionService() {
                     reuseMountedMedia = reuseMountedMedia,
                     restoreCompletedSnapshot = pipelineRestoresCompleteSnapshot,
                     forceRegenerateDubbing = pipelineMustRegenerateDubbing,
+                    forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                 )
                 ensureCurrentSession(key, pipelineGeneration)
                 val finishedState = ui.value
@@ -5050,6 +5050,7 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         reuseMountedMedia: Boolean = false,
         restoreCompletedSnapshot: Boolean = false,
         forceRegenerateDubbing: Boolean = false,
+        forceYouTubeSubtitleRefresh: Boolean = false,
     ) {
         // The NewPipe path remains preferred. If YouTube explicitly blocks anonymous watch access,
         // switch this session to the existing yt-dlp media URL pipeline and continue with audio ASR.
@@ -5394,7 +5395,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 )
                 db.subtitleCacheDao().delete(translationCacheKey)
             }
+            var sourceCachedKey: String? = null
+            var sourceFetchAttempted = false
+            var fetchedSourceCacheResult: Pair<List<SubLine>, String>? = null
             suspend fun fetchAndCacheSourceLines(): Pair<List<SubLine>, String>? {
+                if (sourceFetchAttempted) return fetchedSourceCacheResult
+                sourceFetchAttempted = true
                 val id = videoId ?: return null
                 awaitProcessingResumed(key, pipelineGeneration)
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
@@ -5427,21 +5433,22 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 ensureCurrentSession(key, pipelineGeneration)
+                val cacheKey = youtubeCaptionCacheKey ?: sourceSubtitleCacheKey
                 db.subtitleCacheDao().put(
                     io.translatetube.local.data.SubtitleCacheEntity(
-                        youtubeCaptionCacheKey ?: sourceSubtitleCacheKey,
+                        cacheKey,
                         lang,
                         sourceArr.toString(),
                         System.currentTimeMillis(),
                         videoKey = key,
                     )
                 )
+                sourceCachedKey = cacheKey
                 // A valid caption track supersedes any interrupted ASR transcript for this video.
                 db.subtitleCacheDao().delete("$sourceSubtitleCacheKey|asr-progress-v2")
-                return fetchedLines to lang
+                return (fetchedLines to lang).also { fetchedSourceCacheResult = it }
             }
 
-            var sourceCachedKey: String? = null
             var sourceCached = if (
                 resumeState == null && (videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()
             ) {
@@ -5453,6 +5460,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 if (captionCache != null) {
                     sourceCachedKey = captionCache.cacheKey
                     captionCache
+                } else if (forceYouTubeSubtitleRefresh && videoId != null) {
+                    // Re-check the selected caption priority before falling back to an ASR cache.
+                    // If no caption is available, keep the valid ASR cache as the next fallback.
+                    if (fetchAndCacheSourceLines() != null) null
+                    else db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
+                        sourceCachedKey = sourceSubtitleCacheKey
+                    }
                 } else {
                     db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
                         sourceCachedKey = sourceSubtitleCacheKey
@@ -5477,10 +5491,15 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         )
                     }
                 }.getOrNull()
-            }
-            var restoredSourceLang: String? = restoredSourceLines?.let {
-                sourceCached?.srcLang?.takeIf { lang -> lang.isNotBlank() }
-                    ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(it.asSequence().map { cue -> cue.text }.asIterable())
+            } ?: fetchedSourceCacheResult?.first
+            var restoredSourceLang: String? = when {
+                sourceCached != null && restoredSourceLines != null ->
+                    sourceCached.srcLang.takeIf { it.isNotBlank() }
+                        ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(
+                            restoredSourceLines.asSequence().map { cue -> cue.text }.asIterable()
+                        )
+                fetchedSourceCacheResult != null -> fetchedSourceCacheResult?.second
+                else -> null
             }
 
             // Caption caches and ASR transcript caches use separate keys: a selected fallback
@@ -5618,6 +5637,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     )
                 } else {
                     fetchAndCacheSourceLines()?.let { (fetchedLines, lang) ->
+                        restoredSourceLines = fetchedLines
+                        restoredSourceLang = lang
                         lines = fetchedLines
                         srcLang = lang
                     }
@@ -5630,10 +5651,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 videoId != null && restoredSourceLines != null &&
                     YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey) ->
                     ProcessingFlow.YOUTUBE_SUBTITLES
+                videoId != null && restoredSourceLines != null &&
+                    sourceCachedKey == sourceSubtitleCacheKey ->
+                    ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 videoId != null && restoredSourceLines != null ->
                     ReadyHistorySessionConfigStore.savedProcessingFlow(this@PlaybackService, key)
                         ?.takeIf { it == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION || it == ProcessingFlow.YOUTUBE_SUBTITLES }
-                        ?: ProcessingFlow.YOUTUBE_SUBTITLES
+                        ?: ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 videoId != null && lines == null && cached == null -> ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
                 videoId != null -> ProcessingFlow.YOUTUBE_SUBTITLES
                 remoteMediaUrl != null -> ProcessingFlow.WEB_SPEECH_RECOGNITION
