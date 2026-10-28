@@ -452,30 +452,21 @@ object NewPipeRepo {
                 mode = subtitleMode,
             )
         }
-        val englishTracks = ordered.filter {
-            YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(it.languageTag) == "en"
-        }
-        val sourceLanguageTracks = if (sourceLanguageTag == null) {
-            emptyList()
-        } else {
-            ordered.filter { track ->
-                YouTubeSubtitleSelectionPolicy.matchesSourceLanguage(sourceLanguageTag, track.languageTag)
-            }
-        }
-        // Try English captions first, then matching source-language captions. Never use an unrelated
-        // language as a silent fallback; if no selected caption can be read, transcribe the audio.
-        val candidateTracks = when (subtitleMode) {
-            YouTubeSubtitleLanguageMode.PREFER_ENGLISH ->
-                (englishTracks + sourceLanguageTracks).distinctBy { it.url }
-            YouTubeSubtitleLanguageMode.MATCH_ORIGINAL -> sourceLanguageTracks
+        // Keep the selected mode strict: English mode only reads English tracks, while original
+        // mode only reads tracks matching the original audio language. Never silently switch
+        // languages when the preferred captions are missing or fail to download.
+        val candidateTracks = ordered.filter { track ->
+            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
+                mode = subtitleMode,
+                sourceLanguageTag = sourceLanguageTag,
+                subtitleLanguageTag = track.languageTag,
+            )
         }
         if (candidateTracks.isEmpty()) {
             logWarning(
                 when {
-                    subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH && sourceLanguageTag == null ->
-                        "YouTube 无英语字幕且原声音轨语言未知，改用音频转写"
                     subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH ->
-                        "YouTube 无可用英语或原声语言字幕，改用音频转写"
+                        "YouTube 没有可用英语字幕，改用音频转写"
                     sourceLanguageTag == null ->
                         "YouTube 原声音轨语言无法确认，改用音频转写"
                     else ->
@@ -486,7 +477,10 @@ object NewPipeRepo {
                     "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "优先英语字幕" else "匹配视频原声语言",
                     "原声音频语言提示" to sourceLanguageTag.orEmpty().ifBlank { "未知" },
                     "可用字幕语言" to ordered.map { it.languageTag }.distinct().take(20).joinToString(", "),
-                    "后续处理" to "未找到所选模式允许的字幕，使用视频音轨转写",
+                    "后续处理" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH)
+                        "严格使用英语字幕；不可用时使用视频音轨转写"
+                    else
+                        "严格使用原声语言字幕；不可用时使用视频音轨转写",
                 ),
             )
             return null
