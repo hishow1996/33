@@ -8,8 +8,7 @@ class SubtitleCacheRestorePolicyTest {
     @Test
     fun importedTranslatedSubtitlesTakePriorityOverExistingTranslationCache() {
         assertFalse(
-            SubtitleCacheRestorePolicy.shouldRestoreCachedRows(
-                cacheAvailable = true,
+            SubtitleCacheRestorePolicy.shouldUseCachedRows(
                 hasAuthoritativeImportedTranslation = true,
             ),
         )
@@ -18,18 +17,7 @@ class SubtitleCacheRestorePolicyTest {
     @Test
     fun normalSubtitleFlowsKeepCacheFirstBehavior() {
         assertTrue(
-            SubtitleCacheRestorePolicy.shouldRestoreCachedRows(
-                cacheAvailable = true,
-                hasAuthoritativeImportedTranslation = false,
-            ),
-        )
-    }
-
-    @Test
-    fun missingCacheNeverSelectsCacheRestore() {
-        assertFalse(
-            SubtitleCacheRestorePolicy.shouldRestoreCachedRows(
-                cacheAvailable = false,
+            SubtitleCacheRestorePolicy.shouldUseCachedRows(
                 hasAuthoritativeImportedTranslation = false,
             ),
         )
