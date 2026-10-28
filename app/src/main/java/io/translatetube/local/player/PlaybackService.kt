@@ -3662,6 +3662,16 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
      * 支持 SRT/VTT/ASS；双语 cue 会优先取含中文的行作为译文。
      */
     fun importTranslatedSubtitles(uri: Uri) {
+        // Capture the state before cancelling the old pipeline or publishing the import stage.
+        // A translation-only task has no TTS engine to protect, so subtitle import can prepare a
+        // new TTS engine without waiting for a blocking translation call to unwind.
+        val stateBeforeImport = ui.value
+        val importMayOverlapCancelledTranslation =
+            ImportedTranslatedSubtitleConcurrencyPolicy.canBypassPipelineMutex(
+                previousPhase = stateBeforeImport.phase,
+                hasActiveDubbingEngine = dubbing != null,
+                hasRetiringDubbingEngine = retiringDubbingEngines.isNotEmpty(),
+            )
         val pipelineGeneration = beginPipelineGeneration()
         val sessionKey = videoKey
         // This operation replaces any previous imported-source workflow. The translated rows are
@@ -3773,7 +3783,12 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 // Serialize only engine replacement and synthesis. The translated cues and their
                 // timestamps are already validated, so the UI can leave the old translation stage
                 // while a previous native inference finishes unwinding.
-                pipelineExecutionMutex.withLock {
+                var pipelineLockAcquired = false
+                try {
+                    if (!importMayOverlapCancelledTranslation) {
+                        pipelineExecutionMutex.lock()
+                        pipelineLockAcquired = true
+                    }
                     ensureCurrentSession(sessionKey, pipelineGeneration)
                     if (::pm.isInitialized) {
                         // The bus may still be disabled from the previously playing session.
@@ -3912,6 +3927,8 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         ),
                     )
                 }
+                } finally {
+                    if (pipelineLockAcquired) pipelineExecutionMutex.unlock()
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
