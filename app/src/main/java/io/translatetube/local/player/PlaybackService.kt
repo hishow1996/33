@@ -888,9 +888,6 @@ class PlaybackService : MediaSessionService() {
             return EngineRestartStage.TRANSCRIPTION
         }
         val sourceIsChinese = isChineseLanguage(state.sourceLang)
-        val hasMissingTranslation = !sourceIsChinese &&
-            state.processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
-            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
         return EngineRestartStagePolicy.choose(
             previous = previous,
             current = current,
@@ -898,7 +895,6 @@ class PlaybackService : MediaSessionService() {
             ignoreTranscription = ignoreTranscription,
             hasLines = state.lines.isNotEmpty(),
             sourceLanguageIsChinese = sourceIsChinese,
-            hasMissingTranslation = hasMissingTranslation,
         )
     }
 

@@ -37,7 +37,6 @@ class EngineRestartStagePolicyTest {
                     ignoreTranscription = flow == ProcessingFlow.YOUTUBE_SUBTITLES,
                     hasLines = true,
                     sourceLanguageIsChinese = false,
-                    hasMissingTranslation = false,
                 ),
             )
         }
@@ -54,7 +53,6 @@ class EngineRestartStagePolicyTest {
                 ignoreTranscription = false,
                 hasLines = true,
                 sourceLanguageIsChinese = true,
-                hasMissingTranslation = false,
             ),
         )
     }
@@ -69,7 +67,6 @@ class EngineRestartStagePolicyTest {
                 ignoreTranscription = false,
                 hasLines = true,
                 sourceLanguageIsChinese = false,
-                hasMissingTranslation = false,
             ),
         )
         assertEquals(
@@ -100,7 +97,6 @@ class EngineRestartStagePolicyTest {
                     ignoreTranscription = false,
                     hasLines = true,
                     sourceLanguageIsChinese = false,
-                    hasMissingTranslation = false,
                 ),
             )
         }
@@ -164,7 +160,6 @@ class EngineRestartStagePolicyTest {
                     ignoreTranscription = false,
                     hasLines = false,
                     sourceLanguageIsChinese = false,
-                    hasMissingTranslation = false,
                 ),
             )
         }
@@ -180,7 +175,6 @@ class EngineRestartStagePolicyTest {
                 ignoreTranscription = false,
                 hasLines = true,
                 sourceLanguageIsChinese = false,
-                hasMissingTranslation = false,
             ),
         )
     }
@@ -195,13 +189,12 @@ class EngineRestartStagePolicyTest {
                 ignoreTranscription = true,
                 hasLines = true,
                 sourceLanguageIsChinese = false,
-                hasMissingTranslation = false,
             ),
         )
     }
 
     @Test
-    fun ttsOnlyChangeResumesWithExistingTimelineAndCompletesMissingTranslationsFirst() {
+    fun ttsOnlyChangeResumesAtDubbingWhenSourceRowsExist() {
         assertEquals(
             EngineRestartStage.DUBBING,
             EngineRestartStagePolicy.choose(
@@ -211,7 +204,6 @@ class EngineRestartStagePolicyTest {
                 ignoreTranscription = false,
                 hasLines = true,
                 sourceLanguageIsChinese = false,
-                hasMissingTranslation = true,
             ),
         )
     }
@@ -265,7 +257,6 @@ class EngineRestartStagePolicyTest {
                 ignoreTranscription = false,
                 hasLines = true,
                 sourceLanguageIsChinese = false,
-                hasMissingTranslation = false,
             ),
         )
     }
