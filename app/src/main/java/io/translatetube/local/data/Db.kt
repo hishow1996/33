@@ -89,6 +89,16 @@ interface SubtitleCacheDao {
     @Query("SELECT * FROM subtitle_cache WHERE cacheKey = :k")
     suspend fun get(k: String): SubtitleCacheEntity?
 
+    /** Finds prior downloaded YouTube captions even if their legacy key included an ASR engine. */
+    @Query(
+        "SELECT * FROM subtitle_cache " +
+            "WHERE substr(cacheKey, 1, length(:keyPrefix)) = :keyPrefix " +
+            "AND (substr(cacheKey, -length('|captions-v1')) = '|captions-v1' " +
+            "OR substr(cacheKey, -length('|captions-v2')) = '|captions-v2') " +
+            "ORDER BY updatedAt DESC LIMIT 1"
+    )
+    suspend fun getLatestYouTubeCaptionCache(keyPrefix: String): SubtitleCacheEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun put(e: SubtitleCacheEntity)
 

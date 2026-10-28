@@ -5306,10 +5306,22 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             // Keep downloaded YouTube caption tracks separate from ASR transcripts. Fallback
             // captions may legitimately differ from the spoken language, while ASR caches must
             // still match the original audio language during validation.
-            val youtubeCaptionCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
-                "$sourceSubtitleCacheKey|captions-v1"
+            // Caption files are source data, not ASR output. Their identity must not change with ASR.
+            val youtubeCaptionCachePrefix = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                YouTubeCaptionCacheIdentity.prefix(
+                    videoKey = key,
+                    sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    subtitleMode = youtubeSubtitleMode.preferenceValue,
+                )
             } else {
                 null
+            }
+            val youtubeCaptionCacheKey = youtubeCaptionCachePrefix?.let {
+                YouTubeCaptionCacheIdentity.key(
+                    videoKey = key,
+                    sourceCacheVersion = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION,
+                    subtitleMode = youtubeSubtitleMode.preferenceValue,
+                )
             }
             // 首次处理显示字幕读取阶段；完整成功快照恢复时不再展示解析、转写和翻译阶段。
             if (restoreCompletedSnapshot) {
@@ -5401,8 +5413,12 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 resumeState == null && (videoId != null || localUri != null || remoteMediaUrl != null) && sourceImportedLines.isNullOrEmpty()
             ) {
                 val captionCache = youtubeCaptionCacheKey?.let { db.subtitleCacheDao().get(it) }
+                    ?: youtubeCaptionCachePrefix?.let {
+                        // Reuse v1 caption rows saved below the old ASR-specific key.
+                        db.subtitleCacheDao().getLatestYouTubeCaptionCache(it)
+                    }
                 if (captionCache != null) {
-                    sourceCachedKey = youtubeCaptionCacheKey
+                    sourceCachedKey = captionCache.cacheKey
                     captionCache
                 } else {
                     db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
@@ -5463,8 +5479,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         expectedSourceLanguage = expectedContentLanguage,
                         detectedTextLanguage = detectedCacheLanguageCode,
                         savedSourceLanguage = sourceCached.srcLang,
-                        allowSubtitleLanguageFallback = sourceCachedKey != null &&
-                            sourceCachedKey == youtubeCaptionCacheKey,
+                        allowSubtitleLanguageFallback =
+                            YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey),
                     )
                 ) {
                     android.util.Log.w(
@@ -5578,7 +5594,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val resolvedProcessingFlow = when {
                 resumeState != null -> resumeState.processingFlow
                 !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
-                videoId != null && restoredSourceLines != null && sourceCachedKey == youtubeCaptionCacheKey ->
+                videoId != null && restoredSourceLines != null &&
+                    YouTubeCaptionCacheIdentity.isCaptionCacheKey(sourceCachedKey) ->
                     ProcessingFlow.YOUTUBE_SUBTITLES
                 videoId != null && restoredSourceLines != null ->
                     ReadyHistorySessionConfigStore.savedProcessingFlow(this@PlaybackService, key)
