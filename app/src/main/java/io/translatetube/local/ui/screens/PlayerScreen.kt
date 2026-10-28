@@ -3107,7 +3107,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     onStartFloat: () -> Unit,
     onExitFloat: () -> Unit,
 ) {
-    val svc = PlaybackService.instance
+    // Resolve the live service at each interaction; the screen may compose before Service.onCreate completes.
     var pos by remember(state.key) { mutableStateOf(0f) }
     var scrubbing by remember(state.key) { mutableStateOf(false) }
     var qualityExpanded by remember { mutableStateOf(false) }
@@ -3137,8 +3137,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
     LaunchedEffect(state.key) {
         while (true) {
             if (!scrubbing) {
-                val duration = svc?.duration() ?: 0L
-                val position = svc?.position() ?: 0L
+                val duration = PlaybackService.instance?.duration() ?: 0L
+                val position = PlaybackService.instance?.position() ?: 0L
                 pos = if (duration > 0L) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
             }
             delay(300)
@@ -3153,7 +3153,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         var loadingTicks by remember(state.key) { mutableStateOf(0) }
         LaunchedEffect(state.key) {
             while (true) {
-                bufferedMs = svc?.bufferedAheadMs() ?: 0L
+                bufferedMs = PlaybackService.instance?.bufferedAheadMs() ?: 0L
                 delay(500)
                 loadingTicks += 1
             }
@@ -3188,7 +3188,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             Surface(
                 // This control is only shown while isPlaying=false and the player is not loading; issue an explicit play
                 // rather than toggling based on playWhenReady during buffering.
-                onClick = { svc?.playPlayback() },
+                onClick = { PlaybackService.instance?.playPlayback() },
                 shape = CircleShape,
                 color = Color.White,
             ) {
@@ -3213,11 +3213,11 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 .height(12.dp)
                 .pointerInput(state.key, state.durationMs) {
                     detectTapGestures { offset ->
-                        val duration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
+                        val duration = (PlaybackService.instance?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
                         if (duration > 0L && size.width > 0) {
                             val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
                             pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
-                            svc?.seek((pos * duration).toLong())
+                            PlaybackService.instance?.seek((pos * duration).toLong())
                             scrubbing = false
                         }
                     }
@@ -3232,8 +3232,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             }
                         },
                         onDragEnd = {
-                            val duration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
-                            if (duration > 0L) svc?.seek((pos * duration).toLong())
+                            val duration = (PlaybackService.instance?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
+                            if (duration > 0L) PlaybackService.instance?.seek((pos * duration).toLong())
                             scrubbing = false
                         },
                         onDragCancel = { scrubbing = false },
@@ -3278,7 +3278,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
             IconButton(
-                onClick = { if (state.isPlaying) svc?.pausePlayback() else svc?.playPlayback() },
+                onClick = { if (state.isPlaying) PlaybackService.instance?.pausePlayback() else PlaybackService.instance?.playPlayback() },
                 modifier = Modifier.size(36.dp),
             ) {
                 Icon(
@@ -3299,7 +3299,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             text = { Text(if (value == speed) "✓ " + value + "×" else value.toString() + "×") },
                             onClick = {
                                 speed = value
-                                svc?.setSpeed(value)
+                                PlaybackService.instance?.setSpeed(value)
                                 speedExpanded = false
                             },
                         )
@@ -3336,7 +3336,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                             text = { Text(if (quality == state.selectedQuality) "✓ " + quality else quality) },
                             onClick = {
                                 qualityExpanded = false
-                                svc?.selectQuality(quality)
+                                PlaybackService.instance?.selectQuality(quality)
                             },
                         )
                     }
