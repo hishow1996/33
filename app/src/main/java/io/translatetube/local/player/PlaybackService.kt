@@ -4382,14 +4382,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 else -> "$baseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
             }
             val translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
-                "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v1"
+                "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.TRANSLATION_CACHE_VERSION}"
             } else {
                 baseModeAwareTranslationCacheKey
             }
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
                 // Isolate YouTube source caches by selected caption language mode.
-                videoId != null -> "$key|source|youtube-v7-subtitle-${youtubeSubtitleMode.preferenceValue}" + when (asrProvider) {
+                videoId != null -> "$key|source|youtube-v${io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.SOURCE_CACHE_VERSION}-subtitle-${youtubeSubtitleMode.preferenceValue}" + when (asrProvider) {
                     "local" -> "|asr-$localAsrModelId"
                     else -> "|asr-$asrCacheIdentity-cloud-v1"
                 }
