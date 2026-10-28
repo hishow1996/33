@@ -3805,7 +3805,9 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }
                 val d = try {
                     DubbingEngine(this@PlaybackService, sessionKey, scope, pm.dubbingBus)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
+                    // Also release the initialized TTS runtime when DubbingEngine allocation fails
+                    // with OutOfMemoryError; the outer import handler then restores source playback.
                     runCatching { tts.close() }
                     throw e
                 }
@@ -3819,7 +3821,8 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 registerDubbingFailureHandler(d, tts, sessionKey)
                 try {
                     d.attach(tts, translatedLines)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
+                    // A failed attach may be an allocation error, not just an Exception.
                     retireDubbing(d)
                     runCatching { tts.close() }
                     throw e
@@ -6632,6 +6635,28 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            // The import path may bypass the old pipeline's broad mutex while a translation call
+            // unwinds. Never let a late failure from that obsolete generation unmute or otherwise
+            // alter the newly imported subtitle session.
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != key ||
+                ui.value.key != key
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackPipeline",
+                    "已忽略过期处理任务异常",
+                    e,
+                    diagnosticContext = mapOf(
+                        "异常类型" to e.javaClass.name,
+                        "旧处理代数" to pipelineGeneration.toString(),
+                        "活动处理代数" to activePipelineGeneration.toString(),
+                        "当前处理流程" to ui.value.processingFlow.name,
+                    ),
+                )
+                return@withLock
+            }
             val failureState = ui.value
             io.translatetube.local.util.AppLogStore.error(
                 this@PlaybackService,
