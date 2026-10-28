@@ -821,8 +821,13 @@ class PlaybackService : MediaSessionService() {
         state: PlayerUiState,
         ignoreTranscription: Boolean,
     ): EngineRestartStage? {
-        // Caption language changes the source transcript itself, so restart at source selection.
-        if (ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)) {
+        // YouTube caption preference changes affect only captions fetched from YouTube.
+        // User-imported subtitles are already the authoritative source and must remain untouched.
+        val usesUserImportedSubtitles = state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+        if (!usesUserImportedSubtitles &&
+            ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)
+        ) {
             return EngineRestartStage.TRANSCRIPTION
         }
         val sourceIsChinese = isChineseLanguage(state.sourceLang)
@@ -1074,7 +1079,11 @@ class PlaybackService : MediaSessionService() {
                                 state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
                                     (completedReadySessionKey == sessionKey &&
                                         completedReadySessionIgnoresTranscription)
+                            val usesUserImportedSubtitles =
+                                state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                                    state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
                             if (
+                                !usesUserImportedSubtitles &&
                                 changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
                                 restartVideoId != null
                             ) {
