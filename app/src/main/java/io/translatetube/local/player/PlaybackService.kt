@@ -542,7 +542,7 @@ class PlaybackService : MediaSessionService() {
     private var prepJob: Job? = null
     private val manualTranslationRequestedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val manualTranslationWaiters =
-        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<List<SubLine>>>()
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<List<SubLine>?>>()
     private val manualTranslationSources = java.util.concurrent.ConcurrentHashMap<String, List<SubLine>>()
     private val processingPauseGate = kotlinx.coroutines.sync.Mutex()
     @Volatile private var processingPaused = false
@@ -3285,6 +3285,42 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
         )
     }
 
+    /**
+     * Cancel external-translation waiting and continue with the configured in-app translator.
+     * Complete the waiter with null instead of cancelling the processing job, so the five-stage
+     * pipeline can fall through to its normal translation path.
+     */
+    fun cancelManualSubtitleTranslation() {
+        val current = ui.value
+        val key = current.key
+        if (key.isBlank()) return
+
+        val requested = manualTranslationRequestedKeys.remove(key)
+        val wasEnabled = current.manualTranslationModeEnabled || current.manualTranslationWaiting
+        if (!requested && !wasEnabled) return
+
+        // A null result releases awaitManualSubtitleTranslation without treating source-only
+        // subtitles as a successful external translation.
+        manualTranslationWaiters[key]?.complete(null)
+        manualTranslationSources.remove(key)
+
+        updateUiForSession(key) {
+            it.copy(
+                manualTranslationModeEnabled = false,
+                manualTranslationWaiting = false,
+                subtitleTrackStatus = "已取消外部翻译模式，继续使用应用内翻译。",
+                progress = if (current.manualTranslationWaiting) "正在恢复应用内翻译…" else it.progress,
+                translatedLineCount = if (current.manualTranslationWaiting) 0 else it.translatedLineCount,
+            )
+        }
+        io.translatetube.local.util.AppLogStore.info(
+            this,
+            "Subtitles",
+            "已取消外部翻译并恢复应用内翻译",
+            diagnosticContext = mapOf("字幕任务键" to key),
+        )
+    }
+
     /** Import the externally translated file into the waiting pipeline, retaining the original timeline. */
     fun importManualTranslatedSubtitle(uri: Uri) {
         val sessionKey = ui.value.key
@@ -3345,19 +3381,25 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     e,
                 )
                 updateUiForSession(sessionKey) {
-                    it.copy(
-                        manualTranslationWaiting = true,
-                        manualTranslationModeEnabled = true,
-                        subtitleTrackStatus = "导入失败，可重新选择译文文件：" + (e.message ?: e.javaClass.simpleName),
-                        progress = "译文导入失败，请检查字幕时间轴后重试。",
-                    )
+                    if (!manualTranslationRequestedKeys.contains(sessionKey) || waiter.isCompleted) {
+                        it
+                    } else {
+                        it.copy(
+                            manualTranslationWaiting = true,
+                            manualTranslationModeEnabled = true,
+                            subtitleTrackStatus = "导入失败，可重新选择译文文件：" + (e.message ?: e.javaClass.simpleName),
+                            progress = "译文导入失败，请检查字幕时间轴后重试。",
+                        )
+                    }
                 }
-                withContext(Dispatchers.Main) {
-                    android.widget.Toast.makeText(
-                        this@PlaybackService,
-                        "译文导入失败：" + (e.message ?: e.javaClass.simpleName),
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
+                if (manualTranslationRequestedKeys.contains(sessionKey) && !waiter.isCompleted) {
+                    withContext(Dispatchers.Main) {
+                        android.widget.Toast.makeText(
+                            this@PlaybackService,
+                            "译文导入失败：" + (e.message ?: e.javaClass.simpleName),
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
                 }
             }
         }
@@ -3374,26 +3416,45 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             line.copy(index = index, zh = null)
         }
         if (sourceOnly.isEmpty()) return null
-        val newWaiter = kotlinx.coroutines.CompletableDeferred<List<SubLine>>()
+        val newWaiter = kotlinx.coroutines.CompletableDeferred<List<SubLine>?>()
         val existing = manualTranslationWaiters.putIfAbsent(sessionKey, newWaiter)
         val waiter = existing ?: newWaiter
         manualTranslationSources[sessionKey] = sourceOnly
+        // Enabling and cancelling can race between the initial membership check and waiter
+        // registration. In that case, release the newly registered waiter immediately.
+        if (!manualTranslationRequestedKeys.contains(sessionKey)) waiter.complete(null)
         updateUiForSession(sessionKey, pipelineGeneration) {
-            it.copy(
-                phase = Phase.TRANSLATING,
-                lines = sourceOnly,
-                totalLines = sourceOnly.size,
-                sourceLang = sourceLang,
-                translatedLineCount = 0,
-                manualTranslationModeEnabled = true,
-                manualTranslationWaiting = true,
-                progress = "原文字幕已生成（" + sourceOnly.size + " 条），请导出后外部翻译，再导入译文继续。",
-                subtitleTrackStatus = "正在等待外部翻译字幕文件；当前视频与原文时间轴已保留。",
-            )
+            if (!manualTranslationRequestedKeys.contains(sessionKey)) {
+                it
+            } else {
+                it.copy(
+                    phase = Phase.TRANSLATING,
+                    lines = sourceOnly,
+                    totalLines = sourceOnly.size,
+                    sourceLang = sourceLang,
+                    translatedLineCount = 0,
+                    manualTranslationModeEnabled = true,
+                    manualTranslationWaiting = true,
+                    progress = "原文字幕已生成（" + sourceOnly.size + " 条），请导出后外部翻译，再导入译文继续。",
+                    subtitleTrackStatus = "正在等待外部翻译字幕文件；当前视频与原文时间轴已保留。",
+                )
+            }
         }
         try {
             val merged = waiter.await()
             ensureCurrentSession(sessionKey, pipelineGeneration)
+            if (merged == null) {
+                manualTranslationRequestedKeys.remove(sessionKey)
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        manualTranslationModeEnabled = false,
+                        manualTranslationWaiting = false,
+                        progress = "已取消外部翻译，正在继续应用内翻译…",
+                        subtitleTrackStatus = "已取消外部翻译模式，继续使用应用内翻译。",
+                    )
+                }
+                return null
+            }
             manualTranslationRequestedKeys.remove(sessionKey)
             updateUiForSession(sessionKey, pipelineGeneration) {
                 it.copy(
