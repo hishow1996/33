@@ -1708,10 +1708,13 @@ class PlaybackService : MediaSessionService() {
                     } else {
                         val id = videoId
                         val sessionKey = ui.value.key
+                        // Bind recovery to the pipeline generation that emitted this player error.
+                        // The same video ID can be reopened with a different engine configuration.
+                        val recoveryPipelineGeneration = activePipelineGeneration
                         if (id != null && qualitySources.isNotEmpty() && !qualityRecoveryAttempted) {
                             qualityRecoveryAttempted = true
                             qualityRecoveryJob = scope.launch {
-                                recoverYouTubePlayback(sessionKey, id, err)
+                                recoverYouTubePlayback(sessionKey, id, err, recoveryPipelineGeneration)
                             }
                         } else {
                             ui.update { it.copy(error = err, phase = Phase.ERROR, progress = "") }
@@ -7761,22 +7764,33 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         sessionKey: String,
         failedVideoId: String,
         originalError: String,
+        pipelineGeneration: Long,
     ) {
         val thisJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         try {
+            ensureCurrentSession(sessionKey, pipelineGeneration)
             val oldHeight = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }?.height
-            updateUiForSession(sessionKey) { state ->
+            updateUiForSession(sessionKey, pipelineGeneration) { state ->
                 if (state.key == sessionKey) state.copy(
                     phase = Phase.PARSING,
                     progress = "YouTube 视频流加载失败，正在刷新播放地址…",
                     error = null,
                 ) else state
             }
-            val position = withContext(Dispatchers.Main) { pm.position() }
-            val shouldResume = withContext(Dispatchers.Main) { pm.player.playWhenReady }
+            val position = withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                pm.position()
+            }
+            val shouldResume = withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                pm.player.playWhenReady
+            }
+            ensureCurrentSession(sessionKey, pipelineGeneration)
             NewPipeRepo.invalidate(failedVideoId)
             val refreshedInfo = NewPipeRepo.streams(failedVideoId)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
             val choices = buildYouTubeStreamChoices(refreshedInfo)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
             val lowerCandidates = if (oldHeight != null) choices.sources.filter { it.height < oldHeight } else emptyList()
             val fallback = lowerCandidates.firstOrNull { it.muxed }
                 ?: lowerCandidates.firstOrNull()
@@ -7784,11 +7798,17 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 ?: choices.defaultQuality
 
             withContext(Dispatchers.Main) {
-                if (ui.value.key != sessionKey || videoId != failedVideoId) return@withContext
+                // A cancellation alone is insufficient if an extractor/network call returned
+                // after ignoring it. Generation validation prevents an old same-video recovery
+                // from replacing the source installed by a newer engine-processing run.
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (ui.value.key != sessionKey || videoId != failedVideoId) {
+                    throw kotlinx.coroutines.CancellationException("YouTube 播放恢复任务已过期")
+                }
                 qualitySources = choices.sources
                 qualityAudioUrl = choices.audioUrl
                 pm.errorSink.value = null
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
                     state.copy(
                         phase = Phase.PARSING,
                         progress = "正在尝试兼容清晰度 ${fallback.label}…",
@@ -7796,6 +7816,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         qualityOptions = choices.sources.map { it.label },
                     )
                 }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 val accepted = pm.setYouTubeQuality(
                     videoUrl = fallback.url,
                     audioUrl = choices.audioUrl,
@@ -7807,29 +7828,46 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (!accepted) {
                     throw IllegalStateException(pm.errorSink.value ?: "刷新后的视频流初始化失败")
                 }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 pm.seekTo(position)
                 if (shouldResume) pm.play() else pm.pause()
-                updateUiForSession(sessionKey) { state ->
-                    if (state.key == sessionKey) state.copy(
+                updateUiForSession(sessionKey, pipelineGeneration) { state ->
+                    state.copy(
                         phase = Phase.READY,
                         progress = "",
                         error = null,
                         selectedQuality = fallback.label,
-                    ) else state
+                    )
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            // Do not publish an old recovery error, unmute audio, or change phase after a newer
+            // same-key open() has already advanced the pipeline generation.
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != sessionKey ||
+                ui.value.key != sessionKey ||
+                videoId != failedVideoId
+            ) {
+                return
+            }
             io.translatetube.local.util.AppLogStore.error(
-    this@PlaybackService, "YouTubePlayback", "刷新 YouTube 播放资源失败", e,
-)
-android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
+                this@PlaybackService, "YouTubePlayback", "刷新 YouTube 播放资源失败", e,
+            )
+            android.util.Log.e("PlaybackService", "YouTube playback recovery failed", e)
             withContext(Dispatchers.Main) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (ui.value.key == sessionKey && videoId == failedVideoId) {
                     pm.errorSink.value = null
-                    runCatching { safelySetOriginalVolume(if (ui.value.originalVolume <= 0f) 0f else 1f, "source audio fallback") }
-                    updateUiForSession(sessionKey) {
+                    runCatching {
+                        safelySetOriginalVolume(
+                            if (ui.value.originalVolume <= 0f) 0f else 1f,
+                            "source audio fallback",
+                        )
+                    }
+                    updateUiForSession(sessionKey, pipelineGeneration) {
                         it.copy(
                             phase = Phase.ERROR,
                             progress = "",
