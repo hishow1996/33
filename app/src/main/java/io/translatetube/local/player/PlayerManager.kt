@@ -219,17 +219,25 @@ class PlayerManager(private val ctx: Context) {
     }
 
     /** 播放器诊断日志写磁盘，放到后台线程，避免卡住主线程/渲染。不记录带签名的完整地址，只记录域名。 */
-    private fun logPlayerDiagnostic(isWarning: Boolean, message: String, details: Map<String, String>) {
+    private fun logPlayerDiagnostic(
+        isWarning: Boolean,
+        message: String,
+        details: Map<String, String>,
+        failure: Throwable? = null,
+        issueKey: String? = null,
+    ) {
         runCatching {
             mixerLogExecutor.execute {
                 runCatching {
+                    // 沿用 PlayerManager 标签：日志页会归到"视频播放"分类，标题由 AppLogTitleResolver 生成。
                     if (isWarning) {
                         io.translatetube.local.util.AppLogStore.warning(
-                            ctx, "PlayerDiagnostics", message, diagnosticContext = details,
+                            ctx, "PlayerManager", message, failure,
+                            diagnosticContext = details, issueKey = issueKey,
                         )
                     } else {
                         io.translatetube.local.util.AppLogStore.info(
-                            ctx, "PlayerDiagnostics", message, diagnosticContext = details,
+                            ctx, "PlayerManager", message, diagnosticContext = details,
                         )
                     }
                 }
@@ -255,13 +263,19 @@ class PlayerManager(private val ctx: Context) {
         val httpStatus = chain.firstNotNullOfOrNull {
             (it as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
         }
+        val host = currentMediaHost()
         logPlayerDiagnostic(
             isWarning = true,
             message = "播放器报告错误",
+            failure = error,
+            // 不同错误码/域名分别归类，避免所有播放错误被合并成同一条问题。
+            issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                "PlayerManager", "播放器报告错误|${error.errorCodeName}|$host",
+            ),
             details = mapOf(
                 "错误码" to error.errorCodeName,
                 "HTTP 状态码" to (httpStatus?.toString() ?: "无"),
-                "视频流域名" to currentMediaHost(),
+                "视频流域名" to host,
                 "播放位置 ms" to runCatching { player.currentPosition.toString() }.getOrDefault("未知"),
                 "播放器状态" to runCatching { playerStateName(player.playbackState) }.getOrDefault("未知"),
                 "异常链" to chain.joinToString(" <- ") {

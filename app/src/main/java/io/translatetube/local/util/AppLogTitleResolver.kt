@@ -184,6 +184,13 @@ object AppLogTitleResolver {
         if (normalizedTag.contains("dubbingengine") && message == "配音 PCM 缓存预检完成") {
             return "PCM 预检完成"
         }
+        if (normalizedTag.contains("playermanager")) {
+            when (message) {
+                "播放器报告错误" -> return "播放出错"
+                "视频首帧已渲染" -> return "首帧已渲染"
+                "视频缓冲较慢" -> return "缓冲较慢"
+            }
+        }
         return null
     }
 

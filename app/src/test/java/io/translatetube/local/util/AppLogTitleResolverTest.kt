@@ -127,4 +127,12 @@ class AppLogTitleResolverTest {
             AppLogTitleResolver.title("AppLogStore", ""),
         )
     }
+
+    @Test
+    fun playerDiagnosticsUseTheSamePlaybackCategoryAndCompactTitles() {
+        assertEquals("视频播放：播放出错", AppLogTitleResolver.title("PlayerManager", "播放器报告错误"))
+        assertEquals("视频播放：首帧已渲染", AppLogTitleResolver.title("PlayerManager", "视频首帧已渲染"))
+        assertEquals("视频播放：缓冲较慢", AppLogTitleResolver.title("PlayerManager", "视频缓冲较慢"))
+        assertEquals("视频播放", AppLogTitleResolver.featureLabel("PlayerManager", "播放器报告错误"))
+    }
 }
