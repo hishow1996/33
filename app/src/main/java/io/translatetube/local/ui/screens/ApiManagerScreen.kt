@@ -372,6 +372,18 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 val supportedProfiles = list.filterNot { it.type == "BAIDU" }
                 profiles = supportedProfiles
                 loadError = null
+                // Seed the profile digest for upgraded installs that predate the SharedPreferences
+                // mirror. Without it, an old success snapshot can match even when the active
+                // Room profile's model, endpoint or credentials have since changed.
+                val selectedProfile = supportedProfiles.firstOrNull {
+                    it.id == activeId && it.enabled
+                }
+                val activeProfileFingerprint = translationActiveApiProfileFingerprint(selectedProfile)
+                if (prefs.getString(PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT, null) != activeProfileFingerprint) {
+                    prefs.edit()
+                        .putString(PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT, activeProfileFingerprint)
+                        .apply()
+                }
                 // 已删除、停用或已移除的引擎不能继续作为当前引擎，自动回退到本地引擎。
                 if (activeId >= 0L && supportedProfiles.none { it.id == activeId && it.enabled }) {
                     setActive(-1L)
