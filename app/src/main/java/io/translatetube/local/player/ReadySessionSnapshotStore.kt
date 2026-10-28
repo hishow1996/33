@@ -362,8 +362,11 @@ internal object ReadySessionSnapshotStore {
         }
     }
 
+    // These snapshots are required to resume a completed video (including user-imported
+    // translated subtitles). cacheDir may be purged by Android at any time, so keep the bounded
+    // snapshot store in filesDir and let remove()/clearAll()/prune() manage its lifetime.
     private fun directory(context: Context): File =
-        File(context.applicationContext.cacheDir, DIRECTORY_NAME).apply { mkdirs() }
+        File(context.applicationContext.filesDir, DIRECTORY_NAME).apply { mkdirs() }
 
     private fun filePrefix(videoKey: String): String = "ready_" + keyHash(videoKey) + "_"
 
