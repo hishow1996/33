@@ -190,6 +190,22 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun importedTranslatedFlowRestartsOnlyDubbingWhenTtsChanges() {
+        assertEquals(
+            EngineRestartStage.DUBBING,
+            EngineRestartStagePolicy.choose(
+                previous = oldConfig,
+                current = changed(dubbing = "tts-b"),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ignoreTranscription = false,
+                hasLines = true,
+                sourceLanguageIsChinese = false,
+                hasMissingTranslation = false,
+            ),
+        )
+    }
+
+    @Test
     fun importedOriginalSubtitlesStillTreatTranslationModelChangesAsRelevant() {
         assertEquals(
             true,
