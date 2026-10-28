@@ -1321,53 +1321,55 @@ class PlaybackService : MediaSessionService() {
         // Remember the newest view even if the service/player is still initializing. The
         // successful initialization path will attach it, so an early call cannot be lost.
         requestedVideoSurface = java.lang.ref.WeakReference(tv)
-        var bindAttempts = 0
-        lateinit var attach: Runnable
-        attach = Runnable {
-            // A queued request from an older screen must never replace the current surface.
-            if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) {
-                return@Runnable
-            }
-            // Do not bind before TextureView owns a valid, laid-out SurfaceTexture. The screen
-            // retries when the texture and non-zero dimensions become available.
-            if (!tv.isAttachedToWindow || !tv.isAvailable || tv.width <= 0 || tv.height <= 0) {
-                return@Runnable
-            }
-            // Repeated lifecycle/Compose callbacks must not clear and recreate an already-bound
-            // Media3 output. Media3 itself tracks SurfaceTexture availability for this view.
-            if (boundVideoSurface?.get() === tv) return@Runnable
+        val attach = object : Runnable {
+            private var bindAttempts = 0
 
-            try {
-                pm.player.setVideoTextureView(tv)
-                boundVideoSurface = java.lang.ref.WeakReference(tv)
-                val bindDetails = mapOf(
-                    "视频视图宽度" to tv.width.toString(),
-                    "视频视图高度" to tv.height.toString(),
-                    "纹理可用" to tv.isAvailable.toString(),
-                    "播放器状态" to pm.player.playbackState.toString(),
-                    "是否正在播放" to pm.player.isPlaying.toString(),
-                )
-                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    runCatching {
-                        io.translatetube.local.util.AppLogStore.info(
-                            applicationContext,
-                            "PlayerManager",
-                            "视频画面已绑定",
-                            diagnosticContext = bindDetails,
-                        )
-                    }
+            override fun run() {
+                // A queued request from an older screen must never replace the current surface.
+                if (requestedVideoSurface?.get() !== tv || !playerReady || !::pm.isInitialized) {
+                    return
                 }
-            } catch (error: Throwable) {
-                if (error is VirtualMachineError || error is ThreadDeath) throw error
-                if (boundVideoSurface?.get() === tv) boundVideoSurface = null
-                android.util.Log.w("PlaybackService", "Attach video surface failed", error)
-                // A transient renderer/view race should not require leaving and reopening the page.
-                // Retry only the failed bind, at most twice, and only while this remains the latest view.
-                if (bindAttempts < 2 && requestedVideoSurface?.get() === tv &&
-                    tv.isAttachedToWindow && tv.isAvailable
-                ) {
-                    bindAttempts++
-                    surfaceAttachHandler.postDelayed(attach, 200L)
+                // Do not bind before TextureView owns a valid, laid-out SurfaceTexture. The screen
+                // retries when the texture and non-zero dimensions become available.
+                if (!tv.isAttachedToWindow || !tv.isAvailable || tv.width <= 0 || tv.height <= 0) {
+                    return
+                }
+                // Repeated lifecycle/Compose callbacks must not clear and recreate an already-bound
+                // Media3 output. Media3 itself tracks SurfaceTexture availability for this view.
+                if (boundVideoSurface?.get() === tv) return
+
+                try {
+                    pm.player.setVideoTextureView(tv)
+                    boundVideoSurface = java.lang.ref.WeakReference(tv)
+                    val bindDetails = mapOf(
+                        "视频视图宽度" to tv.width.toString(),
+                        "视频视图高度" to tv.height.toString(),
+                        "纹理可用" to tv.isAvailable.toString(),
+                        "播放器状态" to pm.player.playbackState.toString(),
+                        "是否正在播放" to pm.player.isPlaying.toString(),
+                    )
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.info(
+                                applicationContext,
+                                "PlayerManager",
+                                "视频画面已绑定",
+                                diagnosticContext = bindDetails,
+                            )
+                        }
+                    }
+                } catch (error: Throwable) {
+                    if (error is VirtualMachineError || error is ThreadDeath) throw error
+                    if (boundVideoSurface?.get() === tv) boundVideoSurface = null
+                    android.util.Log.w("PlaybackService", "Attach video surface failed", error)
+                    // A transient renderer/view race should not require leaving and reopening the page.
+                    // Retry only the failed bind, at most twice, and only while this remains the latest view.
+                    if (bindAttempts < 2 && requestedVideoSurface?.get() === tv &&
+                        tv.isAttachedToWindow && tv.isAvailable
+                    ) {
+                        bindAttempts++
+                        surfaceAttachHandler.postDelayed(this, 200L)
+                    }
                 }
             }
         }
