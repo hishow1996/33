@@ -421,10 +421,9 @@ Section("YouTube 解析") {
                 )
                 Text(
                     if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH)
-                        "优先英语字幕，其次原声语言字幕，再尝试其他字幕。"
+                        "优先英语字幕，其次原声语言字幕，再尝试其他字幕；没有可用字幕时才转写音轨。"
                     else
-                        "优先原声语言字幕，其次英语字幕，再尝试其他字幕。"
-                        + "只有没有可用字幕时才转写原声音频。",
+                        "优先原声语言字幕，其次英语字幕，再尝试其他字幕；没有可用字幕时才转写音轨。",
                     color = SubText,
                     style = MaterialTheme.typography.bodySmall,
                 )
