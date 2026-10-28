@@ -113,7 +113,9 @@ internal object EngineRestartStagePolicy {
 
         if (previous.dubbing != current.dubbing) {
             if (!hasLines) return null
-            return if (hasMissingTranslation) null else EngineRestartStage.DUBBING
+            // runPipeline preserves completed translations and resolves missing rows before stage 5.
+            // A TTS-only change must not discard the source timeline or fall back to the public entry.
+            return EngineRestartStage.DUBBING
         }
 
         return null

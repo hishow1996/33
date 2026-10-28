@@ -821,7 +821,11 @@ class PlaybackService : MediaSessionService() {
                     "音轨处理策略" to when (restartStage) {
                         EngineRestartStage.TRANSCRIPTION -> "复用已缓存音轨；重新转写、翻译和配音"
                         EngineRestartStage.TRANSLATION -> "复用原文字幕和时间轴；重新翻译和配音"
-                        EngineRestartStage.DUBBING -> "复用原文、中文字幕和时间轴；仅重新生成配音"
+                        EngineRestartStage.DUBBING -> if (
+                        !isChineseLanguage(state.sourceLang) &&
+                            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
+                    ) "复用原文和已完成译文；补齐未完成翻译后重新生成配音"
+                    else "复用原文、中文字幕和时间轴；仅重新生成配音"
                     },
                 ),
             )
@@ -1269,7 +1273,11 @@ class PlaybackService : MediaSessionService() {
                                 "恢复策略" to when (readyRestartStage) {
                                     EngineRestartStage.TRANSCRIPTION -> "重新获取/转写原文字幕，再翻译和配音"
                                     EngineRestartStage.TRANSLATION -> "复用原文和时间轴，按新翻译引擎重新翻译，再生成配音"
-                                    EngineRestartStage.DUBBING -> "复用原文、中文字幕和时间轴，仅重新生成配音"
+                                    EngineRestartStage.DUBBING -> if (
+                                        !isChineseLanguage(state.sourceLang) &&
+                                            state.lines.any { needsSubtitleTranslation(it, state.sourceLang) }
+                                    ) "复用原文和已完成译文；补齐未完成翻译后重新生成配音"
+                                    else "复用原文、中文字幕和时间轴，仅重新生成配音"
                                     null -> "使用现有缓存策略重新进入公共处理流程"
                                 },
                                 "音频策略" to "已缓存音轨和原文字幕按来源与转写引擎隔离复用",

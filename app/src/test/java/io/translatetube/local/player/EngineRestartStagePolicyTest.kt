@@ -201,8 +201,9 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
-    fun missingTranslationMustBeResolvedBeforeTtsOnlyRestart() {
-        assertNull(
+    fun ttsOnlyChangeResumesWithExistingTimelineAndCompletesMissingTranslationsFirst() {
+        assertEquals(
+            EngineRestartStage.DUBBING,
             EngineRestartStagePolicy.choose(
                 previous = oldConfig,
                 current = changed(dubbing = "tts-b"),
