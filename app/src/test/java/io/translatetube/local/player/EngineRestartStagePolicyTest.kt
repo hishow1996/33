@@ -143,4 +143,43 @@ class EngineRestartStagePolicyTest {
             ),
         )
     }
+    @Test
+    fun importedTranslatedFlowDoesNotTreatAsrChangesAsRelevant() {
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = oldConfig,
+                current = changed(transcription = "asr-b"),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ignoreTranscription = false,
+            ),
+        )
+    }
+
+    @Test
+    fun normalSpeechFlowTreatsAsrChangesAsRelevant() {
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = oldConfig,
+                current = changed(transcription = "asr-b"),
+                processingFlow = ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                ignoreTranscription = false,
+            ),
+        )
+    }
+
+    @Test
+    fun importedTranslatedFlowStillTreatsDubbingChangesAsRelevant() {
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = oldConfig,
+                current = changed(dubbing = "tts-b"),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ignoreTranscription = false,
+            ),
+        )
+    }
+
 }
