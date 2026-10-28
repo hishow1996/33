@@ -110,6 +110,18 @@ class YouTubeSubtitleSelectionPolicyTest {
     }
 
     @Test
+    fun streamLanguageIsNotBorrowedWhenExplicitOriginalTrackHasNoLocale() {
+        assertNull(
+            YouTubeSubtitleSelectionPolicy.sourceLanguageHint(
+                originalAudioLanguageTags = emptyList(),
+                streamLanguageTag = "en-US",
+                fallbackAudioLanguageTags = listOf("en-US"),
+                originalAudioTrackPresent = true,
+            ),
+        )
+    }
+
+    @Test
     fun subtitleSnapshotValidationRejectsWrongOrUnverifiableLanguage() {
         assertTrue(
             YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot("ko", "en", "en"),
@@ -138,6 +150,28 @@ class YouTubeSubtitleSelectionPolicyTest {
         assertFalse(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("remote:https://example.com/video"))
         assertFalse(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo("local:content://video"))
         assertFalse(YouTubeSubtitleSelectionPolicy.modeAppliesToVideo(null))
+    }
+
+    @Test
+    fun youtubeHistoryFingerprintIncludesCanonicalDefaultModeEvenWhenNotPersisted() {
+        assertEquals(
+            "youtube_subtitle_language_mode=english",
+            YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", null),
+        )
+        assertEquals(
+            "youtube_subtitle_language_mode=original",
+            YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", "original"),
+        )
+        assertEquals(
+            "youtube_subtitle_language_mode=english",
+            YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", "unsupported-value"),
+        )
+        assertNull(
+            YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("remote:https://example.com/video", null),
+        )
+        assertNull(
+            YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("local:content://video", "original"),
+        )
     }
 
     @Test
