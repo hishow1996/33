@@ -5844,7 +5844,15 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                 )
             }
 
-            if (cached != null) {
+            val restoredProcessingFlow = resumeState?.processingFlow ?: ui.value.processingFlow
+            val isImportedTranslatedSnapshot =
+                restoredProcessingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+
+            if (SubtitleCacheRestorePolicy.shouldRestoreCachedRows(
+                    cacheAvailable = cached != null,
+                    hasAuthoritativeImportedTranslation = isImportedTranslatedSnapshot,
+                )
+            ) {
                 // 缓存命中：直接还原双语行
                 val arr = org.json.JSONArray(cached.linesJson)
                 val restored = ArrayList<SubLine>(arr.length())
@@ -5903,9 +5911,6 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             } else if (lines != null) {
                 // ---- 3. 翻译 ----
                 var translatedLines = lines!!
-                val isImportedTranslatedSnapshot =
-                    resumeState?.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-
                 if (isImportedTranslatedSnapshot) {
                     // "导入已翻译字幕并配音" is an authoritative translated input. Do not infer
                     // the source language from its original-language display row and send it to the
