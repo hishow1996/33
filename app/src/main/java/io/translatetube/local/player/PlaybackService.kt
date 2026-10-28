@@ -530,6 +530,9 @@ class PlaybackService : MediaSessionService() {
     // A seek can trigger transient buffering/state callbacks after the immediate play() call.
     // Retry playback once on ExoPlayer's main looper, but cancel the retry on an explicit pause.
     private val seekResumeHandler = Handler(Looper.getMainLooper())
+    // Surface attachment has a separate queue from seek/playback recovery so future seek retries
+    // cannot accidentally delay video-view binding.
+    private val surfaceAttachHandler = Handler(Looper.getMainLooper())
     private val seekResumeLock = Any()
     private var seekResumeGeneration = 0L
     private var pendingSeekResume: Runnable? = null
@@ -1324,7 +1327,7 @@ class PlaybackService : MediaSessionService() {
         }
         // Avoid an unnecessary main-loop delay when called from Compose/View lifecycle callbacks.
         if (Looper.myLooper() == Looper.getMainLooper()) attach.run()
-        else seekResumeHandler.post(attach)
+        else surfaceAttachHandler.post(attach)
     }
 
     private fun attachPendingVideoSurface() {
