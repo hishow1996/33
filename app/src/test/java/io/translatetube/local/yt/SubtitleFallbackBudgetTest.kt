@@ -31,27 +31,12 @@ class SubtitleFallbackBudgetTest {
     }
 
     @Test
-    fun otherHttpErrorsAreNotTreatedAsConnectivityOrRateLimit() {
+    fun tracksWithoutUsableCuesNeverEndTheSearch() {
+        val budget = SubtitleFallbackBudget()
+        repeat(50) { assertFalse(budget.recordTrackFailure(null)) }
+        repeat(50) { assertFalse(budget.recordTrackFailure(SubtitleHttpException(404))) }
         assertFalse(SubtitleFallbackBudget.isRateLimited(SubtitleHttpException(404)))
         assertFalse(SubtitleFallbackBudget.isConnectivityFailure(SubtitleHttpException(404)))
-        val budget = SubtitleFallbackBudget()
-        repeat(7) { assertFalse(budget.recordTrackFailure(SubtitleHttpException(404))) }
-        assertTrue(budget.recordTrackFailure(SubtitleHttpException(404)))
-    }
-
-    @Test
-    fun eightEmptyTracksInARowStopTheSearch() {
-        val budget = SubtitleFallbackBudget()
-        repeat(7) { assertFalse(budget.recordTrackFailure(null)) }
-        assertTrue(budget.recordTrackFailure(null))
-    }
-
-    @Test
-    fun successResetsCounters() {
-        val budget = SubtitleFallbackBudget()
-        repeat(6) { budget.recordTrackFailure(null) }
-        budget.recordSuccess()
-        repeat(7) { assertFalse(budget.recordTrackFailure(null)) }
     }
 
     @Test

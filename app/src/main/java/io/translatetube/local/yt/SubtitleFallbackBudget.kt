@@ -17,19 +17,17 @@ internal class SubtitleHttpException(val code: Int) :
  * The caller tries every caption track in preference order and each try can wait up to the
  * HTTP timeout. A video can have dozens of tracks, so with the network down the parsing page
  * used to sit on "正在下载并读取字幕文件" for minutes before reaching the audio-transcription
- * fallback. Stopping early loses nothing: the remaining tracks are the lowest priority ones, and
- * the audio fallback is what runs when no caption works anyway.
+ * fallback. Only network failure or rate limiting stops the search (the remaining tracks would
+ * fail the same way). A track that simply has no usable cues never does: other tracks are still
+ * tried, because captions are preferred over audio transcription.
  */
 internal class SubtitleFallbackBudget(
     private val maxConnectivityFailures: Int = 2,
-    private val maxConsecutiveFailures: Int = 8,
 ) {
     private var connectivityFailures = 0
-    private var consecutiveFailures = 0
 
     fun recordSuccess() {
         connectivityFailures = 0
-        consecutiveFailures = 0
     }
 
     /**
@@ -37,15 +35,15 @@ internal class SubtitleFallbackBudget(
      * cues). Returns true when the caller should give up on the remaining tracks.
      */
     fun recordTrackFailure(error: Throwable?): Boolean {
-        consecutiveFailures += 1
+        // Tracks that answered but had no usable cues never end the search: a later track in
+        // another language may still work, and captions are preferred over audio transcription.
         if (error != null && isRateLimited(error)) return true
         if (error != null && isConnectivityFailure(error)) {
             connectivityFailures += 1
         } else {
             connectivityFailures = 0
         }
-        return connectivityFailures >= maxConnectivityFailures ||
-            consecutiveFailures >= maxConsecutiveFailures
+        return connectivityFailures >= maxConnectivityFailures
     }
 
     companion object {
