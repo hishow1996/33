@@ -413,6 +413,8 @@ data class PlayerUiState(
     val isPlaying: Boolean = false,
     /** 播放器正在加载/缓冲视频；网络慢或首次加载时界面显示转圈。 */
     val isBuffering: Boolean = false,
+    /** 本次加载中播放器因网络错误自动重试的次数（真实的加载错误回调计数）。 */
+    val loadRetryCount: Int = 0,
     val videoAspect: Float = 16f / 9f,   // 视频真实宽高比（竖屏视频自适应）
     val noModelHint: String? = null,     // 模型/引擎问题的用户提示
     /** Subtitle generation is blocked because the selected ASR engine is not ready. */
@@ -1230,6 +1232,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     /** 主线程把画面 TextureView 交给播放器 */
+    /** 播放头前方已缓冲的时长（毫秒），供加载转圈如实显示进度；需在主线程调用。 */
+    fun bufferedAheadMs(): Long = if (playerReady && ::pm.isInitialized) pm.bufferedAheadMs() else 0L
+
     fun attachSurface(tv: android.view.TextureView) {
         // Service 初始化失败时，PlayerScreen 仍可能尝试挂载 TextureView。
         // 在投递到主线程前后都检查，避免访问尚未初始化的 lateinit PlayerManager。
@@ -1441,6 +1446,9 @@ class PlaybackService : MediaSessionService() {
             }
             scope.launch {
                 pm.isBuffering.collect { buffering -> ui.update { it.copy(isBuffering = buffering) } }
+            }
+            scope.launch {
+                pm.loadRetryCount.collect { retries -> ui.update { it.copy(loadRetryCount = retries) } }
             }
             // Processing belongs to the foreground service, not the visible Activity.
             // Keep the ongoing notification current so users can switch apps and return later.

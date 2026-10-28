@@ -3004,12 +3004,24 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
         }
     }
 
-    // 网络慢/首次加载时显示转圈，而不是一块黑屏加播放按钮；加载超过 8 秒再补一句提示。
+    // 转圈直接反映播放器的真实加载状态（BUFFERING），文字提示来自真实数据：
+    // 网络请求失败的重试次数、已缓冲的时长；没有数据时不编造"网络慢"之类的结论。
     if (state.isBuffering) {
-        var slowLoading by remember(state.key) { mutableStateOf(false) }
+        var bufferedMs by remember(state.key) { mutableStateOf(0L) }
+        // 每 0.5 秒一格，16 格 = 加载满 8 秒才开始显示详情，避免一闪而过的正常缓冲也弹提示。
+        var loadingTicks by remember(state.key) { mutableStateOf(0) }
         LaunchedEffect(state.key) {
-            delay(8_000)
-            slowLoading = true
+            while (true) {
+                bufferedMs = svc?.bufferedAheadMs() ?: 0L
+                delay(500)
+                loadingTicks += 1
+            }
+        }
+        val statusText = when {
+            state.loadRetryCount > 0 -> "连接不稳定，正在重试（第 ${state.loadRetryCount} 次）…"
+            loadingTicks >= 16 && bufferedMs <= 0L -> "仍在加载视频，暂未收到数据…"
+            loadingTicks >= 16 -> "仍在加载视频，已缓冲 ${bufferedMs / 1000} 秒…"
+            else -> null
         }
         Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
             Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
@@ -3018,10 +3030,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     color = Color.White,
                     strokeWidth = 3.dp,
                 )
-                if (slowLoading) {
+                if (statusText != null) {
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "网络较慢，视频加载中…",
+                        statusText,
                         color = Color.White,
                         style = MaterialTheme.typography.bodySmall,
                     )

@@ -156,6 +156,16 @@ class PlayerManager(private val ctx: Context) {
     /** 播放器正在加载/缓冲（含首次加载、拖动进度后的重新加载）：界面据此显示转圈，而不是黑屏。 */
     private val _isBuffering = MutableStateFlow(false)
     val isBuffering: StateFlow<Boolean> = _isBuffering
+
+    /**
+     * 本次加载中，网络请求失败后播放器自动重试的次数（来自 ExoPlayer 的真实加载错误回调）。
+     * 缓冲结束（可播放）或停止后清零。界面据此如实提示"连接不稳定，正在重试"。
+     */
+    private val _loadRetryCount = MutableStateFlow(0)
+    val loadRetryCount: StateFlow<Int> = _loadRetryCount
+
+    /** 播放头之前方已经缓冲到的时长（毫秒），必须在主线程读取。 */
+    fun bufferedAheadMs(): Long = runCatching { player.totalBufferedDuration }.getOrDefault(0L).coerceAtLeast(0L)
     val errorSink = MutableStateFlow<String?>(null)
 
     var onTick: ((ms: Long) -> Unit)? = null
@@ -317,6 +327,9 @@ class PlayerManager(private val ctx: Context) {
             override fun onPlaybackStateChanged(state: Int) {
                 // 记录缓冲耗时：黑屏时能看出是一直在缓冲（网络慢/域名不通）还是根本没开始加载。
                 _isBuffering.value = state == Player.STATE_BUFFERING
+                if (state == Player.STATE_READY || state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
+                    _loadRetryCount.value = 0
+                }
                 val nowMs = android.os.SystemClock.elapsedRealtime()
                 when (state) {
                     Player.STATE_BUFFERING -> bufferingStartedAtMs = nowMs
@@ -395,6 +408,32 @@ class PlayerManager(private val ctx: Context) {
                         android.util.Log.w("PlayerManager", "Video-aspect callback failed", error)
                     }
                 }
+            }
+        })
+        // 真实网络信号：每次视频数据请求失败（超时/断连/HTTP 错误）ExoPlayer 都会回调一次，随后自动重试。
+        player.addAnalyticsListener(object : androidx.media3.exoplayer.analytics.AnalyticsListener {
+            override fun onLoadError(
+                eventTime: androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime,
+                loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+                mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData,
+                error: java.io.IOException,
+                wasCanceled: Boolean,
+            ) {
+                if (wasCanceled) return
+                _loadRetryCount.value = _loadRetryCount.value + 1
+                logPlayerDiagnostic(
+                    isWarning = true,
+                    message = "视频数据加载失败，播放器将自动重试",
+                    details = mapOf(
+                        "累计失败次数" to _loadRetryCount.value.toString(),
+                        "视频流域名" to (loadEventInfo.uri.host ?: "未知"),
+                        "已缓冲 ms" to bufferedAheadMs().toString(),
+                    ),
+                    failure = error,
+                    issueKey = io.translatetube.local.util.AppLogStore.stableIssueKey(
+                        "PlayerManager", "视频数据加载失败|${loadEventInfo.uri.host ?: "未知"}",
+                    ),
+                )
             }
         })
         // No idle ticker: onIsPlayingChanged starts it when an observed player begins playback.
