@@ -5627,6 +5627,26 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
             }
 
+            if (
+                cached != null &&
+                SubtitleCacheRestorePolicy.shouldInvalidateUnverifiedMediaTranslationCache(
+                    hasImportedSource = !sourceImportedLines.isNullOrEmpty(),
+                    isYouTube = videoId != null,
+                    hasMediaSource = localUri != null || remoteMediaUrl != null,
+                    hasValidatedSourceTimeline = restoredSourceLines != null,
+                )
+            ) {
+                // Local/web translation caches are only safe when the matching original timeline
+                // is still available. Without it, the media at the same URI/URL may have changed
+                // or its source cache may have been evicted; re-run ASR instead of dubbing stale text.
+                android.util.Log.w(
+                    "PlaybackService",
+                    "Ignoring local/web translation cache because the source timeline is unavailable",
+                )
+                db.subtitleCacheDao().delete(translationCacheKey)
+                cached = null
+            }
+
             if (!restoredSourceLang.isNullOrBlank()) srcLang = restoredSourceLang
             var sourceTranscriptProducedInThisRun = false
             var lines: List<SubLine>? = resumeState?.lines?.takeIf { it.isNotEmpty() }
