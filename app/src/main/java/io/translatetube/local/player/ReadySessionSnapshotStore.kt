@@ -365,8 +365,33 @@ internal object ReadySessionSnapshotStore {
     // These snapshots are required to resume a completed video (including user-imported
     // translated subtitles). cacheDir may be purged by Android at any time, so keep the bounded
     // snapshot store in filesDir and let remove()/clearAll()/prune() manage its lifetime.
-    private fun directory(context: Context): File =
-        File(context.applicationContext.filesDir, DIRECTORY_NAME).apply { mkdirs() }
+    private fun directory(context: Context): File {
+        val appContext = context.applicationContext
+        val persistentDirectory = File(appContext.filesDir, DIRECTORY_NAME).apply { mkdirs() }
+
+        // Migrate snapshots written by earlier versions under cacheDir. Without this migration,
+        // users updating the app would lose access to existing successful sessions on first launch.
+        val legacyDirectory = File(appContext.cacheDir, DIRECTORY_NAME)
+        if (legacyDirectory.isDirectory) {
+            legacyDirectory.listFiles()?.forEach { legacyFile ->
+                if (!legacyFile.isFile) return@forEach
+                val persistentFile = File(persistentDirectory, legacyFile.name)
+                if (persistentFile.exists()) {
+                    runCatching { legacyFile.delete() }
+                } else {
+                    val copied = runCatching {
+                        legacyFile.copyTo(persistentFile, overwrite = false)
+                        true
+                    }.getOrDefault(false)
+                    if (copied) runCatching { legacyFile.delete() }
+                }
+            }
+            if (legacyDirectory.listFiles()?.isEmpty() == true) {
+                runCatching { legacyDirectory.delete() }
+            }
+        }
+        return persistentDirectory
+    }
 
     private fun filePrefix(videoKey: String): String = "ready_" + keyHash(videoKey) + "_"
 
