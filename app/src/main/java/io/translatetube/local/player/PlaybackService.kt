@@ -1145,36 +1145,54 @@ class PlaybackService : MediaSessionService() {
                             ) &&
                                 state.lines.isNotEmpty() &&
                                 state.sourceLang.isNotBlank()
+                        val canResumeAtSourceStage =
+                            EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                                phase = state.phase,
+                                processingFlow = state.processingFlow,
+                            )
                         // This baseline belongs to the active pipeline, not just the last successful
-                        // run. It enables stage-specific resume even on the first run of this video.
-                        val previousDomains = if (canResumeWithTimeline) {
+                        // run. It enables stage-specific resume even on the first run of this video,
+                        // including source preparation before the first subtitle row exists.
+                        val previousDomains = if (canResumeWithTimeline || canResumeAtSourceStage) {
                             processingEngineDomainFingerprints
                         } else null
                         val currentDomains = if (previousDomains != null) {
                             ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                         } else null
+                        val usesUserImportedSubtitles =
+                            state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                        val forceYouTubeSubtitleRefresh =
+                            !usesUserImportedSubtitles &&
+                                changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
+                                restartVideoId != null
                         val readyRestartStage = if (previousDomains != null && currentDomains != null) {
                             val ignoreTranscription =
                                 state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
                                     (completedReadySessionKey == sessionKey &&
                                         completedReadySessionIgnoresTranscription)
-                            val usesUserImportedSubtitles =
-                                state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
-                                    state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-                            if (
-                                !usesUserImportedSubtitles &&
-                                changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
-                                restartVideoId != null
-                            ) {
-                                EngineRestartStage.TRANSCRIPTION
-                            } else {
-                                chooseEngineRestartStage(previousDomains, currentDomains, state, ignoreTranscription)
+                            val configRestartStage = chooseEngineRestartStage(
+                                previousDomains,
+                                currentDomains,
+                                state,
+                                ignoreTranscription,
+                            )
+                            when {
+                                // A caption-mode change must re-enter subtitle discovery, not treat
+                                // an empty resume snapshot as an ASR transcript request.
+                                forceYouTubeSubtitleRefresh -> EngineRestartStage.TRANSCRIPTION
+                                configRestartStage != null -> configRestartStage
+                                // There are no rows to preserve yet. Restart at the current source
+                                // preparation boundary; cached audio and partial ASR checkpoints
+                                // remain available, without reopening the whole source pipeline.
+                                canResumeAtSourceStage -> EngineRestartStage.TRANSCRIPTION
+                                else -> null
                             }
                         } else null
                         val readyRestartState = readyRestartStage?.let { stage ->
                             stateForEngineRestart(state, stage)
                         }
-                        val canResumeAtStage = canResumeWithTimeline &&
+                        val canResumeAtStage = (canResumeWithTimeline || canResumeAtSourceStage) &&
                             readyRestartStage != null &&
                             readyRestartState != null
                         val importedRestartLines = if (canResumeAtStage && this@PlaybackService.importedLines != null) {
@@ -1220,7 +1238,13 @@ class PlaybackService : MediaSessionService() {
                                 videoId = restartVideoId,
                                 localUri = restartLocalUri,
                                 importedLines = importedRestartLines,
-                                resumeState = if (canResumeAtStage) readyRestartState else null,
+                                resumeState = if (forceYouTubeSubtitleRefresh) {
+                                    null
+                                } else if (canResumeAtStage) {
+                                    readyRestartState
+                                } else {
+                                    null
+                                },
                                 remoteMediaUrl = restartRemoteUrl,
                                 remoteMediaTitle = restartRemoteTitle,
                                 remoteMediaReferrer = restartRemoteReferrer,
@@ -1229,6 +1253,7 @@ class PlaybackService : MediaSessionService() {
                                 requestToken = restartRequestToken,
                                 reuseMountedMediaForRestart = canResumeAtStage,
                                 forceRegenerateDubbing = true,
+                                forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
                             )
                         }
                     }
@@ -2748,6 +2773,7 @@ class PlaybackService : MediaSessionService() {
         reuseMountedMediaForRestart: Boolean = false,
         restoreReadySnapshot: Boolean = false,
         forceRegenerateDubbing: Boolean = false,
+        forceYouTubeSubtitleRefresh: Boolean = false,
     ) {
         val canRestoreStoredResult = resumeState == null && importedLines == null && key.isNotBlank()
         // A matching snapshot may belong to an older run of the current configuration. Compare
@@ -2762,7 +2788,13 @@ class PlaybackService : MediaSessionService() {
                 ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
             }
         } else null
-        val fallbackSnapshot = if (canRestoreStoredResult && reusableSnapshot == null) {
+        val fallbackSnapshot = if (
+            canRestoreStoredResult &&
+            reusableSnapshot == null &&
+            !forceYouTubeSubtitleRefresh
+        ) {
+            // A successful snapshot from the previous subtitle mode is not a valid fallback:
+            // the caller intentionally needs to discover/download the newly preferred caption track.
             ReadySessionSnapshotStore.findLatestForVideo(this, key)
         } else null
         val fallbackPreviousDomains = fallbackSnapshot?.let { snapshot ->

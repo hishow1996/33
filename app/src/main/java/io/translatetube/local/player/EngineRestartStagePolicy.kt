@@ -28,6 +28,23 @@ internal object EngineRestartStagePolicy {
         else -> false
     }
 
+    /**
+     * Source-preparation sessions may not have subtitle rows yet. A configuration switch during
+     * audio extraction/transcription can still resume from this boundary without repeating video
+     * metadata resolution or subtitle discovery. The source-audio cache/checkpoint decides whether
+     * the actual audio needs to be prepared again.
+     */
+    fun canResumeFromSourcePreparation(
+        phase: Phase,
+        processingFlow: ProcessingFlow,
+    ): Boolean =
+        phase in setOf(Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING) &&
+            processingFlow in setOf(
+                ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+            )
+
     fun hasRelevantConfigChange(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,

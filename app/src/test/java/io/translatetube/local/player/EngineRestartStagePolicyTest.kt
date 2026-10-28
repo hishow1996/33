@@ -107,6 +107,70 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun sourcePreparationCanResumeBeforeSubtitleRowsExist() {
+        val flows = listOf(
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+        )
+        for (flow in flows) {
+            assertEquals(
+                "audio extraction should be resumable for $flow",
+                true,
+                EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                    Phase.DOWNLOADING_AUDIO,
+                    flow,
+                ),
+            )
+            assertEquals(
+                "transcription should be resumable for $flow",
+                true,
+                EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                    Phase.TRANSCRIBING,
+                    flow,
+                ),
+            )
+        }
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                Phase.TRANSCRIBING,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canResumeFromSourcePreparation(
+                Phase.TRANSCRIBING,
+                ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+            ),
+        )
+    }
+
+    @Test
+    fun transcriptionSwitchCanChooseTranscriptionBeforeTheFirstRowExists() {
+        for (flow in listOf(
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+        )) {
+            assertEquals(
+                "flow=$flow",
+                EngineRestartStage.TRANSCRIPTION,
+                EngineRestartStagePolicy.choose(
+                    previous = oldConfig,
+                    current = changed(transcription = "asr-b"),
+                    processingFlow = flow,
+                    ignoreTranscription = false,
+                    hasLines = false,
+                    sourceLanguageIsChinese = false,
+                    hasMissingTranslation = false,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun importedTranslatedSubtitlesIgnoreTranscriptionChanges() {
         assertNull(
             EngineRestartStagePolicy.choose(
