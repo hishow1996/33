@@ -177,9 +177,13 @@ private object ReadyHistorySessionConfigStore {
     fun hasEngineConfigChangedSinceLastSuccess(context: Context, videoKey: String): Boolean {
         val previous = savedFingerprints(context, videoKey) ?: return false
         val current = fingerprints(context)
-        return previous.transcription != current.transcription ||
-            previous.translation != current.translation ||
-            previous.dubbing != current.dubbing
+        val flow = savedProcessingFlow(context, videoKey)
+        return EngineRestartStagePolicy.hasRelevantConfigChange(
+            previous = previous,
+            current = current,
+            processingFlow = flow,
+            ignoreTranscription = flow == ProcessingFlow.YOUTUBE_SUBTITLES,
+        )
     }
 
     fun savedProcessingFlow(context: Context, videoKey: String): ProcessingFlow? {
