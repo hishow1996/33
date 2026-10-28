@@ -1314,9 +1314,10 @@ class PlaybackService : MediaSessionService() {
     private suspend fun awaitProcessingResumed(
         sessionKey: String,
         pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
     ) {
         if (processingPaused) processingPauseGate.withLock { /* resumes when unlocked */ }
-        ensureCurrentSession(sessionKey, pipelineGeneration)
+        ensureCurrentSession(sessionKey, pipelineGeneration, dubbingMutationGeneration)
     }
 
     fun toggleProcessingPause() {
@@ -5479,13 +5480,17 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 awaitProcessingResumed(key, pipelineGeneration)
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "无字幕，正在提取视频音频…") }
                 val audioFile: Any = when {
-                    videoId != null -> obtainAsrAudioFile(videoId, key, "复用已下载音频，避免重复下载…")
+                    videoId != null -> obtainAsrAudioFile(
+                        videoId, key, "复用已下载音频，避免重复下载…",
+                        pipelineGeneration = pipelineGeneration,
+                    )
                     remoteMediaUrl != null -> obtainRemoteMediaAsrFile(
                         remoteMediaUrl,
                         remoteMediaReferrer,
                         remoteMediaCookie,
                         key,
                         "复用网页视频音频缓存，避免重复下载…",
+                        pipelineGeneration = pipelineGeneration,
                     )
                     else -> localUri ?: throw IllegalStateException("无音频源")
                 }
@@ -7947,25 +7952,28 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         videoId: String,
         sessionKey: String,
         cacheHitProgress: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
     ): File {
         return asrAudioDownloadLocks.withLock(videoId) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
             reusableAsrAudioFile(videoId, cacheNamespace = "youtube-original-track-v2")?.let { cached ->
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cached
             }
-            updateUiForSession(sessionKey) { state ->
+            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                 if (state.key == sessionKey) {
                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "YouTube · 正在选择独立音轨…")
                 } else state
             }
-            awaitProcessingResumed(sessionKey)
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
             val stream = NewPipeRepo.audioForAsr(videoId)
                 ?: throw IllegalStateException(
                     "无法安全确定与原声匹配的 YouTube 音轨。为避免误把其他语言的配音轨当作原声转写，本次已停止处理；请稍后重试。",
                 )
-            updateUiForSession(sessionKey) { state ->
+            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
@@ -7973,20 +7981,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     )
                 } else state
             }
-            awaitProcessingResumed(sessionKey)
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
             val destination = asrAudioCacheFile(videoId, cacheNamespace = "youtube-original-track-v2")
             VideoHistoryCacheIndex.rememberAudioCacheFile(this@PlaybackService, sessionKey, destination.name)
             suspend fun downloadStream(url: String): File = try {
-                downloadAudio(url, destination, sessionKey, progressLabel = "YouTube · 独立音轨")
+                downloadAudio(
+                    url, destination, sessionKey,
+                    progressLabel = "YouTube · 独立音轨",
+                    pipelineGeneration = pipelineGeneration,
+                    dubbingMutationGeneration = dubbingMutationGeneration,
+                )
             } catch (manifest: HlsManifestPayloadException) {
                 HlsAudioDownloader.download(
                     url,
                     destination,
-                    awaitResume = { awaitProcessingResumed(sessionKey) },
+                    awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
                     userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                     initialSourceKind = HlsAudioDownloader.AudioSourceKind.INDEPENDENT,
                 ) { detail ->
-                    updateUiForSession(sessionKey) { state ->
+                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                         if (state.key == sessionKey) {
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
                         } else state
@@ -8007,14 +8020,14 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     // StreamInfo caches expiring signed URLs. Invalidate and extract once before
                     // asking the user to retry the same stale URL again.
                     NewPipeRepo.invalidate(videoId)
-                    updateUiForSession(sessionKey) { state ->
+                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                         if (state.key == sessionKey) {
                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = "音频链接已失效，正在刷新视频流…")
                         } else state
                     }
-                    awaitProcessingResumed(sessionKey)
+                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
                     val refreshed = NewPipeRepo.audioForAsr(videoId) ?: throw firstError
-                    awaitProcessingResumed(sessionKey)
+                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
                     try {
                         downloadStream(refreshed.content)
                     } catch (refreshError: Exception) {
@@ -8341,6 +8354,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             // Flush the completed muxer output before publishing it as the reusable cache file.
             java.io.RandomAccessFile(work, "rw").use { it.fd.sync() }
+            awaitResume()
+            ownerJob?.ensureActive()
             if (!work.renameTo(destination)) {
                 // Never copy directly over the old cache: a failed/partial copy could destroy the
                 // last good file. The caller's catch removes only this .part file on failure.
@@ -8414,18 +8429,21 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         cookie: String?,
         sessionKey: String,
         cacheHitProgress: String,
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
     ): File {
+        awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
         // Reuse downloaded bytes across rotating signed URLs, but never across page origins or
         // different WebView cookie sessions. The raw cookie/media URL is not written to this key.
         val identity = MediaUrlCacheIdentity.audioKey(mediaUrl, referrer, cookie)
         return asrAudioDownloadLocks.withLock(identity) {
             reusableAsrAudioFile(identity)?.let { cached ->
-                updateUiForSession(sessionKey) { state ->
+                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                     if (state.key == sessionKey) state.copy(progress = cacheHitProgress) else state
                 }
                 return@withLock cached
             }
-            updateUiForSession(sessionKey) { state ->
+            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                 if (state.key == sessionKey) {
                     state.copy(
                         phase = Phase.DOWNLOADING_AUDIO,
@@ -8455,8 +8473,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             ytdlpOrigin.pageUrl,
                             destination,
                             onProgress = { percent, downloadedBytes, totalBytes ->
-                                kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey) }
-                                updateUiForSession(sessionKey) { state ->
+                                kotlinx.coroutines.runBlocking { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }
+                                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                     if (state.key == sessionKey) {
                                         val progress = if (downloadedBytes > 0L || totalBytes != null) {
                                             AudioDownloadProgressFormatter.formatProgress(
@@ -8496,7 +8514,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             throw e
                         }
                         android.util.Log.w("PlaybackService", "yt-dlp 音频直下失败，回落流式提取", e)
-                        updateUiForSession(sessionKey) { state ->
+                        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(progress = "独立音轨下载失败，正在检查网页媒体源并提取音轨…")
                             } else state
@@ -8506,8 +8524,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 val cachedAudio = try {
                     if (HlsAudioDownloader.isManifestUrl(mediaUrl)) {
                         extractionStage = "HLS 主清单音轨分段下载"
-                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
-                            updateUiForSession(sessionKey) { state ->
+                        HlsAudioDownloader.download(mediaUrl, destination, requestHeaders = headers, awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) }, userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() }) { detail ->
+                            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
                                 } else state
@@ -8523,10 +8541,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 mediaUrl,
                                 destination,
                                 headers,
-                                awaitResume = { awaitProcessingResumed(sessionKey) },
+                                awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
                                 onSourceType = { kind ->
                                     detectedSourceKind = kind
-                                    updateUiForSession(sessionKey) { state ->
+                                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                         if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
                                             state.copy(
                                                 progress = "${kind.displayName} · 正在从网页媒体源提取音轨…",
@@ -8535,7 +8553,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     }
                                 },
                                 onProgressPercent = { percent, extractedBytes, totalBytes, totalIsEstimate ->
-                                    updateUiForSession(sessionKey) { state ->
+                                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                         if (state.key == sessionKey && state.phase == Phase.DOWNLOADING_AUDIO) {
                                             state.copy(
                                                 progress = AudioDownloadProgressFormatter.formatProgress(
@@ -8606,10 +8624,10 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     mediaUrl,
                                     destination,
                                     requestHeaders = headers,
-                                    awaitResume = { awaitProcessingResumed(sessionKey) },
+                                    awaitResume = { awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration) },
                                     userAgent = remoteMediaUserAgent.takeIf { it.isNotBlank() },
                                 ) { detail ->
-                                    updateUiForSession(sessionKey) { state ->
+                                    updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                         if (state.key == sessionKey) {
                                             state.copy(phase = Phase.DOWNLOADING_AUDIO, progress = detail)
                                         } else state
@@ -8621,7 +8639,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             ) {
                                 extractionStage = "纯音频直链下载兜底"
                                 // A URL explicitly ending in an audio-only extension is safe to fetch whole.
-                                updateUiForSession(sessionKey) { state ->
+                                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                     if (state.key == sessionKey) {
                                         state.copy(progress = "音轨流式读取失败，正在下载独立音频文件…")
                                     } else state
@@ -8632,6 +8650,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     sessionKey,
                                     headers,
                                     progressLabel = "独立音轨",
+                                    pipelineGeneration = pipelineGeneration,
+                                    dubbingMutationGeneration = dubbingMutationGeneration,
                                 )
                             } else {
                                 android.util.Log.w(
@@ -8768,6 +8788,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         sessionKey: String,
         requestHeaders: Map<String, String> = emptyMap(),
         progressLabel: String = "音轨类型待确认 · 音轨",
+        pipelineGeneration: Long? = null,
+        dubbingMutationGeneration: Long? = null,
     ): File {
         val target = destination ?: File(cacheDir, "asr_audio_${System.nanoTime()}.bin")
         target.parentFile?.mkdirs()
@@ -8780,6 +8802,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
         var lastError: Exception? = null
 
         for (attempt in 1..3) {
+            awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             writeTarget.delete()
             try {
@@ -8826,7 +8849,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                 val buf = ByteArray(64 * 1024)
                                 while (true) {
                                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                    awaitProcessingResumed(sessionKey)
+                                    awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
                                     val n = io.translatetube.local.util.ProgressSafeInput.read(ins, buf)
                                     if (n < 0) break
                                     if (payloadPrefixSize < payloadPrefix.size) {
@@ -8862,7 +8885,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                             totalBytes = total.takeIf { it > 0L },
                                             percent = percent,
                                         )
-                                        updateUiForSession(sessionKey) { state ->
+                                        updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                             if (state.key == sessionKey) state.copy(progress = progress) else state
                                         }
                                         lastProgressBytes = got
@@ -8876,7 +8899,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                                     "音频下载不完整：响应声明 ${total} 字节，实际收到 ${got} 字节"
                                 )
                             }
-                            updateUiForSession(sessionKey) { state ->
+                            updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                                 if (state.key == sessionKey) {
                                     state.copy(
                                         progress = AudioDownloadProgressFormatter.formatProgress(
@@ -8902,6 +8925,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 // Rename only after the complete response has been validated. On Android/Linux,
                 // same-directory rename replaces the previous regular file atomically; if it fails,
                 // leave the previous cache intact rather than deleting it first.
+                awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
                 if (!writeTarget.renameTo(target)) {
                     throw IllegalStateException("下载完成但无法原子保存音频缓存")
                 }
@@ -8912,7 +8936,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
                 if (attempt == 3 || !MediaDownloadRetryPolicy.shouldRetry(error)) throw error
-                updateUiForSession(sessionKey) { state ->
+                awaitProcessingResumed(sessionKey, pipelineGeneration, dubbingMutationGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration, dubbingMutationGeneration) { state ->
                     if (state.key == sessionKey) {
                         state.copy(progress = "网络不稳定，正在重试音频下载（第 ${attempt + 1} 次）")
                     } else state
@@ -9841,7 +9866,11 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     val sourceUri: Uri?
                     if (sessionVideoId != null) {
                         val id = sessionVideoId
-                        val audio = obtainAsrAudioFile(id, sessionKey, "复用已下载音频，正在分析人物声音…")
+                        val audio = obtainAsrAudioFile(
+                            id, sessionKey, "复用已下载音频，正在分析人物声音…",
+                            pipelineGeneration = pipelineGeneration,
+                            dubbingMutationGeneration = mutationGeneration,
+                        )
                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                             if (state.key == sessionKey) {
                                 state.copy(phase = Phase.TRANSCRIBING, progress = "解码音频，准备分析人物声音…")
@@ -9858,6 +9887,8 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                             sessionRemoteMediaCookie,
                             sessionKey,
                             "复用网页视频音频，正在分析人物声音…",
+                            pipelineGeneration = pipelineGeneration,
+                            dubbingMutationGeneration = mutationGeneration,
                         )
                         updateUiForSession(sessionKey, pipelineGeneration, mutationGeneration) { state ->
                             if (state.key == sessionKey) {
