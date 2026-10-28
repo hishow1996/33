@@ -452,35 +452,21 @@ object NewPipeRepo {
                 mode = subtitleMode,
             )
         }
-        // Keep the selected mode strict: English mode only reads English tracks, while original
-        // mode only reads tracks matching the original audio language. Never silently switch
-        // languages when the preferred captions are missing or fail to download.
-        val candidateTracks = ordered.filter { track ->
-            YouTubeSubtitleSelectionPolicy.isEligibleSubtitleTrack(
-                mode = subtitleMode,
-                sourceLanguageTag = sourceLanguageTag,
-                subtitleLanguageTag = track.languageTag,
-            )
-        }
+        // Try every available caption in preference order. English-first mode ranks English
+        // captions first, then original-language captions, then all other captions. Original-first
+        // mode reverses the first two priorities. Audio transcription is reached only if no
+        // subtitle track can be downloaded and parsed successfully.
+        val candidateTracks = ordered.filter { track -> !track.url.isNullOrBlank() }
         if (candidateTracks.isEmpty()) {
             logWarning(
-                when {
-                    subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH ->
-                        "YouTube 没有可用英语字幕，改用音频转写"
-                    sourceLanguageTag == null ->
-                        "YouTube 原声音轨语言无法确认，改用音频转写"
-                    else ->
-                        "YouTube 没有与原声音轨语言匹配的字幕，改用音频转写"
-                },
+                "YouTube 没有可下载的字幕轨，改用音频转写",
                 context = mapOf(
                     "YouTube 视频 ID" to videoId,
-                    "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "优先英语字幕" else "匹配视频原声语言",
+                    "检测到字幕轨数量" to tracks.size.toString(),
+                    "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "默认英语优先" else "原声语言优先",
                     "原声音频语言提示" to sourceLanguageTag.orEmpty().ifBlank { "未知" },
-                    "可用字幕语言" to ordered.map { it.languageTag }.distinct().take(20).joinToString(", "),
-                    "后续处理" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH)
-                        "严格使用英语字幕；不可用时使用视频音轨转写"
-                    else
-                        "严格使用原声语言字幕；不可用时使用视频音轨转写",
+                    "识别到的字幕语言" to ordered.map { it.languageTag }.distinct().take(20).joinToString(", ").ifBlank { "无" },
+                    "后续处理" to "没有带有效地址的字幕轨，改用视频音轨转写",
                 ),
             )
             return null
@@ -505,7 +491,7 @@ object NewPipeRepo {
                             mapOf(
                                 "YouTube 视频 ID" to videoId,
                                 "选中字幕语言" to track.languageTag.ifBlank { "未知" },
-                                "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "优先英语字幕" else "匹配视频原声语言",
+                                "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "英语优先，原声与其他字幕回退" else "原声优先，英语与其他字幕回退",
                                 "原声音频语言提示" to sourceLanguageTag.orEmpty().ifBlank { "未知" },
                                 "字幕与原声语言匹配" to (
                                     YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(track.languageTag) != null &&
@@ -544,10 +530,10 @@ object NewPipeRepo {
             context = mapOf(
                 "YouTube 视频 ID" to videoId,
                 "检测到字幕轨数量" to tracks.size.toString(),
-                "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "优先英语字幕" else "匹配视频原声语言",
+                "字幕语言模式" to if (subtitleMode == YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "英语优先，原声与其他字幕回退" else "原声优先，英语与其他字幕回退",
                 "尝试过的字幕语言" to candidateTracks.map { it.languageTag }.distinct().take(20).joinToString(", "),
                 "尝试格式" to "每条字幕轨优先 VTT，失败后重试原始格式",
-                "后续建议" to "检查字幕请求 HTTP 状态、字幕内容格式及视频访问权限",
+                "后续建议" to "字幕轨已全部尝试但无法读取，后续由五阶段流程转写原声音轨",
             ),
         )
         return null
