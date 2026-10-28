@@ -632,6 +632,8 @@ class PlaybackService : MediaSessionService() {
     private var videoId: String? = null
     private var localUri: Uri? = null
     @Volatile private var activeLocalMediaIdentityKey: String? = null
+    // Avoid blocking callers on slow document providers; only the newest open may publish a result.
+    private val localMediaIdentityResolutionGeneration = java.util.concurrent.atomic.AtomicLong(0L)
     private var remoteMediaUrl: String? = null
     private var remoteMediaTitle: String = ""
     private var remoteMediaReferrer: String = ""
@@ -743,9 +745,10 @@ class PlaybackService : MediaSessionService() {
             val effectiveLocalUri = localMediaUri ?: key
                 .takeIf { it.startsWith("local:", ignoreCase = true) }
                 ?.removePrefix("local:")
-            val localIdentity = effectiveLocalUri?.let { raw ->
-                runCatching { LocalMediaCacheIdentity.identityKey(context, Uri.parse(raw)) }.getOrNull()
-            }
+            // This synchronous routing hint must not query a document provider on the caller thread.
+            // PlaybackService.open() resolves the identity on IO and performs the actual snapshot match.
+            if (effectiveLocalUri != null) return false
+            val localIdentity: String? = null
             val snapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
                 videoKey = key,
                 remoteMediaUrl = effectiveRemoteUrl,
@@ -806,8 +809,10 @@ class PlaybackService : MediaSessionService() {
             state.dubbingHasErrors
         ) return false
 
-        val currentLocalIdentity = localUri?.let { LocalMediaCacheIdentity.identityKey(this, it) }
-        if (localUri != null && currentLocalIdentity != activeLocalMediaIdentityKey) return false
+        // This synchronous Boolean API cannot verify provider-backed URIs safely without blocking.
+        // Let open() resolve the metadata on IO and restore a compatible successful snapshot.
+        if (localUri != null) return false
+        val currentLocalIdentity: String? = null
         val currentRemoteSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
             videoKey = key,
             remoteMediaUrl = remoteMediaUrl,
@@ -1226,9 +1231,16 @@ class PlaybackService : MediaSessionService() {
                         // If this exact engine combination has completed successfully before, restore
                         // that result directly. A subtitle-mode change is the exception: it requires
                         // rediscovering YouTube captions, even if an older successful snapshot exists.
-                        val restartLocalMediaIdentity = restartLocalUri?.let {
-                            LocalMediaCacheIdentity.identityKey(this@PlaybackService, it)
+                        val restartLocalMediaIdentity = restartLocalUri?.let { uri ->
+                            withContext(Dispatchers.IO) {
+                                LocalMediaCacheIdentity.identityKey(this@PlaybackService, uri)
+                            }
                         }
+                        // A slow provider query may overlap a newer open request. Do not restore stale work.
+                        if (videoKey != sessionKey ||
+                            activePipelineGeneration != changedPipelineGeneration ||
+                            ui.value.key != sessionKey
+                        ) return@launch
                         val liveSnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
                             videoKey = sessionKey,
                             remoteMediaUrl = restartRemoteUrl,
@@ -2996,8 +3008,93 @@ class PlaybackService : MediaSessionService() {
         restoreReadySnapshot: Boolean = false,
         forceRegenerateDubbing: Boolean = false,
         forceYouTubeSubtitleRefresh: Boolean = false,
+        precomputedLocalMediaIdentityKey: String? = null,
+        localIdentityResolutionToken: Long? = null,
     ) {
-        val localMediaIdentityKey = localUri?.let { LocalMediaCacheIdentity.identityKey(this, it) }
+        if (precomputedLocalMediaIdentityKey == null) {
+            val identityToken = localMediaIdentityResolutionGeneration.incrementAndGet()
+            if (localUri != null) {
+                val importedLinesSnapshot = importedLines?.toList()
+                // Invalidate the older pipeline now. URI metadata can block on SAF or cloud storage.
+                beginPipelineGeneration()
+                cancelPendingSeekResume()
+                prepJob?.cancel()
+                subtitleDownloadJob?.cancel(); subtitleDownloadJob = null
+                speakerJob?.cancel(); speakerJob = null
+                dubCollectJob?.cancel(); dubCollectJob = null
+                qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
+                enginePreferenceRestartJob?.cancel()
+                processingNotificationHandler.post {
+                    if (::pm.isInitialized) runCatching { pm.pause() }
+                }
+                ui.update { state ->
+                    state.copy(
+                        phase = Phase.PARSING,
+                        progress = "正在检查本地视频…",
+                        key = key,
+                        title = remoteMediaTitle,
+                        lines = emptyList(),
+                        translatedLineCount = 0,
+                        totalLines = 0,
+                        preparedUntil = 0,
+                        preparedCount = 0,
+                        activeDubbingLine = -1,
+                        currentLine = -1,
+                        captionOverride = null,
+                        error = null,
+                        failedPhase = null,
+                        failedProgress = "",
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                        dubbingHasErrors = false,
+                    )
+                }
+                scope.launch {
+                    val identity = withContext(Dispatchers.IO) {
+                        runCatching {
+                            LocalMediaCacheIdentity.identityKey(this@PlaybackService, localUri)
+                        }.getOrElse {
+                            LocalMediaCacheIdentity.createIdentityKey(
+                                uri = localUri.toString(),
+                                sizeBytes = null,
+                                lastModifiedMs = null,
+                                displayName = null,
+                            )
+                        }
+                    }
+                    if (localMediaIdentityResolutionGeneration.get() != identityToken) return@launch
+                    withContext(Dispatchers.Main.immediate) {
+                        if (localMediaIdentityResolutionGeneration.get() != identityToken) return@withContext
+                        open(
+                            key = key,
+                            videoId = videoId,
+                            localUri = localUri,
+                            importedLines = importedLinesSnapshot,
+                            resumeState = resumeState,
+                            remoteMediaUrl = remoteMediaUrl,
+                            remoteMediaTitle = remoteMediaTitle,
+                            remoteMediaReferrer = remoteMediaReferrer,
+                            remoteMediaCookie = remoteMediaCookie,
+                            remoteMediaUserAgent = remoteMediaUserAgent,
+                            requestToken = requestToken,
+                            reuseMountedMediaForRestart = reuseMountedMediaForRestart,
+                            restoreReadySnapshot = restoreReadySnapshot,
+                            forceRegenerateDubbing = forceRegenerateDubbing,
+                            forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
+                            precomputedLocalMediaIdentityKey = identity,
+                            localIdentityResolutionToken = identityToken,
+                        )
+                    }
+                }
+                return
+            }
+        } else if (
+            localIdentityResolutionToken == null ||
+            localIdentityResolutionToken != localMediaIdentityResolutionGeneration.get()
+        ) {
+            return
+        }
+        val localMediaIdentityKey = precomputedLocalMediaIdentityKey
         val readySnapshotIdentityKey = MediaUrlCacheIdentity.readySnapshotIdentityKey(
             videoKey = key,
             remoteMediaUrl = remoteMediaUrl,
