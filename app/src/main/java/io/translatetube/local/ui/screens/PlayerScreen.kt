@@ -1098,6 +1098,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         color = Color(0xFFD32F2F),
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
                     )
                 }
