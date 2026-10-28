@@ -1695,7 +1695,10 @@ class PlaybackService : MediaSessionService() {
             }
             scope.launch {
                 pm.errorSink.collect { err ->
-                    if (err == null) return@collect
+                    // StateFlow collectors can be scheduled after a newer source has cleared or
+                    // replaced an earlier error. Ignore queued stale values rather than starting
+                    // recovery for, or marking ERROR on, the current same-key session.
+                    if (err == null || pm.errorSink.value != err) return@collect
                     val activeRecovery = qualityRecoveryJob?.takeIf { it.isActive }
                     if (activeRecovery != null) {
                         // Media3 can report the same obsolete signed-URL failure more than once
@@ -1717,7 +1720,9 @@ class PlaybackService : MediaSessionService() {
                                 recoverYouTubePlayback(sessionKey, id, err, recoveryPipelineGeneration)
                             }
                         } else {
-                            ui.update { it.copy(error = err, phase = Phase.ERROR, progress = "") }
+                            updateUiForSession(sessionKey, recoveryPipelineGeneration) {
+                                it.copy(error = err, phase = Phase.ERROR, progress = "")
+                            }
                         }
                     }
                 }
