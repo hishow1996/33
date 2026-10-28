@@ -230,3 +230,5 @@ jobs:
 # Explicit retry of user-requested APK build after fixing Canvas size name shadowing in floating resize handle (2026-10-27).
 # Explicit retry after fixing YouTube audio-language candidate typing (2026-10-28).
 # Explicit retry after fixing missing batchSize in translation fallback test (2026-10-28).
+
+# Explicit user-requested APK build trigger (2026-10-28 18:30 Asia/Tokyo).
