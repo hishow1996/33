@@ -144,11 +144,21 @@ private object ReadyHistorySessionConfigStore {
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
                 ),
             )
+        val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
+            settings.getString("asr_provider", "local"),
+        )
         val relevant = settings.all.entries
             .filter { entry ->
+                val isTranscriptionPreference =
+                    belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION)
                 isRelevantPreferenceKey(entry.key) &&
                     entry.key != io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
-                    !(ignoreTranscription && belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION))
+                    !(ignoreTranscription && isTranscriptionPreference) &&
+                    (ignoreTranscription || !isTranscriptionPreference ||
+                        AsrConfigPreferencePolicy.isRelevantForActiveProvider(
+                            entry.key,
+                            activeAsrProvider,
+                        ))
             }
             .map { entry ->
                 val rawValue = when (val raw = entry.value) {
@@ -252,8 +262,18 @@ private object ReadyHistorySessionConfigStore {
 
     private fun domainFingerprint(context: Context, domain: EngineConfigDomain): String {
         val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val activeAsrProvider = AsrConfigPreferencePolicy.normalizeProvider(
+            settings.getString("asr_provider", "local"),
+        )
         val entries = settings.all.entries
-            .filter { belongsToDomain(it.key, domain) }
+            .filter { entry ->
+                belongsToDomain(entry.key, domain) &&
+                    (domain != EngineConfigDomain.TRANSCRIPTION ||
+                        AsrConfigPreferencePolicy.isRelevantForActiveProvider(
+                            entry.key,
+                            activeAsrProvider,
+                        ))
+            }
             .sortedBy { it.key }
             .joinToString("\n") { entry ->
                 val rawValue = when (val raw = entry.value) {
