@@ -4697,6 +4697,20 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         false
     }
 
+    /**
+     * Message for the processing page when the pipeline throws. A network failure while still
+     * parsing used to surface as a bare host name or a timeout in English; describe those in
+     * Chinese. Later stages already wrap their own errors with specific text, so leave those.
+     */
+    private fun pipelineFailureMessage(error: Exception, failedPhase: Phase, fallback: String): String {
+        val described = if (failedPhase == Phase.PARSING) {
+            io.translatetube.local.yt.YouTubeParseFailurePolicy.toUserFacing(error)
+        } else {
+            error
+        }
+        return described.message ?: fallback
+    }
+
     private suspend fun runPipeline(
         key: String,
         pipelineGeneration: Long,
@@ -4727,6 +4741,10 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
         var transientAudio: File? = null
         var transientPcmFile: AudioExtract.PcmFile? = null
         var transientCloudUploadAudio: File? = null
+        // True once the pipeline reaches the dubbing-engine step. Only a failure from that point
+        // on may be blamed on the text-to-speech setup; an earlier parse/download/transcribe/
+        // translate failure used to show the same "check your TTS service" banner.
+        var dubbingStageEntered = false
         try {
             awaitProcessingResumed(key, pipelineGeneration)
             awaitRetiredDubbingEngines()
@@ -4786,7 +4804,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     throw cancelled
                 } catch (extractorError: Exception) {
                     if (!io.translatetube.local.yt.YouTubeAccessFallbackPolicy.shouldTryYtDlp(extractorError)) {
-                        throw extractorError
+                        // Private / unavailable / offline: say so in plain Chinese instead of
+                        // showing the extractor's English text or just a host name.
+                        throw io.translatetube.local.yt.YouTubeParseFailurePolicy.toUserFacing(extractorError)
                     }
 
                     val watchUrl = "https://www.youtube.com/watch?v=$requestedId"
@@ -6484,6 +6504,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             awaitProcessingResumed(key, pipelineGeneration)
 
             // ---- 5. 配音引擎：必须严格使用设置里明确选择的引擎 ----
+            dubbingStageEntered = true
             if (finalLines.isNotEmpty()) {
                 val selectedTts = getSharedPreferences("settings", MODE_PRIVATE)
                     .getString("tts_engine", "edge") ?: "edge"
@@ -6893,13 +6914,19 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                     it.copy(
                         phase = Phase.ERROR,
                         progress = "",
-                        error = e.message ?: "视频解析或配音初始化失败",
-                        noModelHint = "配音初始化失败，已恢复视频原声以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。",
+                        error = pipelineFailureMessage(e, failureState.phase, "视频解析或配音初始化失败"),
+                        noModelHint = if (dubbingStageEntered) {
+                            "配音初始化失败，已恢复视频原声以避免无声播放。系统 TTS 请检查手机文字转语音服务/中文语音数据；Kokoro/Piper 请检查模型文件是否完整。"
+                        } else {
+                            null
+                        },
                         muteOriginal = false,
                     )
                 }
             } else {
-                updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.ERROR, progress = "", error = e.message ?: "视频解析失败") }
+                updateUiForSession(key, pipelineGeneration) {
+                    it.copy(phase = Phase.ERROR, progress = "", error = pipelineFailureMessage(e, failureState.phase, "视频解析失败"))
+                }
             }
             }
         } catch (e: OutOfMemoryError) {

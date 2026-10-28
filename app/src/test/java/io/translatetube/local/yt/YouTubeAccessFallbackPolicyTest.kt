@@ -33,4 +33,13 @@ class YouTubeAccessFallbackPolicyTest {
             )
         )
     }
+
+    @Test
+    fun ageRestrictedVideosAlsoTryYtDlp() {
+        assertTrue(
+            YouTubeAccessFallbackPolicy.shouldTryYtDlp(
+                IllegalStateException("This age-restricted video cannot be watched anonymously"),
+            ),
+        )
+    }
 }

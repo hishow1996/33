@@ -56,4 +56,35 @@ class SharedLinkTextParserTest {
         assertNull(SharedLinkTextParser.extractFirstHttpUrl("没有链接的文本 bilibili://video/123"))
         assertNull(SharedLinkTextParser.extractFirstHttpUrl(""))
     }
+
+    @Test
+    fun findsKnownVideoSiteLinksWrittenWithoutScheme() {
+        assertEquals(
+            "https://youtu.be/dQw4w9WgXcQ",
+            SharedLinkTextParser.extractFirstHttpUrl("看这个 youtu.be/dQw4w9WgXcQ 很不错"),
+        )
+        assertEquals(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5s",
+            SharedLinkTextParser.extractFirstHttpUrl("推荐：www.youtube.com/watch?v=dQw4w9WgXcQ&t=5s，值得一看"),
+        )
+        assertEquals(
+            "https://bili2233.cn/AbCdEf",
+            SharedLinkTextParser.extractFirstHttpUrl("【标题】 bili2233.cn/AbCdEf"),
+        )
+    }
+
+    @Test
+    fun schemelessFallbackDoesNotMatchOtherDomainsOrOrdinaryText() {
+        assertNull(SharedLinkTextParser.extractFirstHttpUrl("notyoutube.com/watch?v=abc"))
+        assertNull(SharedLinkTextParser.extractFirstHttpUrl("a.com/b 和 example.org/page"))
+        assertNull(SharedLinkTextParser.extractFirstHttpUrl("youtu.be/。"))
+    }
+
+    @Test
+    fun explicitHttpLinkStillWinsOverSchemelessOne() {
+        assertEquals(
+            "https://b23.tv/LfQ2WWb",
+            SharedLinkTextParser.extractFirstHttpUrl("youtu.be/aaaaaaaaaaa 以及 https://b23.tv/LfQ2WWb"),
+        )
+    }
 }

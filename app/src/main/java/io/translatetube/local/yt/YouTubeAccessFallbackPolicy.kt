@@ -14,6 +14,11 @@ internal object YouTubeAccessFallbackPolicy {
         "sign in to confirm you're not a bot",
         "temporarily blocked anonymous watch access",
         "confirm you're not a bot",
+        // Age-restricted videos cannot be read anonymously either; yt-dlp can reuse the
+        // signed-in YouTube cookies from the app's web page, which the extractor cannot.
+        "age-restricted",
+        "cannot be watched anonymously",
+        "confirm your age",
     )
 
     fun shouldTryYtDlp(error: Throwable): Boolean {

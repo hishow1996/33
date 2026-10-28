@@ -57,14 +57,15 @@ internal object BilibiliNativeResolver {
         if (u.startsWith("bilibili://", ignoreCase = true)) return true
         val host = runCatching { java.net.URI(u).host?.lowercase(java.util.Locale.ROOT) }.getOrNull()
             ?: return false
-        return host == "b23.tv" || host.endsWith(".bilibili.com") || host == "bilibili.com"
+        return BilibiliVideoRefPolicy.isShortLinkHost(host) ||
+            host.endsWith(".bilibili.com") || host == "bilibili.com"
     }
 
-    /** b23.tv 短链展开：跟随最多 5 次 30x，返回最终 URL（非短链原样返回）。 */
+    /** b23.tv / bili2233.cn 短链展开：跟随最多 5 次 30x，返回最终 URL（非短链原样返回）。 */
     private fun expandShortLink(url: String): String? {
         val host = runCatching { java.net.URI(url).host?.lowercase(java.util.Locale.ROOT) }.getOrNull()
             ?: return url
-        if (host != "b23.tv") return url
+        if (!BilibiliVideoRefPolicy.isShortLinkHost(host)) return url
         var current = url
         repeat(5) {
             // HEAD 优先（省流量）；个别短链服务不支持 HEAD 时 GET 兜底（body 不读）。
@@ -77,7 +78,7 @@ internal object BilibiliNativeResolver {
             val converted = BilibiliDeepLinkPolicy.toWebUrl(absolute) ?: absolute
             current = converted
             val nextHost = runCatching { java.net.URI(current).host?.lowercase(java.util.Locale.ROOT) }.getOrNull()
-            if (nextHost != "b23.tv") return current
+            if (!BilibiliVideoRefPolicy.isShortLinkHost(nextHost)) return current
         }
         return current
     }
@@ -89,27 +90,66 @@ internal object BilibiliNativeResolver {
         }
     }.getOrNull()
 
-    private val videoIdPattern = Regex("""(?:^|/)video/(BV[A-Za-z0-9]{10}|av[0-9]+)""", RegexOption.IGNORE_CASE)
-
-    /** 从 URL 提取 BV 号或 av 号（含展开与深链转换）。 */
-    private fun extractVideoId(url: String): Pair<String?, Long?>? {
+    /** 从 URL 提取 BV/av 号与分P序号（含短链展开与深链转换）。 */
+    private fun extractVideoRef(url: String): BilibiliVideoRefPolicy.Ref? {
         val expanded = expandShortLink(url) ?: return null
         val webUrl = if (expanded.startsWith("bilibili://", ignoreCase = true)) {
             BilibiliDeepLinkPolicy.toWebUrl(expanded) ?: return null
         } else {
             expanded
         }
-        val match = videoIdPattern.find(webUrl) ?: return null
-        val raw = match.groupValues[1]
-        return if (raw.startsWith("BV", ignoreCase = true)) {
-            raw.uppercase(java.util.Locale.ROOT) to null
-        } else {
-            null to raw.removePrefix("av").removePrefix("AV").toLongOrNull()
+        return BilibiliVideoRefPolicy.parse(webUrl)
+    }
+
+    /** API/页面里的 pages 数组 → 分P列表；缺字段的条目直接丢弃。 */
+    private fun parsePages(array: org.json.JSONArray?): List<BilibiliVideoRefPolicy.PageInfo> {
+        if (array == null) return emptyList()
+        val result = ArrayList<BilibiliVideoRefPolicy.PageInfo>(array.length())
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            val cid = item.optLong("cid", -1L)
+            if (cid <= 0) continue
+            result.add(
+                BilibiliVideoRefPolicy.PageInfo(
+                    cid = cid,
+                    page = item.optInt("page", i + 1),
+                    part = item.optString("part"),
+                    durationSec = item.optLong("duration", 0L),
+                ),
+            )
         }
+        return result
+    }
+
+    /** 按链接里的 ?p= 选分P；没有 pages 数组时退回视频级 cid（单P视频）。 */
+    private fun buildVideoInfo(
+        data: JSONObject,
+        bvid: String?,
+        aid: Long?,
+        requestedPage: Int?,
+    ): VideoInfo? {
+        val pages = parsePages(data.optJSONArray("pages"))
+        val picked = BilibiliVideoRefPolicy.pickPage(pages, requestedPage)
+        val cid = picked?.cid ?: data.optLong("cid", -1L)
+        if (cid <= 0) return null
+        val baseTitle = data.optString("title").takeIf { it.isNotBlank() } ?: "B站视频"
+        val durationSec = picked?.durationSec?.takeIf { it > 0 } ?: data.optLong("duration")
+        return VideoInfo(
+            bvid = data.optString("bvid").takeIf { it.isNotBlank() } ?: bvid,
+            aid = data.optLong("aid", aid ?: -1L).takeIf { it > 0 },
+            cid = cid,
+            title = if (picked != null) {
+                BilibiliVideoRefPolicy.displayTitle(baseTitle, pages, picked)
+            } else {
+                baseTitle
+            },
+            coverUrl = data.optString("pic").takeIf { it.isNotBlank() },
+            durationMs = durationSec * 1000L,
+        )
     }
 
     /** view API：标题/cid/时长/封面（手机网络直连）。 */
-    private fun fetchView(bvid: String?, aid: Long?, cookie: String?): VideoInfo? {
+    private fun fetchView(bvid: String?, aid: Long?, requestedPage: Int?, cookie: String?): VideoInfo? {
         val query = when {
             bvid != null -> "bvid=$bvid"
             aid != null -> "aid=$aid"
@@ -128,16 +168,7 @@ internal object BilibiliNativeResolver {
                 val json = JSONObject(body)
                 if (json.optInt("code") != 0) return@runCatching null
                 val data = json.optJSONObject("data") ?: return@runCatching null
-                val cid = data.optLong("cid", -1L)
-                if (cid <= 0) return@runCatching null
-                VideoInfo(
-                    bvid = data.optString("bvid").takeIf { it.isNotBlank() } ?: bvid,
-                    aid = data.optLong("aid", aid ?: -1L).takeIf { it > 0 },
-                    cid = cid,
-                    title = data.optString("title").takeIf { it.isNotBlank() } ?: "B站视频",
-                    coverUrl = data.optString("pic").takeIf { it.isNotBlank() },
-                    durationMs = data.optLong("duration") * 1000L,
-                )
+                buildVideoInfo(data, bvid, aid, requestedPage)
             }
         }.getOrNull()
     }
@@ -146,7 +177,7 @@ internal object BilibiliNativeResolver {
      * 页面 HTML 兜底：从 www.bilibili.com 视频页的 __INITIAL_STATE__ 提取元信息。
      * API 被风控（412）时页面本身仍可访问（已在转写管线中验证）。
      */
-    private fun fetchViewFromHtml(bvid: String): VideoInfo? {
+    private fun fetchViewFromHtml(bvid: String, requestedPage: Int?): VideoInfo? {
         val request = Request.Builder()
             .url("https://www.bilibili.com/video/$bvid/")
             .header("User-Agent", DESKTOP_UA)
@@ -158,16 +189,7 @@ internal object BilibiliNativeResolver {
                 val html = response.body?.string() ?: return@runCatching null
                 val state = extractInitialState(html) ?: return@runCatching null
                 val videoData = state.optJSONObject("videoData") ?: return@runCatching null
-                val cid = videoData.optLong("cid", -1L)
-                if (cid <= 0) return@runCatching null
-                VideoInfo(
-                    bvid = videoData.optString("bvid").takeIf { it.isNotBlank() } ?: bvid,
-                    aid = videoData.optLong("aid", -1L).takeIf { it > 0 },
-                    cid = cid,
-                    title = videoData.optString("title").takeIf { it.isNotBlank() } ?: "B站视频",
-                    coverUrl = videoData.optString("pic").takeIf { it.isNotBlank() },
-                    durationMs = videoData.optLong("duration") * 1000L,
-                )
+                buildVideoInfo(videoData, bvid, null, requestedPage)
             }
         }.getOrNull()
     }
@@ -255,9 +277,9 @@ internal object BilibiliNativeResolver {
      * 成功结果的播放请求需携带 Referer + 桌面 UA（B 站 CDN 校验）。
      */
     suspend fun resolve(rawUrl: String, cookie: String?): PlayResult? = withContext(Dispatchers.IO) {
-        val (bvid, aid) = extractVideoId(rawUrl) ?: return@withContext null
-        val info = fetchView(bvid, aid, cookie)
-            ?: (bvid?.let { fetchViewFromHtml(it) })
+        val ref = extractVideoRef(rawUrl) ?: return@withContext null
+        val info = fetchView(ref.bvid, ref.aid, ref.page, cookie)
+            ?: (ref.bvid?.let { fetchViewFromHtml(it, ref.page) })
             ?: return@withContext null
         val (playUrl, backups) = fetchPlayUrl(info, cookie) ?: return@withContext null
         PlayResult(
