@@ -1362,6 +1362,23 @@ class PlaybackService : MediaSessionService() {
                     if (error is VirtualMachineError || error is ThreadDeath) throw error
                     if (boundVideoSurface?.get() === tv) boundVideoSurface = null
                     android.util.Log.w("PlaybackService", "Attach video surface failed", error)
+                    val failureDetails = mapOf(
+                        "视频视图宽度" to tv.width.toString(),
+                        "视频视图高度" to tv.height.toString(),
+                        "纹理可用" to tv.isAvailable.toString(),
+                        "重试次数" to bindAttempts.toString(),
+                    )
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            io.translatetube.local.util.AppLogStore.warning(
+                                applicationContext,
+                                "PlayerManager",
+                                "视频画面绑定失败",
+                                error,
+                                diagnosticContext = failureDetails,
+                            )
+                        }
+                    }
                     // A transient renderer/view race should not require leaving and reopening the page.
                     // Retry only the failed bind, at most twice, and only while this remains the latest view.
                     if (bindAttempts < 2 && requestedVideoSurface?.get() === tv &&
