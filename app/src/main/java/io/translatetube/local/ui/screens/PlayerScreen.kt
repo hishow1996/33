@@ -1578,7 +1578,7 @@ private fun VideoParsingPage(
         // Keep the external-translation waiting card visible only while the mode itself is active.
         // When the user cancels, clearing manualTranslationModeEnabled closes this card immediately,
         // even if a stale waiting flag is briefly observed during pipeline resumption.
-        if (state.manualTranslationModeEnabled && state.manualTranslationWaiting) {
+        if (state.manualTranslationModeEnabled) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 shape = RoundedCornerShape(18.dp),
@@ -1589,7 +1589,7 @@ private fun VideoParsingPage(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        "等待外部译文",
+                        if (state.manualTranslationWaiting) "等待外部译文" else "外部翻译已启用",
                         color = Color(0xFF20324B),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     )
@@ -1609,6 +1609,7 @@ private fun VideoParsingPage(
                         }
                         Button(
                             onClick = onImportManualTranslatedSubtitle,
+                            enabled = state.manualTranslationWaiting,
                             modifier = Modifier.weight(1f),
                         ) {
                             Icon(Icons.Filled.Subtitles, contentDescription = null, modifier = Modifier.size(17.dp))
