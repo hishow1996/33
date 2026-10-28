@@ -59,6 +59,7 @@ import io.translatetube.local.data.ApiProfile
 import io.translatetube.local.data.AppDatabase
 import io.translatetube.local.util.AppLogStore
 import io.translatetube.local.translate.Crypto
+import io.translatetube.local.translate.ApiProfileConfigFingerprint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -73,6 +74,37 @@ import android.view.WindowManager
 import android.widget.Toast
 import io.translatetube.local.ui.theme.*
 import kotlinx.coroutines.withContext
+
+private const val PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT = "translation_active_api_profile_fingerprint"
+
+/**
+ * Keep the selected API model in the settings fingerprint watched by PlaybackService.
+ * Only a one-way digest is stored; credentials and other private profile values are not copied
+ * into SharedPreferences or logs.
+ */
+private fun translationActiveApiProfileFingerprint(profile: ApiProfile?): String {
+    if (profile == null) return ""
+    val secondaryCredentialName = when (profile.type) {
+        "BAIDU_API" -> "appId"
+        "TENCENT" -> "secretId"
+        "ALIYUN" -> "accessKeyId"
+        else -> ""
+    }
+    val secondaryCredential = secondaryCredentialName.takeIf { it.isNotBlank() }
+        ?.let { name -> runCatching { readApiProfileCredential(profile, name) }.getOrDefault("") }
+        .orEmpty()
+    val apiKey = runCatching { Crypto.decrypt(profile.apiKey) }.getOrElse { profile.apiKey }
+    return ApiProfileConfigFingerprint.create(
+        profileId = profile.id,
+        type = profile.type,
+        baseUrl = profile.baseUrl,
+        model = profile.model,
+        apiKey = apiKey,
+        region = profile.region,
+        secondaryCredential = secondaryCredential,
+    )
+}
+
 
 /** 内置的免密钥在线翻译引擎卡片：点选即切换，右侧可测试连通性。 */
 @Composable
@@ -224,9 +256,17 @@ fun ApiManagerScreen(onBack: () -> Unit) {
     fun setActive(id: Long) {
         val previousId = activeId
         activeId = id
-        prefs.edit().putLong("active_api_id", id).apply()
+        val profile = profiles.firstOrNull { it.id == id }
+        // This translation-prefixed preference is part of the translation-stage fingerprint.
+        // A model change inside the same API profile must be detected even when active_api_id stays unchanged.
+        prefs.edit()
+            .putLong("active_api_id", id)
+            .putString(
+                PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT,
+                translationActiveApiProfileFingerprint(profile),
+            )
+            .apply()
         if (previousId != id) {
-            val profile = profiles.firstOrNull { it.id == id }
             val profileName = profile?.name ?: when (id) {
                 -1L -> "Google 翻译"
                 -2L -> "本地/混合翻译"
@@ -709,6 +749,16 @@ fun ApiManagerScreen(onBack: () -> Unit) {
                 scope.launch(Dispatchers.IO) {
                     try {
                         db.apiProfileDao().upsert(p)
+                        // Editing the selected profile does not change active_api_id. Mirror its
+                        // new digest so PlaybackService restarts from translation when the model changes.
+                        if (p.id != 0L && p.id == activeId) {
+                            prefs.edit()
+                                .putString(
+                                    PREF_TRANSLATION_ACTIVE_API_PROFILE_FINGERPRINT,
+                                    translationActiveApiProfileFingerprint(p),
+                                )
+                                .apply()
+                        }
                         AppLogStore.info(
                             ctx.applicationContext,
                             "ApiManagerScreen",
