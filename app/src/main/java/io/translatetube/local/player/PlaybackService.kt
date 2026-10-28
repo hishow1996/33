@@ -4447,7 +4447,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 val id = videoId ?: return null
                 awaitProcessingResumed(key, pipelineGeneration)
                 updateUiForSession(key, pipelineGeneration) { it.copy(phase = Phase.PARSING, progress = "正在下载并读取字幕文件…") }
-                val fetched = NewPipeRepo.subtitles(id) ?: return null
+                val fetched = NewPipeRepo.subtitles(id) { fallbackMessage ->
+                    // Surface every fallback to a lower-priority subtitle language in the active
+                    // five-stage UI so the user knows why the selected caption differs.
+                    ensureCurrentSession(key, pipelineGeneration)
+                    updateUiForSession(key, pipelineGeneration) {
+                        it.copy(phase = Phase.PARSING, progress = fallbackMessage)
+                    }
+                } ?: return null
                 awaitProcessingResumed(key, pipelineGeneration)
                 val lang = fetched.second.takeIf { it.isNotBlank() } ?: "auto"
                 val fetchedLines = fetched.first
