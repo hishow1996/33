@@ -5457,16 +5457,23 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         // Reuse v1 caption rows saved below the old ASR-specific key.
                         db.subtitleCacheDao().getLatestYouTubeCaptionCache(it)
                     }
-                if (captionCache != null) {
+                if (forceYouTubeSubtitleRefresh && videoId != null) {
+                    // A changed subtitle preference must actually re-run caption discovery.
+                    // Only fall back to the mode-specific cached captions if discovery returns no
+                    // usable track; then reuse the ASR cache as the final fallback.
+                    if (fetchAndCacheSourceLines() != null) {
+                        null
+                    } else if (captionCache != null) {
+                        sourceCachedKey = captionCache.cacheKey
+                        captionCache
+                    } else {
+                        db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
+                            sourceCachedKey = sourceSubtitleCacheKey
+                        }
+                    }
+                } else if (captionCache != null) {
                     sourceCachedKey = captionCache.cacheKey
                     captionCache
-                } else if (forceYouTubeSubtitleRefresh && videoId != null) {
-                    // Re-check the selected caption priority before falling back to an ASR cache.
-                    // If no caption is available, keep the valid ASR cache as the next fallback.
-                    if (fetchAndCacheSourceLines() != null) null
-                    else db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
-                        sourceCachedKey = sourceSubtitleCacheKey
-                    }
                 } else {
                     db.subtitleCacheDao().get(sourceSubtitleCacheKey)?.also {
                         sourceCachedKey = sourceSubtitleCacheKey
