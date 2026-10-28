@@ -4228,9 +4228,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                             ),
                         )
                     } else {
-                    val completedDomainFingerprints =
-                        ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
-                    val snapshotSaved = ReadySessionSnapshotStore.save(
+                        val snapshotSaved = ReadySessionSnapshotStore.save(
                         context = this@PlaybackService,
                         videoKey = sessionKey,
                         fingerprint = completedFingerprint,
