@@ -5898,12 +5898,8 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
                     // "导入已翻译字幕并配音" is an authoritative translated input. Do not infer
                     // the source language from its original-language display row and send it to the
                     // active translation engine again. Keep the imported zh text and timestamps.
-                    translatedLines = translatedLines.mapIndexed { index, line ->
-                        line.copy(
-                            index = index,
-                            zh = line.zh?.takeIf { it.isNotBlank() } ?: line.text,
-                        )
-                    }
+                    translatedLines = io.translatetube.local.subs.ImportedSubtitlePolicy
+                        .preserveImportedTranslations(translatedLines)
                     srcLang = "zh"
                     updateUiForSession(key, pipelineGeneration) {
                         it.copy(
