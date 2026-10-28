@@ -544,6 +544,8 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var dubbingDrainSessionKey = ""
     @Volatile private var dubbingDrainPoll: Runnable? = null
     @Volatile private var playerReady = false
+    // Keep only the latest requested video output. A weak reference avoids retaining an old Activity view.
+    @Volatile private var requestedVideoSurface: java.lang.ref.WeakReference<android.view.TextureView>? = null
     private var session: MediaSession? = null
     @Volatile private var dubbing: DubbingEngine? = null
     private val retiringDubbingEngines = java.util.concurrent.CopyOnWriteArrayList<DubbingEngine>()
@@ -1310,15 +1312,23 @@ class PlaybackService : MediaSessionService() {
     fun bufferedAheadMs(): Long = if (playerReady && ::pm.isInitialized) pm.bufferedAheadMs() else 0L
 
     fun attachSurface(tv: android.view.TextureView) {
-        // Service 初始化失败时，PlayerScreen 仍可能尝试挂载 TextureView。
-        // 在投递到主线程前后都检查，避免访问尚未初始化的 lateinit PlayerManager。
-        if (!playerReady || !::pm.isInitialized) return
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            if (playerReady && ::pm.isInitialized) {
+        // Remember the newest view even if the service/player is still initializing. The
+        // successful initialization path will attach it, so an early call cannot be lost.
+        requestedVideoSurface = java.lang.ref.WeakReference(tv)
+        val attach = Runnable {
+            // A queued request from an older screen must never replace the current surface.
+            if (requestedVideoSurface?.get() === tv && playerReady && ::pm.isInitialized) {
                 runCatching { pm.player.setVideoTextureView(tv) }
                     .onFailure { android.util.Log.w("PlaybackService", "Attach video surface failed", it) }
             }
         }
+        // Avoid an unnecessary main-loop delay when called from Compose/View lifecycle callbacks.
+        if (Looper.myLooper() == Looper.getMainLooper()) attach.run()
+        else seekResumeHandler.post(attach)
+    }
+
+    private fun attachPendingVideoSurface() {
+        requestedVideoSurface?.get()?.let(::attachSurface)
     }
 
     override fun onCreate() {
@@ -1565,6 +1575,7 @@ class PlaybackService : MediaSessionService() {
             }
             playerReady = true
             instance = this
+            attachPendingVideoSurface()
         } catch (e: Throwable) {
             // Player/MediaSession startup can fail with LinkageError on older Android builds.
             // Keep those failures visible in the player page instead of killing the app process.
