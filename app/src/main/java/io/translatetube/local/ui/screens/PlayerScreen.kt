@@ -1521,7 +1521,7 @@ private fun VideoParsingPage(
                         leadingIcon = {
                             Icon(Icons.Filled.Subtitles, contentDescription = null, tint = Color(0xFF067647))
                         },
-                        enabled = state.manualTranslationWaiting,
+                        enabled = state.manualTranslationModeEnabled && state.manualTranslationWaiting,
                         onClick = {
                             processingSettingsOpen = false
                             onImportManualTranslatedSubtitle()
@@ -1575,7 +1575,10 @@ private fun VideoParsingPage(
             }
         }
 
-        if (state.manualTranslationWaiting) {
+        // Keep the external-translation waiting card visible only while the mode itself is active.
+        // When the user cancels, clearing manualTranslationModeEnabled closes this card immediately,
+        // even if a stale waiting flag is briefly observed during pipeline resumption.
+        if (state.manualTranslationModeEnabled && state.manualTranslationWaiting) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
                 shape = RoundedCornerShape(18.dp),
