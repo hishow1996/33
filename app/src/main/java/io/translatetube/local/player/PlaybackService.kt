@@ -1106,7 +1106,7 @@ class PlaybackService : MediaSessionService() {
                             processingEngineConfigFingerprint = stableFingerprint
                             processingEngineDomainFingerprints = currentDomainFingerprints
                             activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
-                            if (pendingYouTubeSubtitleRefreshKey == sessionKey) {
+                            if (pendingYouTubeSubtitleRefreshKey == changedSessionKey) {
                                 pendingYouTubeSubtitleRefreshKey = null
                             }
                             return@launch
