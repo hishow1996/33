@@ -3321,25 +3321,26 @@ class PlaybackService : MediaSessionService() {
     private fun selectAdaptiveVideoQuality(sessionKey: String, label: String) {
         if (!adaptiveQualitySourceReady || label !in ui.value.qualityOptions) return
         if (label == ui.value.selectedQuality) return
+        val pipelineGeneration = activePipelineGeneration
 
         qualityJob?.cancel()
         qualityJob = scope.launch {
             try {
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (videoId != null || !adaptiveQualitySourceReady) {
                     throw kotlinx.coroutines.CancellationException("视频来源已改变，取消画质切换")
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(progress = "正在切换清晰度至 $label…", error = null)
                 }
                 withContext(Dispatchers.Main.immediate) {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                     if (!pm.selectVideoQuality(label)) {
                         throw IllegalStateException("当前媒体清单未能选择 $label 视频轨")
                     }
                 }
-                ensureCurrentSession(sessionKey)
-                updateUiForSession(sessionKey) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(selectedQuality = label, progress = "")
                 }
                 io.translatetube.local.util.AppLogStore.info(
@@ -3357,6 +3358,11 @@ class PlaybackService : MediaSessionService() {
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) return@launch
                 io.translatetube.local.util.AppLogStore.error(
                     this@PlaybackService,
                     "PlaybackQuality",
@@ -3370,7 +3376,7 @@ class PlaybackService : MediaSessionService() {
                         "视频轨道清晰度" to (if (::pm.isInitialized) pm.availableVideoQualityLabels().joinToString(",") else "播放器未初始化"),
                     ),
                 )
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         progress = "",
                         error = "切换到 $label 失败；当前网页可能未公开该清晰度的视频轨。",
@@ -3384,6 +3390,7 @@ class PlaybackService : MediaSessionService() {
     fun selectQuality(label: String) {
         val sessionKey = ui.value.key
         if (!::pm.isInitialized || sessionKey.isBlank()) return
+        val pipelineGeneration = activePipelineGeneration
         val sessionVideoId = videoId
         if (sessionVideoId == null) {
             selectAdaptiveVideoQuality(sessionKey, label)
@@ -3393,25 +3400,26 @@ class PlaybackService : MediaSessionService() {
         if (!::pm.isInitialized || sessionKey.isBlank() || source.label == ui.value.selectedQuality) return
         val previousSource = qualitySources.firstOrNull { it.label == ui.value.selectedQuality }
         val previousAudioUrl = qualityAudioUrl
+        val selectedAudioUrl = previousAudioUrl
         qualityRecoveryJob?.cancel(); qualityRecoveryJob = null
         qualityRecoveryAttempted = false
         qualityJob?.cancel()
         qualityJob = scope.launch {
-            ensureCurrentSession(sessionKey)
+            ensureCurrentSession(sessionKey, pipelineGeneration)
             if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
             val positionMs = withContext(Dispatchers.Main) { pm.position() }
             // isPlaying is false while buffering even when the user intends playback.
             // Preserve playWhenReady so switching quality does not accidentally pause the video.
             val wasPlaying = withContext(Dispatchers.Main) { pm.player.playWhenReady }
-            updateUiForSession(sessionKey) { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
+            updateUiForSession(sessionKey, pipelineGeneration) { it.copy(progress = "正在切换清晰度至 ${source.label}…", error = null) }
             try {
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 withContext(Dispatchers.Main) {
-                    ensureCurrentSession(sessionKey)
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                     if (videoId != sessionVideoId) throw kotlinx.coroutines.CancellationException("视频已切换，取消旧清晰度切换")
                     val accepted = pm.setYouTubeQuality(
                         videoUrl = source.url,
-                        audioUrl = qualityAudioUrl,
+                        audioUrl = selectedAudioUrl,
                         muxed = source.muxed,
                         title = ui.value.title,
                         artist = ui.value.channel,
@@ -3422,11 +3430,17 @@ class PlaybackService : MediaSessionService() {
                     }
                     pm.seekTo(positionMs)
                     if (wasPlaying) pm.play() else pm.pause()
-                    updateUiForSession(sessionKey) { it.copy(selectedQuality = source.label, progress = "") }
+                    updateUiForSession(sessionKey, pipelineGeneration) { it.copy(selectedQuality = source.label, progress = "") }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey ||
+                    videoId != sessionVideoId
+                ) return@launch
                 io.translatetube.local.util.AppLogStore.error(
     this@PlaybackService, "PlaybackQuality", "切换 YouTube 清晰度失败", e,
 )
@@ -3436,7 +3450,10 @@ android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
                 if (previousSource != null) {
                     try {
                         withContext(Dispatchers.Main) {
-                            if (ui.value.key == sessionKey && videoId == sessionVideoId) {
+                            if (
+                                activePipelineGeneration == pipelineGeneration &&
+                                videoKey == sessionKey && ui.value.key == sessionKey && videoId == sessionVideoId
+                            ) {
                                 val restored = pm.setYouTubeQuality(
                                     videoUrl = previousSource.url,
                                     audioUrl = previousAudioUrl,
@@ -3462,7 +3479,7 @@ android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
                         android.util.Log.w("PlaybackService", "Quality-switch rollback failed", rollbackError)
                     }
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         progress = "",
                         error = "切换清晰度失败：${e.message ?: e.javaClass.simpleName}",
@@ -3476,19 +3493,20 @@ android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
     fun downloadSubtitle(track: SubtitleTrackOption, outputUri: Uri) {
         val sessionKey = ui.value.key
         val sessionVideoId = videoId
+        val pipelineGeneration = activePipelineGeneration
         subtitleDownloadJob?.cancel()
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val ownerJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             try {
-                ensureCurrentSession(sessionKey)
-                updateUiForSession(sessionKey) {
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(subtitleTrackStatus = "正在下载 " + track.languageTag + " 字幕…")
                 }
                 if (sessionVideoId != videoId) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
                 }
                 val content = NewPipeRepo.downloadSubtitleContent(track)
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 if (sessionVideoId != videoId) {
                     throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕下载")
                 }
@@ -3498,6 +3516,7 @@ android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
                 if (cueCount == 0) throw IllegalStateException("字幕文件没有可用的时间轴")
                 withContext(Dispatchers.IO) {
                     ownerJob?.ensureActive()
+                    ensureCurrentSession(sessionKey, pipelineGeneration)
                     if (sessionVideoId != videoId || ui.value.key != sessionKey) {
                         throw kotlinx.coroutines.CancellationException("视频已切换，取消旧字幕写入")
                     }
@@ -3516,7 +3535,7 @@ android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
                         ownerJob?.ensureActive()
                     }
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         subtitleTrackStatus = "已保存 " + track.languageTag + " 字幕（" + cueCount +
                             " 条）。翻译时请保留时间戳，完成后可上传并直接配音。",
@@ -3525,11 +3544,17 @@ android.util.Log.e("PlaybackService", "Unable to switch YouTube quality", e)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey ||
+                    videoId != sessionVideoId
+                ) return@launch
                 io.translatetube.local.util.AppLogStore.warning(
     this@PlaybackService, "Subtitles", "下载原字幕失败", e,
 )
 android.util.Log.w("PlaybackService", "Subtitle download failed", e)
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(subtitleTrackStatus = "字幕下载失败：" + (e.message ?: e.javaClass.simpleName))
                 }
             } finally {
