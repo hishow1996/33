@@ -40,8 +40,11 @@ internal object EngineRestartStagePolicy {
                 isYouTube = processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
             ) &&
             previous.transcription != current.transcription
-        return transcriptionChanged ||
-            previous.translation != current.translation ||
+        val importedTranslationIsAuthoritative =
+            processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+        val translationChanged = !importedTranslationIsAuthoritative &&
+            previous.translation != current.translation
+        return transcriptionChanged || translationChanged ||
             previous.dubbing != current.dubbing
     }
 
@@ -63,7 +66,10 @@ internal object EngineRestartStagePolicy {
             return EngineRestartStage.TRANSCRIPTION
         }
 
-        if (previous.translation != current.translation) {
+        if (
+            processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+            previous.translation != current.translation
+        ) {
             if (!hasLines) return null
             return if (
                 sourceLanguageIsChinese ||
