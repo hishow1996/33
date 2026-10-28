@@ -163,7 +163,7 @@ class YouTubeSubtitleSelectionPolicyTest {
             YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", "original"),
         )
         assertEquals(
-            "youtube_subtitle_language_mode=english",
+            "youtube_subtitle_language_mode=english;policy=3",
             YouTubeSubtitleSelectionPolicy.modeFingerprintEntry("youtube:abc123", "unsupported-value"),
         )
         assertNull(
