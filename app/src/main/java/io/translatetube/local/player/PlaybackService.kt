@@ -5848,8 +5848,7 @@ updateUiForSession(key, pipelineGeneration) { it.copy(progress = "语音分段 0
             val isImportedTranslatedSnapshot =
                 restoredProcessingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
 
-            if (SubtitleCacheRestorePolicy.shouldRestoreCachedRows(
-                    cacheAvailable = cached != null,
+            if (cached != null && SubtitleCacheRestorePolicy.shouldUseCachedRows(
                     hasAuthoritativeImportedTranslation = isImportedTranslatedSnapshot,
                 )
             ) {
