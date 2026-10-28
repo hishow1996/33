@@ -3627,6 +3627,21 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     ?: throw IllegalStateException("原文字幕等待状态已失效，请重新启动该流程")
                 val merged = io.translatetube.local.subs.ManualSubtitleTranslationMerger.merge(source, translated)
                 ensureCurrentSession(sessionKey)
+                // The imported external translation supersedes any previous successful subtitle
+                // snapshot. Remove it before resuming synthesis so an interruption cannot restore
+                // the old translated result on the next history open.
+                ReadyHistorySessionConfigStore.remove(this@PlaybackService, sessionKey)
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        AppDatabase.get(this@PlaybackService).videoDao().setWatched(sessionKey, 0L)
+                    }
+                }.onFailure {
+                    android.util.Log.w(
+                        "PlaybackService",
+                        "Unable to reset watch position before external-translation synthesis",
+                        it,
+                    )
+                }
                 if (!waiter.complete(merged)) {
                     throw IllegalStateException("当前字幕等待任务已结束，请重新启用外部翻译模式")
                 }
