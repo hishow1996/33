@@ -105,4 +105,49 @@ class ChatCompletionParamsPolicyTest {
         )
     }
 
+
+    @Test
+    fun fullEndpointBaseUrlIsNormalizedForBothChatAndModelRoutes() {
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            openAiCompatEndpoint(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                "/chat/completions"
+            )
+        )
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/models",
+            openAiCompatEndpoint(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                "/models"
+            )
+        )
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            openAiCompatEndpoint(
+                "https://open.bigmodel.cn/api/paas/v4/models",
+                "/chat/completions"
+            )
+        )
+    }
+
+    @Test
+    fun baseUrlQueryParametersRemainAfterTheEndpointPath() {
+        assertEquals(
+            "https://gateway.example/api/v3/chat/completions?tenant=abc",
+            openAiCompatEndpoint(
+                "https://gateway.example/api/v3?tenant=abc",
+                "/chat/completions"
+            )
+        )
+    }
+
+    @Test
+    fun invalidBaseUrlFailsWithActionableMessage() {
+        val error = org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            openAiCompatEndpoint("not a url", "/chat/completions")
+        }
+        assertTrue(error.message.orEmpty().contains("API Base URL 格式无效"))
+    }
+
 }

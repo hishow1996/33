@@ -134,4 +134,27 @@ class ThinkingControlPolicyTest {
         assertTrue(!isReasoningFieldName("content"))
         assertTrue(!isReasoningFieldName("tool_calls"))
     }
+
+    @Test
+    fun zhipuGlmUsesNativeThinkingControlAndPlainFallback() {
+        assertEquals(
+            listOf(ThinkingControlStyle.ZHIPU, ThinkingControlStyle.PLAIN),
+            thinkingControlOrder(
+                "https://open.bigmodel.cn/api/paas/v4",
+                "glm-4.7-flash"
+            )
+        )
+        assertEquals(
+            listOf(ThinkingControlStyle.ZHIPU, ThinkingControlStyle.PLAIN),
+            thinkingControlOrder(
+                "https://api.z.ai/api/paas/v4",
+                "glm-4.7-flash"
+            )
+        )
+        assertEquals(
+            listOf(ThinkingControlStyle.ZHIPU, ThinkingControlStyle.PLAIN),
+            thinkingControlOrder("https://gateway.example/v1", "glm-4.7-flash")
+        )
+    }
+
 }

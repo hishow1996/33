@@ -684,6 +684,7 @@ private class ReasoningOnlyResponseException(
 
 internal enum class ThinkingControlStyle {
     DEEPSEEK,
+    ZHIPU,
     QWEN,
     OPENROUTER,
     REASONING_EFFORT,
@@ -713,15 +714,17 @@ internal fun thinkingControlOrder(baseUrl: String, model: String): List<Thinking
 
     val preferred = when {
         normalizedBase.contains("openrouter.ai") -> ThinkingControlStyle.OPENROUTER
+        normalizedBase.contains("open.bigmodel.cn") || normalizedBase.contains("api.z.ai") ->
+            ThinkingControlStyle.ZHIPU
         normalizedBase.contains("api.deepseek.com") || normalizedModel.contains("deepseek") ->
             ThinkingControlStyle.DEEPSEEK
         normalizedBase.contains("dashscope") ||
             normalizedBase.contains("qwencloud") ||
             normalizedModel.contains("qwen") ->
             ThinkingControlStyle.QWEN
+        normalizedModel.contains("glm") || normalizedModel.contains("zhipu") ->
+            ThinkingControlStyle.ZHIPU
         normalizedModel.contains("kimi") ||
-            normalizedModel.contains("glm") ||
-            normalizedModel.contains("zhipu") ||
             normalizedModel.contains("reasoner") ||
             normalizedModel.contains("thinking") ||
             normalizedModel.contains("qwq") ||
@@ -732,6 +735,7 @@ internal fun thinkingControlOrder(baseUrl: String, model: String): List<Thinking
     }
 
     val fallback = when (preferred) {
+        ThinkingControlStyle.ZHIPU -> ThinkingControlStyle.PLAIN
         ThinkingControlStyle.DEEPSEEK,
         ThinkingControlStyle.QWEN,
         ThinkingControlStyle.OPENROUTER,
@@ -1023,23 +1027,56 @@ internal fun extractOpenAiCompatContent(body: String): String {
 }
 
 /**
- * Build endpoints for OpenAI-compatible APIs without injecting a second version segment.
+ * Build an OpenAI-compatible endpoint from a Base URL.
  *
- * Most providers use an unversioned Base URL and require /v1, while some providers
- * (including Zhipu's /api/paas/v4 and gateways ending in /api/v3) include the API
- * version in the Base URL already. In that case, append the resource path directly.
+ * Supports ordinary service roots and providers with an API version in the base path
+ * (for example, Zhipu's /api/paas/v4). If a full /chat/completions or /models endpoint
+ * was pasted into the Base URL field, remove that resource suffix before building a route.
+ * Existing query parameters stay after the endpoint path.
  */
 internal fun openAiCompatEndpoint(baseUrl: String, path: String): String {
-    val base = baseUrl.trim().trimEnd('/')
-    require(base.isNotEmpty()) { "API Base URL 不能为空" }
+    val rawBase = baseUrl.trim().trimEnd('/')
+    require(rawBase.isNotEmpty()) { "API Base URL 不能为空" }
 
-    val basePath = runCatching { java.net.URI(base).path.orEmpty().trimEnd('/') }
-        .getOrDefault("")
+    val uri = try {
+        java.net.URI(rawBase)
+    } catch (_: Exception) {
+        throw IllegalArgumentException("API Base URL 格式无效，请填写 http:// 或 https:// 开头的地址")
+    }
+    val scheme = uri.scheme?.lowercase(java.util.Locale.ROOT)
+    require(uri.isAbsolute && scheme in setOf("http", "https") && !uri.rawAuthority.isNullOrBlank()) {
+        "API Base URL 格式无效，请填写 http:// 或 https:// 开头的地址"
+    }
+
+    var basePath = uri.rawPath.orEmpty().trimEnd('/')
+    basePath = when {
+        basePath.endsWith("/chat/completions", ignoreCase = true) ->
+            basePath.dropLast("/chat/completions".length)
+        basePath.endsWith("/models", ignoreCase = true) ->
+            basePath.dropLast("/models".length)
+        else -> basePath
+    }.trimEnd('/')
+
     val finalPathSegment = basePath.substringAfterLast('/')
-    val hasExplicitVersion = finalPathSegment.startsWith("v") &&
-        finalPathSegment.length > 1 && finalPathSegment.drop(1).all { it in '0'..'9' }
-    val apiRoot = if (hasExplicitVersion) base else "$base/v1"
-    return "$apiRoot/${path.trimStart('/')}"
+    val hasExplicitVersion = Regex("""v[0-9]+""", RegexOption.IGNORE_CASE)
+        .matches(finalPathSegment)
+    val apiRootPath = if (hasExplicitVersion) basePath else "$basePath/v1"
+    val endpointPath = "${apiRootPath}/${path.trimStart('/')}"
+        .replace(Regex("/{2,}"), "/")
+        .let { if (it.startsWith('/')) it else "/$it" }
+
+    return buildString {
+        append(scheme)
+        append("://")
+        append(uri.rawAuthority)
+        append(endpointPath)
+        uri.rawQuery?.let {
+            if (it.isNotEmpty()) {
+                append('?')
+                append(it)
+            }
+        }
+    }
 }
 
 /** OpenAI 兼容引擎（OpenAI / DeepSeek / 智谱 / Kimi / Ollama / 任意兼容中转） */
@@ -1061,7 +1098,8 @@ class OpenAiCompatEngine(
         payload.remove("reasoning")
         payload.remove("reasoning_effort")
         when (style) {
-            ThinkingControlStyle.DEEPSEEK ->
+            ThinkingControlStyle.DEEPSEEK,
+            ThinkingControlStyle.ZHIPU ->
                 payload.put("thinking", JSONObject().put("type", "disabled"))
             ThinkingControlStyle.QWEN ->
                 payload.put("enable_thinking", false)
