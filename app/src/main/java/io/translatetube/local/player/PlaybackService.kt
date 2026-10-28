@@ -1027,15 +1027,23 @@ class PlaybackService : MediaSessionService() {
                         // change remains relevant and continues through the normal dubbing restart.
                         val currentDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                         val previousDomainFingerprints = processingEngineDomainFingerprints
-                        if (
+                        val importingTranslatedFile =
                             state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
-                            !EngineRestartStagePolicy.hasRelevantConfigChange(
-                                previous = previousDomainFingerprints,
-                                current = currentDomainFingerprints,
-                                processingFlow = state.processingFlow,
-                                ignoreTranscription = true,
-                            )
-                        ) {
+                                state.phase == Phase.PARSING &&
+                                state.subtitleTrackStatus == "正在导入已翻译字幕"
+                        val importedTranslationSettingsAreIrrelevant =
+                            state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
+                                !EngineRestartStagePolicy.hasRelevantConfigChange(
+                                    previous = previousDomainFingerprints,
+                                    current = currentDomainFingerprints,
+                                    processingFlow = state.processingFlow,
+                                    ignoreTranscription = true,
+                                )
+                        if (importingTranslatedFile || importedTranslationSettingsAreIrrelevant) {
+                            // During the file-read phase there is no reusable subtitle timeline yet.
+                            // Keep the import alive for any engine setting change; the new TTS setting
+                            // is read when synthesis starts. After import, only a relevant TTS change
+                            // should restart this authoritative translated-subtitle flow.
                             processingEngineConfigFingerprint = stableFingerprint
                             processingEngineDomainFingerprints = currentDomainFingerprints
                             return@launch
