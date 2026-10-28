@@ -625,6 +625,8 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var completedReadySessionEngineFingerprint = ""
     private var enginePreferencesListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Volatile private var enginePreferenceRestartJob: Job? = null
+    // Preserve a YouTube subtitle-mode change across the preference debounce if another engine setting changes too.
+    @Volatile private var pendingYouTubeSubtitleRefreshKey: String? = null
     // Serialize every flow that creates/replaces a DubbingEngine. YouTube, remote web media,
     // local video and imported subtitles must not initialize a new TTS engine while a cancelled
     // pipeline is still unwinding a blocking Android TTS/JNI call.
@@ -1006,6 +1008,9 @@ class PlaybackService : MediaSessionService() {
         processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this)
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
             if (changedKey != null && isProcessingEnginePreferenceKey(changedKey)) {
+                if (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY && videoKey.isNotBlank()) {
+                    pendingYouTubeSubtitleRefreshKey = videoKey
+                }
                 val latestFingerprint = processingEnginePreferenceFingerprint()
                 val current = ui.value
                 if (!shouldRestartForEnginePreferenceChange(current)) {
@@ -1029,6 +1034,9 @@ class PlaybackService : MediaSessionService() {
                             activePipelineGeneration != changedPipelineGeneration ||
                             state.key != changedSessionKey
                         ) {
+                            if (pendingYouTubeSubtitleRefreshKey == changedSessionKey) {
+                                pendingYouTubeSubtitleRefreshKey = null
+                            }
                             processingEngineConfigFingerprint = stableFingerprint
                             processingEngineDomainFingerprints = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                             return@launch
@@ -1076,9 +1084,19 @@ class PlaybackService : MediaSessionService() {
                         val restartRemoteCookie = remoteMediaCookie
                         val restartRemoteUserAgent = remoteMediaUserAgent
 
+                        val usesUserImportedSubtitles =
+                            state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                        val pendingSubtitleModeRefresh = pendingYouTubeSubtitleRefreshKey == sessionKey
+                        val forceYouTubeSubtitleRefresh = !usesUserImportedSubtitles &&
+                            (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
+                                pendingSubtitleModeRefresh) &&
+                            restartVideoId != null
+                        if (pendingSubtitleModeRefresh) pendingYouTubeSubtitleRefreshKey = null
+
                         // If this exact engine combination has completed successfully before, restore
-                        // that result directly. It is normal for the latest-success fingerprint to
-                        // differ after the user tried another local/online/cloud engine.
+                        // that result directly. A subtitle-mode change is the exception: it requires
+                        // rediscovering YouTube captions, even if an older successful snapshot exists.
                         val matchingSuccessfulSnapshot =
                             ReadySessionSnapshotStore.findForCurrentConfig(this@PlaybackService, sessionKey) { ignore ->
                                 ReadyHistorySessionConfigStore.fingerprint(
@@ -1087,7 +1105,7 @@ class PlaybackService : MediaSessionService() {
                                     videoKey = sessionKey,
                                 )
                             }
-                        if (matchingSuccessfulSnapshot != null) {
+                        if (matchingSuccessfulSnapshot != null && !forceYouTubeSubtitleRefresh) {
                             val restoredSuccessfulState = matchingSuccessfulSnapshot.state.copy(
                                 dubbingOn = true,
                                 muteOriginal = state.originalVolume <= 0f,
@@ -1130,6 +1148,38 @@ class PlaybackService : MediaSessionService() {
                             return@launch
                         }
 
+                        val sourcePreparationPreviousDomains = processingEngineDomainFingerprints
+                        val sourcePreparationCurrentDomains = ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
+                        if (
+                            !forceYouTubeSubtitleRefresh &&
+                            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                                phase = state.phase,
+                                processingFlow = state.processingFlow,
+                                previous = sourcePreparationPreviousDomains,
+                                current = sourcePreparationCurrentDomains,
+                            )
+                        ) {
+                            // Translation and TTS are read when their stages start. Do not cancel ASR
+                            // just because a downstream engine changed while audio is being prepared
+                            // or transcribed; doing so wastes work and can discard an active checkpoint.
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = sourcePreparationCurrentDomains
+                            io.translatetube.local.util.AppLogStore.info(
+                                this@PlaybackService,
+                                "PlaybackFlow",
+                                "转写继续使用当前引擎，后续阶段应用新配置",
+                                diagnosticContext = mapOf(
+                                    "处理阶段" to state.phase.name,
+                                    "处理流程" to state.processingFlow.name,
+                                    "转写配置变化" to "否",
+                                    "翻译配置变化" to (sourcePreparationPreviousDomains.translation != sourcePreparationCurrentDomains.translation).toString(),
+                                    "配音配置变化" to (sourcePreparationPreviousDomains.dubbing != sourcePreparationCurrentDomains.dubbing).toString(),
+                                    "是否重启当前阶段" to "否",
+                                ),
+                            )
+                            return@launch
+                        }
+
                         // On a completed session, compare the saved per-domain fingerprints and
                         // restart at the earliest affected stage using the shared, source-independent policy.
                         // Translation changes reuse source text/timestamps and regenerate Chinese speech.
@@ -1159,13 +1209,6 @@ class PlaybackService : MediaSessionService() {
                         val currentDomains = if (previousDomains != null) {
                             ReadyHistorySessionConfigStore.fingerprints(this@PlaybackService)
                         } else null
-                        val usesUserImportedSubtitles =
-                            state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
-                                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-                        val forceYouTubeSubtitleRefresh =
-                            !usesUserImportedSubtitles &&
-                                changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
-                                restartVideoId != null
                         val readyRestartStage = if (previousDomains != null && currentDomains != null) {
                             val ignoreTranscription =
                                 state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||

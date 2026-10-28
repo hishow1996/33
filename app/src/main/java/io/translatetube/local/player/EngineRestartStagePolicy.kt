@@ -45,6 +45,22 @@ internal object EngineRestartStagePolicy {
                 ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
             )
 
+    /**
+     * A downstream translation/TTS change does not invalidate in-flight audio preparation or ASR.
+     * Keep the current source stage running when the transcription configuration is unchanged;
+     * those downstream settings are read when their own stages begin.
+     */
+    fun canDeferDownstreamChangeDuringSourcePreparation(
+        phase: Phase,
+        processingFlow: ProcessingFlow,
+        previous: EngineConfigFingerprints,
+        current: EngineConfigFingerprints,
+    ): Boolean {
+        if (!canResumeFromSourcePreparation(phase, processingFlow)) return false
+        if (previous.transcription != current.transcription) return false
+        return previous.translation != current.translation || previous.dubbing != current.dubbing
+    }
+
     fun hasRelevantConfigChange(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,

@@ -327,4 +327,68 @@ class EngineRestartStagePolicyTest {
         )
     }
 
+    @Test
+    fun downstreamChangesDoNotRestartAnUnchangedTranscriptionStage() {
+        val flows = listOf(
+            ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION,
+            ProcessingFlow.WEB_SPEECH_RECOGNITION,
+            ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+        )
+        for (flow in flows) {
+            for (phase in listOf(Phase.DOWNLOADING_AUDIO, Phase.TRANSCRIBING)) {
+                assertEquals(
+                    "translation change should not cancel active source work: flow=$flow phase=$phase",
+                    true,
+                    EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                        phase,
+                        flow,
+                        oldConfig,
+                        changed(translation = "translation-model-b"),
+                    ),
+                )
+                assertEquals(
+                    "TTS change should not cancel active source work: flow=$flow phase=$phase",
+                    true,
+                    EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                        phase,
+                        flow,
+                        oldConfig,
+                        changed(dubbing = "tts-b"),
+                    ),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun sourceStageDeferralDoesNotHideTranscriptionOrSubtitleModeChanges() {
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.TRANSCRIBING,
+                ProcessingFlow.LOCAL_SPEECH_RECOGNITION,
+                oldConfig,
+                changed(transcription = "asr-b", translation = "translation-model-b"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.TRANSCRIBING,
+                ProcessingFlow.YOUTUBE_SUBTITLES,
+                oldConfig,
+                changed(translation = "translation-model-b"),
+            ),
+        )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.canDeferDownstreamChangeDuringSourcePreparation(
+                Phase.TRANSLATING,
+                ProcessingFlow.WEB_SPEECH_RECOGNITION,
+                oldConfig,
+                changed(translation = "translation-model-b"),
+            ),
+        )
+    }
+
 }
