@@ -358,10 +358,18 @@ class PlayerManager(private val ctx: Context) {
                 }
             }
             override fun onRenderedFirstFrame() {
+                val size = player.videoSize
                 logPlayerDiagnostic(
                     isWarning = false,
                     message = "视频首帧已渲染",
-                    details = mapOf("视频流域名" to currentMediaHost()),
+                    details = mapOf(
+                        "视频流域名" to currentMediaHost(),
+                        "视频宽度" to size.width.toString(),
+                        "视频高度" to size.height.toString(),
+                        "播放器状态" to playerStateName(player.playbackState),
+                        "是否正在播放" to player.isPlaying.toString(),
+                        "当前进度 ms" to player.currentPosition.coerceAtLeast(0L).toString(),
+                    ),
                 )
             }
             override fun onPlayerError(error: PlaybackException) {
