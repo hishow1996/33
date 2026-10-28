@@ -311,6 +311,65 @@ object NewPipeRepo {
                 ),
         )
 
+    private fun subtitleLanguageDisplayName(languageTag: String?): String =
+        when (YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(languageTag)) {
+            "en" -> "英语"
+            "ko" -> "韩语"
+            "ja" -> "日语"
+            "zh" -> "中文"
+            "ru" -> "俄语"
+            "fr" -> "法语"
+            "de" -> "德语"
+            "es" -> "西班牙语"
+            "pt" -> "葡萄牙语"
+            "it" -> "意大利语"
+            "ar" -> "阿拉伯语"
+            "hi" -> "印地语"
+            "th" -> "泰语"
+            "vi" -> "越南语"
+            "id" -> "印尼语"
+            "nl" -> "荷兰语"
+            "pl" -> "波兰语"
+            "tr" -> "土耳其语"
+            "uk" -> "乌克兰语"
+            "sv" -> "瑞典语"
+            "da" -> "丹麦语"
+            "fi" -> "芬兰语"
+            else -> languageTag?.takeIf { it.isNotBlank() } ?: "未知语言"
+        }
+
+    private fun subtitleFallbackStatus(
+        mode: YouTubeSubtitleLanguageMode,
+        tier: Int,
+        sourceLanguageTag: String?,
+        selectedLanguageTag: String?,
+    ): String {
+        val selected = subtitleLanguageDisplayName(selectedLanguageTag)
+        val source = subtitleLanguageDisplayName(sourceLanguageTag)
+        return when (mode) {
+            YouTubeSubtitleLanguageMode.PREFER_ENGLISH -> when (tier) {
+                1 -> "英语字幕不可用，正在尝试${selected}原声字幕"
+                else -> if (sourceLanguageTag != null) {
+                    "英语和${source}原声字幕不可用，正在尝试${selected}字幕"
+                } else {
+                    "英语字幕不可用，正在尝试其他语言字幕（${selected}）"
+                }
+            }
+            YouTubeSubtitleLanguageMode.MATCH_ORIGINAL -> when (tier) {
+                1 -> if (sourceLanguageTag != null) {
+                    "${source}原声字幕不可用，正在尝试${selected}字幕"
+                } else {
+                    "无法确认原声语言字幕，正在尝试${selected}字幕"
+                }
+                else -> if (sourceLanguageTag != null) {
+                    "${source}原声和英语字幕不可用，正在尝试${selected}字幕"
+                } else {
+                    "无法确认原声字幕且英语字幕不可用，正在尝试${selected}字幕"
+                }
+            }
+        }
+    }
+
     /** 返回视频可用的全部字幕轨，给解析页展示；不下载任何字幕内容。 */
     suspend fun subtitleTracks(videoId: String): List<SubtitleTrackOption> {
         var tracksReadSuccessfully = true
@@ -418,7 +477,10 @@ object NewPipeRepo {
         }
 
     /** 字幕轨优先请求 WebVTT；NewPipe 默认 URL 常为 TTML，需兼容两种格式。 */
-    suspend fun subtitles(videoId: String): Pair<List<SubLine>, String>? {
+    suspend fun subtitles(
+        videoId: String,
+        onFallback: suspend (String) -> Unit = {},
+    ): Pair<List<SubLine>, String>? {
         val ownerJob = currentCoroutineContext()[Job]
         val streamInfo = info(videoId)
         val tracks: List<SubtitlesStream> = try {
@@ -472,8 +534,31 @@ object NewPipeRepo {
             return null
         }
 
+        var previousTier: Int? = null
+        var previousLanguageCode: String? = null
         for (track in candidateTracks) {
             val url = track.url?.takeIf { it.isNotBlank() } ?: continue
+            val tier = YouTubeSubtitleSelectionPolicy.priorityTier(
+                sourceLanguageTag = sourceLanguageTag,
+                subtitleLanguageTag = track.languageTag,
+                mode = subtitleMode,
+            )
+            val languageCode = YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(track.languageTag)
+            when {
+                previousTier == null && tier > 0 -> onFallback(
+                    subtitleFallbackStatus(subtitleMode, tier, sourceLanguageTag, track.languageTag),
+                )
+                previousTier != null && tier > previousTier!! -> onFallback(
+                    subtitleFallbackStatus(subtitleMode, tier, sourceLanguageTag, track.languageTag),
+                )
+                tier == 2 && previousTier == 2 &&
+                    languageCode != null && previousLanguageCode != null &&
+                    languageCode != previousLanguageCode -> onFallback(
+                        "${subtitleLanguageDisplayName(previousLanguageCode)}字幕不可用，正在尝试${subtitleLanguageDisplayName(track.languageTag)}字幕",
+                    )
+            }
+            previousTier = tier
+            previousLanguageCode = languageCode
             val candidateUrls = listOf(withSubtitleFormat(url, "vtt"), url).distinct()
             for (candidateUrl in candidateUrls) {
                 try {
