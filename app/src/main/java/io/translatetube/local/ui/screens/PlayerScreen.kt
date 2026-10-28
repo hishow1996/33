@@ -301,8 +301,9 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     val surfaceAttachScope = rememberCoroutineScope()
     val surfaceAttachJob = remember(tv) { arrayOfNulls<kotlinx.coroutines.Job>(1) }
 
-    // The view may attach before the foreground service publishes its instance. Retry briefly
-    // while this view remains attached, then bind once the live player is actually ready.
+    // A view can be attached before its SurfaceTexture exists or before layout gives it
+    // non-zero dimensions. Both landscape and portrait videos need a real output surface before
+    // Media3 binds it; wait for service readiness AND surface readiness, not just window attachment.
     fun attachSurfaceWhenReady() {
         if (!tv.isAttachedToWindow) return
         surfaceAttachJob[0]?.cancel()
@@ -310,17 +311,21 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             var tries = 0
             while (tries < 100 && tv.isAttachedToWindow) {
                 val service = PlaybackService.instance
-                if (service?.isReady == true) {
+                val surfaceReady = tv.isAvailable && tv.width > 0 && tv.height > 0
+                if (service?.isReady == true && surfaceReady) {
                     service.attachSurface(tv)
                     return@launch
                 }
                 tries++
                 delay(100)
             }
-            if (tv.isAttachedToWindow && PlaybackService.instance?.isReady != true) {
+            if (tv.isAttachedToWindow) {
+                val serviceReady = PlaybackService.instance?.isReady == true
                 android.util.Log.w(
                     "PlayerScreen",
-                    "Video surface stayed attached but playback service did not become ready",
+                    "Video surface initialization timed out: serviceReady=" + serviceReady +
+                        ", textureAvailable=" + tv.isAvailable +
+                        ", size=" + tv.width + "x" + tv.height,
                 )
             }
         }
