@@ -92,7 +92,9 @@ internal object EngineRestartStagePolicy {
         val importedFlow = processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
             processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
 
-        if (!ignoreTranscription && !importedFlow &&
+        val flowIgnoresTranscription = importedFlow ||
+            processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES
+        if (!ignoreTranscription && !flowIgnoresTranscription &&
             previous.transcription != current.transcription
         ) {
             return EngineRestartStage.TRANSCRIPTION

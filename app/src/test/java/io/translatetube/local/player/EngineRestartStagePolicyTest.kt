@@ -194,6 +194,20 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun youtubeCaptionFlowIgnoresAsrChangeEvenIfCallerDoesNotSetIgnoreFlag() {
+        assertNull(
+            EngineRestartStagePolicy.choose(
+                previous = oldConfig,
+                current = changed(transcription = "asr-b"),
+                processingFlow = ProcessingFlow.YOUTUBE_SUBTITLES,
+                ignoreTranscription = false,
+                hasLines = true,
+                sourceLanguageIsChinese = false,
+            ),
+        )
+    }
+
+    @Test
     fun ttsOnlyChangeResumesAtDubbingWhenSourceRowsExist() {
         assertEquals(
             EngineRestartStage.DUBBING,
