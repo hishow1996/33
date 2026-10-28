@@ -221,6 +221,26 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
+    fun asrChangesAreIrrelevantForYoutubeCaptionsAndImportedSubtitleFlows() {
+        for (flow in listOf(
+            ProcessingFlow.YOUTUBE_SUBTITLES,
+            ProcessingFlow.IMPORTED_SUBTITLES,
+            ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+        )) {
+            assertEquals(
+                "flow=$flow",
+                false,
+                EngineRestartStagePolicy.hasRelevantConfigChange(
+                    previous = oldConfig,
+                    current = changed(transcription = "asr-b"),
+                    processingFlow = flow,
+                    ignoreTranscription = false,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun normalSpeechFlowTreatsAsrChangesAsRelevant() {
         assertEquals(
             true,

@@ -1098,11 +1098,51 @@ class PlaybackService : MediaSessionService() {
                                     processingFlow = state.processingFlow,
                                     ignoreTranscription = true,
                                 )
+                        val usesUserImportedSubtitles =
+                            state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
+                                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
+                        val pendingSubtitleModeRefresh =
+                            pendingYouTubeSubtitleRefreshKey == changedSessionKey
+                        val restartVideoIdCandidate = videoId ?: if (remoteMediaUrl == null) {
+                            changedSessionKey.takeIf { it.startsWith("youtube:") }?.removePrefix("youtube:")
+                        } else {
+                            null
+                        }
+                        val forceYouTubeSubtitleRefresh = !usesUserImportedSubtitles &&
+                            (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
+                                pendingSubtitleModeRefresh) &&
+                            restartVideoIdCandidate != null
+                        val ignoreTranscriptionForCurrentFlow =
+                            state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
+                                usesUserImportedSubtitles ||
+                                (completedReadySessionKey == changedSessionKey &&
+                                    completedReadySessionIgnoresTranscription)
+                        val hasRelevantEngineConfigChange =
+                            EngineRestartStagePolicy.hasRelevantConfigChange(
+                                previous = previousDomainFingerprints,
+                                current = currentDomainFingerprints,
+                                processingFlow = state.processingFlow,
+                                ignoreTranscription = ignoreTranscriptionForCurrentFlow,
+                            )
                         if (importingTranslatedFile || importedTranslationSettingsAreIrrelevant) {
                             // During the file-read phase there is no reusable subtitle timeline yet.
                             // Keep the import alive for any engine setting change; the new TTS setting
                             // is read when synthesis starts. After import, only a relevant TTS change
                             // should restart this authoritative translated-subtitle flow.
+                            processingEngineConfigFingerprint = stableFingerprint
+                            processingEngineDomainFingerprints = currentDomainFingerprints
+                            activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
+                            if (pendingYouTubeSubtitleRefreshKey == changedSessionKey) {
+                                pendingYouTubeSubtitleRefreshKey = null
+                            }
+                            return@launch
+                        }
+
+                        // Some flows do not consume every engine domain: YouTube-caption and
+                        // user-imported-subtitle flows do not use the ASR engine. Do not reopen the
+                        // whole pipeline just because the global preference fingerprint changed.
+                        // A pending YouTube subtitle-mode refresh remains an explicit exception.
+                        if (!forceYouTubeSubtitleRefresh && !hasRelevantEngineConfigChange) {
                             processingEngineConfigFingerprint = stableFingerprint
                             processingEngineDomainFingerprints = currentDomainFingerprints
                             activeProcessingYouTubeSubtitleMode = selectedYouTubeSubtitleMode()
@@ -1125,14 +1165,7 @@ class PlaybackService : MediaSessionService() {
                         val restartRemoteCookie = remoteMediaCookie
                         val restartRemoteUserAgent = remoteMediaUserAgent
 
-                        val usesUserImportedSubtitles =
-                            state.processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
-                                state.processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-                        val pendingSubtitleModeRefresh = pendingYouTubeSubtitleRefreshKey == sessionKey
-                        val forceYouTubeSubtitleRefresh = !usesUserImportedSubtitles &&
-                            (changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
-                                pendingSubtitleModeRefresh) &&
-                            restartVideoId != null
+                        val restartVideoId = restartVideoIdCandidate
                         if (pendingSubtitleModeRefresh) pendingYouTubeSubtitleRefreshKey = null
 
                         // If this exact engine combination has completed successfully before, restore
