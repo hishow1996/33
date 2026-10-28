@@ -60,9 +60,8 @@ class EngineRestartStagePolicyTest {
     }
 
     @Test
-    fun translatedSubtitleImportOnlyNeedsNewDubbingWhenTranslationSettingChanges() {
-        assertEquals(
-            EngineRestartStage.DUBBING,
+    fun translatedSubtitleImportIgnoresTranslationModelChanges() {
+        assertNull(
             EngineRestartStagePolicy.choose(
                 previous = oldConfig,
                 current = changed(translation = "translation-model-b"),
@@ -73,8 +72,16 @@ class EngineRestartStagePolicyTest {
                 hasMissingTranslation = false,
             ),
         )
+        assertEquals(
+            false,
+            EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = oldConfig,
+                current = changed(translation = "translation-model-b"),
+                processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ignoreTranscription = false,
+            ),
+        )
     }
-
     @Test
     fun transcriptionSwitchRestartsAsrForYoutubeWebAndLocalSpeechFlows() {
         val flows = listOf(
@@ -177,6 +184,19 @@ class EngineRestartStagePolicyTest {
                 previous = oldConfig,
                 current = changed(dubbing = "tts-b"),
                 processingFlow = ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES,
+                ignoreTranscription = false,
+            ),
+        )
+    }
+
+    @Test
+    fun importedOriginalSubtitlesStillTreatTranslationModelChangesAsRelevant() {
+        assertEquals(
+            true,
+            EngineRestartStagePolicy.hasRelevantConfigChange(
+                previous = oldConfig,
+                current = changed(translation = "translation-model-b"),
+                processingFlow = ProcessingFlow.IMPORTED_SUBTITLES,
                 ignoreTranscription = false,
             ),
         )
