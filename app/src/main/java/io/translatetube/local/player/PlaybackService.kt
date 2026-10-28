@@ -6738,7 +6738,7 @@ android.util.Log.e("PlaybackService", "Unable to initialize selected TTS engine 
                         "当前处理流程" to ui.value.processingFlow.name,
                     ),
                 )
-                return@withLock
+                return
             }
             val failureState = ui.value
             io.translatetube.local.util.AppLogStore.error(
@@ -6826,7 +6826,7 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         "处理流程" to ui.value.processingFlow.name,
                     ),
                 )
-                return@withLock
+                return
             }
             // Native ASR/TTS engines can exhaust the app heap/native budget when a history replay
             // switches engines in the same service process. Prefer original-audio playback and an
