@@ -299,6 +299,23 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
     val tv = remember { TextureView(ctx) }
     val frame = remember { FrameLayout(ctx) }
 
+    // Bind only once TextureView is actually attached to a window. This avoids the first-frame
+    // race when the processing page is replaced by the player page or when the view is reparented.
+    val surfaceAttachListener = remember(tv) {
+        object : android.view.View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: android.view.View) {
+                PlaybackService.instance?.attachSurface(tv)
+            }
+
+            override fun onViewDetachedFromWindow(view: android.view.View) = Unit
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(tv) {
+        tv.addOnAttachStateChangeListener(surfaceAttachListener)
+        if (tv.isAttachedToWindow) PlaybackService.instance?.attachSurface(tv)
+        onDispose { tv.removeOnAttachStateChangeListener(surfaceAttachListener) }
+    }
+
     // Reparse switches between the processing UI and player UI. AndroidView can be
     // recreated while this remembered FrameLayout still owns the TextureView.
     // Move the surface only when needed; never add the same child twice.
@@ -324,8 +341,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
-            // Reparenting may recreate TextureView's SurfaceTexture; ask Media3 to bind again.
-            PlaybackService.instance?.attachSurface(tv)
         } else {
             android.util.Log.w(
                 "PlayerScreen",
@@ -333,9 +348,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
             )
         }
     }
-
-    // Bind when the player view enters composition, not while the parsing page still owns
-    // the TextureView. PlaybackService retains the latest request if initialization is ongoing.
 
     // 从后台回到播放页时重新绑定画面：后台期间 TextureView 的画面表面会被系统销毁，
     // 不重新绑定就会一直黑屏。
@@ -916,7 +928,6 @@ android.util.Log.e("PlayerScreen", "Unable to start playback service", e)
                         // Otherwise the player may have just returned from the processing page,
                         // where this remembered frame can still contain tv.
                         if (!isFloating) moveTextureViewTo(frame)
-                        PlaybackService.instance?.attachSurface(tv)
                         frame
                     },
                     modifier = Modifier.fillMaxSize(),
