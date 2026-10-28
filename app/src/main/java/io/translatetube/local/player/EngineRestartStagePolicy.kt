@@ -18,15 +18,27 @@ internal data class EngineConfigFingerprints(
 )
 
 internal object EngineRestartStagePolicy {
+    fun ignoresTranscriptionConfig(
+        processingFlow: ProcessingFlow?,
+        isYouTube: Boolean,
+    ): Boolean = when (processingFlow) {
+        ProcessingFlow.IMPORTED_SUBTITLES,
+        ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES -> true
+        ProcessingFlow.YOUTUBE_SUBTITLES -> isYouTube
+        else -> false
+    }
+
     fun hasRelevantConfigChange(
         previous: EngineConfigFingerprints,
         current: EngineConfigFingerprints,
         processingFlow: ProcessingFlow?,
         ignoreTranscription: Boolean,
     ): Boolean {
-        val importedFlow = processingFlow == ProcessingFlow.IMPORTED_SUBTITLES ||
-            processingFlow == ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES
-        val transcriptionChanged = !ignoreTranscription && !importedFlow &&
+        val transcriptionChanged = !ignoreTranscription &&
+            !ignoresTranscriptionConfig(
+                processingFlow = processingFlow,
+                isYouTube = processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES,
+            ) &&
             previous.transcription != current.transcription
         return transcriptionChanged ||
             previous.translation != current.translation ||
