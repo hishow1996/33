@@ -89,6 +89,7 @@ private object ReadyHistorySessionConfigStore {
 
     fun isRelevantPreferenceKey(key: String): Boolean =
         key == "active_api_id" ||
+            key == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY ||
             // ASR provider/model choices, including local and cloud implementations.
             key.startsWith("asr_") ||
             key.startsWith("local_asr_") ||
@@ -178,6 +179,21 @@ private object ReadyHistorySessionConfigStore {
         } else {
             ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION
         }
+    }
+
+    fun hasYouTubeSubtitleModeChanged(context: Context, videoKey: String): Boolean {
+        if (!videoKey.startsWith("youtube:", ignoreCase = true)) return false
+        val key = storageKey(videoKey)
+        val savedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedMode = savedPrefs.getString(key + "-youtube-subtitle-mode", null)
+        val currentMode = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString(
+                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+            ) ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE
+        // An older success has no mode marker, so it is parsed once under the new explicit preference.
+        if (savedMode == null) return savedPrefs.getString(key, null) != null
+        return savedMode != currentMode
     }
 
     fun savedCompositeFingerprint(context: Context, videoKey: String): String? {
@@ -270,6 +286,14 @@ private object ReadyHistorySessionConfigStore {
             .putString(key + "-translation-fingerprint", fingerprints.translation)
             .putString(key + "-dubbing-fingerprint", fingerprints.dubbing)
             .putString(key + "-processing-flow", processingFlow.name)
+            .putString(
+                key + "-youtube-subtitle-mode",
+                context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                    .getString(
+                        io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                        io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                    ) ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+            )
             .apply()
     }
 
@@ -299,6 +323,7 @@ private object ReadyHistorySessionConfigStore {
             .remove(key + "-translation-fingerprint")
             .remove(key + "-dubbing-fingerprint")
             .remove(key + "-processing-flow")
+            .remove(key + "-youtube-subtitle-mode")
             .apply()
         ReadySessionSnapshotStore.remove(context, videoKey)
     }
@@ -763,6 +788,10 @@ class PlaybackService : MediaSessionService() {
         state: PlayerUiState,
         ignoreTranscription: Boolean,
     ): EngineRestartStage? {
+        // Caption language changes the source transcript itself, so restart at source selection.
+        if (ReadyHistorySessionConfigStore.hasYouTubeSubtitleModeChanged(this, state.key)) {
+            return EngineRestartStage.TRANSCRIPTION
+        }
         val sourceIsChinese = isChineseLanguage(state.sourceLang)
         val hasMissingTranslation = !sourceIsChinese &&
             state.processingFlow != ProcessingFlow.IMPORTED_TRANSLATED_SUBTITLES &&
@@ -1009,7 +1038,14 @@ class PlaybackService : MediaSessionService() {
                                 state.processingFlow == ProcessingFlow.YOUTUBE_SUBTITLES ||
                                     (completedReadySessionKey == sessionKey &&
                                         completedReadySessionIgnoresTranscription)
-                            chooseEngineRestartStage(previousDomains, currentDomains, state, ignoreTranscription)
+                            if (
+                                changedKey == io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY &&
+                                restartVideoId != null
+                            ) {
+                                EngineRestartStage.TRANSCRIPTION
+                            } else {
+                                chooseEngineRestartStage(previousDomains, currentDomains, state, ignoreTranscription)
+                            }
                         } else null
                         val readyRestartState = readyRestartStage?.let { stage ->
                             stateForEngineRestart(state, stage)
@@ -2756,11 +2792,17 @@ class PlaybackService : MediaSessionService() {
                         }
                         val detectedLanguage = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy
                             .normalizeLanguageCode(detectedTextLanguage)
+                        val allowEnglishCaption = getSharedPreferences("settings", MODE_PRIVATE)
+                            .getString(
+                                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                                io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                            ) == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH.preferenceValue
                         if (
                             io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
                                 expectedSourceLanguage = expectedLanguage,
                                 detectedTextLanguage = detectedLanguage,
                                 savedSourceLanguage = savedLanguage,
+                                allowEnglishCaption = allowEnglishCaption,
                             )
                         ) {
                             val restoredFlow = pipelineResumeState.processingFlow.name
@@ -4295,18 +4337,26 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             )
             // An ASR provider switch must never reuse captions/translations generated by a different
             // recognizer. Keep imported subtitle tasks independent of ASR settings.
-            val translationCacheKey = when {
+            val youtubeSubtitleMode = io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeFromPreference(
+                settingsPrefs.getString(
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                ),
+            )
+            val baseModeAwareTranslationCacheKey = when {
                 !sourceImportedLines.isNullOrEmpty() -> baseTranslationCacheKey
                 asrProvider == "local" -> "$baseTranslationCacheKey|local-asr-$localAsrModelId-timeline-v3"
                 else -> "$baseTranslationCacheKey|cloud-asr-$asrCacheIdentity-timeline-v4"
             }
+            val translationCacheKey = if (videoId != null && sourceImportedLines.isNullOrEmpty()) {
+                "$baseModeAwareTranslationCacheKey|yt-subtitle-mode-${youtubeSubtitleMode.preferenceValue}-v1"
+            } else {
+                baseModeAwareTranslationCacheKey
+            }
             updateUiForSession(key, pipelineGeneration) { it.copy(translationCacheKey = translationCacheKey) }
             val sourceSubtitleCacheKey = when {
-                // v6 is a one-time migration: v5 caches do not record whether text came from a
-                // language-matched caption track or the original-audio ASR fallback. Reusing an
-                // unproven v5 cache could silently bring back English-first captions for Korean audio.
-                // All v6 source caches are written only after strict caption matching or ASR fallback.
-                videoId != null -> "$key|source|youtube-v6-original-audio" + when (asrProvider) {
+                // Isolate YouTube source caches by selected caption language mode.
+                videoId != null -> "$key|source|youtube-v7-subtitle-${youtubeSubtitleMode.preferenceValue}" + when (asrProvider) {
                     "local" -> "|asr-$localAsrModelId"
                     else -> "|asr-$asrCacheIdentity-cloud-v1"
                 }
@@ -4446,8 +4496,13 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     ?: io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(sourceCached.srcLang)
                 val expectedContentLanguage =
                     io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.normalizeLanguageCode(originalAudioLanguage)
-                if (expectedContentLanguage != null && cachedContentLanguage != null &&
-                    expectedContentLanguage != cachedContentLanguage
+                if (
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.shouldInvalidateSubtitleSnapshot(
+                        expectedSourceLanguage = expectedContentLanguage,
+                        detectedTextLanguage = detectedCacheLanguageCode,
+                        savedSourceLanguage = sourceCached.srcLang,
+                        allowEnglishCaption = youtubeSubtitleMode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+                    )
                 ) {
                     android.util.Log.w(
                         "PlaybackService",
@@ -4463,9 +4518,14 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                         cached = null
                     }
                 } else if (expectedContentLanguage != null && detectedCacheLanguageCode == expectedContentLanguage) {
-                    // The old cache's language label may be stale even when its text is correct.
+                    // The cache's language label may be stale even when its text is correct.
                     // Use the verified text language for the next translation pass.
                     restoredSourceLang = expectedContentLanguage
+                } else if (
+                    youtubeSubtitleMode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH &&
+                    cachedContentLanguage == "en"
+                ) {
+                    restoredSourceLang = "en"
                 }
             }
 

@@ -66,6 +66,16 @@ fun SettingsScreen(onBack: () -> Unit, onApiManager: () -> Unit, onAppLogs: () -
         prefs.registerOnSharedPreferenceChangeListener(listener)
         onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
+    var youtubeSubtitleMode by remember {
+        mutableStateOf(
+            io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.modeFromPreference(
+                prefs.getString(
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.DEFAULT_MODE,
+                ),
+            ),
+        )
+    }
     var ttsEngine by remember { mutableStateOf(prefs.getString("tts_engine", "edge") ?: "edge") }
     var systemTtsMode by remember { mutableStateOf(prefs.getString("system_tts_mode", "generated") ?: "generated") }
     var systemTtsVoiceName by remember { mutableStateOf(prefs.getString("system_tts_voice_name", "").orEmpty()) }
@@ -375,6 +385,58 @@ systemTtsVoiceStatus = "读取系统音色失败：${error.message ?: error.java
         Spacer(Modifier.height(2.dp))
 
 Section("翻译引擎", onHeaderClick = onApiManager) {}
+
+Section("YouTube 解析") {
+    Text("字幕语言", color = OnBg, style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(6.dp))
+    listOf(
+        io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH,
+        io.translatetube.local.yt.YouTubeSubtitleLanguageMode.MATCH_ORIGINAL,
+    ).forEach { mode ->
+        val selected = youtubeSubtitleMode == mode
+        val selectMode: () -> Unit = {
+            youtubeSubtitleMode = mode
+            prefs.edit()
+                .putString(
+                    io.translatetube.local.yt.YouTubeSubtitleSelectionPolicy.PREF_KEY,
+                    mode.preferenceValue,
+                )
+                .apply()
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (selected) Color(0xFFF0F5FF) else Color.White)
+                .clickable(onClick = selectMode)
+                .padding(horizontal = 8.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = selected, onClick = selectMode)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH) "优先英语字幕" else "匹配视频原声语言",
+                    color = OnBg,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH)
+                        "先用英语字幕；没有可用英语字幕时，再尝试匹配原声语言。"
+                    else
+                        "只用与原声音轨语言一致的字幕；找不到则转写原声音频。",
+                    color = SubText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(2.dp))
+    Text(
+        "只影响 YouTube；网页视频和本地视频保持原有流程。",
+        color = SubText,
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
 
 Section(
     "转写引擎",
