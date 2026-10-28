@@ -419,23 +419,10 @@ Section("YouTube 解析") {
                     color = OnBg,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                Text(
-                    if (mode == io.translatetube.local.yt.YouTubeSubtitleLanguageMode.PREFER_ENGLISH)
-                        "优先英语字幕，其次原声语言字幕，再尝试其他字幕；没有可用字幕时才转写音轨。"
-                    else
-                        "优先原声语言字幕，其次英语字幕，再尝试其他字幕；没有可用字幕时才转写音轨。",
-                    color = SubText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
             }
         }
     }
     Spacer(Modifier.height(2.dp))
-    Text(
-        "只影响 YouTube；网页视频和本地视频保持原有流程。",
-        color = SubText,
-        style = MaterialTheme.typography.bodySmall,
-    )
 }
 
 Section(
