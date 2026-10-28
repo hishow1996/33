@@ -143,10 +143,10 @@ internal object YouTubeSubtitleSelectionPolicy {
     }
 
     /**
-     * Matching-language captions always outrank another language, even when the matching track is
-     * automatic and the unrelated track is manually authored. Within one language, manual captions
-     * are preferred over automatically generated captions. Unknown source language never implies
-     * English; in that case manual tracks retain the neutral fallback preference.
+     * Rank fallback captions without excluding any language: English-first mode prefers English,
+     * then the source language, then other tracks; original-first mode prefers source language,
+     * then English, then other tracks. Manual captions outrank auto-generated captions within each
+     * priority tier. The caller tries each ranked track and transcribes audio only if all fail.
      */
     fun rank(
         sourceLanguageTag: String?,
