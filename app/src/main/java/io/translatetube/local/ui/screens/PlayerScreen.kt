@@ -3194,6 +3194,7 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                 .background(Color(0xB8172033))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
+            val seekThumbRadiusPx = with(LocalDensity.current) { 5.dp.toPx() }
             Canvas(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3202,7 +3203,8 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     detectTapGestures { offset ->
                         val duration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
                         if (duration > 0L && size.width > 0) {
-                            pos = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                            val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
+                            pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
                             svc?.seek((pos * duration).toLong())
                             scrubbing = false
                         }
@@ -3212,7 +3214,10 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                     detectDragGestures(
                         onDragStart = { offset ->
                             scrubbing = true
-                            if (size.width > 0) pos = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                            if (size.width > 0) {
+                                val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
+                                pos = ((offset.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                            }
                         },
                         onDragEnd = {
                             val duration = (svc?.duration() ?: 0L).takeIf { it > 0L } ?: state.durationMs
@@ -3222,28 +3227,39 @@ private fun androidx.compose.foundation.layout.BoxScope.VideoOverlayControls(
                         onDragCancel = { scrubbing = false },
                     ) { change, _ ->
                         change.consume()
-                        if (size.width > 0) pos = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        if (size.width > 0) {
+                            val seekableWidth = (size.width - 2f * seekThumbRadiusPx).coerceAtLeast(1f)
+                            pos = ((change.position.x - seekThumbRadiusPx) / seekableWidth).coerceIn(0f, 1f)
+                        }
                     }
                 },
         ) {
             val height = 2.dp.toPx()
             val centerY = size.height / 2f
+            val thumbRadius = seekThumbRadiusPx
+            val trackWidth = (size.width - 2f * thumbRadius).coerceAtLeast(0f)
+            val thumbCenterX = thumbRadius + trackWidth * pos.coerceIn(0f, 1f)
             val radius = CornerRadius(height / 2f, height / 2f)
             drawRoundRect(
                 color = Color(0x66FFFFFF),
-                topLeft = Offset(0f, centerY - height / 2f),
-                size = Size(size.width, height),
+                topLeft = Offset(thumbRadius, centerY - height / 2f),
+                size = Size(trackWidth, height),
                 cornerRadius = radius,
             )
-            val activeWidth = size.width * pos.coerceIn(0f, 1f)
+            val activeWidth = trackWidth * pos.coerceIn(0f, 1f)
             if (activeWidth > 0f) {
                 drawRoundRect(
                     color = Color(0xFF5890FF),
-                    topLeft = Offset(0f, centerY - height / 2f),
+                    topLeft = Offset(thumbRadius, centerY - height / 2f),
                     size = Size(activeWidth, height),
                     cornerRadius = radius,
                 )
             }
+            drawCircle(
+                color = Color(0xFF5890FF),
+                radius = thumbRadius,
+                center = Offset(thumbCenterX, centerY),
+            )
         }
         Row(
             Modifier.fillMaxWidth(),
