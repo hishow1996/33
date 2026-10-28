@@ -3932,6 +3932,66 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
+            } catch (e: OutOfMemoryError) {
+                // Recover from synthesis/model allocation failure without letting an obsolete import
+                // retire the current session's engine or change its playback state.
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "Subtitles",
+                        "已忽略过期字幕导入任务的内存恢复操作",
+                        e,
+                        diagnosticContext = mapOf(
+                            "当前处理代数" to pipelineGeneration.toString(),
+                            "活动处理代数" to activePipelineGeneration.toString(),
+                            "处理流程" to ui.value.processingFlow.name,
+                        ),
+                    )
+                    return@launch
+                }
+                io.translatetube.local.util.AppLogStore.error(
+                    this@PlaybackService,
+                    "Subtitles",
+                    "导入字幕配音时内存不足，已恢复视频原声",
+                    e,
+                    diagnosticContext = mapOf(
+                        "字幕行数" to ui.value.lines.size.toString(),
+                        "当前配音引擎" to ui.value.ttsEngineName.ifBlank { "未确定" },
+                        "处理阶段" to ui.value.phase.name,
+                        "内存恢复策略" to "释放当前配音引擎并恢复原声，不自动切换其他引擎",
+                    ),
+                )
+                runCatching { retireCurrentDubbing() }
+                runCatching {
+                    withContext(Dispatchers.IO) { awaitRetiredDubbingEngines() }
+                }
+                runCatching { System.gc() }
+                runCatching { safelySetOriginalVolume(1f, "translated subtitle import OOM recovery") }
+                updateUiForSession(sessionKey, pipelineGeneration) {
+                    it.copy(
+                        phase = Phase.ERROR,
+                        progress = "",
+                        error = "设备可用内存不足，无法合成已导入字幕的中文配音。",
+                        noModelHint = "已恢复视频原声。请关闭其他应用后重试；不会自动切换配音引擎。",
+                        muteOriginal = false,
+                        dubbingHasErrors = true,
+                        waitingForTranscriptionEngine = false,
+                        waitingForDubbingEngine = false,
+                    )
+                }
+                if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
+                    withContext(Dispatchers.Main) {
+                        if (
+                            activePipelineGeneration == pipelineGeneration &&
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey
+                        ) pm.play()
+                    }
+                }
             } catch (e: Exception) {
                 io.translatetube.local.util.AppLogStore.error(
     this@PlaybackService, "Subtitles", "导入已翻译字幕失败", e,
@@ -6637,6 +6697,29 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
             }
             }
         } catch (e: OutOfMemoryError) {
+            // A newer import can intentionally run while this canceled translation pipeline unwinds.
+            // A stale OOM handler must not retire the new pipeline's TTS engine or start its video
+            // before the imported subtitle synthesis is ready.
+            if (
+                activePipelineGeneration != pipelineGeneration ||
+                videoKey != key ||
+                ui.value.key != key
+            ) {
+                io.translatetube.local.util.AppLogStore.warning(
+                    this@PlaybackService,
+                    "PlaybackPipeline",
+                    "已忽略过期处理任务的内存恢复操作",
+                    e,
+                    diagnosticContext = mapOf(
+                        "当前处理代数" to pipelineGeneration.toString(),
+                        "活动处理代数" to activePipelineGeneration.toString(),
+                        "是否仍为当前视频" to (videoKey == key && ui.value.key == key).toString(),
+                        "处理阶段" to ui.value.phase.name,
+                        "处理流程" to ui.value.processingFlow.name,
+                    ),
+                )
+                return@withLock
+            }
             // Native ASR/TTS engines can exhaust the app heap/native budget when a history replay
             // switches engines in the same service process. Prefer original-audio playback and an
             // actionable warning over letting this recoverable initialization failure kill the app.
