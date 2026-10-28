@@ -4521,10 +4521,9 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                     ?: io.translatetube.local.subs.SubtitleLanguageDetector.detectFromCues(it.asSequence().map { cue -> cue.text }.asIterable())
             }
 
-            // Older versions could cache English captions even when the actual YouTube audio was
-            // Korean (or another language). Validate populated YouTube source caches against the
-            // source-audio metadata, so valid ASR checkpoints remain reusable and are not
-            // invalidated merely because the caption-selection policy changed.
+            // Caption caches and ASR transcript caches use separate keys: a selected fallback
+            // caption may differ from the original audio language, while a transcript must match
+            // the spoken language. Validate each cache according to its actual origin.
             if (videoId != null && sourceCached != null && restoredSourceLines != null) {
                 val originalAudioLanguage = try {
                     io.translatetube.local.yt.NewPipeRepo.sourceAudioLanguageHint(videoId)
@@ -4665,6 +4664,8 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
             val resolvedProcessingFlow = when {
                 resumeState != null -> resumeState.processingFlow
                 !sourceImportedLines.isNullOrEmpty() -> ProcessingFlow.IMPORTED_SUBTITLES
+                videoId != null && restoredSourceLines != null && sourceCachedKey == youtubeCaptionCacheKey ->
+                    ProcessingFlow.YOUTUBE_SUBTITLES
                 videoId != null && restoredSourceLines != null ->
                     ReadyHistorySessionConfigStore.savedProcessingFlow(this@PlaybackService, key)
                         ?.takeIf { it == ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION || it == ProcessingFlow.YOUTUBE_SUBTITLES }
