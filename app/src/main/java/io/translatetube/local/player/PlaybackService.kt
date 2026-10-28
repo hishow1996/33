@@ -3715,6 +3715,7 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
     /** Import the externally translated file into the waiting pipeline, retaining the original timeline. */
     fun importManualTranslatedSubtitle(uri: Uri) {
         val sessionKey = ui.value.key
+        val pipelineGeneration = activePipelineGeneration
         val waiter = manualTranslationWaiters[sessionKey]
         if (sessionKey.isBlank() || waiter == null || !ui.value.manualTranslationWaiting) {
             android.widget.Toast.makeText(
@@ -3751,11 +3752,14 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         line.startMs >= 0L && line.endMs > line.startMs && line.text.isNotBlank()
                     }
                 }
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
                 val source = manualTranslationSources[sessionKey]
                     ?: throw IllegalStateException("原文字幕等待状态已失效，请重新启动该流程")
                 val merged = io.translatetube.local.subs.ManualSubtitleTranslationMerger.merge(source, translated)
-                ensureCurrentSession(sessionKey)
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (manualTranslationWaiters[sessionKey] !== waiter || waiter.isCompleted) {
+                    throw kotlinx.coroutines.CancellationException("外部翻译导入任务已过期")
+                }
                 // The imported external translation supersedes any previous successful subtitle
                 // snapshot. Remove it before resuming synthesis so an interruption cannot restore
                 // the old translated result on the next history open.
@@ -3771,10 +3775,14 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                         it,
                     )
                 }
+                ensureCurrentSession(sessionKey, pipelineGeneration)
+                if (manualTranslationWaiters[sessionKey] !== waiter) {
+                    throw kotlinx.coroutines.CancellationException("外部翻译等待任务已被替换")
+                }
                 if (!waiter.complete(merged)) {
                     throw IllegalStateException("当前字幕等待任务已结束，请重新启用外部翻译模式")
                 }
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     it.copy(
                         subtitleTrackStatus = "已导入外部译文，正在沿用原字幕时间轴继续处理。",
                         progress = "已匹配译文时间轴，正在继续配音准备…",
@@ -3783,13 +3791,20 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey ||
+                    manualTranslationWaiters[sessionKey] !== waiter ||
+                    waiter.isCompleted
+                ) return@launch
                 io.translatetube.local.util.AppLogStore.error(
                     this@PlaybackService,
                     "Subtitles",
                     "导入外部翻译字幕失败",
                     e,
                 )
-                updateUiForSession(sessionKey) {
+                updateUiForSession(sessionKey, pipelineGeneration) {
                     if (!manualTranslationRequestedKeys.contains(sessionKey) || waiter.isCompleted) {
                         it
                     } else {
