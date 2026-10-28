@@ -151,10 +151,15 @@ private object ReadyHistorySessionConfigStore {
                     !(ignoreTranscription && belongsToDomain(entry.key, EngineConfigDomain.TRANSCRIPTION))
             }
             .map { entry ->
-                val value = when (val raw = entry.value) {
+                val rawValue = when (val raw = entry.value) {
                     is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
                     else -> raw?.toString().orEmpty()
                 }
+                val value = AsrCredentialFingerprintPolicy.canonicalValue(
+                    key = entry.key,
+                    storedValue = rawValue,
+                    decrypt = Crypto::decrypt,
+                )
                 "${entry.key}=$value"
             }
             .toMutableList()
@@ -251,10 +256,15 @@ private object ReadyHistorySessionConfigStore {
             .filter { belongsToDomain(it.key, domain) }
             .sortedBy { it.key }
             .joinToString("\n") { entry ->
-                val value = when (val raw = entry.value) {
+                val rawValue = when (val raw = entry.value) {
                     is Set<*> -> raw.map { it?.toString().orEmpty() }.sorted().joinToString(",")
                     else -> raw?.toString().orEmpty()
                 }
+                val value = AsrCredentialFingerprintPolicy.canonicalValue(
+                    key = entry.key,
+                    storedValue = rawValue,
+                    decrypt = Crypto::decrypt,
+                )
                 "${entry.key}=$value"
             }
         val activeApiId = settings.getLong("active_api_id", -1L)
