@@ -1591,7 +1591,7 @@ private fun VideoParsingPage(
                         color = Color(0xFF7A8495),
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    if (externalTranslationCardVisible || state.manualTranslationModeEnabled || state.manualTranslationWaiting) {
+                    if (externalTranslationCardVisible) {
                         DropdownMenuItem(
                             text = {
                                 Text(
