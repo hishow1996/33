@@ -10114,8 +10114,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         )
                     } else state
                 }
-                if (oldEngineRetired && videoKey == sessionKey && ui.value.key == sessionKey) {
-                    withContext(Dispatchers.Main) { safelySetOriginalVolume(1f, "source audio restore requested") }
+                if (
+                    oldEngineRetired &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey &&
+                    activePipelineGeneration == pipelineGeneration &&
+                    activeDubbingMutationGeneration == mutationGeneration
+                ) {
+                    withContext(Dispatchers.Main) {
+                        // Check again on the player thread: a new pipeline or speaker mutation
+                        // may start while this coroutine is being dispatched to Main.
+                        if (
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey &&
+                            activePipelineGeneration == pipelineGeneration &&
+                            activeDubbingMutationGeneration == mutationGeneration
+                        ) {
+                            safelySetOriginalVolume(1f, "source audio restore requested")
+                        }
+                    }
                 }
             } finally {
                 pendingTts?.close()
@@ -10354,8 +10371,25 @@ android.util.Log.e("PlaybackService", "Video pipeline failed for key=$key", e)
                         error = "切换人物音色失败：${e.message}",
                     )
                 }
-                if (oldEngineRetired && videoKey == sessionKey && ui.value.key == sessionKey) {
-                    withContext(Dispatchers.Main) { safelySetOriginalVolume(1f, "source audio restore requested") }
+                if (
+                    oldEngineRetired &&
+                    videoKey == sessionKey &&
+                    ui.value.key == sessionKey &&
+                    activePipelineGeneration == pipelineGeneration &&
+                    activeDubbingMutationGeneration == mutationGeneration
+                ) {
+                    withContext(Dispatchers.Main) {
+                        // Check again on the player thread: a new pipeline or speaker mutation
+                        // may start while this coroutine is being dispatched to Main.
+                        if (
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey &&
+                            activePipelineGeneration == pipelineGeneration &&
+                            activeDubbingMutationGeneration == mutationGeneration
+                        ) {
+                            safelySetOriginalVolume(1f, "source audio restore requested")
+                        }
+                    }
                 }
             } finally {
                 pendingTts?.close()
