@@ -4268,6 +4268,24 @@ android.util.Log.w("PlaybackService", "Subtitle download failed", e)
                     }
                 }
             } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "Subtitles",
+                        "已忽略过期字幕导入任务异常",
+                        e,
+                        diagnosticContext = mapOf(
+                            "旧处理代数" to pipelineGeneration.toString(),
+                            "当前处理代数" to activePipelineGeneration.toString(),
+                            "处理流程" to ui.value.processingFlow.name,
+                        ),
+                    )
+                    return@launch
+                }
                 io.translatetube.local.util.AppLogStore.error(
     this@PlaybackService, "Subtitles", "导入已翻译字幕失败", e,
 )
@@ -4285,7 +4303,11 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
                 }
                 if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
                     withContext(Dispatchers.Main) {
-                        if (videoKey == sessionKey && ui.value.key == sessionKey) pm.play()
+                        if (
+                            activePipelineGeneration == pipelineGeneration &&
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey
+                        ) pm.play()
                     }
                 }
             }
@@ -4660,6 +4682,24 @@ android.util.Log.e("PlaybackService", "Import translated subtitles failed", e)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (
+                    activePipelineGeneration != pipelineGeneration ||
+                    videoKey != sessionKey ||
+                    ui.value.key != sessionKey
+                ) {
+                    io.translatetube.local.util.AppLogStore.warning(
+                        this@PlaybackService,
+                        "Subtitles",
+                        "已忽略过期字幕导入任务异常",
+                        e,
+                        diagnosticContext = mapOf(
+                            "旧处理代数" to pipelineGeneration.toString(),
+                            "当前处理代数" to activePipelineGeneration.toString(),
+                            "处理流程" to ui.value.processingFlow.name,
+                        ),
+                    )
+                    return@launch
+                }
                 io.translatetube.local.util.AppLogStore.error(
     this@PlaybackService, "Subtitles", "导入字幕并启动处理流程失败", e,
 )
@@ -4673,7 +4713,11 @@ android.util.Log.e("PlaybackService", "Subtitle import failed", e)
                 }
                 if (resumePlaybackAfterImport && videoKey == sessionKey && ui.value.key == sessionKey) {
                     withContext(Dispatchers.Main) {
-                        if (videoKey == sessionKey && ui.value.key == sessionKey) pm.play()
+                        if (
+                            activePipelineGeneration == pipelineGeneration &&
+                            videoKey == sessionKey &&
+                            ui.value.key == sessionKey
+                        ) pm.play()
                     }
                 }
             }
