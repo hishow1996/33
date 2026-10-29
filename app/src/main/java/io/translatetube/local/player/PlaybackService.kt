@@ -856,7 +856,7 @@ class PlaybackService : MediaSessionService() {
             this,
             key,
             identityKey = currentRemoteSnapshotIdentityKey,
-            expectedProcessingFlow = state.processingFlow,
+            expectedProcessingFlows = setOf(state.processingFlow),
         ) { ignore ->
             ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
         }
@@ -1288,7 +1288,7 @@ class PlaybackService : MediaSessionService() {
                                 this@PlaybackService,
                                 sessionKey,
                                 identityKey = liveSnapshotIdentityKey,
-                                expectedProcessingFlow = state.processingFlow,
+                                expectedProcessingFlows = setOf(state.processingFlow),
                             ) { ignore ->
                                 ReadyHistorySessionConfigStore.fingerprint(
                                     this@PlaybackService,
@@ -3153,6 +3153,15 @@ class PlaybackService : MediaSessionService() {
         // If the URI now resolves to different metadata, that snapshot belongs to the prior file.
         val requestedResumeState = if (localMediaChangedForActiveSession) null else resumeState
         val canRestoreStoredResult = requestedResumeState == null && importedLines == null && key.isNotBlank()
+        // Restrict persisted restoration to flows that can actually be produced by this source.
+        // YouTube may legitimately use either captions or ASR; webpage/local media use their own ASR flow.
+        val expectedSnapshotFlows = when {
+            videoId != null || key.startsWith("youtube:", ignoreCase = true) ->
+                setOf(ProcessingFlow.YOUTUBE_SUBTITLES, ProcessingFlow.YOUTUBE_SPEECH_RECOGNITION)
+            remoteMediaUrl != null -> setOf(ProcessingFlow.WEB_SPEECH_RECOGNITION)
+            localUri != null -> setOf(ProcessingFlow.LOCAL_SPEECH_RECOGNITION)
+            else -> null
+        }
         // A matching snapshot may belong to an older run of the current configuration. Compare
         // against the latest successful run first; if any engine domain changed, restart from the
         // latest successful snapshot instead of treating that older matching snapshot as "unchanged".
@@ -3165,7 +3174,10 @@ class PlaybackService : MediaSessionService() {
             forceYouTubeSubtitleRefresh = forceYouTubeSubtitleRefresh,
         )) {
             ReadySessionSnapshotStore.findForCurrentConfig(
-                this, key, identityKey = readySnapshotIdentityKey,
+                this,
+                key,
+                identityKey = readySnapshotIdentityKey,
+                expectedProcessingFlows = expectedSnapshotFlows,
             ) { ignore ->
                 ReadyHistorySessionConfigStore.fingerprint(this, ignoreTranscription = ignore, videoKey = key)
             }
@@ -3178,7 +3190,10 @@ class PlaybackService : MediaSessionService() {
             // A successful snapshot from the previous subtitle mode is not a valid fallback:
             // the caller intentionally needs to discover/download the newly preferred caption track.
             ReadySessionSnapshotStore.findLatestForVideo(
-                this, key, identityKey = readySnapshotIdentityKey,
+                this,
+                key,
+                identityKey = readySnapshotIdentityKey,
+                expectedProcessingFlows = expectedSnapshotFlows,
             )
         } else null
         val fallbackPreviousDomains = fallbackSnapshot?.let { snapshot ->
